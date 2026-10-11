@@ -619,6 +619,8 @@ The full 14-DOF model does not exist yet. The plan therefore proves the promise 
 
 The point-mass formulation must compile against that fixture, produce results identical to the minimal assembly, and report both unused components in the manifest. When the UniTire models arrive, the tire adapter replaces the fixture tire and the same test must still pass.
 
+The fixture models live in `tests/fixtures/models/`, not in `models/`. Their schema types are registered by the test module, not by the production bootstrap. Task P0B made this change after review: the production registry must not carry a type whose only purpose is a test. A separate test starts a fresh interpreter and requires the fixture type to be absent from the production registry.
+
 ## 6\. Python interfaces
 
 ```python
@@ -1200,6 +1202,8 @@ Task P0A and Task P0B run after Task P1 completes. Task P1 touches `tools/`, `mo
 - Keep the two assemblies separate under Decision D1. Join them only through the compiled capability.
 - Preserve the lumped `drivetrain-model` reduction as a second path to `drive-force-limit`, and require it to reproduce the current lap times.
 - Register the reduction in the adapter registry from Task P0B. Do not hard-code the chain in the compiler.
+- **Allow nested assemblies.** The assembly compiler currently rejects a reference to another assembly. This task introduces `powertrain-assembly` and `drivetrain-assembly`, and the vehicle assembly references both, so the compiler must resolve an assembly reference to the components inside it. Extend the resolution and record each nested assembly in the manifest.
+- The vehicle assembly must reference the two nested assemblies and the tire and aero components, so that one canonical dataset carries every fidelity.
 
 **Tests**
 

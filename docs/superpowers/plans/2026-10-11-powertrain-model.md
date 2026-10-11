@@ -222,22 +222,30 @@ Acceptance requirements for the fitted set:
 
 | Requirement | Floor | Tolerance | Basis |
 |---|---|---|---|
-| Copper loss | above 1000 W | 6.1 percent | the joint optimum is 6.03 percent |
-| Phase voltage | above 60 V | 12.2 percent | the joint optimum is 12.05 percent |
-| Shaft torque | above 5 N*m | 18.2 percent | the joint optimum is 18.07 percent |
-| Zero-speed required voltage | the 1 rpm row | 5.1 percent | the joint optimum is 5.02 percent |
+| Copper loss | above 1000 W | 6.1 percent | the joint optimum for this table |
+| Phase voltage | above 60 V | 12.2 percent | the joint optimum for this table leaves this rule inactive |
+| Shaft torque | above 5 N*m | 18.2 percent | the joint optimum for this table |
+| Zero-speed required voltage | the 1 rpm row | 5.1 percent | the joint optimum for this table |
 | Parameter stability under a 10 percent row removal | — | 5 percent relative | guards against a fit dominated by a few points |
 | Reproduction of the committed parameter file | — | exact | reproducibility |
 
 A relative error against a near-zero reference value is meaningless. Each tolerance therefore applies only above the stated floor.
 
-**The zero-speed criterion is like for like.** It compares the model's required phase voltage at the 1 rpm anchor row against the measured voltage at that same row. It does not compare the resistive drop `resistance * current_limit` against the measured total, because the model also predicts the small rotational term at that row. The task must state which definition it uses, because the two differ by 0.045 percent in the resistance.
+**The zero-speed criterion is like for like.** It compares the model's required voltage at the 1 rpm anchor row against the measured voltage at that same row. It does not compare the resistive drop `resistance * current_limit` against the measured total, because the model also predicts the small rotational term at that row. The task must state which definition it uses, because the two differ by 0.045 percent in the resistance.
 
-**Each tolerance carries a one percent margin over the joint optimum.** A tolerance that sits within optimiser noise of the optimum is not a regression guard. It is a coin flip. The margin makes the guard fire on a real degradation rather than on optimiser jitter.
+**Each tolerance carries a margin over the joint optimum, and the real margin is about 1.4 percent.** The margin is a deliberate guard band, so that the test fires only on a degradation greater than about one percent. The reviewer measured the optimiser's own repeatability at about 0.002 percent of the ratio, which is far tighter than the margin. The margin is therefore not needed to absorb optimiser variation, and an earlier justification that called a tighter tolerance "optimiser noise" was quantitatively wrong.
 
 The margin is not free room to relax. The four tolerances are the last adjustment. A further conflict means the model form is at fault, not the table, and it becomes a new decision.
 
 **The fit must minimize the largest error-to-tolerance ratio.** The acceptance criterion is a set of maximum relative errors, so the fitting objective must be that same quantity. A least-squares fit minimizes a different objective and does not reach the joint optimum.
+
+**The fitted parameters are one point in a shallow valley.** Two parameter sets that differ by about two percent in the inductances differ by about `1.5e-5` in the error-to-tolerance ratio. The ratio is well determined at `0.986489`; the individual parameters are not. The reviewer found an independent optimum with `direct_inductance = 1.13234 mH` and `quadrature_inductance = 0.89143 mH` against the delivered `1.10986 mH` and `0.86585 mH`, for the same ratio. A later reader must compare the ratio, not the individual inductances.
+
+**Voltage basis.** The motor map stores its d/q voltages so that `hypot(v_d, v_q)` reaches 600 V at 16 300 rpm at maximum current, and it names that quantity `voltage_phase_peak`. Its own `voltage_line_rms` equals that value divided by `sqrt(2)`, which is the phase root-mean-square value, not the line value. The map is therefore self-consistent with a 600 V bus only if its d/q voltages are **line-to-line peak** values, and the true per-phase peak is `600 / sqrt(3)`.
+
+The fitted `flux_linkage` and inductances inherit that basis, because they were fitted against those voltages. Section 4.2 uses `available_voltage = bus_voltage / sqrt(3)`, which is a per-phase basis. Task P5 must not combine the two without a conversion. The plan requires P5 to work in one stated basis and to prove it by reproducing the measured reference point.
+
+A further factor of `sqrt(3)` would change every envelope speed by that factor, so the basis is settled before Task P5 computes an envelope.
 
 **The per-equation bounds are not simultaneously achievable.** The best set for phase voltage alone gives a torque error of 88 percent. The best set for torque alone gives a phase-voltage error of 31.85 percent. The two equations pull in opposite directions, so only a joint bound is meaningful.
 
@@ -1173,8 +1181,11 @@ Task P0A and Task P0B run after Task P1 completes. Task P1 touches `tools/`, `mo
 **Method**
 
 - Implement `calculate_available_voltage` with the `1 / sqrt(3)` factor.
+- **Settle the voltage basis before computing an envelope.** The fitted parameters are in the map's own basis, which is line-to-line peak, while `calculate_available_voltage` returns a per-phase value. Choose one basis, state it in the module, and convert the other quantity into it. A factor of `sqrt(3)` changes every envelope speed by the same factor.
+- **Prove the basis at the reference point.** Reproduce the measured reference condition: the maximum current at 16 300 rpm requires the full reference bus voltage. The task must show the computed voltage at that operating point against the measured value and state the difference.
 - Use `maximum_speed = 18600 rpm` for the motor limit, per decision D21. Do not copy the 20 000 rpm table range into the limit.
 - Use the loss map unscaled, per decision D20. Declare no loss scale parameter.
+- **Do not use the fitted parameters to predict an absolute torque.** They minimize a joint acceptance ratio for a model form with three measured limitations, and they sit in a shallow valley. Use them for the field-weakening loss correction and the voltage solve, and take the envelope from the map.
 - Implement the speed-axis envelope scaling from Section 4.2.
 - Implement `solve_direct_current` as one quadratic solve, with a reported infeasible status.
 - Implement the loss map plus the field-weakening correction.
@@ -1534,7 +1545,7 @@ A joint search over 120 starts and a 40 000-point sample gives the best joint se
 
 A second measurement tightened those numbers, because the zero-speed criterion must compare like with like. Comparing the model phase voltage at the 1 rpm anchor row against the measurement at that row gives a joint optimum of 6.03 percent copper, 12.05 percent phase voltage, 18.07 percent torque, and 5.02 percent zero-speed voltage. The earlier zero-speed figure of 4.98 percent compared the resistive drop alone. The two definitions differ by 0.045 percent in the resistance, and the copper criterion pulls the opposite way, so the definition decides which of the two binds.
 
-Section 4.3 places each tolerance one percent above the joint optimum, so the guard fires on a real degradation rather than on optimiser noise.
+Section 4.3 places each tolerance a guard band above the joint optimum, so the test fires only on a degradation greater than about one percent. The optimiser is repeatable to about 0.002 percent, so the band is deliberate rather than necessary.
 
 A least-squares fit does not reach the joint optimum, because it minimizes a different objective. The fit must minimize the largest error-to-tolerance ratio.
 

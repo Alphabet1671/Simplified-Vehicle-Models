@@ -71,7 +71,8 @@ class XmlLoaderTests(unittest.TestCase):
             root = Path(directory)
             self._write_valid_component_files(root)
             (root / "vehicle.xml").write_text(
-                """<model schema-version="1.0" id="vehicle" type="vehicle-assembly" subtype="point-mass">
+                """<model schema-version="1.0" id="vehicle"
+    type="vehicle-assembly" subtype="point-mass">
     <parameters>
         <parameter name="wheelbase" value="1.535" unit="m"/>
         <parameter name="track_width" value="1.016" unit="m"/>
@@ -120,7 +121,8 @@ class XmlLoaderTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "duplicate.xml"
             path.write_text(
-                """<model schema-version="1.0" id="duplicate" type="tire-model" subtype="load-sensitive-friction-ellipse">
+                """<model schema-version="1.0" id="duplicate"
+    type="tire-model" subtype="load-sensitive-friction-ellipse">
     <parameters>
         <parameter name="longitudinal_mu_scale" value="0.25" unit="1"/>
         <parameter name="longitudinal_mu_scale" value="0.30" unit="1"/>
@@ -137,7 +139,8 @@ class XmlLoaderTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "invalid.xml"
             path.write_text(
-                """<model schema-version="1.0" id="invalid" type="tire-model" subtype="load-sensitive-friction-ellipse">
+                """<model schema-version="1.0" id="invalid"
+    type="tire-model" subtype="load-sensitive-friction-ellipse">
     <parameters>
         <parameter name="longitudinal_mu_scale" value="not-a-number" unit="1"/>
     </parameters>
@@ -159,7 +162,8 @@ class XmlLoaderTests(unittest.TestCase):
 
     def _write_valid_component_files(self, root: Path) -> None:
         (root / "tire.xml").write_text(
-            """<model schema-version="1.0" id="tire" type="tire-model" subtype="load-sensitive-friction-ellipse">
+            """<model schema-version="1.0" id="tire"
+    type="tire-model" subtype="load-sensitive-friction-ellipse">
     <parameters>
         <parameter name="longitudinal_mu_scale" value="0.25" unit="1"/>
         <parameter name="lateral_mu_scale" value="0.4745" unit="1"/>
@@ -172,7 +176,8 @@ class XmlLoaderTests(unittest.TestCase):
             encoding="utf-8",
         )
         (root / "aero.xml").write_text(
-            """<model schema-version="1.0" id="aero" type="aero-model" subtype="fixed-aero">
+            """<model schema-version="1.0" id="aero"
+    type="aero-model" subtype="fixed-aero">
     <parameters>
         <parameter name="air_density" value="1.22" unit="kg/m^3"/>
         <parameter name="downforce_area" value="4.2" unit="m^2"/>
@@ -184,11 +189,13 @@ class XmlLoaderTests(unittest.TestCase):
             encoding="utf-8",
         )
         (root / "drivetrain.xml").write_text(
-            """<model schema-version="1.0" id="drivetrain" type="drivetrain-model" subtype="four-wheel-electric">
+            """<model schema-version="1.0" id="drivetrain"
+    type="drivetrain-model" subtype="four-wheel-electric">
     <parameters>
         <parameter name="motor_count" value="4" unit="1"/>
         <parameter name="gear_ratio" value="10.9" unit="1"/>
-        <parameter name="peak_motor_torque" value="21.834945614425717" unit="N*m"/>
+        <parameter name="peak_motor_torque"
+            value="21.834945614425717" unit="N*m"/>
         <parameter name="power_limit" value="80000" unit="W"/>
         <parameter name="efficiency" value="0.95" unit="1"/>
         <parameter name="maximum_motor_speed" value="20000" unit="rpm"/>

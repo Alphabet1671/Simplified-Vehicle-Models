@@ -49,9 +49,13 @@ def load_point_mass_vehicle(path: str | Path) -> PointMassVehicleParameters:
     model = _load_model(source_path, (), {}, {})
     _require_model_type(model, "vehicle-formulation", "point-mass")
 
-    sources = [reference for reference in model.references if reference.tag == "source"]
+    sources = [
+        reference for reference in model.references if reference.tag == "source"
+    ]
     if len(sources) != 1 or len(model.references) != 1:
-        raise ValueError(f"{model.path}: the formulation must contain one source reference")
+        raise ValueError(
+            f"{model.path}: the formulation must contain one source reference"
+        )
 
     return _compile_vehicle(sources[0].model)
 
@@ -173,18 +177,24 @@ def _compile_vehicle(model: _Model) -> PointMassVehicleParameters:
     components: dict[str, _Model] = {}
     for reference in model.references:
         if reference.tag != "component" or reference.role is None:
-            raise ValueError(f"{model.path}: each vehicle reference must be a component")
+            raise ValueError(
+                f"{model.path}: each vehicle reference must be a component"
+            )
         if reference.role in components:
-            raise ValueError(f"{model.path}: duplicate component role {reference.role!r}")
+            raise ValueError(
+                f"{model.path}: duplicate component role {reference.role!r}"
+            )
         components[reference.role] = reference.model
 
     expected_roles = {"tire", "aero", "drivetrain"}
     if set(components) != expected_roles:
         missing = sorted(expected_roles - set(components))
         unknown = sorted(set(components) - expected_roles)
-        raise ValueError(
-            f"{model.path}: invalid component roles; missing={missing}, unknown={unknown}"
+        message = (
+            f"{model.path}: invalid component roles; "
+            f"missing={missing}, unknown={unknown}"
         )
+        raise ValueError(message)
 
     return PointMassVehicleParameters(
         total_mass=values["total_mass"],

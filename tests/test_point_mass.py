@@ -83,7 +83,11 @@ class PointMassTests(unittest.TestCase):
     def test_drive_force_does_not_exceed_power_limit(self) -> None:
         speed = 30.0
         limits = acceleration_limits(self.vehicle, speed, 0.0)
-        power_force = self.vehicle.drivetrain.power_limit * self.vehicle.drivetrain.efficiency / speed
+        power_force = (
+            self.vehicle.drivetrain.power_limit
+            * self.vehicle.drivetrain.efficiency
+            / speed
+        )
 
         self.assertLessEqual(limits.drive_force_limit, power_force)
 

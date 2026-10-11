@@ -20,7 +20,11 @@ class TrackTests(unittest.TestCase):
         self.assertEqual(len(track.distance), 1407)
         self.assertEqual(len(track.segment_length), 1406)
         self.assertAlmostEqual(track.lap_length, 1014.32575, places=8)
-        self.assertAlmostEqual(float(np.sum(track.segment_length)), 1014.32575, places=8)
+        self.assertAlmostEqual(
+            float(np.sum(track.segment_length)),
+            1014.32575,
+            places=8,
+        )
         self.assertAlmostEqual(float(np.min(track.radius)), 5.210433541156343)
         np.testing.assert_allclose(track.curvature, 1.0 / track.radius)
         self.assertTrue(np.all(track.segment_length > 0.0))
@@ -45,7 +49,8 @@ class TrackTests(unittest.TestCase):
                 encoding="utf-8",
             )
             (root / "track.xml").write_text(
-                """<model schema-version="1.0" id="track" type="track-model" subtype="distance-radius-profile">
+                """<model schema-version="1.0" id="track"
+    type="track-model" subtype="distance-radius-profile">
     <metadata><title>Invalid track</title></metadata>
     <data ref="track.csv"/>
     <parameters>

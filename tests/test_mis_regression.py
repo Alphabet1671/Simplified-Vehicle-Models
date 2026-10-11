@@ -4,7 +4,10 @@ import unittest
 import numpy as np
 
 from simplified_vehicle_models.lap_solver import LapMode, LapResult, solve_lap
-from simplified_vehicle_models.point_mass import acceleration_limits, maximum_vehicle_speed
+from simplified_vehicle_models.point_mass import (
+    acceleration_limits,
+    maximum_vehicle_speed,
+)
 from simplified_vehicle_models.tracks import TrackProfile, load_track
 from simplified_vehicle_models.xml_loader import load_point_mass_vehicle
 

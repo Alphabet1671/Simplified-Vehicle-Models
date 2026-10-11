@@ -8,7 +8,10 @@ import numpy as np
 import numpy.typing as npt
 
 from simplified_vehicle_models.parameters import PointMassVehicleParameters
-from simplified_vehicle_models.point_mass import acceleration_limits, maximum_corner_speed
+from simplified_vehicle_models.point_mass import (
+    acceleration_limits,
+    maximum_corner_speed,
+)
 from simplified_vehicle_models.tracks import TrackProfile
 
 

@@ -20,3 +20,4 @@ class Model:
     parameters: dict[str, float]
     units: dict[str, str]
     references: tuple[ModelReference, ...]
+    requires: tuple[str, ...] = ()

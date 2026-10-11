@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<model schema-version="1.0" id="murphy-2024" type="vehicle-assembly" subtype="point-mass">
+<model schema-version="1.0" id="murphy-2024" type="vehicle-assembly" subtype="four-wheel">
     <parameters>
         <parameter name="total_mass" value="299.0" unit="kg"/>
         <parameter name="wheelbase" value="1.535" unit="m"/>

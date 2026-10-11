@@ -73,7 +73,7 @@ class XmlLoaderTests(unittest.TestCase):
             self._write_valid_component_files(root)
             (root / "vehicle.xml").write_text(
                 """<model schema-version="1.0" id="vehicle"
-    type="vehicle-assembly" subtype="point-mass">
+    type="vehicle-assembly" subtype="four-wheel">
     <parameters>
         <parameter name="wheelbase" value="1.535" unit="m"/>
         <parameter name="track_width" value="1.016" unit="m"/>
@@ -107,7 +107,7 @@ class XmlLoaderTests(unittest.TestCase):
             )
             (root / "second.xml").write_text(
                 '<model schema-version="1.0" id="second" '
-                'type="vehicle-assembly" subtype="point-mass">'
+                'type="vehicle-assembly" subtype="four-wheel">'
                 '<component role="tire" ref="first.xml"/></model>',
                 encoding="utf-8",
             )

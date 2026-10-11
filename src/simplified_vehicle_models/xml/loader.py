@@ -1,43 +1,42 @@
+"""Parse one XML model, resolve each reference, and validate it against its descriptor.
+
+The loader keeps three duties:
+- parse one file;
+- resolve one component reference;
+- validate the model type against the registry descriptor.
+
+The component modules own the parameter schemas and the compile functions.
+"""
+
 from __future__ import annotations
 
 import math
 from pathlib import Path
 import xml.etree.ElementTree as ElementTree
+from typing import cast
 
-from simplified_vehicle_models.parameters.aero import AeroParameters
-from simplified_vehicle_models.parameters.drivetrain import DrivetrainParameters
-from simplified_vehicle_models.parameters.tire import TireEnvelopeParameters
+from simplified_vehicle_models.compiler.registry import (
+    component_descriptor,
+    register_builtin_components,
+)
 from simplified_vehicle_models.parameters.vehicle import PointMassVehicleParameters
 from simplified_vehicle_models.xml.model import Model, ModelReference
 
 
-_REGISTERED_MODELS = frozenset(
-    {
-        ("aero-model", "fixed-aero"),
-        ("drivetrain-model", "four-wheel-electric"),
-        ("tire-model", "load-sensitive-friction-ellipse"),
-        ("vehicle-assembly", "point-mass"),
-        ("vehicle-formulation", "point-mass"),
-    }
-)
+def load_model(path: str | Path) -> Model:
+    """Load one XML model and resolve every reference."""
+
+    register_builtin_components()
+    source_path = Path(path).expanduser().resolve()
+    return _load_model(source_path, (), {}, {})
 
 
 def load_point_mass_vehicle(path: str | Path) -> PointMassVehicleParameters:
     """Load and compile one point-mass vehicle formulation."""
 
-    source_path = Path(path).expanduser().resolve()
-    model = _load_model(source_path, (), {}, {})
-    _require_model_type(model, "vehicle-formulation", "point-mass")
+    from simplified_vehicle_models.compiler.compile import compile_formulation
 
-    sources = [
-        reference for reference in model.references if reference.tag == "source"
-    ]
-    if len(sources) != 1 or len(model.references) != 1:
-        raise ValueError(
-            f"{model.path}: the formulation must contain one source reference"
-        )
-
-    return _compile_vehicle(sources[0].model)
+    return cast(PointMassVehicleParameters, compile_formulation(path).model)
 
 
 def _load_model(
@@ -68,8 +67,10 @@ def _load_model(
     model_id = _required_attribute(root, "id", path)
     model_type = _required_attribute(root, "type", path)
     subtype = _required_attribute(root, "subtype", path)
-    if (model_type, subtype) not in _REGISTERED_MODELS:
-        raise ValueError(f"{path}: unknown model type {model_type}/{subtype}")
+    try:
+        component_descriptor(model_type, subtype)
+    except ValueError as error:
+        raise ValueError(f"{path}: {error}") from error
 
     prior_path = model_ids.get(model_id)
     if prior_path is not None and prior_path != path:
@@ -79,6 +80,7 @@ def _load_model(
     model_ids[model_id] = path
 
     parameters, units = _parse_parameters(root, path)
+    requires = _parse_requires(root, path)
     reference_models: list[ModelReference] = []
     next_chain = chain + (path,)
     for element in root.iter():
@@ -99,6 +101,7 @@ def _load_model(
         parameters=parameters,
         units=units,
         references=tuple(reference_models),
+        requires=requires,
     )
     cache[path] = model
     return model
@@ -139,221 +142,11 @@ def _parse_parameters(
     return parameters, units
 
 
-def _compile_vehicle(model: Model) -> PointMassVehicleParameters:
-    _require_model_type(model, "vehicle-assembly", "point-mass")
-    values = _require_parameters(
-        model,
-        {
-            "total_mass": "kg",
-            "wheelbase": "m",
-            "track_width": "m",
-            "cg_height": "m",
-            "front_mass_fraction": "1",
-            "lateral_load_transfer_distribution": "1",
-            "brake_bias": "1",
-        },
-    )
-
-    components: dict[str, Model] = {}
-    for reference in model.references:
-        if reference.tag != "component" or reference.role is None:
-            raise ValueError(
-                f"{model.path}: each vehicle reference must be a component"
-            )
-        if reference.role in components:
-            raise ValueError(
-                f"{model.path}: duplicate component role {reference.role!r}"
-            )
-        components[reference.role] = reference.model
-
-    expected_roles = {"tire", "aero", "drivetrain"}
-    if set(components) != expected_roles:
-        missing = sorted(expected_roles - set(components))
-        unknown = sorted(set(components) - expected_roles)
-        message = (
-            f"{model.path}: invalid component roles; "
-            f"missing={missing}, unknown={unknown}"
-        )
-        raise ValueError(message)
-
-    _require_positive(model, values, "total_mass", "wheelbase", "track_width")
-    _require_nonnegative(model, values, "cg_height")
-    _require_open_unit_interval(model, values, "front_mass_fraction", "brake_bias")
-    _require_closed_unit_interval(
-        model,
-        values,
-        "lateral_load_transfer_distribution",
-    )
-    return PointMassVehicleParameters(
-        total_mass=values["total_mass"],
-        wheelbase=values["wheelbase"],
-        track_width=values["track_width"],
-        cg_height=values["cg_height"],
-        front_mass_fraction=values["front_mass_fraction"],
-        lateral_load_transfer_distribution=values[
-            "lateral_load_transfer_distribution"
-        ],
-        brake_bias=values["brake_bias"],
-        tire=_compile_tire(components["tire"]),
-        aero=_compile_aero(components["aero"]),
-        drivetrain=_compile_drivetrain(components["drivetrain"]),
-    )
-
-
-def _compile_tire(model: Model) -> TireEnvelopeParameters:
-    _require_model_type(model, "tire-model", "load-sensitive-friction-ellipse")
-    values = _require_parameters(
-        model,
-        {
-            "longitudinal_mu_scale": "1",
-            "lateral_mu_scale": "1",
-            "load_sensitivity_slope": "1/N",
-            "load_sensitivity_intercept": "1",
-            "effective_radius": "m",
-        },
-    )
-    _require_no_references(model)
-    _require_positive(
-        model,
-        values,
-        "longitudinal_mu_scale",
-        "lateral_mu_scale",
-        "load_sensitivity_intercept",
-        "effective_radius",
-    )
-    if values["load_sensitivity_slope"] > 0.0:
-        raise ValueError(
-            f"{model.path}: load_sensitivity_slope must be nonpositive"
-        )
-    return TireEnvelopeParameters(**values)
-
-
-def _compile_aero(model: Model) -> AeroParameters:
-    _require_model_type(model, "aero-model", "fixed-aero")
-    values = _require_parameters(
-        model,
-        {
-            "air_density": "kg/m^3",
-            "downforce_area": "m^2",
-            "drag_area": "m^2",
-            "aero_balance": "1",
-        },
-    )
-    _require_no_references(model)
-    _require_positive(model, values, "air_density")
-    _require_nonnegative(model, values, "downforce_area", "drag_area")
-    _require_closed_unit_interval(model, values, "aero_balance")
-    return AeroParameters(**values)
-
-
-def _compile_drivetrain(model: Model) -> DrivetrainParameters:
-    _require_model_type(model, "drivetrain-model", "four-wheel-electric")
-    values = _require_parameters(
-        model,
-        {
-            "motor_count": "1",
-            "gear_ratio": "1",
-            "peak_motor_torque": "N*m",
-            "power_limit": "W",
-            "efficiency": "1",
-            "maximum_motor_speed": "rpm",
-        },
-    )
-    _require_no_references(model)
-    motor_count = values.pop("motor_count")
-    if not motor_count.is_integer() or motor_count < 1:
-        raise ValueError(f"{model.path}: motor_count must be a positive integer")
-    _require_positive(
-        model,
-        values,
-        "gear_ratio",
-        "peak_motor_torque",
-        "power_limit",
-        "maximum_motor_speed",
-    )
-    _require_open_closed_unit_interval(model, values, "efficiency")
-    return DrivetrainParameters(motor_count=int(motor_count), **values)
-
-
-def _require_positive(
-    model: Model,
-    values: dict[str, float],
-    *names: str,
-) -> None:
-    for name in names:
-        if values[name] <= 0.0:
-            raise ValueError(f"{model.path}: {name} must be positive")
-
-
-def _require_nonnegative(
-    model: Model,
-    values: dict[str, float],
-    *names: str,
-) -> None:
-    for name in names:
-        if values[name] < 0.0:
-            raise ValueError(f"{model.path}: {name} must be nonnegative")
-
-
-def _require_open_unit_interval(
-    model: Model,
-    values: dict[str, float],
-    *names: str,
-) -> None:
-    for name in names:
-        if not 0.0 < values[name] < 1.0:
-            raise ValueError(f"{model.path}: {name} must be between zero and one")
-
-
-def _require_closed_unit_interval(
-    model: Model,
-    values: dict[str, float],
-    *names: str,
-) -> None:
-    for name in names:
-        if not 0.0 <= values[name] <= 1.0:
-            raise ValueError(f"{model.path}: {name} must be from zero through one")
-
-
-def _require_open_closed_unit_interval(
-    model: Model,
-    values: dict[str, float],
-    *names: str,
-) -> None:
-    for name in names:
-        if not 0.0 < values[name] <= 1.0:
-            raise ValueError(f"{model.path}: {name} must be greater than zero")
-
-
-def _require_model_type(model: Model, model_type: str, subtype: str) -> None:
-    if (model.model_type, model.subtype) != (model_type, subtype):
-        raise ValueError(
-            f"{model.path}: expected model type {model_type}/{subtype}, "
-            f"received {model.model_type}/{model.subtype}"
-        )
-
-
-def _require_parameters(
-    model: Model,
-    expected_units: dict[str, str],
-) -> dict[str, float]:
-    expected_names = set(expected_units)
-    actual_names = set(model.parameters)
-    missing = sorted(expected_names - actual_names)
-    unknown = sorted(actual_names - expected_names)
-    if missing or unknown:
-        raise ValueError(
-            f"{model.path}: invalid parameters; missing={missing}, unknown={unknown}"
-        )
-    for name, expected_unit in expected_units.items():
-        unit = model.units[name]
-        if unit != expected_unit:
-            raise ValueError(
-                f"{model.path}: parameter {name!r} must use unit {expected_unit!r}"
-            )
-    return dict(model.parameters)
-
-
-def _require_no_references(model: Model) -> None:
-    if model.references:
-        raise ValueError(f"{model.path}: component models cannot contain references")
+def _parse_requires(
+    root: ElementTree.Element,
+    path: Path,
+) -> tuple[str, ...]:
+    requires: list[str] = []
+    for element in root.findall("./requires"):
+        requires.append(_required_attribute(element, "capability", path))
+    return tuple(requires)

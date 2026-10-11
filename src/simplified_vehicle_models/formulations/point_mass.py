@@ -1,14 +1,121 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 import math
+from typing import TypeVar, cast
 
 import numpy as np
 
+from simplified_vehicle_models.compiler.adapters import ResolutionResult
+from simplified_vehicle_models.compiler.capabilities import (
+    AERO_LOADS,
+    DRIVE_FORCE_LIMIT,
+    TIRE_FORCE_ENVELOPE,
+)
 from simplified_vehicle_models.core.conventions import GRAVITY
 from simplified_vehicle_models.core.types import FloatArray
+from simplified_vehicle_models.parameters.aero import AeroParameters
+from simplified_vehicle_models.parameters.drivetrain import DrivetrainParameters
+from simplified_vehicle_models.parameters.tire import TireEnvelopeParameters
 from simplified_vehicle_models.parameters.vehicle import PointMassVehicleParameters
+from simplified_vehicle_models.xml.model import Model
+from simplified_vehicle_models.xml.schema import (
+    require_closed_unit_interval,
+    require_nonnegative,
+    require_open_unit_interval,
+    require_positive,
+    required_parameters,
+)
+
+
+POINT_MASS_REQUESTED_CAPABILITIES: tuple[str, ...] = (
+    TIRE_FORCE_ENVELOPE,
+    AERO_LOADS,
+    DRIVE_FORCE_LIMIT,
+)
+
+_CapabilityValue = TypeVar("_CapabilityValue")
+
+POINT_MASS_VEHICLE_PARAMETER_UNITS: dict[str, str] = {
+    "total_mass": "kg",
+    "wheelbase": "m",
+    "track_width": "m",
+    "cg_height": "m",
+    "front_mass_fraction": "1",
+    "lateral_load_transfer_distribution": "1",
+    "brake_bias": "1",
+}
+
+
+def compile_point_mass_vehicle(
+    assembly: Model,
+    resolutions: Mapping[str, ResolutionResult],
+) -> PointMassVehicleParameters:
+    """Compile one fidelity-neutral assembly for the point-mass formulation.
+
+    Consume the assembly parameters that the point-mass model needs.
+    Resolve each requested capability through the capability resolutions.
+    """
+
+    values, _ = required_parameters(assembly, POINT_MASS_VEHICLE_PARAMETER_UNITS)
+    require_positive(assembly, values, "total_mass", "wheelbase", "track_width")
+    require_nonnegative(assembly, values, "cg_height")
+    require_open_unit_interval(assembly, values, "front_mass_fraction", "brake_bias")
+    require_closed_unit_interval(
+        assembly,
+        values,
+        "lateral_load_transfer_distribution",
+    )
+    return PointMassVehicleParameters(
+        total_mass=values["total_mass"],
+        wheelbase=values["wheelbase"],
+        track_width=values["track_width"],
+        cg_height=values["cg_height"],
+        front_mass_fraction=values["front_mass_fraction"],
+        lateral_load_transfer_distribution=values[
+            "lateral_load_transfer_distribution"
+        ],
+        brake_bias=values["brake_bias"],
+        tire=_capability_value(
+            assembly,
+            resolutions,
+            TIRE_FORCE_ENVELOPE,
+            TireEnvelopeParameters,
+        ),
+        aero=_capability_value(
+            assembly,
+            resolutions,
+            AERO_LOADS,
+            AeroParameters,
+        ),
+        drivetrain=_capability_value(
+            assembly,
+            resolutions,
+            DRIVE_FORCE_LIMIT,
+            DrivetrainParameters,
+        ),
+    )
+
+
+def _capability_value(
+    assembly: Model,
+    resolutions: Mapping[str, ResolutionResult],
+    capability: str,
+    expected_type: type[_CapabilityValue],
+) -> _CapabilityValue:
+    resolution = resolutions.get(capability)
+    if resolution is None:
+        raise ValueError(
+            f"{assembly.path}: the compiler did not resolve capability {capability!r}"
+        )
+    if not isinstance(resolution.value, expected_type):
+        raise ValueError(
+            f"{assembly.path}: capability {capability!r} produced "
+            f"{type(resolution.value).__name__}, expected "
+            f"{expected_type.__name__}"
+        )
+    return cast(_CapabilityValue, resolution.value)
 
 
 @dataclass(frozen=True, slots=True)

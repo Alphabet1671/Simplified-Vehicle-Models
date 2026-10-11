@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from simplified_vehicle_models.parameters.aero import AeroParameters
 from simplified_vehicle_models.parameters.drivetrain import DrivetrainParameters
 from simplified_vehicle_models.parameters.tire import TireEnvelopeParameters
+
+if TYPE_CHECKING:
+    from simplified_vehicle_models.compiler.manifest import CompileManifest
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,3 +25,4 @@ class PointMassVehicleParameters:
     tire: TireEnvelopeParameters
     aero: AeroParameters
     drivetrain: DrivetrainParameters
+    manifest: CompileManifest | None = None

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- This formulation compiles the point-mass model against the reduction fixture.
+     The test registers the transient-combined-slip to tire-force-envelope adapter. -->
+<model schema-version="1.0" id="fixture-murphy-point-mass-reduced" type="vehicle-formulation" subtype="point-mass">
+    <source ref="../vehicles/fixture_four_wheel_reduced.xml"/>
+</model>

@@ -10,6 +10,7 @@ import numpy.typing as npt
 from simplified_vehicle_models.parameters import PointMassVehicleParameters
 from simplified_vehicle_models.point_mass import (
     acceleration_limits,
+    evaluate_equilibrium,
     maximum_corner_speed,
 )
 from simplified_vehicle_models.tracks import TrackProfile
@@ -35,6 +36,15 @@ class LapResult:
     lateral_acceleration: FloatArray
     throttle: FloatArray
     brake: FloatArray
+    normal_loads: FloatArray
+    longitudinal_forces: FloatArray
+    lateral_forces: FloatArray
+    combined_utilization: FloatArray
+    drive_force_limit: FloatArray
+    brake_force_limit: FloatArray
+    force_balance_residual: FloatArray
+    yaw_moment_residual: FloatArray
+    active_longitudinal_constraint: tuple[str, ...]
     lap_time: float
     converged: bool
     iterations: int
@@ -124,7 +134,7 @@ def _forward_sweep(
         )
 
         candidate = upper_speed
-        for _ in range(6):
+        for _ in range(20):
             limits = acceleration_limits(
                 vehicle,
                 0.5 * (start_speed + candidate),
@@ -135,10 +145,12 @@ def _forward_sweep(
                 + 2.0 * limits.maximum_acceleration * segment_length
             )
             updated = min(candidate, reachable)
-            if abs(updated - candidate) <= 1.0e-7:
+            if abs(updated - candidate) <= 1.0e-8:
                 break
             candidate = updated
-        speed[index + 1] = min(candidate, updated)
+        else:
+            raise RuntimeError("forward transition did not converge")
+        speed[index + 1] = updated
 
 
 def _backward_sweep(
@@ -158,7 +170,7 @@ def _backward_sweep(
         )
 
         candidate = upper_speed
-        for _ in range(6):
+        for _ in range(20):
             limits = acceleration_limits(
                 vehicle,
                 0.5 * (candidate + next_speed),
@@ -169,10 +181,12 @@ def _backward_sweep(
                 + 2.0 * limits.maximum_deceleration * segment_length
             )
             updated = min(candidate, reachable)
-            if abs(updated - candidate) <= 1.0e-7:
+            if abs(updated - candidate) <= 1.0e-8:
                 break
             candidate = updated
-        speed[index] = min(candidate, updated)
+        else:
+            raise RuntimeError("backward transition did not converge")
+        speed[index] = updated
 
 
 def _build_result(
@@ -192,26 +206,41 @@ def _build_result(
         np.abs(track.curvature[:-1]),
         np.abs(track.curvature[1:]),
     )
-    lateral_acceleration = start_speed * start_speed * segment_curvature
-    throttle = np.zeros_like(acceleration)
-    brake = np.zeros_like(acceleration)
+    evaluation_speed = 0.5 * (start_speed + end_speed)
+    lateral_acceleration = evaluation_speed * evaluation_speed * segment_curvature
+    segment_count = len(acceleration)
+    throttle = np.zeros(segment_count, dtype=np.float64)
+    brake = np.zeros(segment_count, dtype=np.float64)
+    loads = np.zeros((segment_count, 4), dtype=np.float64)
+    longitudinal_forces = np.zeros((segment_count, 4), dtype=np.float64)
+    lateral_forces = np.zeros((segment_count, 4), dtype=np.float64)
+    utilization = np.zeros((segment_count, 4), dtype=np.float64)
+    drive_limit = np.zeros(segment_count, dtype=np.float64)
+    brake_limit = np.zeros(segment_count, dtype=np.float64)
+    force_residual = np.zeros(segment_count, dtype=np.float64)
+    yaw_residual = np.zeros(segment_count, dtype=np.float64)
+    constraints: list[str] = []
     for index, required_acceleration in enumerate(acceleration):
-        evaluation_speed = 0.5 * (start_speed[index] + end_speed[index])
-        limits = acceleration_limits(
+        state = evaluate_equilibrium(
             vehicle,
-            float(evaluation_speed),
+            float(evaluation_speed[index]),
             float(segment_curvature[index]),
+            float(required_acceleration),
         )
-        if required_acceleration > 0.0 and limits.maximum_acceleration > 0.0:
-            throttle[index] = min(
-                required_acceleration / limits.maximum_acceleration,
-                1.0,
-            )
-        elif required_acceleration < 0.0 and limits.maximum_deceleration > 0.0:
-            brake[index] = min(
-                -required_acceleration / limits.maximum_deceleration,
-                1.0,
-            )
+        wheel_force = float(np.sum(state.longitudinal_forces))
+        if wheel_force > 0.0 and state.drive_force_limit > 0.0:
+            throttle[index] = min(wheel_force / state.drive_force_limit, 1.0)
+        elif wheel_force < 0.0 and state.brake_force_limit > 0.0:
+            brake[index] = min(-wheel_force / state.brake_force_limit, 1.0)
+        loads[index] = state.normal_loads
+        longitudinal_forces[index] = state.longitudinal_forces
+        lateral_forces[index] = state.lateral_forces
+        utilization[index] = state.combined_utilization
+        drive_limit[index] = state.drive_force_limit
+        brake_limit[index] = state.brake_force_limit
+        force_residual[index] = state.force_balance_residual
+        yaw_residual[index] = state.yaw_moment_residual
+        constraints.append(state.active_longitudinal_constraint)
 
     denominator = start_speed + end_speed
     if np.any(denominator <= 0.0):
@@ -227,6 +256,14 @@ def _build_result(
         lateral_acceleration,
         throttle,
         brake,
+        loads,
+        longitudinal_forces,
+        lateral_forces,
+        utilization,
+        drive_limit,
+        brake_limit,
+        force_residual,
+        yaw_residual,
     )
     for array in arrays:
         array.setflags(write=False)
@@ -237,6 +274,15 @@ def _build_result(
         lateral_acceleration=lateral_acceleration,
         throttle=throttle,
         brake=brake,
+        normal_loads=loads,
+        longitudinal_forces=longitudinal_forces,
+        lateral_forces=lateral_forces,
+        combined_utilization=utilization,
+        drive_force_limit=drive_limit,
+        brake_force_limit=brake_limit,
+        force_balance_residual=force_residual,
+        yaw_moment_residual=yaw_residual,
+        active_longitudinal_constraint=tuple(constraints),
         lap_time=float(elapsed_time[-1]),
         converged=converged,
         iterations=iterations,

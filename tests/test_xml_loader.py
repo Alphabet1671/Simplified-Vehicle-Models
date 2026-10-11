@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 from pathlib import Path
+import shutil
 import sys
 import tempfile
 import unittest
@@ -151,6 +152,25 @@ class XmlLoaderTests(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "valid float"):
                 load_point_mass_vehicle(path)
+
+    def test_rejects_nonphysical_parameter_range(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "models"
+            shutil.copytree(REPOSITORY_ROOT / "models", target)
+            vehicle_path = target / "vehicles/murphy_2024.xml"
+            text = vehicle_path.read_text(encoding="utf-8")
+            vehicle_path.write_text(
+                text.replace(
+                    'name="total_mass" value="299.0"',
+                    'name="total_mass" value="0"',
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "total_mass must be positive"):
+                load_point_mass_vehicle(
+                    target / "formulations/murphy_point_mass.xml"
+                )
 
     def _write_formulation(self, root: Path) -> None:
         (root / "formulation.xml").write_text(

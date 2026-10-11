@@ -196,6 +196,14 @@ def _compile_vehicle(model: _Model) -> PointMassVehicleParameters:
         )
         raise ValueError(message)
 
+    _require_positive(model, values, "total_mass", "wheelbase", "track_width")
+    _require_nonnegative(model, values, "cg_height")
+    _require_open_unit_interval(model, values, "front_mass_fraction", "brake_bias")
+    _require_closed_unit_interval(
+        model,
+        values,
+        "lateral_load_transfer_distribution",
+    )
     return PointMassVehicleParameters(
         total_mass=values["total_mass"],
         wheelbase=values["wheelbase"],
@@ -225,6 +233,18 @@ def _compile_tire(model: _Model) -> TireEnvelopeParameters:
         },
     )
     _require_no_references(model)
+    _require_positive(
+        model,
+        values,
+        "longitudinal_mu_scale",
+        "lateral_mu_scale",
+        "load_sensitivity_intercept",
+        "effective_radius",
+    )
+    if values["load_sensitivity_slope"] > 0.0:
+        raise ValueError(
+            f"{model.path}: load_sensitivity_slope must be nonpositive"
+        )
     return TireEnvelopeParameters(**values)
 
 
@@ -240,6 +260,9 @@ def _compile_aero(model: _Model) -> AeroParameters:
         },
     )
     _require_no_references(model)
+    _require_positive(model, values, "air_density")
+    _require_nonnegative(model, values, "downforce_area", "drag_area")
+    _require_closed_unit_interval(model, values, "aero_balance")
     return AeroParameters(**values)
 
 
@@ -260,7 +283,66 @@ def _compile_drivetrain(model: _Model) -> DrivetrainParameters:
     motor_count = values.pop("motor_count")
     if not motor_count.is_integer() or motor_count < 1:
         raise ValueError(f"{model.path}: motor_count must be a positive integer")
+    _require_positive(
+        model,
+        values,
+        "gear_ratio",
+        "peak_motor_torque",
+        "power_limit",
+        "maximum_motor_speed",
+    )
+    _require_open_closed_unit_interval(model, values, "efficiency")
     return DrivetrainParameters(motor_count=int(motor_count), **values)
+
+
+def _require_positive(
+    model: _Model,
+    values: dict[str, float],
+    *names: str,
+) -> None:
+    for name in names:
+        if values[name] <= 0.0:
+            raise ValueError(f"{model.path}: {name} must be positive")
+
+
+def _require_nonnegative(
+    model: _Model,
+    values: dict[str, float],
+    *names: str,
+) -> None:
+    for name in names:
+        if values[name] < 0.0:
+            raise ValueError(f"{model.path}: {name} must be nonnegative")
+
+
+def _require_open_unit_interval(
+    model: _Model,
+    values: dict[str, float],
+    *names: str,
+) -> None:
+    for name in names:
+        if not 0.0 < values[name] < 1.0:
+            raise ValueError(f"{model.path}: {name} must be between zero and one")
+
+
+def _require_closed_unit_interval(
+    model: _Model,
+    values: dict[str, float],
+    *names: str,
+) -> None:
+    for name in names:
+        if not 0.0 <= values[name] <= 1.0:
+            raise ValueError(f"{model.path}: {name} must be from zero through one")
+
+
+def _require_open_closed_unit_interval(
+    model: _Model,
+    values: dict[str, float],
+    *names: str,
+) -> None:
+    for name in names:
+        if not 0.0 < values[name] <= 1.0:
+            raise ValueError(f"{model.path}: {name} must be greater than zero")
 
 
 def _require_model_type(model: _Model, model_type: str, subtype: str) -> None:

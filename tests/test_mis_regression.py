@@ -4,11 +4,8 @@ import unittest
 import numpy as np
 
 from simplified_vehicle_models.lap_solver import LapMode, LapResult, solve_lap
-from simplified_vehicle_models.point_mass import (
-    acceleration_limits,
-    maximum_vehicle_speed,
-)
-from simplified_vehicle_models.tracks import TrackProfile, load_track
+from simplified_vehicle_models.point_mass import GRAVITY, maximum_vehicle_speed
+from simplified_vehicle_models.tracks import load_track
 from simplified_vehicle_models.xml_loader import load_point_mass_vehicle
 
 
@@ -22,7 +19,12 @@ class MisRegressionTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.vehicle = load_point_mass_vehicle(FORMULATION_PATH)
         cls.track = load_track(TRACK_PATH)
-        cls.flying = solve_lap(cls.vehicle, cls.track, LapMode.FLYING, tolerance=1.0e-5)
+        cls.flying = solve_lap(
+            cls.vehicle,
+            cls.track,
+            LapMode.FLYING,
+            tolerance=1.0e-5,
+        )
         cls.standing = solve_lap(
             cls.vehicle,
             cls.track,
@@ -36,7 +38,6 @@ class MisRegressionTests(unittest.TestCase):
             self.assertTrue(np.isfinite(result.lap_time))
             self.assertGreater(result.lap_time, 50.0)
             self.assertLess(result.lap_time, 100.0)
-
         self.assertGreater(self.standing.lap_time, self.flying.lap_time)
         self.assertLess(self.standing.lap_time - self.flying.lap_time, 15.0)
 
@@ -44,41 +45,72 @@ class MisRegressionTests(unittest.TestCase):
         self.assertAlmostEqual(self.flying.speed[0], self.flying.speed[-1])
         self.assertEqual(self.standing.speed[0], 0.0)
 
-    def test_speed_and_force_limits_are_satisfied(self) -> None:
+    def test_independent_equilibrium_closure(self) -> None:
         speed_limit = maximum_vehicle_speed(self.vehicle)
         for result in (self.flying, self.standing):
             self.assertLessEqual(float(np.max(result.speed)), speed_limit + 1.0e-8)
-            self._assert_transition_limits(result, self.track)
+            self._assert_equilibrium(result)
 
-    def _assert_transition_limits(
-        self,
-        result: LapResult,
-        track: TrackProfile,
-    ) -> None:
-        for index, required_acceleration in enumerate(
-            result.longitudinal_acceleration
-        ):
-            evaluation_speed = 0.5 * (result.speed[index] + result.speed[index + 1])
-            segment_curvature = max(
-                abs(float(track.curvature[index])),
-                abs(float(track.curvature[index + 1])),
-            )
-            limits = acceleration_limits(
-                self.vehicle,
-                float(evaluation_speed),
-                segment_curvature,
-            )
-            self.assertTrue(limits.is_feasible)
-            if required_acceleration >= 0.0:
-                self.assertLessEqual(
-                    float(required_acceleration),
-                    limits.maximum_acceleration + 1.0e-8,
-                )
-            else:
-                self.assertLessEqual(
-                    float(-required_acceleration),
-                    limits.maximum_deceleration + 1.0e-8,
-                )
+    def _assert_equilibrium(self, result: LapResult) -> None:
+        vehicle = self.vehicle
+        midpoint_speed = 0.5 * (result.speed[:-1] + result.speed[1:])
+        dynamic_pressure = 0.5 * vehicle.aero.air_density * midpoint_speed**2
+        drag = dynamic_pressure * vehicle.aero.drag_area
+        downforce = dynamic_pressure * vehicle.aero.downforce_area
+        force_residual = (
+            np.sum(result.longitudinal_forces, axis=1)
+            - drag
+            - vehicle.total_mass * result.longitudinal_acceleration
+        )
+        np.testing.assert_allclose(force_residual, 0.0, atol=1.0e-8)
+        np.testing.assert_allclose(
+            np.sum(result.normal_loads, axis=1),
+            vehicle.total_mass * GRAVITY + downforce,
+            atol=1.0e-8,
+        )
+        self.assertTrue(np.all(result.normal_loads >= 0.0))
+
+        distance_to_front = vehicle.wheelbase * (
+            1.0 - vehicle.front_mass_fraction
+        )
+        distance_to_rear = vehicle.wheelbase * vehicle.front_mass_fraction
+        yaw_moment = (
+            np.sum(result.lateral_forces[:, :2], axis=1) * distance_to_front
+            - np.sum(result.lateral_forces[:, 2:], axis=1) * distance_to_rear
+        )
+        np.testing.assert_allclose(yaw_moment, 0.0, atol=1.0e-8)
+
+        tire = vehicle.tire
+        load_factor = (
+            tire.load_sensitivity_slope * result.normal_loads
+            + tire.load_sensitivity_intercept
+        )
+        longitudinal_capacity = (
+            tire.longitudinal_mu_scale * load_factor * result.normal_loads
+        )
+        lateral_capacity = (
+            tire.lateral_mu_scale * load_factor * result.normal_loads
+        )
+        utilization = np.sqrt(
+            (result.longitudinal_forces / longitudinal_capacity) ** 2
+            + (result.lateral_forces / lateral_capacity) ** 2
+        )
+        self.assertLessEqual(float(np.max(utilization)), 1.0 + 1.0e-7)
+
+        commanded_force = (
+            result.throttle * result.drive_force_limit
+            - result.brake * result.brake_force_limit
+        )
+        np.testing.assert_allclose(
+            commanded_force,
+            np.sum(result.longitudinal_forces, axis=1),
+            atol=1.0e-8,
+        )
+        self.assertFalse(
+            np.any((result.throttle > 0.0) & (result.brake > 0.0))
+        )
+        mild_deceleration = result.longitudinal_acceleration < 0.0
+        self.assertTrue(np.any(mild_deceleration & (result.throttle > 0.0)))
 
 
 if __name__ == "__main__":

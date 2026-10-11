@@ -15,21 +15,48 @@ FloatArray = npt.NDArray[np.float64]
 
 
 @dataclass(frozen=True, slots=True)
+class EquilibriumState:
+    """Store one prescribed-acceleration force equilibrium."""
+
+    longitudinal_acceleration: float
+    lateral_acceleration: float
+    normal_loads: FloatArray
+    longitudinal_capacities: FloatArray
+    lateral_capacities: FloatArray
+    longitudinal_forces: FloatArray
+    lateral_forces: FloatArray
+    combined_utilization: FloatArray
+    drive_force_limit: float
+    brake_force_limit: float
+    drag_force: float
+    active_longitudinal_constraint: str
+    force_balance_residual: float
+    yaw_moment_residual: float
+    contact_feasible: bool
+    lateral_feasible: bool
+    longitudinal_feasible: bool
+
+    @property
+    def is_feasible(self) -> bool:
+        """Return true when all force constraints are feasible."""
+
+        return (
+            self.contact_feasible
+            and self.lateral_feasible
+            and self.longitudinal_feasible
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class AccelerationLimits:
-    """Store the live acceleration limits and wheel diagnostics."""
+    """Store live limits and their solved equilibrium states."""
 
     maximum_acceleration: float
     maximum_deceleration: float
     lateral_acceleration: float
-    drive_force_limit: float
-    brake_force_limit: float
-    drag_force: float
-    normal_loads: FloatArray
-    longitudinal_capacities: FloatArray
-    lateral_capacities: FloatArray
-    lateral_forces: FloatArray
-    active_drive_constraint: str
-    is_feasible: bool
+    acceleration_state: EquilibriumState
+    braking_state: EquilibriumState
+    coasting_state: EquilibriumState
 
 
 def aerodynamic_forces(
@@ -39,9 +66,10 @@ def aerodynamic_forces(
     """Calculate downforce and drag at the specified speed."""
 
     dynamic_pressure = 0.5 * vehicle.aero.air_density * speed * speed
-    downforce = dynamic_pressure * vehicle.aero.downforce_area
-    drag = dynamic_pressure * vehicle.aero.drag_area
-    return downforce, drag
+    return (
+        dynamic_pressure * vehicle.aero.downforce_area,
+        dynamic_pressure * vehicle.aero.drag_area,
+    )
 
 
 def normal_loads(
@@ -50,7 +78,7 @@ def normal_loads(
     longitudinal_acceleration: float,
     lateral_acceleration: float,
 ) -> FloatArray:
-    """Calculate the vertical load for each tire."""
+    """Calculate the rigid vertical load solution for each tire."""
 
     mass = vehicle.total_mass
     downforce, _ = aerodynamic_forces(vehicle, speed)
@@ -63,15 +91,14 @@ def normal_loads(
         / vehicle.wheelbase
     )
     rear_axle = mass * GRAVITY + downforce - front_axle
-
-    total_lateral_transfer = (
+    total_transfer = (
         mass * abs(lateral_acceleration) * vehicle.cg_height / vehicle.track_width
     )
     front_transfer = (
-        total_lateral_transfer * vehicle.lateral_load_transfer_distribution
+        total_transfer * vehicle.lateral_load_transfer_distribution
     )
-    rear_transfer = total_lateral_transfer - front_transfer
-    loads = np.asarray(
+    rear_transfer = total_transfer - front_transfer
+    return np.asarray(
         [
             front_axle * 0.5 - front_transfer,
             front_axle * 0.5 + front_transfer,
@@ -80,20 +107,23 @@ def normal_loads(
         ],
         dtype=np.float64,
     )
-    return np.maximum(loads, 0.0)
 
 
 def tire_force_capacities(
     vehicle: PointMassVehicleParameters,
     loads: FloatArray,
 ) -> tuple[FloatArray, FloatArray]:
-    """Calculate pure longitudinal and lateral force capacities."""
+    """Calculate pure force capacities for nonnegative contact loads."""
 
+    contact_loads = np.maximum(loads, 0.0)
     tire = vehicle.tire
-    load_factor = tire.load_sensitivity_slope * loads + tire.load_sensitivity_intercept
+    load_factor = (
+        tire.load_sensitivity_slope * contact_loads
+        + tire.load_sensitivity_intercept
+    )
     longitudinal_mu = np.maximum(tire.longitudinal_mu_scale * load_factor, 0.0)
     lateral_mu = np.maximum(tire.lateral_mu_scale * load_factor, 0.0)
-    return longitudinal_mu * loads, lateral_mu * loads
+    return longitudinal_mu * contact_loads, lateral_mu * contact_loads
 
 
 def maximum_vehicle_speed(vehicle: PointMassVehicleParameters) -> float:
@@ -101,6 +131,133 @@ def maximum_vehicle_speed(vehicle: PointMassVehicleParameters) -> float:
 
     motor_speed = vehicle.drivetrain.maximum_motor_speed * 2.0 * math.pi / 60.0
     return motor_speed * vehicle.tire.effective_radius / vehicle.drivetrain.gear_ratio
+
+
+def evaluate_equilibrium(
+    vehicle: PointMassVehicleParameters,
+    speed: float,
+    curvature: float,
+    longitudinal_acceleration: float,
+) -> EquilibriumState:
+    """Evaluate wheel forces for one prescribed vehicle acceleration."""
+
+    lateral_acceleration = speed * speed * abs(curvature)
+    loads = normal_loads(
+        vehicle,
+        speed,
+        longitudinal_acceleration,
+        lateral_acceleration,
+    )
+    contact_feasible = bool(np.all(loads >= -1.0e-9))
+    longitudinal_capacity, lateral_capacity = tire_force_capacities(vehicle, loads)
+
+    total_lateral_force = vehicle.total_mass * lateral_acceleration
+    front_target = total_lateral_force * vehicle.front_mass_fraction
+    rear_target = total_lateral_force - front_target
+    lateral_forces = np.zeros(4, dtype=np.float64)
+    front_ok = _allocate_axle_force(
+        lateral_forces,
+        lateral_capacity,
+        slice(0, 2),
+        front_target,
+    )
+    rear_ok = _allocate_axle_force(
+        lateral_forces,
+        lateral_capacity,
+        slice(2, 4),
+        rear_target,
+    )
+    lateral_feasible = front_ok and rear_ok and contact_feasible
+
+    lateral_ratio = np.divide(
+        lateral_forces,
+        lateral_capacity,
+        out=np.zeros(4, dtype=np.float64),
+        where=lateral_capacity > 0.0,
+    )
+    remaining = longitudinal_capacity * np.sqrt(
+        np.maximum(1.0 - lateral_ratio * lateral_ratio, 0.0)
+    )
+    drive_limit, drive_constraint = _available_drive_force(
+        vehicle,
+        speed,
+        remaining,
+    )
+    brake_limit, brake_constraint = _available_brake_force(vehicle, remaining)
+    _, drag = aerodynamic_forces(vehicle, speed)
+    required_force = vehicle.total_mass * longitudinal_acceleration + drag
+    longitudinal_forces = np.zeros(4, dtype=np.float64)
+    if required_force >= 0.0:
+        _allocate_total_force(longitudinal_forces, remaining, required_force)
+        longitudinal_feasible = required_force <= drive_limit + 1.0e-8
+        active_constraint = drive_constraint
+    else:
+        brake_demand = -required_force
+        _allocate_brake_force(
+            longitudinal_forces,
+            remaining,
+            brake_demand,
+            vehicle.brake_bias,
+        )
+        longitudinal_feasible = brake_demand <= brake_limit + 1.0e-8
+        active_constraint = brake_constraint
+
+    longitudinal_ratio = np.divide(
+        longitudinal_forces,
+        longitudinal_capacity,
+        out=np.zeros(4, dtype=np.float64),
+        where=longitudinal_capacity > 0.0,
+    )
+    combined_utilization = np.sqrt(
+        longitudinal_ratio * longitudinal_ratio
+        + lateral_ratio * lateral_ratio
+    )
+    force_residual = (
+        float(np.sum(longitudinal_forces))
+        - drag
+        - vehicle.total_mass * longitudinal_acceleration
+    )
+    distance_to_front = vehicle.wheelbase * (
+        1.0 - vehicle.front_mass_fraction
+    )
+    distance_to_rear = vehicle.wheelbase * vehicle.front_mass_fraction
+    yaw_residual = (
+        float(np.sum(lateral_forces[:2])) * distance_to_front
+        - float(np.sum(lateral_forces[2:])) * distance_to_rear
+    )
+    arrays = (
+        loads,
+        longitudinal_capacity,
+        lateral_capacity,
+        longitudinal_forces,
+        lateral_forces,
+        combined_utilization,
+    )
+    for array in arrays:
+        array.setflags(write=False)
+    return EquilibriumState(
+        longitudinal_acceleration=longitudinal_acceleration,
+        lateral_acceleration=lateral_acceleration,
+        normal_loads=loads,
+        longitudinal_capacities=longitudinal_capacity,
+        lateral_capacities=lateral_capacity,
+        longitudinal_forces=longitudinal_forces,
+        lateral_forces=lateral_forces,
+        combined_utilization=combined_utilization,
+        drive_force_limit=drive_limit,
+        brake_force_limit=brake_limit,
+        drag_force=drag,
+        active_longitudinal_constraint=active_constraint,
+        force_balance_residual=force_residual,
+        yaw_moment_residual=yaw_residual,
+        contact_feasible=contact_feasible,
+        lateral_feasible=lateral_feasible,
+        longitudinal_feasible=(
+            longitudinal_feasible
+            and lateral_feasible
+            and float(np.max(combined_utilization)) <= 1.0 + 1.0e-8
+        ),
+    )
 
 
 def maximum_corner_speed(
@@ -114,11 +271,12 @@ def maximum_corner_speed(
         raise ValueError("radius must be finite and positive")
     upper = min(maximum_speed, maximum_vehicle_speed(vehicle))
     lower = 0.0
-    if _corner_is_feasible(vehicle, upper, radius):
+    if evaluate_equilibrium(vehicle, upper, 1.0 / radius, 0.0).is_feasible:
         return upper
     for _ in range(32):
         trial = 0.5 * (lower + upper)
-        if _corner_is_feasible(vehicle, trial, radius):
+        state = evaluate_equilibrium(vehicle, trial, 1.0 / radius, 0.0)
+        if state.is_feasible:
             lower = trial
         else:
             upper = trial
@@ -130,108 +288,96 @@ def acceleration_limits(
     speed: float,
     curvature: float,
 ) -> AccelerationLimits:
-    """Solve the live acceleration limits at one path condition."""
+    """Solve live acceleration limits and their equilibrium states."""
 
     if not math.isfinite(speed) or speed < 0.0:
         raise ValueError("speed must be finite and nonnegative")
     if not math.isfinite(curvature):
         raise ValueError("curvature must be finite")
+    curvature = abs(curvature)
+    coasting = evaluate_equilibrium(vehicle, speed, curvature, 0.0)
 
-    lateral_acceleration = speed * speed * abs(curvature)
-    base = _force_state(vehicle, speed, 0.0, lateral_acceleration)
-    if not base[-1]:
-        return AccelerationLimits(
-            maximum_acceleration=0.0,
-            maximum_deceleration=0.0,
-            lateral_acceleration=lateral_acceleration,
-            drive_force_limit=0.0,
-            brake_force_limit=0.0,
-            drag_force=aerodynamic_forces(vehicle, speed)[1],
-            normal_loads=base[0],
-            longitudinal_capacities=base[1],
-            lateral_capacities=base[2],
-            lateral_forces=base[3],
-            active_drive_constraint="lateral",
-            is_feasible=False,
-        )
+    def drive_residual(acceleration: float) -> float:
+        state = evaluate_equilibrium(vehicle, speed, curvature, acceleration)
+        required = vehicle.total_mass * acceleration + state.drag_force
+        if not state.contact_feasible or not state.lateral_feasible:
+            return -required
+        return state.drive_force_limit - required
 
-    maximum_acceleration = _solve_drive_acceleration(
+    def brake_residual(deceleration: float) -> float:
+        state = evaluate_equilibrium(vehicle, speed, curvature, -deceleration)
+        required = vehicle.total_mass * deceleration - state.drag_force
+        if not state.contact_feasible or not state.lateral_feasible:
+            return -max(required, 0.0)
+        return state.brake_force_limit - max(required, 0.0)
+
+    maximum_acceleration = (
+        _positive_root(drive_residual, 30.0) if coasting.lateral_feasible else 0.0
+    )
+    maximum_deceleration = (
+        _positive_root(brake_residual, 30.0) if coasting.lateral_feasible else 0.0
+    )
+    acceleration_state = evaluate_equilibrium(
         vehicle,
         speed,
-        lateral_acceleration,
+        curvature,
+        maximum_acceleration,
     )
-    maximum_deceleration = _solve_braking_deceleration(
+    braking_state = evaluate_equilibrium(
         vehicle,
         speed,
-        lateral_acceleration,
+        curvature,
+        -maximum_deceleration,
     )
-    drive_force, constraint = _available_drive_force(
-        vehicle,
-        speed,
-        base[4],
-    )
-    brake_force = _available_brake_force(vehicle, base[4])
-    _, drag = aerodynamic_forces(vehicle, speed)
     return AccelerationLimits(
         maximum_acceleration=maximum_acceleration,
         maximum_deceleration=maximum_deceleration,
-        lateral_acceleration=lateral_acceleration,
-        drive_force_limit=drive_force,
-        brake_force_limit=brake_force,
-        drag_force=drag,
-        normal_loads=base[0],
-        longitudinal_capacities=base[1],
-        lateral_capacities=base[2],
-        lateral_forces=base[3],
-        active_drive_constraint=constraint,
-        is_feasible=True,
+        lateral_acceleration=coasting.lateral_acceleration,
+        acceleration_state=acceleration_state,
+        braking_state=braking_state,
+        coasting_state=coasting,
     )
 
 
-def _corner_is_feasible(
-    vehicle: PointMassVehicleParameters,
-    speed: float,
-    radius: float,
+def _allocate_axle_force(
+    output: FloatArray,
+    capacity: FloatArray,
+    indices: slice,
+    target: float,
 ) -> bool:
-    lateral_acceleration = speed * speed / radius
-    state = _force_state(vehicle, speed, 0.0, lateral_acceleration)
-    if not state[-1]:
+    axle_capacity = float(np.sum(capacity[indices]))
+    if target <= 1.0e-12:
+        return True
+    if axle_capacity <= 0.0:
         return False
-    remaining = state[4]
-    _, drag = aerodynamic_forces(vehicle, speed)
-    drive_force, _ = _available_drive_force(vehicle, speed, remaining)
-    return drive_force + 1.0e-9 >= drag
+    output[indices] = capacity[indices] * (target / axle_capacity)
+    return target <= axle_capacity + 1.0e-8
 
 
-def _force_state(
-    vehicle: PointMassVehicleParameters,
-    speed: float,
-    longitudinal_acceleration: float,
-    lateral_acceleration: float,
-) -> tuple[FloatArray, FloatArray, FloatArray, FloatArray, FloatArray, bool]:
-    loads = normal_loads(
-        vehicle,
-        speed,
-        longitudinal_acceleration,
-        lateral_acceleration,
-    )
-    longitudinal, lateral = tire_force_capacities(vehicle, loads)
-    demand = vehicle.total_mass * abs(lateral_acceleration)
-    total_lateral_capacity = float(np.sum(lateral))
-    feasible = demand <= total_lateral_capacity + 1.0e-9
-    if total_lateral_capacity <= 0.0:
-        lateral_forces = np.zeros(4, dtype=np.float64)
-        feasible = demand <= 1.0e-9
-    else:
-        lateral_forces = lateral * min(demand / total_lateral_capacity, 1.0)
-    utilization = np.divide(
-        lateral_forces,
-        lateral,
-        out=np.zeros(4, dtype=np.float64),
-        where=lateral > 0.0,
-    )
-    remaining = longitudinal * np.sqrt(np.maximum(1.0 - utilization * utilization, 0.0))
-    return loads, longitudinal, lateral, lateral_forces, remaining, feasible
+def _allocate_total_force(
+    output: FloatArray,
+    capacity: FloatArray,
+    target: float,
+) -> None:
+    total_capacity = float(np.sum(capacity))
+    if total_capacity > 0.0:
+        output[:] = capacity * (target / total_capacity)
+
+
+def _allocate_brake_force(
+    output: FloatArray,
+    capacity: FloatArray,
+    target: float,
+    front_bias: float,
+) -> None:
+    front_target = target * front_bias
+    rear_target = target - front_target
+    front_capacity = float(np.sum(capacity[:2]))
+    rear_capacity = float(np.sum(capacity[2:]))
+    if front_capacity > 0.0:
+        output[:2] = -capacity[:2] * (front_target / front_capacity)
+    if rear_capacity > 0.0:
+        output[2:] = -capacity[2:] * (rear_target / rear_capacity)
 
 
 def _available_drive_force(
@@ -239,11 +385,9 @@ def _available_drive_force(
     speed: float,
     tire_limits: FloatArray,
 ) -> tuple[float, str]:
-    tire_force = float(np.sum(tire_limits))
-    drivetrain = vehicle.drivetrain
-    speed_limit = maximum_vehicle_speed(vehicle)
-    if speed > speed_limit + 1.0e-9:
+    if speed > maximum_vehicle_speed(vehicle) + 1.0e-9:
         return 0.0, "motor_speed"
+    drivetrain = vehicle.drivetrain
     torque_force = (
         drivetrain.motor_count
         * drivetrain.peak_motor_torque
@@ -256,7 +400,11 @@ def _available_drive_force(
         if speed <= 1.0e-9
         else drivetrain.power_limit * drivetrain.efficiency / speed
     )
-    limits = {"tire": tire_force, "motor_torque": torque_force, "power": power_force}
+    limits = {
+        "tire": float(np.sum(tire_limits)),
+        "motor_torque": torque_force,
+        "power": power_force,
+    }
     constraint = min(limits, key=limits.get)
     return limits[constraint], constraint
 
@@ -264,51 +412,18 @@ def _available_drive_force(
 def _available_brake_force(
     vehicle: PointMassVehicleParameters,
     tire_limits: FloatArray,
-) -> float:
-    front_limit = float(np.sum(tire_limits[:2]))
-    rear_limit = float(np.sum(tire_limits[2:]))
-    bias = vehicle.brake_bias
-    return min(front_limit / bias, rear_limit / (1.0 - bias))
-
-
-def _solve_drive_acceleration(
-    vehicle: PointMassVehicleParameters,
-    speed: float,
-    lateral_acceleration: float,
-) -> float:
-    _, drag = aerodynamic_forces(vehicle, speed)
-
-    def residual(acceleration: float) -> float:
-        state = _force_state(vehicle, speed, acceleration, lateral_acceleration)
-        if not state[-1]:
-            return -vehicle.total_mass * acceleration - drag
-        drive_force, _ = _available_drive_force(vehicle, speed, state[4])
-        return drive_force - drag - vehicle.total_mass * acceleration
-
-    if residual(0.0) <= 0.0:
-        return 0.0
-    return _positive_root(residual, 30.0)
-
-
-def _solve_braking_deceleration(
-    vehicle: PointMassVehicleParameters,
-    speed: float,
-    lateral_acceleration: float,
-) -> float:
-    _, drag = aerodynamic_forces(vehicle, speed)
-
-    def residual(deceleration: float) -> float:
-        state = _force_state(vehicle, speed, -deceleration, lateral_acceleration)
-        if not state[-1]:
-            return drag - vehicle.total_mass * deceleration
-        brake_force = _available_brake_force(vehicle, state[4])
-        return brake_force + drag - vehicle.total_mass * deceleration
-
-    return _positive_root(residual, 30.0)
+) -> tuple[float, str]:
+    front_limit = float(np.sum(tire_limits[:2])) / vehicle.brake_bias
+    rear_limit = float(np.sum(tire_limits[2:])) / (1.0 - vehicle.brake_bias)
+    if front_limit <= rear_limit:
+        return front_limit, "front_tire"
+    return rear_limit, "rear_tire"
 
 
 def _positive_root(function: Callable[[float], float], upper: float) -> float:
     lower = 0.0
+    if function(lower) <= 0.0:
+        return 0.0
     if function(upper) > 0.0:
         return upper
     for _ in range(32):

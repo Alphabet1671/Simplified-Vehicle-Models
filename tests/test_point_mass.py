@@ -7,6 +7,7 @@ from simplified_vehicle_models.point_mass import (
     GRAVITY,
     acceleration_limits,
     aerodynamic_forces,
+    evaluate_equilibrium,
     maximum_corner_speed,
     maximum_vehicle_speed,
     normal_loads,
@@ -89,7 +90,38 @@ class PointMassTests(unittest.TestCase):
             / speed
         )
 
-        self.assertLessEqual(limits.drive_force_limit, power_force)
+        self.assertLessEqual(
+            limits.acceleration_state.drive_force_limit,
+            power_force,
+        )
+
+    def test_lateral_forces_close_yaw_moment(self) -> None:
+        state = evaluate_equilibrium(self.vehicle, 10.0, 1.0 / 20.0, 0.0)
+
+        self.assertTrue(state.is_feasible)
+        self.assertAlmostEqual(state.yaw_moment_residual, 0.0, places=10)
+
+    def test_wheel_lift_is_infeasible_without_added_load(self) -> None:
+        state = evaluate_equilibrium(self.vehicle, 25.0, 1.0 / 3.0, 0.0)
+        expected_load = (
+            self.vehicle.total_mass * GRAVITY
+            + aerodynamic_forces(self.vehicle, 25.0)[0]
+        )
+
+        self.assertFalse(state.contact_feasible)
+        self.assertAlmostEqual(float(np.sum(state.normal_loads)), expected_load)
+
+    def test_limit_diagnostics_match_solved_accelerations(self) -> None:
+        limits = acceleration_limits(self.vehicle, 15.0, 1.0 / 30.0)
+
+        self.assertAlmostEqual(
+            limits.acceleration_state.longitudinal_acceleration,
+            limits.maximum_acceleration,
+        )
+        self.assertAlmostEqual(
+            limits.braking_state.longitudinal_acceleration,
+            -limits.maximum_deceleration,
+        )
 
     def test_tighter_corner_has_lower_speed(self) -> None:
         tight = maximum_corner_speed(self.vehicle, 8.0)

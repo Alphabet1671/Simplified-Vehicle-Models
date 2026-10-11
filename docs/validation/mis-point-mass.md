@@ -10,10 +10,10 @@ The source track has 1,407 nodes and 1,406 physical segments. Its represented la
 
 | Boundary condition | Lap time | Average speed | Maximum speed | Iterations |
 |---|---:|---:|---:|---:|
-| Flying lap | 93.7956 s | 10.8142 m/s | 19.4278 m/s | 2 |
-| Standing start | 94.8431 s | 10.6948 m/s | 19.4278 m/s | 2 |
+| Flying lap | 94.9422 s | 10.6836 m/s | 19.4519 m/s | 2 |
+| Standing start | 95.9624 s | 10.5700 m/s | 19.4519 m/s | 2 |
 
-The standing-start penalty is 1.0475 s. Both calculations met the `1e-5 m/s` convergence criterion. The final maximum speed change was `3.45e-9 m/s`.
+The standing-start penalty is 1.0202 s. Both calculations met the `1e-5 m/s` convergence criterion. The final maximum speed change was `4.29e-10 m/s`.
 
 ## Checks
 
@@ -23,14 +23,17 @@ The standing-start penalty is 1.0475 s. Both calculations met the `1e-5 m/s` con
 - The flying-lap boundary speeds are equal.
 - The standing-start initial speed is zero.
 - All speeds are below the motor-speed limit.
-- All segment transitions satisfy the calculated live acceleration or braking limit.
-- All segment states satisfy the combined-force lateral feasibility check.
+- Independent test calculations close longitudinal force balance to `1e-8 N`.
+- Independent test calculations close yaw-moment balance to `1e-8 N*m`.
+- All wheel contact loads are nonnegative.
+- Independent per-wheel combined utilization is at most one within `1e-7`.
+- Replayed throttle and brake commands reproduce the required wheel force to `1e-8 N`.
 
 ## Legacy comparison
 
 The measured Lap 8 trace spans approximately 70.30 s. A nearby legacy correlation script cites a 69.98 s fastest-lap reference and a 71.696 s median-lap reference. The legacy event workbook contains average-lap values from approximately 67.667 s to 94.253 s.
 
-The flying-lap result is inside the broad event range and near its slow boundary. It is 23.50 s slower than the measured Lap 8 trace. The standing-start result is 0.59 s above the broad event range. The standing-start result is not directly comparable to flying event laps.
+The flying-lap result is 0.69 s above the broad event range. It is 24.64 s slower than the measured Lap 8 trace. The standing-start result is 1.71 s above the broad event range. The standing-start result is not directly comparable to flying event laps.
 
 The difference from the measured trace is plausible for this first model. The model uses a load-sensitive friction ellipse instead of a correlated transient tire model. The path contains unsigned radius only, so it does not contain turn direction, banking, or elevation. The segment calculation also uses the larger curvature at adjacent nodes to keep every transition feasible. These choices make the calculation conservative.
 

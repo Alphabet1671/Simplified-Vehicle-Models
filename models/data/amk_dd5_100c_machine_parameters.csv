@@ -1,13 +1,14 @@
 # AMK DD5 machine parameters at 100 C.
 # Columns: name, value, unit, standard_error, rows_used.
 # The tool tools/identify_motor_parameters.py produced every value.
-# The fit is a joint least-squares fit of the four machine equations.
+# The value minimises the largest error-to-tolerance ratio of Decision D22.
+# A three-step least-squares pass gives the standard error and the row count.
 # A rows_used value of zero marks a recorded constant, not a fitted value.
 # SI units. The inductances are in henry. The resistance is in ohm.
 name,value,unit,standard_error,rows_used
 pole_pairs,5,1,0,0
 reference_bus_voltage,600,V,0,0
-resistance,0.249176829829,ohm,0.000113399552256,4221
-flux_linkage,0.0441523945415,Wb,4.17960538661e-05,4200
-direct_inductance,0.00120643805075,H,3.52656857622e-06,4200
-quadrature_inductance,0.00089873061038,H,1.12434573095e-06,4000
+resistance,0.253737197423,ohm,0.000113399552256,4221
+flux_linkage,0.0413234736836,Wb,4.17960538661e-05,4200
+direct_inductance,0.00109887704973,H,3.52656857622e-06,4200
+quadrature_inductance,0.000854233240364,H,1.12434573095e-06,4000

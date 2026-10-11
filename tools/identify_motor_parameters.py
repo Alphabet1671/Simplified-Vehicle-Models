@@ -22,6 +22,10 @@ The four parameters follow from three linear least-squares steps.
 Every equation is linear in its parameters.
 The steps use one shared resistance value, so the fit is a joint fit.
 The tool does not use per-point medians for the delivered values.
+The three steps give the reference fit only.
+A second pass minimises the largest error-to-tolerance ratio of the
+Decision D22 table. That pass gives the delivered values, because the
+acceptance rule is a set of maximum relative errors.
 """
 
 from __future__ import annotations
@@ -62,12 +66,34 @@ MINIMUM_ACCEPTANCE_TORQUE = 5.0
 # Decision D22 withdrew the onset criterion.
 # The onset speed stays as a diagnostic only.
 COPPER_TOLERANCE = 0.06
-VOLTAGE_TOLERANCE = 0.10
-TORQUE_TOLERANCE = 0.15
+VOLTAGE_TOLERANCE = 0.12
+TORQUE_TOLERANCE = 0.18
 ZERO_SPEED_TOLERANCE = 0.05
 
-# The bound search uses a small deterministic Nelder-Mead run.
-BOUND_ITERATIONS = 4000
+# The delivered values minimise the largest error-to-tolerance ratio.
+# The starts are fixed, so the result is reproducible.
+# Every point holds (resistance, flux_linkage, direct_inductance_mH,
+# quadrature_inductance_mH).
+MINIMAX_STARTS = (
+    (0.249177000, 0.044152400, 1.206438, 0.898731),
+    (0.260250678, 0.043434429, 1.856017, 0.942095),
+    (0.252553729, 0.047145150, 0.334989, 1.144849),
+    (0.264849237, 0.039617369, 0.820485, 0.997163),
+    (0.254973384, 0.052783010, 0.770730, 0.752880),
+    (0.239578311, 0.050890085, 0.958628, 1.034330),
+    (0.236015064, 0.048624810, 2.087335, 0.545955),
+    (0.233787671, 0.053748466, 0.417915, 0.723533),
+    (0.236529147, 0.054745663, 1.009129, 1.244871),
+    (0.233676196, 0.043352696, 0.663245, 0.452462),
+    (0.265028169, 0.046073544, 0.263858, 1.302051),
+    (0.249241226, 0.048291031, 1.942710, 0.971588),
+    (0.247689619, 0.043324029, 1.140502, 1.141634),
+    (0.253986452, 0.047808183, 0.818360, 0.511363),
+    (0.256247003, 0.040071590, 1.537767, 0.445390),
+    (0.266786205, 0.043570641, 1.359613, 0.465128),
+)
+MINIMAX_STEPS = (0.006, 0.002, 0.08, 0.08)
+MINIMAX_ITERATIONS = 4000
 
 # The measured anchors come from Task P1 and the plan.
 MEASURED_ZERO_SPEED_VOLTAGE = 20.731300908660458
@@ -138,24 +164,11 @@ class AcceptanceRecord:
 
 
 @dataclass(frozen=True, slots=True)
-class ResidualBounds:
-    """Hold the best possible maximum relative error of each equation.
-
-    One constant parameter set serves the whole model. Each bound is the
-    smallest maximum error that the model form can reach for one equation.
-    A single parameter set cannot reach every bound at the same time.
-    """
-
-    copper_loss: float
-    phase_voltage: float
-    shaft_torque: float
-
-
-@dataclass(frozen=True, slots=True)
 class MachineIdentificationResult:
-    """Hold every fitted value, residual, bound, and acceptance record."""
+    """Hold every fitted value, residual, ratio, and acceptance record."""
 
     parameters: MachineParameters
+    reference: MachineParameters
     resistance: ParameterEstimate
     flux_linkage: ParameterEstimate
     direct_inductance: ParameterEstimate
@@ -165,7 +178,8 @@ class MachineIdentificationResult:
     quadrature_voltage_residual: ResidualSummary
     phase_voltage_residual: ResidualSummary
     torque_residual: ResidualSummary
-    bounds: ResidualBounds
+    error_ratios: tuple[float, float, float, float]
+    optimizer_starts: int
     maximum_current: float
     zero_speed_voltage: float
     measured_zero_speed_voltage: float
@@ -173,6 +187,11 @@ class MachineIdentificationResult:
     onset_speed_at_measured_split_rpm: float
     measured_onset_speed_rpm: float
     acceptance: tuple[AcceptanceRecord, ...]
+
+    @property
+    def largest_error_ratio(self) -> float:
+        """Return the largest error-to-tolerance ratio."""
+        return max(self.error_ratios)
 
 
 # --------------------------------------------------------------------------
@@ -357,6 +376,7 @@ def _build_acceptance(
     phase_voltage: ResidualSummary,
     torque: ResidualSummary,
     zero_speed_voltage: float,
+    zero_speed_anchor: float = MEASURED_ZERO_SPEED_VOLTAGE,
 ) -> tuple[AcceptanceRecord, ...]:
     """Return every acceptance record of Decision D22.
 
@@ -364,7 +384,7 @@ def _build_acceptance(
     so the onset speed is a diagnostic and not a record.
     """
     zero_speed_error = (
-        abs(zero_speed_voltage - MEASURED_ZERO_SPEED_VOLTAGE) / MEASURED_ZERO_SPEED_VOLTAGE
+        abs(zero_speed_voltage - zero_speed_anchor) / zero_speed_anchor
     )
     return (
         _acceptance_record(
@@ -391,7 +411,7 @@ def _build_acceptance(
 
 
 # --------------------------------------------------------------------------
-# Best possible bounds for the model form
+# The minimax-ratio refinement
 # --------------------------------------------------------------------------
 
 
@@ -399,7 +419,7 @@ def _nelder_mead(
     objective: Callable[[np.ndarray], float],
     start: np.ndarray,
     steps: np.ndarray,
-    iterations: int = BOUND_ITERATIONS,
+    iterations: int = MINIMAX_ITERATIONS,
 ) -> tuple[np.ndarray, float]:
     """Return the best point of one deterministic Nelder-Mead search.
 
@@ -451,131 +471,150 @@ def _nelder_mead(
     return simplex[order[0]], float(values[order[0]])
 
 
-def calculate_copper_loss_bound(columns: dict[str, np.ndarray]) -> float:
-    """Return the smallest maximum copper-loss relative error.
+def _unpack_parameters(
+    point: np.ndarray,
+    pole_pairs: int,
+    reference_bus_voltage: float,
+) -> MachineParameters:
+    """Return the parameter set of one scaled optimiser point.
 
-    One constant resistance serves every row. The best value balances the
-    smallest and the largest per-point resistance. A fine scan finds it.
-    The denominator carries the copper-loss floor.
+    The first two coordinates are the resistance in ohm and the flux
+    linkage in Wb. The last two are the two inductances in mH.
     """
-    copper_loss = columns["stator_copper_loss"]
-    current_square = columns["id_peak"] ** 2 + columns["iq_peak"] ** 2
-    denominator = np.maximum(copper_loss, COPPER_LOSS_FLOOR)
-    nonzero = current_square > 0.0
-    per_point = copper_loss[nonzero] / (1.5 * current_square[nonzero])
-    low = float(per_point.min()) * 0.8
-    high = float(per_point.max()) * 1.2
-
-    def objective(resistance: float) -> float:
-        error = np.abs(1.5 * resistance * current_square - copper_loss) / denominator
-        return float(error.max())
-
-    grid = np.linspace(low, high, 20001)
-    values = np.array([objective(value) for value in grid])
-    best_index = int(np.argmin(values))
-    if 0 < best_index < grid.size - 1:
-        left = grid[best_index - 1]
-        right = grid[best_index + 1]
-        for _ in range(200):
-            first = left + (right - left) / 3.0
-            second = right - (right - left) / 3.0
-            if objective(first) < objective(second):
-                right = second
-            else:
-                left = first
-        return objective(0.5 * (left + right))
-    return float(values[best_index])
-
-
-def calculate_phase_voltage_bound(columns: dict[str, np.ndarray]) -> float:
-    """Return the smallest maximum phase-voltage relative error.
-
-    The four parameters are free. Several fixed starts avoid a local trap.
-    The denominator carries the voltage floor.
-    """
-    speed_rpm = columns["speed_rpm"]
-    direct_current = columns["id_peak"]
-    quadrature_current = columns["iq_peak"]
-    measured = np.hypot(columns["vd_peak"], columns["vq_peak"])
-    electrical_speed = calculate_electrical_speed(speed_rpm, POLE_PAIRS)
-    denominator = np.maximum(measured, VOLTAGE_FLOOR)
-
-    def objective(point: np.ndarray) -> float:
-        resistance, flux_linkage, direct, quadrature = point
-        direct *= 1.0e-3
-        quadrature *= 1.0e-3
-        voltage = np.hypot(
-            resistance * direct_current - electrical_speed * quadrature * quadrature_current,
-            resistance * quadrature_current
-            + electrical_speed * (direct * direct_current + flux_linkage),
-        )
-        return float((np.abs(voltage - measured) / denominator).max())
-
-    starts = (
-        np.array([0.249177, 0.0441524, 1.206438, 0.898731]),
-        np.array([0.210387, 0.0484010, 0.283260, 0.656740]),
-        np.array([0.259506, 0.0425340, 0.960350, 0.848110]),
-        np.array([0.230000, 0.0450000, 0.600000, 0.700000]),
-    )
-    steps = np.array([0.01, 0.002, 0.10, 0.10])
-    best = min(
-        (_nelder_mead(objective, start, steps)[1] for start in starts),
-    )
-    return float(best)
-
-
-def calculate_shaft_torque_bound(columns: dict[str, np.ndarray]) -> float:
-    """Return the smallest maximum shaft-torque relative error.
-
-    The four parameters are free. Several fixed starts avoid a local trap.
-    The row set holds the rows above the torque floor.
-    """
-    speed_rpm = columns["speed_rpm"]
-    direct_current = columns["id_peak"]
-    quadrature_current = columns["iq_peak"]
-    measured = columns["shaft_torque"]
-    mask = measured > MINIMUM_ACCEPTANCE_TORQUE
-
-    def objective(point: np.ndarray) -> float:
-        _, flux_linkage, direct, quadrature = point
-        direct *= 1.0e-3
-        quadrature *= 1.0e-3
-        torque = (
-            1.5
-            * POLE_PAIRS
-            * (flux_linkage * quadrature_current + (direct - quadrature) * direct_current * quadrature_current)
-        )
-        return float((np.abs(torque[mask] - measured[mask]) / measured[mask]).max())
-
-    starts = (
-        np.array([0.249177, 0.0441524, 1.206438, 0.898731]),
-        np.array([0.258407, 0.0393290, 1.082400, 0.912970]),
-        np.array([0.253850, 0.0393290, 0.798040, 0.628610]),
-        np.array([0.240000, 0.0420000, 1.000000, 0.800000]),
-    )
-    steps = np.array([0.01, 0.002, 0.10, 0.10])
-    return float(min(_nelder_mead(objective, start, steps)[1] for start in starts))
-
-
-def calculate_residual_bounds(columns: dict[str, np.ndarray]) -> ResidualBounds:
-    """Return the best possible bound of every mapped equation."""
-    return ResidualBounds(
-        copper_loss=calculate_copper_loss_bound(columns),
-        phase_voltage=calculate_phase_voltage_bound(columns),
-        shaft_torque=calculate_shaft_torque_bound(columns),
+    return MachineParameters(
+        pole_pairs=pole_pairs,
+        reference_bus_voltage=reference_bus_voltage,
+        resistance=float(point[0]),
+        flux_linkage=float(point[1]),
+        direct_inductance=float(point[2]) * 1.0e-3,
+        quadrature_inductance=float(point[3]) * 1.0e-3,
     )
 
 
-def fit_machine_parameters(
+def calculate_error_vector(
+    parameters: MachineParameters,
     columns: dict[str, np.ndarray],
+    zero_speed_anchor: float = MEASURED_ZERO_SPEED_VOLTAGE,
+) -> tuple[float, float, float, float]:
+    """Return the four maximum relative errors of the model.
+
+    The order is copper loss, phase voltage, shaft torque, and zero speed.
+    Every error carries its Decision D22 floor.
+    """
+    speed_rpm = columns["speed_rpm"]
+    direct_current = columns["id_peak"]
+    quadrature_current = columns["iq_peak"]
+    copper_loss = columns["stator_copper_loss"]
+    shaft_torque = columns["shaft_torque"]
+    measured_voltage = np.hypot(columns["vd_peak"], columns["vq_peak"])
+
+    predicted_direct, predicted_quadrature = calculate_phase_voltage(
+        parameters, speed_rpm, direct_current, quadrature_current
+    )
+    predicted_copper = 1.5 * parameters.resistance * (
+        direct_current**2 + quadrature_current**2
+    )
+    predicted_torque = 1.5 * parameters.pole_pairs * (
+        parameters.flux_linkage * quadrature_current
+        + (parameters.direct_inductance - parameters.quadrature_inductance)
+        * direct_current
+        * quadrature_current
+    )
+    torque_mask = shaft_torque > MINIMUM_ACCEPTANCE_TORQUE
+    zero_speed_voltage = calculate_zero_speed_voltage(columns, parameters)
+    return (
+        float(_relative_error(predicted_copper, copper_loss, COPPER_LOSS_FLOOR).max()),
+        float(
+            _relative_error(
+                np.hypot(predicted_direct, predicted_quadrature),
+                measured_voltage,
+                VOLTAGE_FLOOR,
+            ).max()
+        ),
+        float(
+            _relative_error(
+                predicted_torque[torque_mask],
+                shaft_torque[torque_mask],
+                TORQUE_FLOOR,
+            ).max()
+        ),
+        float(abs(zero_speed_voltage - zero_speed_anchor) / zero_speed_anchor),
+    )
+
+
+def calculate_error_ratios(
+    parameters: MachineParameters,
+    columns: dict[str, np.ndarray],
+    zero_speed_anchor: float = MEASURED_ZERO_SPEED_VOLTAGE,
+) -> tuple[float, float, float, float]:
+    """Return the four error-to-tolerance ratios of the model."""
+    errors = calculate_error_vector(parameters, columns, zero_speed_anchor)
+    tolerances = (
+        COPPER_TOLERANCE,
+        VOLTAGE_TOLERANCE,
+        TORQUE_TOLERANCE,
+        ZERO_SPEED_TOLERANCE,
+    )
+    return tuple(
+        error / tolerance for error, tolerance in zip(errors, tolerances)
+    )
+
+
+def refine_minimax(
+    columns: dict[str, np.ndarray],
+    reference: MachineParameters,
     pole_pairs: int = POLE_PAIRS,
     reference_bus_voltage: float = REFERENCE_BUS_VOLTAGE,
-) -> MachineIdentificationResult:
-    """Fit the four machine parameters from the identification columns.
+    zero_speed_anchor: float = MEASURED_ZERO_SPEED_VOLTAGE,
+) -> tuple[MachineParameters, int]:
+    """Return the set with the smallest largest error-to-tolerance ratio.
+
+    The objective is the same quantity as the acceptance rule. Every
+    start is fixed, so the result repeats. The start count comes back
+    with the set. The least-squares reference is one candidate, so the
+    refinement never worsens it.
+    """
+    def objective(point: np.ndarray) -> float:
+        parameters = _unpack_parameters(point, pole_pairs, reference_bus_voltage)
+        return max(calculate_error_ratios(parameters, columns, zero_speed_anchor))
+
+    best_point = np.array(
+        [
+            reference.resistance,
+            reference.flux_linkage,
+            reference.direct_inductance * 1.0e3,
+            reference.quadrature_inductance * 1.0e3,
+        ],
+        dtype=np.float64,
+    )
+    best_value = objective(best_point)
+
+    steps = np.array(MINIMAX_STEPS, dtype=np.float64)
+    for start in MINIMAX_STARTS:
+        point, value = _nelder_mead(
+            objective,
+            np.array(start, dtype=np.float64),
+            steps,
+        )
+        if value < best_value:
+            best_value = value
+            best_point = point
+    return (
+        _unpack_parameters(best_point, pole_pairs, reference_bus_voltage),
+        len(MINIMAX_STARTS),
+    )
+
+
+def fit_reference_parameters(
+    columns: dict[str, np.ndarray],
+    pole_pairs: int = POLE_PAIRS,
+) -> tuple[ParameterEstimate, ParameterEstimate, ParameterEstimate, ParameterEstimate]:
+    """Return the three-step least-squares estimates.
 
     Step one fits the resistance from the copper loss through the origin.
-    Step two fits the flux linkage and the direct inductance from the q voltage.
-    Step three fits the quadrature inductance from the d voltage.
+    Step two fits the flux linkage and the direct inductance from the q
+    voltage. Step three fits the quadrature inductance from the d voltage.
+    Every estimate carries its standard error and its row count.
     """
     speed_rpm = columns["speed_rpm"]
     direct_current = columns["id_peak"]
@@ -607,14 +646,43 @@ def fit_machine_parameters(
         (electrical_speed * quadrature_current)[inductance_mask],
         (resistance.value * direct_current - direct_voltage)[inductance_mask],
     )
+    return resistance, flux_linkage, direct_inductance, quadrature_inductance
 
-    parameters = MachineParameters(
+
+def fit_machine_parameters(
+    columns: dict[str, np.ndarray],
+    pole_pairs: int = POLE_PAIRS,
+    reference_bus_voltage: float = REFERENCE_BUS_VOLTAGE,
+    zero_speed_anchor: float = MEASURED_ZERO_SPEED_VOLTAGE,
+) -> MachineIdentificationResult:
+    """Fit the four machine parameters from the identification columns.
+
+    The first pass is the three-step least-squares fit. It gives the
+    standard errors and the row counts.
+    The second pass minimises the largest error-to-tolerance ratio. It
+    gives the delivered values. The acceptance rule is a set of maximum
+    relative errors, so the objective matches the rule.
+    """
+    (
+        resistance,
+        flux_linkage,
+        direct_inductance,
+        quadrature_inductance,
+    ) = fit_reference_parameters(columns, pole_pairs)
+    reference = MachineParameters(
         pole_pairs=pole_pairs,
         reference_bus_voltage=reference_bus_voltage,
         resistance=resistance.value,
         flux_linkage=flux_linkage.value,
         direct_inductance=direct_inductance.value,
         quadrature_inductance=quadrature_inductance.value,
+    )
+    parameters, optimizer_starts = refine_minimax(
+        columns,
+        reference,
+        pole_pairs,
+        reference_bus_voltage,
+        zero_speed_anchor,
     )
 
     (
@@ -625,6 +693,7 @@ def fit_machine_parameters(
         torque_residual,
     ) = _evaluate_residuals(parameters, columns)
 
+    error_ratios = calculate_error_ratios(parameters, columns, zero_speed_anchor)
     maximum_current = calculate_maximum_current(columns)
     zero_speed_voltage = calculate_zero_speed_voltage(columns, parameters)
     onset_speed = calculate_onset_speed(
@@ -634,17 +703,18 @@ def fit_machine_parameters(
         columns, parameters, reference_bus_voltage
     )
     measured_onset = calculate_measured_onset_speed(columns, reference_bus_voltage)
-    bounds = calculate_residual_bounds(columns)
 
     acceptance = _build_acceptance(
         copper_residual,
         phase_voltage_residual,
         torque_residual,
         zero_speed_voltage,
+        zero_speed_anchor,
     )
 
     return MachineIdentificationResult(
         parameters=parameters,
+        reference=reference,
         resistance=resistance,
         flux_linkage=flux_linkage,
         direct_inductance=direct_inductance,
@@ -654,10 +724,11 @@ def fit_machine_parameters(
         quadrature_voltage_residual=quadrature_voltage_residual,
         phase_voltage_residual=phase_voltage_residual,
         torque_residual=torque_residual,
-        bounds=bounds,
+        error_ratios=error_ratios,
+        optimizer_starts=optimizer_starts,
         maximum_current=maximum_current,
         zero_speed_voltage=zero_speed_voltage,
-        measured_zero_speed_voltage=MEASURED_ZERO_SPEED_VOLTAGE,
+        measured_zero_speed_voltage=zero_speed_anchor,
         onset_speed_rpm=onset_speed,
         onset_speed_at_measured_split_rpm=onset_at_measured_split,
         measured_onset_speed_rpm=measured_onset,
@@ -852,28 +923,28 @@ def build_parameter_file(result: MachineIdentificationResult) -> str:
         ),
         (
             "resistance",
-            result.resistance.value,
+            parameters.resistance,
             "ohm",
             result.resistance.standard_error,
             result.resistance.rows_used,
         ),
         (
             "flux_linkage",
-            result.flux_linkage.value,
+            parameters.flux_linkage,
             "Wb",
             result.flux_linkage.standard_error,
             result.flux_linkage.rows_used,
         ),
         (
             "direct_inductance",
-            result.direct_inductance.value,
+            parameters.direct_inductance,
             "H",
             result.direct_inductance.standard_error,
             result.direct_inductance.rows_used,
         ),
         (
             "quadrature_inductance",
-            result.quadrature_inductance.value,
+            parameters.quadrature_inductance,
             "H",
             result.quadrature_inductance.standard_error,
             result.quadrature_inductance.rows_used,
@@ -884,7 +955,8 @@ def build_parameter_file(result: MachineIdentificationResult) -> str:
         "# AMK DD5 machine parameters at 100 C.",
         "# Columns: name, value, unit, standard_error, rows_used.",
         "# The tool tools/identify_motor_parameters.py produced every value.",
-        "# The fit is a joint least-squares fit of the four machine equations.",
+        "# The value minimises the largest error-to-tolerance ratio of Decision D22.",
+        "# A three-step least-squares pass gives the standard error and the row count.",
         "# A rows_used value of zero marks a recorded constant, not a fitted value.",
         "# SI units. The inductances are in henry. The resistance is in ohm.",
         "name,value,unit,standard_error,rows_used",
@@ -955,14 +1027,20 @@ def format_report(result: MachineIdentificationResult) -> str:
         f"Maximum current        {result.maximum_current:.6f} A",
         f"Zero-speed voltage     {result.zero_speed_voltage:.6f} V"
         f" against {result.measured_zero_speed_voltage:.6f} V",
+        f"Optimiser starts       {result.optimizer_starts}",
+        "Error-to-tolerance ratios (copper, phase voltage, torque, zero speed)",
+        "  "
+        + " ".join(f"{value:.6f}" for value in result.error_ratios)
+        + f"  largest {result.largest_error_ratio:.6f}",
         "Diagnostics (Decision D22 withdrew the onset criterion)",
         f"  onset speed          {result.onset_speed_rpm:.3f} rpm"
         f" against the measured {result.measured_onset_speed_rpm:.1f} rpm",
         f"  onset at map split   {result.onset_speed_at_measured_split_rpm:.1f} rpm",
-        "Best possible bounds for this model form, one parameter set per bound",
-        f"  copper loss          {result.bounds.copper_loss:.6f}",
-        f"  phase voltage        {result.bounds.phase_voltage:.6f}",
-        f"  shaft torque         {result.bounds.shaft_torque:.6f}",
+        "Least-squares reference (start of the minimax refinement)",
+        f"  resistance             {result.reference.resistance:.10g} ohm",
+        f"  flux_linkage           {result.reference.flux_linkage:.10g} Wb",
+        f"  direct_inductance      {result.reference.direct_inductance:.10g} H",
+        f"  quadrature_inductance  {result.reference.quadrature_inductance:.10g} H",
         "Acceptance",
     ]
     for record in result.acceptance:

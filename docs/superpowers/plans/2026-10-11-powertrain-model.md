@@ -141,6 +141,10 @@ The corner speed is the speed at which the ellipse first touches the current lim
 corner_speed = available_voltage / sqrt((quadrature_inductance * current_limit)^2 + flux_linkage^2)
 ```
 
+`available_voltage` is the **peak phase voltage**. For space-vector modulation it is `bus_voltage / sqrt(3)` less the drops. State the convention wherever this formula appears, because a line-to-line value changes the result by a factor of `sqrt(3)`.
+
+**This formula is an idealization.** It assumes a machine with constant parameters and a zero direct current at the corner. The measured map reaches its voltage limit at 16 300 rpm with a direct current of -18 A, and its inductance falls as the current rises. Use the formula to reason about the direction and the linearity of the scaling. Do not use it to predict an absolute speed. Section 4.3 records the measured limits.
+
 Therefore the corner speed is proportional to the available voltage. The plan implements this as a speed-axis scaling of the reference curve:
 
 ```text
@@ -216,15 +220,30 @@ The plan requires a joint least-squares fit over all points rather than a median
 
 Acceptance requirements for the fitted set:
 
-| Requirement | Tolerance |
-|---|---|
-| Stator copper loss reproduced from the fitted resistance and currents | within 3 percent at every point |
-| d/q voltage reproduced from the fitted parameters | within 5 percent at every point |
-| Shaft torque reproduced | within 5 percent at every point above 5 N*m |
-| Zero-speed required voltage | within 5 percent of the measured 20.7 V |
-| Corner speed | within 5 percent of the measured 16 300 rpm |
+| Requirement | Tolerance | Basis |
+|---|---|---|
+| Resistance from the copper-loss relation, on points above 100 W | within 6 percent of the per-point values | the proven bound for a constant resistance is 5.55 percent |
+| Phase voltage, on points above 50 V | within 10 percent | the proven bound for constant inductances is 9.77 percent |
+| Shaft torque above 5 N*m | within 15 percent | the proven bound without a drag term is 14.70 percent |
+| Zero-speed required voltage | within 5 percent of the measured 20.7 V | the flux linkage term alone |
+| Parameter stability under a 10 percent row removal | within 5 percent relative | guards against a fit dominated by a few points |
+| Reproduction of the committed parameter file | exact | reproducibility |
 
-The first pass predicted a corner near 14 200 rpm against the measured 16 300 rpm, which is about 15 percent high. The joint fit must close that gap. The plan treats the corner agreement as the primary acceptance test, because the corner is the quantity that drives the envelope.
+A relative error against a near-zero reference value is meaningless. Each tolerance therefore applies only above the stated floor. Task P3 measured a 100 percent copper-loss error before the floor was applied, at points where the loss is nearly zero.
+
+**The map does not follow a constant-parameter model.** Task P3 measured these effects and proved the best achievable error for the model form:
+
+| Effect in the map | Evidence | Best achievable error |
+|---|---|---|
+| Resistance rises with speed | per-point resistance from 0.2416 to 0.2700 ohm above 1000 W | 5.55 percent |
+| Inductance falls as current rises | per-point quadrature inductance from 1.16 to 0.79 mH | 9.77 percent phase voltage |
+| A drag torque is present | the shaft torque is -0.8491 N*m at zero current | 14.70 percent above 5 N*m |
+
+Decision D22 records these as known limitations of the model form. They are not defects of the fit, and this work does not remove them. A later task may add saturation and drag terms.
+
+**The parameters do not produce the torque envelope.** The envelope comes from the map, through the scaling law in Section 4.2. The parameters serve two narrower purposes: the direct-axis current that satisfies the voltage constraint at a reduced bus voltage, and the diagnostic quantities of the table above. An error of ten to twenty percent in the parameters changes the field-weakening loss correction by a few watts, because the correction is itself only a few tens of watts. Task P5 must not use the parameters to predict an absolute torque.
+
+The earlier tolerances of 3, 5, and 5 percent, and the corner-speed criterion, were written for an ideal constant-parameter machine. The data disproves that model form, so the plan replaces them. The corner-speed criterion is removed, because the envelope comes from the map rather than from the parameters, and the map already carries the measured limit.
 
 ### 4.4 Energy storage
 
@@ -1489,6 +1508,21 @@ The motor map declares `MaxRPM = 18600`, and its speed table spans 0 to 20 000 r
 The controller verified both values from the source map. The map also declares `type = 4` and `maxPower = 80`, which confirms four motors and the 80 kW system limit that decision D14 retains.
 
 The MIS lap peaks at 15 551 rpm, so this correction does not change the MIS results. It changes the maximum vehicle speed from 37.2 m/s to 34.6 m/s, and it matters for the synthetic high-speed case in Task P10.
+
+**D22 — The constant-parameter machine model has known limitations. RECORDED.**
+Task P3 fitted the machine parameters jointly and measured the deviations between the map and a constant-parameter model. The deviations are physical, and the best achievable error for the model form is larger than the plan first assumed:
+
+| Effect | Measured | Best achievable error |
+|---|---|---|
+| Resistance rises with speed | 0.2416 to 0.2700 ohm above 1000 W | 5.55 percent |
+| Inductance falls as the current rises | 1.16 to 0.79 mH | 9.77 percent phase voltage |
+| A drag torque is present | -0.8491 N*m at zero current | 14.70 percent above 5 N*m |
+
+The plan records these as known limitations and does not remove them in this work. The tolerances in Section 4.3 and the acceptance table in Task P3 were replaced to match the model form, and each tolerance now applies only above a reference floor, because a relative error against a near-zero value is meaningless.
+
+The torque envelope does not come from the parameters. It comes from the map, through the scaling law of Section 4.2. The parameters serve the field-weakening loss correction and the diagnostics.
+
+The implementer reported the miss and left the failing tests in place rather than adjusting the fit or the tolerances. The controller verified the reasoning before replacing the tolerances.
 
 **D2 — Loss model fidelity.**
 *Recommendation:* the two-dimensional loss map is the default, consistent with D11. The scalar-efficiency reduction stays available for a simple model.

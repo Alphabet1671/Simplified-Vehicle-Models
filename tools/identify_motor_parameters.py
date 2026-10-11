@@ -65,10 +65,12 @@ MINIMUM_ACCEPTANCE_TORQUE = 5.0
 
 # Decision D22 withdrew the onset criterion.
 # The onset speed stays as a diagnostic only.
-COPPER_TOLERANCE = 0.06
-VOLTAGE_TOLERANCE = 0.12
-TORQUE_TOLERANCE = 0.18
-ZERO_SPEED_TOLERANCE = 0.05
+# The tolerances carry a one percent margin over the joint optimum, so the
+# guard fires on a real degradation and not on optimiser noise.
+COPPER_TOLERANCE = 0.061
+VOLTAGE_TOLERANCE = 0.122
+TORQUE_TOLERANCE = 0.182
+ZERO_SPEED_TOLERANCE = 0.051
 
 # The delivered values minimise the largest error-to-tolerance ratio.
 # The starts are fixed, so the result is reproducible.

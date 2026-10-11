@@ -772,8 +772,11 @@ src/simplified_vehicle_models/
 ├── powertrain/
 │   ├── power_plant.py        # Envelope scaling, loss map, field-weakening correction
 │   ├── energy_storage.py     # Battery, capacitor, and tank storage models
+│   └── assembly.py           # Power plant and energy storage resolution
+├── drivetrain/
 │   ├── transmission.py       # Ratio and efficiency
-│   └── assembly.py           # Powertrain and drivetrain limit resolution
+│   ├── lumped.py             # Lumped reduction, retained as a second path
+│   └── assembly.py           # Transmission and torque-split resolution
 ├── aero/
 │   └── fixed_aero.py         # Drag and downforce
 ├── formulations/

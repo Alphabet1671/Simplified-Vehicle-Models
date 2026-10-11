@@ -3,8 +3,8 @@ import unittest
 
 import numpy as np
 
-from simplified_vehicle_models.point_mass import (
-    GRAVITY,
+from simplified_vehicle_models.core.conventions import GRAVITY
+from simplified_vehicle_models.formulations.point_mass import (
     acceleration_limits,
     aerodynamic_forces,
     evaluate_equilibrium,
@@ -13,7 +13,7 @@ from simplified_vehicle_models.point_mass import (
     normal_loads,
     tire_force_capacities,
 )
-from simplified_vehicle_models.xml_loader import load_point_mass_vehicle
+from simplified_vehicle_models.xml.loader import load_point_mass_vehicle
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]

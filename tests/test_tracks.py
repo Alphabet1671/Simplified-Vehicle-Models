@@ -4,7 +4,7 @@ import unittest
 
 import numpy as np
 
-from simplified_vehicle_models.tracks import load_track
+from simplified_vehicle_models.tracks.profile import load_track
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]

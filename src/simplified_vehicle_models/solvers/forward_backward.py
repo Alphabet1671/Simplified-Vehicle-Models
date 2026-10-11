@@ -1,54 +1,18 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from enum import Enum
 import math
 
 import numpy as np
-import numpy.typing as npt
 
-from simplified_vehicle_models.parameters import PointMassVehicleParameters
-from simplified_vehicle_models.point_mass import (
+from simplified_vehicle_models.core.types import FloatArray
+from simplified_vehicle_models.formulations.point_mass import (
     acceleration_limits,
     evaluate_equilibrium,
     maximum_corner_speed,
 )
-from simplified_vehicle_models.tracks import TrackProfile
-
-
-FloatArray = npt.NDArray[np.float64]
-
-
-class LapMode(Enum):
-    """Identify the boundary condition for a lap."""
-
-    FLYING = "flying"
-    STANDING_START = "standing_start"
-
-
-@dataclass(frozen=True, slots=True)
-class LapResult:
-    """Store the calculated lap state and control traces."""
-
-    speed: FloatArray
-    elapsed_time: FloatArray
-    longitudinal_acceleration: FloatArray
-    lateral_acceleration: FloatArray
-    throttle: FloatArray
-    brake: FloatArray
-    normal_loads: FloatArray
-    longitudinal_forces: FloatArray
-    lateral_forces: FloatArray
-    combined_utilization: FloatArray
-    drive_force_limit: FloatArray
-    brake_force_limit: FloatArray
-    force_balance_residual: FloatArray
-    yaw_moment_residual: FloatArray
-    active_longitudinal_constraint: tuple[str, ...]
-    lap_time: float
-    converged: bool
-    iterations: int
-    maximum_speed_change: float
+from simplified_vehicle_models.parameters.vehicle import PointMassVehicleParameters
+from simplified_vehicle_models.results.traces import LapMode, LapResult
+from simplified_vehicle_models.tracks.types import TrackProfile
 
 
 def solve_lap(

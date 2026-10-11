@@ -11,8 +11,8 @@ import unittest
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPOSITORY_ROOT / "src"))
 
-from simplified_vehicle_models.parameters import PointMassVehicleParameters
-from simplified_vehicle_models.xml_loader import load_point_mass_vehicle
+from simplified_vehicle_models.parameters.vehicle import PointMassVehicleParameters
+from simplified_vehicle_models.xml.loader import load_point_mass_vehicle
 
 
 FORMULATION_PATH = REPOSITORY_ROOT / "models/formulations/murphy_point_mass.xml"

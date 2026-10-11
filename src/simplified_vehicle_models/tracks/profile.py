@@ -1,34 +1,14 @@
 from __future__ import annotations
 
 import csv
-from dataclasses import dataclass
 import math
 from pathlib import Path
 import xml.etree.ElementTree as ElementTree
 
 import numpy as np
-import numpy.typing as npt
 
-
-FloatArray = npt.NDArray[np.float64]
-
-
-@dataclass(frozen=True, slots=True)
-class TrackProfile:
-    """Store a distance and radius track profile."""
-
-    distance: FloatArray
-    segment_length: FloatArray
-    radius: FloatArray
-    curvature: FloatArray
-    is_closed: bool
-    title: str
-
-    @property
-    def lap_length(self) -> float:
-        """Return the represented lap length."""
-
-        return float(self.distance[-1] - self.distance[0])
+from simplified_vehicle_models.core.types import FloatArray
+from simplified_vehicle_models.tracks.types import TrackProfile
 
 
 def load_track(path: str | Path) -> TrackProfile:

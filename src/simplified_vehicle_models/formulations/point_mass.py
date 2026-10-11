@@ -5,13 +5,10 @@ from dataclasses import dataclass
 import math
 
 import numpy as np
-import numpy.typing as npt
 
-from simplified_vehicle_models.parameters import PointMassVehicleParameters
-
-
-GRAVITY = 9.81
-FloatArray = npt.NDArray[np.float64]
+from simplified_vehicle_models.core.conventions import GRAVITY
+from simplified_vehicle_models.core.types import FloatArray
+from simplified_vehicle_models.parameters.vehicle import PointMassVehicleParameters
 
 
 @dataclass(frozen=True, slots=True)

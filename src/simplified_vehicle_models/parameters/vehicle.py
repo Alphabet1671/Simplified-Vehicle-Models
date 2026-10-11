@@ -1,0 +1,23 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from simplified_vehicle_models.parameters.aero import AeroParameters
+from simplified_vehicle_models.parameters.drivetrain import DrivetrainParameters
+from simplified_vehicle_models.parameters.tire import TireEnvelopeParameters
+
+
+@dataclass(frozen=True, slots=True)
+class PointMassVehicleParameters:
+    """Store the compiled point-mass vehicle parameters."""
+
+    total_mass: float
+    wheelbase: float
+    track_width: float
+    cg_height: float
+    front_mass_fraction: float
+    lateral_load_transfer_distribution: float
+    brake_bias: float
+    tire: TireEnvelopeParameters
+    aero: AeroParameters
+    drivetrain: DrivetrainParameters

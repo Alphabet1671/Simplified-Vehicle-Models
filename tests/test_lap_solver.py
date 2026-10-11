@@ -3,9 +3,10 @@ import unittest
 
 import numpy as np
 
-from simplified_vehicle_models.lap_solver import LapMode, solve_lap
-from simplified_vehicle_models.tracks import TrackProfile
-from simplified_vehicle_models.xml_loader import load_point_mass_vehicle
+from simplified_vehicle_models.results.traces import LapMode
+from simplified_vehicle_models.solvers.forward_backward import solve_lap
+from simplified_vehicle_models.tracks.types import TrackProfile
+from simplified_vehicle_models.xml.loader import load_point_mass_vehicle
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]

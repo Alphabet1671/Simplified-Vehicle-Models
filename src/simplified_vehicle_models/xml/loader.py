@@ -1,16 +1,14 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 import math
 from pathlib import Path
 import xml.etree.ElementTree as ElementTree
 
-from simplified_vehicle_models.parameters import (
-    AeroParameters,
-    DrivetrainParameters,
-    PointMassVehicleParameters,
-    TireEnvelopeParameters,
-)
+from simplified_vehicle_models.parameters.aero import AeroParameters
+from simplified_vehicle_models.parameters.drivetrain import DrivetrainParameters
+from simplified_vehicle_models.parameters.tire import TireEnvelopeParameters
+from simplified_vehicle_models.parameters.vehicle import PointMassVehicleParameters
+from simplified_vehicle_models.xml.model import Model, ModelReference
 
 
 _REGISTERED_MODELS = frozenset(
@@ -22,24 +20,6 @@ _REGISTERED_MODELS = frozenset(
         ("vehicle-formulation", "point-mass"),
     }
 )
-
-
-@dataclass(frozen=True, slots=True)
-class _Reference:
-    tag: str
-    role: str | None
-    model: _Model
-
-
-@dataclass(frozen=True, slots=True)
-class _Model:
-    path: Path
-    model_id: str
-    model_type: str
-    subtype: str
-    parameters: dict[str, float]
-    units: dict[str, str]
-    references: tuple[_Reference, ...]
 
 
 def load_point_mass_vehicle(path: str | Path) -> PointMassVehicleParameters:
@@ -63,9 +43,9 @@ def load_point_mass_vehicle(path: str | Path) -> PointMassVehicleParameters:
 def _load_model(
     path: Path,
     chain: tuple[Path, ...],
-    cache: dict[Path, _Model],
+    cache: dict[Path, Model],
     model_ids: dict[str, Path],
-) -> _Model:
+) -> Model:
     path = path.resolve()
     if path in chain:
         cycle_start = chain.index(path)
@@ -99,7 +79,7 @@ def _load_model(
     model_ids[model_id] = path
 
     parameters, units = _parse_parameters(root, path)
-    reference_models: list[_Reference] = []
+    reference_models: list[ModelReference] = []
     next_chain = chain + (path,)
     for element in root.iter():
         reference_path = element.get("ref")
@@ -108,10 +88,10 @@ def _load_model(
         target_path = (path.parent / reference_path).resolve()
         target = _load_model(target_path, next_chain, cache, model_ids)
         reference_models.append(
-            _Reference(tag=element.tag, role=element.get("role"), model=target)
+            ModelReference(tag=element.tag, role=element.get("role"), model=target)
         )
 
-    model = _Model(
+    model = Model(
         path=path,
         model_id=model_id,
         model_type=model_type,
@@ -159,7 +139,7 @@ def _parse_parameters(
     return parameters, units
 
 
-def _compile_vehicle(model: _Model) -> PointMassVehicleParameters:
+def _compile_vehicle(model: Model) -> PointMassVehicleParameters:
     _require_model_type(model, "vehicle-assembly", "point-mass")
     values = _require_parameters(
         model,
@@ -174,7 +154,7 @@ def _compile_vehicle(model: _Model) -> PointMassVehicleParameters:
         },
     )
 
-    components: dict[str, _Model] = {}
+    components: dict[str, Model] = {}
     for reference in model.references:
         if reference.tag != "component" or reference.role is None:
             raise ValueError(
@@ -220,7 +200,7 @@ def _compile_vehicle(model: _Model) -> PointMassVehicleParameters:
     )
 
 
-def _compile_tire(model: _Model) -> TireEnvelopeParameters:
+def _compile_tire(model: Model) -> TireEnvelopeParameters:
     _require_model_type(model, "tire-model", "load-sensitive-friction-ellipse")
     values = _require_parameters(
         model,
@@ -248,7 +228,7 @@ def _compile_tire(model: _Model) -> TireEnvelopeParameters:
     return TireEnvelopeParameters(**values)
 
 
-def _compile_aero(model: _Model) -> AeroParameters:
+def _compile_aero(model: Model) -> AeroParameters:
     _require_model_type(model, "aero-model", "fixed-aero")
     values = _require_parameters(
         model,
@@ -266,7 +246,7 @@ def _compile_aero(model: _Model) -> AeroParameters:
     return AeroParameters(**values)
 
 
-def _compile_drivetrain(model: _Model) -> DrivetrainParameters:
+def _compile_drivetrain(model: Model) -> DrivetrainParameters:
     _require_model_type(model, "drivetrain-model", "four-wheel-electric")
     values = _require_parameters(
         model,
@@ -296,7 +276,7 @@ def _compile_drivetrain(model: _Model) -> DrivetrainParameters:
 
 
 def _require_positive(
-    model: _Model,
+    model: Model,
     values: dict[str, float],
     *names: str,
 ) -> None:
@@ -306,7 +286,7 @@ def _require_positive(
 
 
 def _require_nonnegative(
-    model: _Model,
+    model: Model,
     values: dict[str, float],
     *names: str,
 ) -> None:
@@ -316,7 +296,7 @@ def _require_nonnegative(
 
 
 def _require_open_unit_interval(
-    model: _Model,
+    model: Model,
     values: dict[str, float],
     *names: str,
 ) -> None:
@@ -326,7 +306,7 @@ def _require_open_unit_interval(
 
 
 def _require_closed_unit_interval(
-    model: _Model,
+    model: Model,
     values: dict[str, float],
     *names: str,
 ) -> None:
@@ -336,7 +316,7 @@ def _require_closed_unit_interval(
 
 
 def _require_open_closed_unit_interval(
-    model: _Model,
+    model: Model,
     values: dict[str, float],
     *names: str,
 ) -> None:
@@ -345,7 +325,7 @@ def _require_open_closed_unit_interval(
             raise ValueError(f"{model.path}: {name} must be greater than zero")
 
 
-def _require_model_type(model: _Model, model_type: str, subtype: str) -> None:
+def _require_model_type(model: Model, model_type: str, subtype: str) -> None:
     if (model.model_type, model.subtype) != (model_type, subtype):
         raise ValueError(
             f"{model.path}: expected model type {model_type}/{subtype}, "
@@ -354,7 +334,7 @@ def _require_model_type(model: _Model, model_type: str, subtype: str) -> None:
 
 
 def _require_parameters(
-    model: _Model,
+    model: Model,
     expected_units: dict[str, str],
 ) -> dict[str, float]:
     expected_names = set(expected_units)
@@ -374,6 +354,6 @@ def _require_parameters(
     return dict(model.parameters)
 
 
-def _require_no_references(model: _Model) -> None:
+def _require_no_references(model: Model) -> None:
     if model.references:
         raise ValueError(f"{model.path}: component models cannot contain references")

@@ -5,9 +5,10 @@ from pathlib import Path
 
 import numpy as np
 
-from simplified_vehicle_models.lap_solver import LapMode, solve_lap
-from simplified_vehicle_models.tracks import load_track
-from simplified_vehicle_models.xml_loader import load_point_mass_vehicle
+from simplified_vehicle_models.results.traces import LapMode
+from simplified_vehicle_models.solvers.forward_backward import solve_lap
+from simplified_vehicle_models.tracks.profile import load_track
+from simplified_vehicle_models.xml.loader import load_point_mass_vehicle
 
 
 def main() -> None:

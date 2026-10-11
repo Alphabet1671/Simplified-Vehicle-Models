@@ -24,6 +24,8 @@ The compiled model resolves the subsystems into the two quantities the vehicle m
 - the maximum available wheel torque or drive force at a given speed and energy state;
 - the bus power draw, so the model can track energy use and state of charge.
 
+**Shared data across fidelities.** This plan also carries a cross-cutting requirement. One canonical vehicle dataset must serve every model fidelity. A point-mass formulation must consume a full 14-DOF dataset and use the part that it needs. A later high-fidelity addition must not invalidate any existing formulation. Section 5.5 defines the four mechanisms that implement the requirement and the two promises that test it.
+
 ## 2\. Current state
 
 The point-mass branch contains one lumped model only.
@@ -50,6 +52,8 @@ The legacy MATLAB work contains the physics and the data this plan must use.
 - Fixed-ratio transmission with efficiency and driven-wheel torque split.
 - Energy accounting over a lap and over a multi-lap stint.
 - XML declaration, capability contracts, and compiler validation for the new components.
+- Cross-fidelity data sharing, through capability requests and registered reductions.
+- The master plan package tree, adopted in one move-only commit.
 - Point-mass integration and validation on the legacy MIS track, plus one synthetic high-speed case.
 
 **Out of scope for this plan**
@@ -519,6 +523,92 @@ The machine parameter values above are placeholders from the first identificatio
 
 The legacy repositories stay read-only.
 
+### 5.5 Fidelity sharing across models
+
+Decision D18. One canonical vehicle dataset serves every fidelity. A lower-fidelity formulation consumes that dataset and uses the part it needs. A later high-fidelity addition must not invalidate an existing formulation.
+
+Four mechanisms implement the requirement.
+
+**1. The assembly is fidelity neutral.**
+
+The vehicle assembly describes the physical car at its highest available fidelity. It does not name a simulation model. Each formulation references the assembly and declares the fidelity that it simulates.
+
+```text
+models/vehicles/murphy_2024.xml        one file, full fidelity, every component
+models/formulations/murphy_point_mass.xml
+models/formulations/murphy_planar_7dof.xml
+models/formulations/murphy_full_14dof.xml
+```
+
+The current `models/vehicles/murphy_2024.xml` declares `type="vehicle-assembly" subtype="point-mass"`. That welds the assembly to one fidelity and must change to a fidelity-neutral subtype. The current `models/formulations/murphy_point_mass.xml` already follows the correct pattern.
+
+**2. The formulation declares capability requests.**
+
+A formulation states what it needs, not which component provides it. The point-mass formulation requests:
+
+```text
+tire-force-envelope      four contact patches
+aero-loads
+drive-force-limit
+brake-limits
+```
+
+The assembly may satisfy a request with any component that provides the capability. The compiler resolves each request against the assembly.
+
+**3. Reductions carry high-fidelity data down.**
+
+When no component provides a requested capability directly, the compiler inserts a registered reduction adapter. The adapter chain is the mechanism that makes one dataset serve every fidelity.
+
+```text
+transient-combined-slip  ->  steady-combined-slip  ->  tire-force-envelope
+full powertrain          ->  drive-force-limit
+```
+
+Each adapter is keyed by the source capability and the target capability. The compiler must select a chain when one exists, and must report a clear error when none exists.
+
+This plan builds the mechanism and registers the first concrete reduction: the full powertrain and drivetrain compile into the `drive-force-limit` capability that the point mass consumes. The tire reduction follows when the UniTire models arrive.
+
+**4. A compile manifest reports what was used.**
+
+The compiled model reports:
+
+- every component that it loaded;
+- every capability that it satisfied directly;
+- every capability that it satisfied through a reduction, with the chain;
+- every assembly component that it did not use.
+
+The manifest makes the promise testable. A silent discard is not acceptable.
+
+**Component schemas are closed. Assemblies are open.**
+
+A component declares a closed parameter set. An unknown parameter in a component is an error, because it is usually a spelling mistake.
+
+An assembly may contain components that a given formulation does not use. Those components are never loaded, so their parameters are never validated against that formulation. This is the rule that lets a point-mass formulation consume a 14-DOF dataset.
+
+The current loader violates this rule. `src/simplified_vehicle_models/xml_loader.py` rejects unknown parameters with the message `invalid parameters; missing=..., unknown=...`. A 14-DOF assembly therefore fails to compile for the point mass today. Task P0B must change the rule to the following:
+
+- a **required** parameter that is absent is an error;
+- a parameter that belongs to a component the formulation does not request is ignored, and the component is recorded in the manifest as unused;
+- a parameter that belongs to a requested component but is unknown to that component remains an error.
+
+**Two enforceable promises**
+
+**Promise 1, downward.** Compiling a formulation against the full high-fidelity assembly must reproduce the results from a minimal assembly that contains only the components that formulation needs, to a difference of `1e-9`.
+
+**Promise 2, upward.** Adding a component or a parameter to the assembly must leave every existing formulation's compiled model and results unchanged.
+
+Both promises are acceptance tests. Task P0B adds the harness, and Task P7 enforces them.
+
+**Test fixture for the promise before the 14-DOF model exists**
+
+The full 14-DOF model does not exist yet. The plan therefore proves the promise with a fixture assembly that contains high-fidelity components the point mass cannot use:
+
+- a transient tire component, which provides `transient-combined-slip` and not `tire-force-envelope`;
+- a suspension lookup-table component, which no current formulation requests;
+- the full powertrain assembly.
+
+The point-mass formulation must compile against that fixture, produce results identical to the minimal assembly, and report both unused components in the manifest. When the UniTire models arrive, the tire adapter replaces the fixture tire and the same test must still pass.
+
 ## 6\. Python interfaces
 
 ```python
@@ -636,44 +726,106 @@ Every function name uses the project verb conventions from the master plan: `loa
 
 ## 7\. Module layout
 
-The plan adds flat modules beside the existing ones and defers the master plan package restructure.
+Decision D6 adopts the master plan package tree. The tree is adopted in one move-only commit before any new behavior module appears, so that review of the moves stays separate from review of the new work.
+
+The tree below creates only the packages that this plan fills. The master plan lists further packages, such as `signals/` and `suspension/`, which arrive with the work that needs them.
 
 ```text
+src/simplified_vehicle_models/
+├── __init__.py
+├── core/
+│   ├── conventions.py        # Gravity and shared constants
+│   ├── numerics.py           # Monotone interpolation, smoothing, root finding
+│   └── types.py              # FloatArray and WheelPosition
+├── xml/
+│   ├── loader.py             # Parse, resolve references, validate one component
+│   ├── model.py              # Model and Reference dataclasses
+│   └── paths.py
+├── compiler/
+│   ├── registry.py           # (type, subtype) to component descriptor
+│   ├── capabilities.py       # Capability names and Protocols
+│   ├── adapters.py           # Registered reduction adapters
+│   ├── compile.py            # Formulation plus assembly to runtime model
+│   └── manifest.py           # Loaded, reduced, and unused records
+├── parameters/
+│   ├── vehicle.py
+│   ├── tire.py
+│   ├── aero.py
+│   └── powertrain.py
+├── tracks/
+│   ├── types.py              # TrackProfile
+│   └── profile.py            # load_track
+├── tires/
+│   ├── friction_ellipse.py   # Load-sensitive force envelope
+│   └── compile_envelope.py   # Reduction target for the UniTire models
+├── powertrain/
+│   ├── power_plant.py        # Envelope scaling, loss map, field-weakening correction
+│   ├── energy_storage.py     # Battery, capacitor, and tank storage models
+│   ├── transmission.py       # Ratio and efficiency
+│   └── assembly.py           # Powertrain and drivetrain limit resolution
+├── aero/
+│   └── fixed_aero.py         # Drag and downforce
+├── formulations/
+│   └── point_mass.py         # Point-mass physics and live limits
+├── solvers/
+│   └── forward_backward.py   # Flying and standing lap solver
+└── results/
+    ├── traces.py             # LapResult and energy report
+    └── diagnostics.py        # Independent check helpers
+
 models/
-├── power-plants/amk_dd5_100c.xml
-├── energy-storages/murphy_2024_battery.xml
-├── powertrains/murphy_2024.xml
-├── transmissions/murphy_2024_fixed_gear.xml
-├── drivetrains/murphy_2024_drivetrain.xml
-├── drivetrains/murphy_4wd.xml            # Existing lumped reduction
+├── vehicles/
+│   └── murphy_2024.xml               # Canonical assembly, fidelity neutral
+├── formulations/
+│   └── murphy_point_mass.xml
+├── tires/
+│   └── correlated_comp_2024.xml
+├── aero/
+│   └── murphy_2024.xml
+├── power-plants/
+│   └── amk_dd5_100c.xml
+├── energy-storages/
+│   └── murphy_2024_battery.xml
+├── transmissions/
+│   └── murphy_2024_fixed_gear.xml
+├── powertrains/
+│   └── murphy_2024.xml
+├── drivetrains/
+│   ├── murphy_2024_drivetrain.xml
+│   └── murphy_4wd.xml                # Lumped reduction, retained
+├── tracks/
+│   ├── 2024_michigan_endurance_v11.xml
+│   └── 2024_michigan_endurance_v11.csv
 └── data/
     ├── amk_dd5_100c_torque_map.csv
     ├── amk_dd5_100c_loss_map.csv
+    ├── amk_dd5_100c_identification.csv
     ├── amk_dd5_100c_machine_parameters.csv
     ├── cosmx_cell_curves.csv
     └── provenance.md
-
-src/simplified_vehicle_models/
-├── luts.py               # Shared monotone grid interpolation and smoothing
-├── identification.py     # Least squares machine parameter identification
-├── power_plant.py        # Envelope scaling, loss map, field-weakening correction
-├── energy_storage.py     # Battery, capacitor, and tank storage models
-├── transmission.py       # Ratio, efficiency, and torque split
-├── powertrain.py         # Assembly compile and limit resolution
 
 tools/
 └── export_legacy_powertrain_data.py   # One-time, read-only legacy export
 
 tests/
-├── test_luts.py
+├── test_xml_loader.py
+├── test_export_data.py
+├── test_numerics.py
 ├── test_identification.py
 ├── test_power_plant.py
 ├── test_energy_storage.py
 ├── test_transmission.py
 ├── test_powertrain.py
+├── test_point_mass.py
+├── test_lap_solver.py
+├── test_tracks.py
+├── test_mis_regression.py
+├── test_cross_fidelity.py
 ├── test_energy_lap.py
 └── test_high_speed_regression.py
 ```
+
+The powertrain models live in `powertrain/`, not in `controls/`. The master plan lists `powertrain.py`, `brakes.py`, and `torque_split_device.py` under `controls/`. A battery, a motor, and a gearbox are plant models, not controllers. Decision D19 records this correction to the master plan tree. The `controls/` package keeps the controllers that the master plan lists, such as the yaw reference, the yaw controller, the traction controller, and the torque allocator.
 
 `tools/` is not part of the installed package. It runs one time and records the source digest.
 
@@ -780,6 +932,12 @@ Section 12 records the motor-speed margin and the state-of-charge trend.
 | Energy balance | Require bus energy to equal the storage energy change plus the storage losses |
 | Outer loop | Require the energy iteration to converge below tolerance within the cap, and require a reported flag when it does not |
 | Constraint agreement | Require the reported active constraint to equal an independently calculated minimum |
+| Cross-fidelity, downward | Require a formulation compiled against the full assembly to reproduce the minimal-assembly result to `1e-9` |
+| Cross-fidelity, upward | Require the result to stay unchanged after a component is added to the assembly |
+| Manifest completeness | Require the manifest to list every loaded, reduced, and unused component |
+| Missing capability | Require a clear error when a formulation requests a capability with no provider and no reduction chain |
+| Closed component schema | Require an unknown parameter inside a requested component to remain an error |
+| Open assembly | Require an assembly with unused components to compile without an error |
 | High-speed case | Require a converged lap on a synthetic fast track whose motor speed exceeds the corner speed |
 
 Every task runs the full suite before commit.
@@ -787,6 +945,60 @@ Every task runs the full suite before commit.
 ## 11\. Tasks
 
 Each task is one implementer dispatch with its own tests and commit.
+
+Task P0A and Task P0B run after Task P1 completes. Task P1 touches `tools/`, `models/data/`, and one test file, so it does not conflict with the source moves. Running the moves while Task P1 executes its test suite would produce a spurious failure, so the order is P1, then P0A, then P0B.
+
+### Task P0A — Move to the master plan package tree
+
+**Deliverables**
+
+- The package tree in Section 7.
+- Updated imports in every moved module, in the tests, and in `__init__.py`.
+- An unchanged public API through `simplified_vehicle_models`.
+
+**Method**
+
+- Move files only. Do not change logic.
+- Keep the public names in `__init__.py` unchanged, so `from simplified_vehicle_models import load_point_mass_vehicle` and `load_track` keep working.
+- Keep the class and function names unchanged.
+- Do not create empty packages for work that does not exist yet. Create only the directories that Section 7 fills.
+
+**Tests**
+
+- The full suite passes with no test edits other than import paths.
+- The MIS regression reproduces 69.3558 s and 70.5198 s exactly.
+
+**Depends on:** P1.
+
+### Task P0B — Capability registry, reductions, and open assemblies
+
+**Deliverables**
+
+- `compiler/registry.py`, `compiler/capabilities.py`, `compiler/adapters.py`, `compiler/manifest.py`, and `compiler/compile.py`.
+- Per-component compile functions moved out of `xml/loader.py` and into their component modules.
+- The parameter rule from Section 5.5: closed component schemas, open assemblies.
+- `tests/test_cross_fidelity.py` with the fixture assembly from Section 5.5.
+- A fidelity-neutral subtype on `models/vehicles/murphy_2024.xml`.
+
+**Method**
+
+- Move each per-component compile function beside the component it compiles. The loader keeps reference resolution, file parsing, and dispatch through the registry.
+- Declare the capabilities from Section 5.2 as names and Protocols.
+- Register one reduction: the full powertrain and drivetrain into `drive-force-limit`.
+- Implement the manifest and report loaded, reduced, and unused records.
+- Change the parameter rule. A missing required parameter stays an error. A parameter of a component that the formulation does not request is ignored, and the component is reported as unused.
+- Add the fixture assembly with an unused transient tire and an unused suspension lookup table.
+
+**Tests**
+
+- Promise 1: the point-mass formulation compiles against the fixture assembly and reproduces the minimal-assembly result to `1e-9`.
+- Promise 2: the same formulation, compiled after a component is added to the assembly, reproduces its previous result to `1e-9`.
+- The manifest lists both unused components.
+- A formulation that requests a capability with no provider and no reduction chain reports a clear error.
+- An unknown parameter inside a requested component remains an error.
+- The full suite passes.
+
+**Depends on:** P0A.
 
 ### Task P1 — Export the legacy powertrain data
 
@@ -934,12 +1146,13 @@ Each task is one implementer dispatch with its own tests and commit.
 
 **Deliverables**
 
-- `src/simplified_vehicle_models/powertrain.py`.
+- `powertrain/assembly.py`.
 - `models/powertrains/murphy_2024.xml`.
 - `models/drivetrains/murphy_2024_drivetrain.xml`.
 - `tests/test_powertrain.py`.
 - XML loader entries for `powertrain-assembly` / `electric` and `drivetrain-assembly` / `electric-four-wheel`.
-- Capability declarations for the four capabilities in Section 5.2.
+- Capability descriptors for `torque-source`, `energy-buffer`, `torque-transmission`, and `drive-force-limit`.
+- The reduction that compiles the two assemblies into `drive-force-limit`.
 
 **Method**
 
@@ -949,7 +1162,8 @@ Each task is one implementer dispatch with its own tests and commit.
 - Implement the one fixed-point update on regen torque for the motor loss, with the residual reported.
 - Validate component compatibility and report every mismatch with the model path.
 - Keep the two assemblies separate under Decision D1. Join them only through the compiled capability.
-- Preserve the lumped `drivetrain-model` reduction and require it to reproduce the current lap times.
+- Preserve the lumped `drivetrain-model` reduction as a second path to `drive-force-limit`, and require it to reproduce the current lap times.
+- Register the reduction in the adapter registry from Task P0B. Do not hard-code the chain in the compiler.
 
 **Tests**
 
@@ -958,6 +1172,8 @@ Each task is one implementer dispatch with its own tests and commit.
 - The torque-limited and power-limited regen forces are both reported, with the minimum active.
 - The braking trace is identical with regeneration enabled and disabled when the friction brakes reach the tire limit.
 - The active constraint equals an independently calculated minimum.
+- The two paths to `drive-force-limit` agree, so the lumped reduction and the full assembly produce the same drive limit at the same operating point.
+- Promise 1 and Promise 2 from Section 5.5 still pass with the full assemblies in the fixture.
 
 **Depends on:** P4, P5, P6.
 
@@ -1211,14 +1427,19 @@ The correction changed the validated MIS results:
 
 The corrected flying lap is 0.94 s faster than the measured Lap 8 trace of about 70.30 s and 0.62 s faster than the cited 69.98 s fastest-lap reference. The unit defect was the dominant cause of the earlier 24.9 s gap.
 
+**D6 — Package layout. RECORDED.**
+The master plan package tree applies. The tree is adopted in one move-only commit, Task P0A, so that review of the moves stays separate from review of the new behavior. Only the packages that this plan fills are created. The master plan's remaining packages arrive with the work that needs them.
+
+**D18 — Fidelity sharing across models. RECORDED.**
+One canonical vehicle dataset serves every fidelity. Section 5.5 defines the four mechanisms: a fidelity-neutral assembly, capability requests in the formulation, registered reduction adapters, and a compile manifest. Component schemas stay closed and assemblies stay open, so a component that a formulation does not request is never loaded or validated against it. Two promises are acceptance tests: a lower-fidelity formulation compiled against the full assembly must reproduce the minimal-assembly result to `1e-9`, and adding a component to the assembly must leave every existing formulation unchanged.
+
+**D19 — Powertrain models live outside `controls/`. RECORDED.**
+The master plan lists `powertrain.py`, `brakes.py`, and `torque_split_device.py` under `controls/`. A battery, a motor, and a gearbox are plant models. This plan places them in `powertrain/`. The `controls/` package keeps the controllers that the master plan lists.
+
 ### 14.2 Still open
 
 **D2 — Loss model fidelity.**
 *Recommendation:* the two-dimensional loss map is the default, consistent with D11. The scalar-efficiency reduction stays available for a simple model.
-
-**D6 — Package layout.**
-The master plan proposes `parameters/`, `powertrains/`, and `formulations/` as packages. The current code is flat modules.
-*Recommendation:* add flat modules now and restructure once, after the powertrain work is validated. The cost is one later move-only commit.
 
 **D7 — Transmission scope.**
 *Recommendation:* fixed ratio only in this plan. The shiftable gearbox stays an extension point.
@@ -1257,6 +1478,12 @@ Options:
 
 - The power plant, the energy storage, and the transmission exist as XML-declared, capability-bearing components.
 - `powertrain` and `drivetrain` are separate assemblies that join only through the compiled capability.
+- The package tree matches Section 7, and the moves landed in a commit that changed no behavior.
+- The vehicle assembly is fidelity neutral, and a formulation selects the fidelity.
+- The point-mass formulation compiles against an assembly that contains components it cannot use.
+- Promise 1 holds: the full assembly reproduces the minimal-assembly result to `1e-9`.
+- Promise 2 holds: adding a component to the assembly leaves every existing formulation unchanged.
+- The compile manifest reports every loaded, reduced, and unused component.
 - The machine parameters come from the joint fit and meet every acceptance tolerance in Section 4.3.
 - The envelope scaling reproduces the measured corner speed within 5 percent and is exactly linear in available voltage.
 - The loss model uses the reference map plus the field-weakening correction, and the correction is zero at the reference voltage.

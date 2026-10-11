@@ -192,6 +192,14 @@ Decision D11. The plan identifies the machine parameters from `AMK_Characteristi
 
 The source map supplies, for every one of the 4 221 operating points, the shaft torque, the d/q currents, the d/q voltages, the electrical frequency, and the loss components.
 
+Task P1 confirmed that the map also stores the speed axis directly, as a `miUINT16` field named `Speed` with 201 unique values from 0 to 20 000 rpm in 100 rpm steps. Task P3 must use that field for the speed axis, and must use `Frequency` only as a cross-check that confirms 5 pole pairs.
+
+Task P1 also confirmed these relations against all points:
+
+- `total_loss` equals `stator_copper_loss + iron_loss + magnet_loss + mechanical_loss` exactly.
+- `total_loss` equals `input_power - shaft_power`.
+- `input_power` equals `shaft_power + total_loss`. The relation holds on the 4 020 points with positive shaft torque, with a median relative error of 0.000 percent.
+
 Identification equations:
 
 ```text
@@ -409,7 +417,7 @@ The XML selects and parameterizes the behavior. Python implements the behavior.
     <parameters>
         <parameter name="unit_count" value="4" unit="1"/>
         <parameter name="maximum_torque" value="21.834945614425717" unit="N*m"/>
-        <parameter name="maximum_speed" value="20000" unit="rpm"/>
+        <parameter name="maximum_speed" value="18600" unit="rpm"/>
         <parameter name="unit_power_limit" value="20000" unit="W"/>
         <parameter name="inverter_efficiency" value="0.95" unit="1"/>
         <parameter name="device_drop" value="0.0" unit="V"/>
@@ -1082,6 +1090,7 @@ Task P0A and Task P0B run after Task P1 completes. Task P1 touches `tools/`, `mo
 
 - Implement the pack equations from Section 4.4.
 - Use the recorded values: 144 series, 1 parallel, 200 A discharge, 100 A charge, 14.146 A*h, and clamping cell voltage limits of 3.117 V and 4.227 V.
+- Convert the exported cell energy from watt-hours to joules. The exported curve keeps watt-hours so that the capacity integration yields ampere-hours directly.
 - Derive `usable_energy` from the clamped range, and record the value.
 - Implement `bus_voltage`, `power_limits`, `integrate`, and `usable_energy`.
 - Implement one quadratic solver for both current directions. Do not duplicate the expression.
@@ -1108,6 +1117,8 @@ Task P0A and Task P0B run after Task P1 completes. Task P1 touches `tools/`, `mo
 **Method**
 
 - Implement `calculate_available_voltage` with the `1 / sqrt(3)` factor.
+- Use `maximum_speed = 18600 rpm` for the motor limit, per decision D21. Do not copy the 20 000 rpm table range into the limit.
+- Use the loss map unscaled, per decision D20. Declare no loss scale parameter.
 - Implement the speed-axis envelope scaling from Section 4.2.
 - Implement `solve_direct_current` as one quadratic solve, with a reported infeasible status.
 - Implement the loss map plus the field-weakening correction.
@@ -1437,6 +1448,18 @@ One canonical vehicle dataset serves every fidelity. Section 5.5 defines the fou
 The master plan lists `powertrain.py`, `brakes.py`, and `torque_split_device.py` under `controls/`. A battery, a motor, and a gearbox are plant models. This plan places them in `powertrain/`. The `controls/` package keeps the controllers that the master plan lists.
 
 ### 14.2 Still open
+
+**D20 — The loss scale does not apply to the motor map. RECORDED.**
+`generateDrivetrainModel.m` stores `motorlossScalar = 1.60`, but it scales nothing. Task P1 proved this from the saved `Drivetrain_Murphy_4WD.mat`: the `lossMap` maximum is 5867.858325, which equals the unscaled `Total_Loss` interpolation. A scale of 1.60 would give 9388.573. The controller verified this independently.
+
+The same factor appears in the older `lap-sim` repository as `motorLossCorrectionFactor` and `motorLossCoefficient`, where it multiplies `Total_Loss` for the cooling-load calculation only. The power plant therefore uses `Total_Loss` unscaled, and the power plant model declares no loss scale parameter.
+
+**D21 — Motor speed limit and table range are different values. RECORDED.**
+The motor map declares `MaxRPM = 18600`, and its speed table spans 0 to 20 000 rpm in 100 rpm steps. The current `models/drivetrains/murphy_4wd.xml` sets `maximum_motor_speed = 20000`, which copies the table range into the motor limit. The motor limit is 18 600 rpm.
+
+The controller verified both values from the source map. The map also declares `type = 4` and `maxPower = 80`, which confirms four motors and the 80 kW system limit that decision D14 retains.
+
+The MIS lap peaks at 15 551 rpm, so this correction does not change the MIS results. It changes the maximum vehicle speed from 37.2 m/s to 34.6 m/s, and it matters for the synthetic high-speed case in Task P10.
 
 **D2 — Loss model fidelity.**
 *Recommendation:* the two-dimensional loss map is the default, consistent with D11. The scalar-efficiency reduction stays available for a simple model.

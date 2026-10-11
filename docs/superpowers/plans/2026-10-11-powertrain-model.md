@@ -222,28 +222,34 @@ Acceptance requirements for the fitted set:
 
 | Requirement | Tolerance | Basis |
 |---|---|---|
-| Resistance from the copper-loss relation, on points above 100 W | within 6 percent of the per-point values | the proven bound for a constant resistance is 5.55 percent |
-| Phase voltage, on points above 50 V | within 10 percent | the proven bound for constant inductances is 9.77 percent |
-| Shaft torque above 5 N*m | within 15 percent | the proven bound without a drag term is 14.70 percent |
-| Zero-speed required voltage | within 5 percent of the measured 20.7 V | the flux linkage term alone |
+| Resistance from the copper-loss relation, on points above 1000 W | within 6 percent | the best joint set achieves 5.86 percent |
+| Phase voltage, on points above 60 V | within 12 percent | the best joint set achieves 11.56 percent |
+| Shaft torque above 5 N*m | within 18 percent | the best joint set achieves 17.33 percent |
+| Zero-speed required voltage | within 5 percent of the measured 20.7 V | the best joint set achieves 4.98 percent |
 | Parameter stability under a 10 percent row removal | within 5 percent relative | guards against a fit dominated by a few points |
 | Reproduction of the committed parameter file | exact | reproducibility |
 
-A relative error against a near-zero reference value is meaningless. Each tolerance therefore applies only above the stated floor. Task P3 measured a 100 percent copper-loss error before the floor was applied, at points where the loss is nearly zero.
+A relative error against a near-zero reference value is meaningless. Each tolerance therefore applies only above the stated floor.
 
-**The map does not follow a constant-parameter model.** Task P3 measured these effects and proved the best achievable error for the model form:
+**The tolerances are a regression guard, not a physics requirement.** They sit just above the best joint achievable set, so the fitted parameters stay within a few percent of the best that the model form allows. The downstream use is insensitive to them: the field-weakening loss correction is itself only a few tens of watts, so a twelve percent parameter error moves it by a few watts.
 
-| Effect in the map | Evidence | Best achievable error |
+**The fit must minimize the largest error-to-tolerance ratio.** The acceptance criterion is a set of maximum relative errors, so the fitting objective must be that same quantity. A least-squares fit minimizes a different objective and does not reach the joint optimum. Task P3 must use a minimax-ratio objective.
+
+**The per-equation bounds are not simultaneously achievable.** The best set for phase voltage alone gives a torque error of 88 percent. The best set for torque alone gives a phase-voltage error of 31.85 percent. The two equations pull in opposite directions, so only a joint bound is meaningful.
+
+**Known limitations of the model form.** Task P3 measured these effects:
+
+| Effect in the map | Evidence | Consequence |
 |---|---|---|
-| Resistance rises with speed | per-point resistance from 0.2416 to 0.2700 ohm above 1000 W | 5.55 percent |
-| Inductance falls as current rises | per-point quadrature inductance from 1.16 to 0.79 mH | 9.77 percent phase voltage |
-| A drag torque is present | the shaft torque is -0.8491 N*m at zero current | 14.70 percent above 5 N*m |
+| Resistance rises with speed | per-point resistance from 0.2416 to 0.2700 ohm above 1000 W | 5.55 percent copper loss is the best a constant resistance can do |
+| Inductance falls as current rises | per-point quadrature inductance from 1.16 to 0.79 mH | saturation, which a constant inductance cannot follow |
+| A drag torque is present | the shaft torque is -0.8491 N*m at zero current | the model equation lacks the term |
 
 Decision D22 records these as known limitations of the model form. They are not defects of the fit, and this work does not remove them. A later task may add saturation and drag terms.
 
-**The parameters do not produce the torque envelope.** The envelope comes from the map, through the scaling law in Section 4.2. The parameters serve two narrower purposes: the direct-axis current that satisfies the voltage constraint at a reduced bus voltage, and the diagnostic quantities of the table above. An error of ten to twenty percent in the parameters changes the field-weakening loss correction by a few watts, because the correction is itself only a few tens of watts. Task P5 must not use the parameters to predict an absolute torque.
+**The parameters do not produce the torque envelope.** The envelope comes from the map, through the scaling law in Section 4.2. The parameters serve two narrower purposes: the direct-axis current that satisfies the voltage constraint at a reduced bus voltage, and the diagnostic quantities of the table above. Task P5 must not use the parameters to predict an absolute torque.
 
-The earlier tolerances of 3, 5, and 5 percent, and the corner-speed criterion, were written for an ideal constant-parameter machine. The data disproves that model form, so the plan replaces them. The corner-speed criterion is removed, because the envelope comes from the map rather than from the parameters, and the map already carries the measured limit.
+The original tolerances of 3, 5, and 5 percent, and the corner-speed criterion, were written for an ideal constant-parameter machine. The data disproves that model form. The corner-speed criterion is withdrawn, because the envelope comes from the map rather than from the parameters.
 
 ### 4.4 Energy storage
 
@@ -1512,17 +1518,19 @@ The MIS lap peaks at 15 551 rpm, so this correction does not change the MIS resu
 **D22 — The constant-parameter machine model has known limitations. RECORDED.**
 Task P3 fitted the machine parameters jointly and measured the deviations between the map and a constant-parameter model. The deviations are physical, and the best achievable error for the model form is larger than the plan first assumed:
 
-| Effect | Measured | Best achievable error |
+| Effect | Measured | Consequence |
 |---|---|---|
-| Resistance rises with speed | 0.2416 to 0.2700 ohm above 1000 W | 5.55 percent |
-| Inductance falls as the current rises | 1.16 to 0.79 mH | 9.77 percent phase voltage |
-| A drag torque is present | -0.8491 N*m at zero current | 14.70 percent above 5 N*m |
+| Resistance rises with speed | 0.2416 to 0.2700 ohm above 1000 W | 5.55 percent copper loss is the best a constant resistance can do |
+| Inductance falls as the current rises | 1.16 to 0.79 mH | saturation, which a constant inductance cannot follow |
+| A drag torque is present | -0.8491 N*m at zero current | the model equation lacks the term |
 
-The plan records these as known limitations and does not remove them in this work. The tolerances in Section 4.3 and the acceptance table in Task P3 were replaced to match the model form, and each tolerance now applies only above a reference floor, because a relative error against a near-zero value is meaningless.
+**The per-equation bounds cannot be met at the same time.** The set that best fits phase voltage alone gives a torque error of 88 percent. The set that best fits torque alone gives a phase-voltage error of 31.85 percent. Only a joint bound is meaningful.
 
-The torque envelope does not come from the parameters. It comes from the map, through the scaling law of Section 4.2. The parameters serve the field-weakening loss correction and the diagnostics.
+A joint search over 120 starts and a 40 000-point sample gives the best joint set: 5.86 percent copper, 11.56 percent phase voltage, 17.33 percent torque, and 4.98 percent zero-speed voltage. The smallest achievable largest-ratio against the original table of 6, 10, 15, and 5 percent is 1.156, so that table was not attainable by any parameter set. Section 4.3 carries the corrected table.
 
-The implementer reported the miss and left the failing tests in place rather than adjusting the fit or the tolerances. The controller verified the reasoning before replacing the tolerances.
+A least-squares fit does not reach the joint optimum, because it minimizes a different objective. The fit must minimize the largest error-to-tolerance ratio.
+
+The implementer reported both the miss and the deeper cause, and changed no parameter and no tolerance while the question was open. The controller verified the reasoning before replacing the table.
 
 **D2 — Loss model fidelity.**
 *Recommendation:* the two-dimensional loss map is the default, consistent with D11. The scalar-efficiency reduction stays available for a simple model.

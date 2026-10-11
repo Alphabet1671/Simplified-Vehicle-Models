@@ -1,4 +1,5 @@
 from pathlib import Path
+import math
 import unittest
 
 import numpy as np
@@ -14,6 +15,17 @@ from simplified_vehicle_models.xml.loader import load_point_mass_vehicle
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 FORMULATION_PATH = REPOSITORY_ROOT / "models/formulations/murphy_point_mass.xml"
 TRACK_PATH = REPOSITORY_ROOT / "models/tracks/2024_michigan_endurance_v11.xml"
+
+# The golden values come from docs/validation/mis-point-mass.md.
+# They pin the validated MIS lap result.
+# A physics change must fail these tests. A human then decides if the change is correct.
+# The relative tolerance is 1e-9. A tighter bound is brittle across platforms.
+# A looser bound lets a real physics change through.
+GOLDEN_FLYING_LAP_TIME = 69.35580578176496
+GOLDEN_STANDING_LAP_TIME = 70.51976562331019
+GOLDEN_PEAK_SPEED = 28.93519070116225
+GOLDEN_NODE_COUNT = 1407
+GOLDEN_RELATIVE_TOLERANCE = 1.0e-9
 
 
 class MisRegressionTests(unittest.TestCase):
@@ -46,6 +58,39 @@ class MisRegressionTests(unittest.TestCase):
     def test_boundary_conditions_are_satisfied(self) -> None:
         self.assertAlmostEqual(self.flying.speed[0], self.flying.speed[-1])
         self.assertEqual(self.standing.speed[0], 0.0)
+
+    def test_golden_flying_lap_time(self) -> None:
+        self._assert_golden(self.flying.lap_time, GOLDEN_FLYING_LAP_TIME)
+
+    def test_golden_standing_lap_time(self) -> None:
+        self._assert_golden(self.standing.lap_time, GOLDEN_STANDING_LAP_TIME)
+
+    def test_golden_peak_speed(self) -> None:
+        self._assert_golden(
+            float(np.max(self.flying.speed)),
+            GOLDEN_PEAK_SPEED,
+        )
+        self._assert_golden(
+            float(np.max(self.standing.speed)),
+            GOLDEN_PEAK_SPEED,
+        )
+
+    def test_golden_node_count(self) -> None:
+        self.assertEqual(len(self.track.distance), GOLDEN_NODE_COUNT)
+        self.assertEqual(len(self.flying.speed), GOLDEN_NODE_COUNT)
+        self.assertEqual(len(self.standing.speed), GOLDEN_NODE_COUNT)
+
+    def _assert_golden(self, actual: float, expected: float) -> None:
+        self.assertTrue(
+            math.isclose(
+                actual,
+                expected,
+                rel_tol=GOLDEN_RELATIVE_TOLERANCE,
+                abs_tol=0.0,
+            ),
+            f"expected {expected!r} within {GOLDEN_RELATIVE_TOLERANCE}, "
+            f"received {actual!r}",
+        )
 
     def test_independent_equilibrium_closure(self) -> None:
         speed_limit = maximum_vehicle_speed(self.vehicle)

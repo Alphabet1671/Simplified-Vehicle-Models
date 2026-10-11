@@ -33,7 +33,7 @@ from simplified_vehicle_models.compiler.registry import (
     component_descriptor,
     register_builtin_components,
 )
-from simplified_vehicle_models.xml.loader import load_model
+from simplified_vehicle_models.xml.loader import load_model, load_model_shallow
 from simplified_vehicle_models.xml.model import Model
 
 
@@ -66,7 +66,7 @@ def compile_formulation(formulation_path: str | Path) -> CompiledFormulation:
 
     register_builtin_components()
     source_path = Path(formulation_path).expanduser().resolve()
-    formulation = load_model(source_path)
+    formulation = load_model_shallow(source_path)
     definition = _formulation_definition(formulation)
 
     sources = [
@@ -78,7 +78,8 @@ def compile_formulation(formulation_path: str | Path) -> CompiledFormulation:
         raise ValueError(
             f"{formulation.path}: the formulation must contain one source reference"
         )
-    assembly = sources[0].model
+    source_identity = sources[0].model
+    assembly = load_model_shallow(source_identity.path)
     descriptor = component_descriptor(assembly.model_type, assembly.subtype)
     if descriptor.model_type != definition.assembly_type:
         raise ValueError(
@@ -126,18 +127,34 @@ def compile_formulation(formulation_path: str | Path) -> CompiledFormulation:
 
 
 def compile_component(candidate: ComponentCandidate) -> LoadedComponent:
-    """Compile one candidate component through its descriptor."""
+    """Fully load and compile one candidate component.
 
-    compile_function = candidate.descriptor.compile_function
+    The candidate may hold an identity-only model.
+    This function reads the model file again and parses every parameter.
+    """
+
+    model = load_model(candidate.model.path)
+    descriptor = component_descriptor(model.model_type, model.subtype)
+    if not descriptor.is_component:
+        raise ValueError(
+            f"{model.path}: model type {model.model_type}/{model.subtype} "
+            "is not a component type"
+        )
+    compile_function = descriptor.compile_function
     if compile_function is None:
         raise ValueError(
-            f"{candidate.model.path}: model type "
-            f"{candidate.descriptor.model_type}/{candidate.descriptor.subtype} "
+            f"{model.path}: model type "
+            f"{descriptor.model_type}/{descriptor.subtype} "
             "provides no compiled component"
         )
+    full_candidate = ComponentCandidate(
+        role=candidate.role,
+        model=model,
+        descriptor=descriptor,
+    )
     return LoadedComponent(
-        candidate=candidate,
-        value=compile_function(candidate.model),
+        candidate=full_candidate,
+        value=compile_function(model),
     )
 
 
@@ -158,6 +175,12 @@ def _assembly_candidates(assembly: Model) -> tuple[ComponentCandidate, ...]:
             reference.model.model_type,
             reference.model.subtype,
         )
+        if not descriptor.is_component:
+            raise ValueError(
+                f"{assembly.path}: component role {reference.role!r} references "
+                f"{reference.model.model_type}/{reference.model.subtype}, "
+                "which is not a component type"
+            )
         candidates.append(
             ComponentCandidate(
                 role=reference.role,
@@ -228,10 +251,15 @@ def _build_manifest(
 
 def _attach_manifest(model: object, manifest: CompileManifest) -> object:
     if not dataclasses.is_dataclass(model):
-        return model
+        raise TypeError(
+            "the compiled model must be a dataclass to hold the manifest; "
+            f"received {type(model).__name__}"
+        )
     names = {field.name for field in dataclasses.fields(model)}
     if "manifest" not in names:
-        return model
+        raise ValueError(
+            f"the compiled model {type(model).__name__} has no manifest field"
+        )
     return dataclasses.replace(model, manifest=manifest)
 
 

@@ -1,7 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- This transient tire is a cross-fidelity fixture.
+<!-- This test fixture is a transient tire.
      It provides the transient-combined-slip capability.
      The point-mass formulation does not request that capability.
+     tests/test_cross_fidelity.py registers the fixture schema type.
      Task P0C adds the reduction adapter. This file declares no tire physics. -->
 <model schema-version="1.0" id="fixture-transient-comp-2024" type="tire-model" subtype="transient-combined-slip">
     <parameters>

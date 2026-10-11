@@ -24,15 +24,6 @@ BRAKE_LIMITS = "brake-limits"
 TRANSIENT_COMBINED_SLIP = "transient-combined-slip"
 SUSPENSION_LOAD_TRANSFER = "suspension-load-transfer"
 
-CAPABILITY_NAMES = (
-    TIRE_FORCE_ENVELOPE,
-    AERO_LOADS,
-    DRIVE_FORCE_LIMIT,
-    BRAKE_LIMITS,
-    TRANSIENT_COMBINED_SLIP,
-    SUSPENSION_LOAD_TRANSFER,
-)
-
 
 @runtime_checkable
 class TireForceEnvelope(Protocol):

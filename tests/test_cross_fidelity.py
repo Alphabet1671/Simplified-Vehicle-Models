@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
-from dataclasses import replace
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -35,31 +37,123 @@ from simplified_vehicle_models.compiler.compile import (
 from simplified_vehicle_models.compiler.registry import (
     ComponentCandidate,
     component_descriptor,
+    register_component,
 )
 from simplified_vehicle_models.parameters.tire import TireEnvelopeParameters
 from simplified_vehicle_models.parameters.vehicle import PointMassVehicleParameters
 from simplified_vehicle_models.results.traces import LapMode
 from simplified_vehicle_models.solvers.forward_backward import solve_lap
-from simplified_vehicle_models.tires.transient_slip import TransientTireParameters
 from simplified_vehicle_models.tracks.profile import load_track
 from simplified_vehicle_models.xml.loader import load_model, load_point_mass_vehicle
+from simplified_vehicle_models.xml.model import Model
+from simplified_vehicle_models.xml.schema import (
+    closed_parameters,
+    require_model_type,
+    require_no_references,
+    require_nonnegative,
+    require_positive,
+)
 
 
 MINIMAL_FORMULATION = REPOSITORY_ROOT / "models/formulations/murphy_point_mass.xml"
-FIXTURE_FORMULATION = (
-    REPOSITORY_ROOT / "models/formulations/fixture_point_mass.xml"
-)
-EXTENDED_FORMULATION = (
-    REPOSITORY_ROOT / "models/formulations/fixture_point_mass_extended.xml"
-)
-REDUCED_FORMULATION = (
-    REPOSITORY_ROOT / "models/formulations/fixture_point_mass_reduced.xml"
-)
-FIXTURE_ASSEMBLY = REPOSITORY_ROOT / "models/vehicles/fixture_four_wheel.xml"
-TRANSIENT_TIRE = REPOSITORY_ROOT / "models/tires/transient_comp_2024.xml"
-SUSPENSION_LOOKUP = REPOSITORY_ROOT / "models/suspension/lookup_2024.xml"
+FIXTURE_MODELS = REPOSITORY_ROOT / "tests/fixtures/models"
+FIXTURE_FORMULATION = FIXTURE_MODELS / "fixture_point_mass.xml"
+EXTENDED_FORMULATION = FIXTURE_MODELS / "fixture_point_mass_extended.xml"
+REDUCED_FORMULATION = FIXTURE_MODELS / "fixture_point_mass_reduced.xml"
+FIXTURE_ASSEMBLY = FIXTURE_MODELS / "fixture_four_wheel.xml"
+TRANSIENT_TIRE = FIXTURE_MODELS / "transient_comp_2024.xml"
+SUSPENSION_LOOKUP = FIXTURE_MODELS / "suspension_lookup_2024.xml"
 TRACK_PATH = REPOSITORY_ROOT / "models/tracks/2024_michigan_endurance_v11.xml"
 TIE_BREAK_TARGET = "capability-tie-break"
+
+TRANSIENT_TIRE_SUBTYPE = "transient-combined-slip"
+SUSPENSION_LOOKUP_SUBTYPE = "lookup-table"
+
+_TRANSIENT_TIRE_UNITS = {
+    "relaxation_length": "m",
+    "cornering_stiffness": "N/rad",
+    "longitudinal_slip_stiffness": "N",
+    "effective_radius": "m",
+}
+
+_SUSPENSION_LOOKUP_UNITS = {
+    "front_roll_stiffness": "N*m/rad",
+    "rear_roll_stiffness": "N*m/rad",
+    "front_ride_height": "m",
+    "rear_ride_height": "m",
+    "motion_ratio": "1",
+}
+
+
+@dataclass(frozen=True, slots=True)
+class TransientTireParameters:
+    """Store the parameters of a fixture transient tire."""
+
+    relaxation_length: float
+    cornering_stiffness: float
+    longitudinal_slip_stiffness: float
+    effective_radius: float
+
+
+@dataclass(frozen=True, slots=True)
+class SuspensionLookupParameters:
+    """Store the parameters of a fixture suspension lookup table."""
+
+    front_roll_stiffness: float
+    rear_roll_stiffness: float
+    front_ride_height: float
+    rear_ride_height: float
+    motion_ratio: float
+
+
+def compile_transient_tire(model: Model) -> TransientTireParameters:
+    """Compile one fixture transient tire. This schema is test only."""
+
+    require_model_type(model, "tire-model", TRANSIENT_TIRE_SUBTYPE)
+    values = closed_parameters(model, _TRANSIENT_TIRE_UNITS)
+    require_no_references(model)
+    require_positive(
+        model,
+        values,
+        "relaxation_length",
+        "cornering_stiffness",
+        "longitudinal_slip_stiffness",
+        "effective_radius",
+    )
+    return TransientTireParameters(**values)
+
+
+def compile_suspension_lookup(model: Model) -> SuspensionLookupParameters:
+    """Compile one fixture suspension lookup table. This schema is test only."""
+
+    require_model_type(model, "suspension-model", SUSPENSION_LOOKUP_SUBTYPE)
+    values = closed_parameters(model, _SUSPENSION_LOOKUP_UNITS)
+    require_no_references(model)
+    require_positive(
+        model,
+        values,
+        "front_roll_stiffness",
+        "rear_roll_stiffness",
+        "motion_ratio",
+    )
+    require_nonnegative(model, values, "front_ride_height", "rear_ride_height")
+    return SuspensionLookupParameters(**values)
+
+
+# The fixture schema types are test only.
+# The production bootstrap does not know them.
+register_component(
+    "tire-model",
+    TRANSIENT_TIRE_SUBTYPE,
+    capability=TRANSIENT_COMBINED_SLIP,
+    compile_function=compile_transient_tire,
+)
+register_component(
+    "suspension-model",
+    SUSPENSION_LOOKUP_SUBTYPE,
+    capability=SUSPENSION_LOAD_TRANSFER,
+    compile_function=compile_suspension_lookup,
+)
 
 
 def _reduce_transient_tire(
@@ -86,23 +180,6 @@ def _replace_suspension(value: object) -> object:
     """Return a marker value. This adapter is test only."""
 
     return ("suspension", value)
-
-
-def _vehicle_fields(vehicle: PointMassVehicleParameters) -> tuple[object, ...]:
-    """Return every compiled field except the manifest."""
-
-    return (
-        vehicle.total_mass,
-        vehicle.wheelbase,
-        vehicle.track_width,
-        vehicle.cg_height,
-        vehicle.front_mass_fraction,
-        vehicle.lateral_load_transfer_distribution,
-        vehicle.brake_bias,
-        vehicle.tire,
-        vehicle.aero,
-        vehicle.drivetrain,
-    )
 
 
 class CrossFidelityTests(unittest.TestCase):
@@ -139,7 +216,7 @@ class CrossFidelityTests(unittest.TestCase):
         )
 
     def test_promise_one_reproduces_the_minimal_lap(self) -> None:
-        self.assertEqual(_vehicle_fields(self.fixture), _vehicle_fields(self.minimal))
+        self.assertEqual(self.fixture, self.minimal)
         self.assertAlmostEqual(
             self.fixture_lap.lap_time,
             self.minimal_lap.lap_time,
@@ -153,10 +230,7 @@ class CrossFidelityTests(unittest.TestCase):
         )
 
     def test_promise_two_keeps_the_lap_after_an_added_component(self) -> None:
-        self.assertEqual(
-            _vehicle_fields(self.extended),
-            _vehicle_fields(self.fixture),
-        )
+        self.assertEqual(self.extended, self.fixture)
         self.assertAlmostEqual(
             self.extended_lap.lap_time,
             self.fixture_lap.lap_time,
@@ -182,7 +256,7 @@ class CrossFidelityTests(unittest.TestCase):
         self.assertNotIn("transient_tire_rear", fixture_manifest.unused_roles())
         added = extended_manifest.unused_components[-1]
         self.assertEqual(added.model_id, "fixture-transient-comp-2025")
-        self.assertEqual(added.subtype, "transient-combined-slip")
+        self.assertEqual(added.subtype, TRANSIENT_TIRE_SUBTYPE)
 
     def test_manifest_lists_both_fixture_components_as_unused(self) -> None:
         manifest = self.fixture.manifest
@@ -241,7 +315,7 @@ class CrossFidelityTests(unittest.TestCase):
         self.assertEqual(record.adapter_names, ("_reduce_transient_tire",))
         loaded = manifest.component("tire")
         assert loaded is not None
-        self.assertEqual(loaded.subtype, "transient-combined-slip")
+        self.assertEqual(loaded.subtype, TRANSIENT_TIRE_SUBTYPE)
         self.assertEqual(
             self.reduced.tire,
             TireEnvelopeParameters(
@@ -252,14 +326,80 @@ class CrossFidelityTests(unittest.TestCase):
                 effective_radius=0.193675,
             ),
         )
-        self.assertEqual(
-            replace(self.reduced, manifest=None),
-            replace(self.minimal, manifest=None),
-        )
+        self.assertEqual(self.reduced, self.minimal)
 
     def test_assembly_with_an_unused_component_compiles(self) -> None:
         self.assertIsInstance(self.fixture, PointMassVehicleParameters)
+        assert self.fixture.manifest is not None
         self.assertGreater(len(self.fixture.manifest.unused_components), 0)
+
+    def test_unknown_parameter_in_an_unused_component_compiles(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            unused = root / "unused.xml"
+            unused.write_text(
+                '<model schema-version="1.0" id="fixture-unused-transient" '
+                f'type="tire-model" subtype="{TRANSIENT_TIRE_SUBTYPE}">'
+                "<parameters>"
+                '<parameter name="relaxation_length" value="0.15" unit="m"/>'
+                '<parameter name="torque_map" '
+                'value="amk_dd5_100c_torque_map.csv" unit="1"/>'
+                '<parameter name="speling_mistake" value="1" unit="1"/>'
+                "</parameters>"
+                "</model>",
+                encoding="utf-8",
+            )
+            assembly = root / "assembly.xml"
+            self._write_fixture_assembly(assembly, unused)
+            formulation = root / "formulation.xml"
+            formulation.write_text(
+                '<model schema-version="1.0" id="fixture-unused-parameter" '
+                'type="vehicle-formulation" subtype="point-mass">'
+                f'<source ref="{assembly}"/>'
+                "</model>",
+                encoding="utf-8",
+            )
+
+            vehicle = load_point_mass_vehicle(formulation)
+
+            manifest = vehicle.manifest
+            assert manifest is not None
+            self.assertIn("unused", manifest.unused_roles())
+            record = next(
+                item
+                for item in manifest.unused_components
+                if item.role == "unused"
+            )
+            self.assertEqual(record.model_id, "fixture-unused-transient")
+            self.assertEqual(record.capability, TRANSIENT_COMBINED_SLIP)
+            self.assertEqual(vehicle, self.minimal)
+
+    def test_unknown_type_in_an_unused_component_is_an_error(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            unused = root / "unused.xml"
+            unused.write_text(
+                '<model schema-version="1.0" id="fixture-unknown-type" '
+                'type="unknown-model" subtype="unknown">'
+                "<parameters>"
+                '<parameter name="anything" value="1" unit="1"/>'
+                "</parameters>"
+                "</model>",
+                encoding="utf-8",
+            )
+            assembly = root / "assembly.xml"
+            self._write_fixture_assembly(assembly, unused)
+            formulation = root / "formulation.xml"
+            formulation.write_text(
+                '<model schema-version="1.0" id="fixture-unknown-type-formulation" '
+                'type="vehicle-formulation" subtype="point-mass">'
+                f'<source ref="{assembly}"/>'
+                "</model>",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "unknown model type"):
+                load_point_mass_vehicle(formulation)
 
     def test_missing_capability_names_the_capability_and_the_assembly(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -300,6 +440,54 @@ class CrossFidelityTests(unittest.TestCase):
                     target / "formulations/murphy_point_mass.xml"
                 )
 
+    def test_reference_to_a_formulation_type_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            nested = root / "nested.xml"
+            nested.write_text(
+                '<model schema-version="1.0" id="nested" '
+                'type="vehicle-formulation" subtype="point-mass">'
+                f'<source ref="{FIXTURE_ASSEMBLY.resolve()}"/>'
+                "</model>",
+                encoding="utf-8",
+            )
+            assembly = root / "assembly.xml"
+            self._write_fixture_assembly(assembly, nested)
+            formulation = root / "formulation.xml"
+            formulation.write_text(
+                '<model schema-version="1.0" id="bad-reference" '
+                'type="vehicle-formulation" subtype="point-mass">'
+                f'<source ref="{assembly}"/>'
+                "</model>",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "not a component type"):
+                load_point_mass_vehicle(formulation)
+
+    def test_production_bootstrap_does_not_register_fixture_types(self) -> None:
+        script = (
+            "from simplified_vehicle_models.compiler.registry import "
+            "component_descriptor\n"
+            "try:\n"
+            "    component_descriptor('tire-model', 'transient-combined-slip')\n"
+            "except ValueError:\n"
+            "    print('unregistered')\n"
+            "else:\n"
+            "    print('registered')\n"
+        )
+        environment = dict(os.environ)
+        environment["PYTHONPATH"] = str(REPOSITORY_ROOT / "src")
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            check=True,
+            capture_output=True,
+            text=True,
+            env=environment,
+        )
+
+        self.assertEqual(result.stdout.strip(), "unregistered")
+
     def test_adapter_choice_follows_registration_order(self) -> None:
         first = register_adapter(
             SUSPENSION_LOAD_TRANSFER,
@@ -335,6 +523,35 @@ class CrossFidelityTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "cycle"):
             register_adapter("capability-c", "capability-a", _replace_suspension)
+
+    def _write_fixture_assembly(self, path: Path, unused: Path) -> None:
+        tire = (REPOSITORY_ROOT / "models/tires/correlated_comp_2024.xml").resolve()
+        aero = (REPOSITORY_ROOT / "models/aero/murphy_2024.xml").resolve()
+        drivetrain = (
+            REPOSITORY_ROOT / "models/drivetrains/murphy_4wd.xml"
+        ).resolve()
+        lines = [
+            '<model schema-version="1.0" id="fixture-unused-assembly"',
+            ' type="vehicle-assembly" subtype="four-wheel">',
+            "    <parameters>",
+            '        <parameter name="total_mass" value="299.0" unit="kg"/>',
+            '        <parameter name="wheelbase" value="1.535" unit="m"/>',
+            '        <parameter name="track_width" value="1.016" unit="m"/>',
+            '        <parameter name="cg_height" value="0.3" unit="m"/>',
+            '        <parameter name="front_mass_fraction" value="0.47" unit="1"/>',
+            '        <parameter name="lateral_load_transfer_distribution"',
+            ' value="0.44" unit="1"/>',
+            '        <parameter name="brake_bias" value="0.65" unit="1"/>',
+            "    </parameters>",
+            "    <components>",
+            f'        <component role="tire" ref="{tire}"/>',
+            f'        <component role="aero" ref="{aero}"/>',
+            f'        <component role="drivetrain" ref="{drivetrain}"/>',
+            f'        <component role="unused" ref="{unused.resolve()}"/>',
+            "    </components>",
+            "</model>",
+        ]
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     def _reduction_candidates(self) -> tuple[ComponentCandidate, ...]:
         transient = load_model(TRANSIENT_TIRE)

@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- This assembly is a cross-fidelity fixture for the point-mass formulation.
+<!-- This test fixture is a cross-fidelity assembly for the point-mass formulation.
      It carries a transient tire and a suspension lookup table.
      The point-mass formulation does not request their capabilities.
-     It also carries one parameter that the point-mass formulation does not consume. -->
+     It also carries one parameter that the point-mass formulation does not consume.
+     The fixture schema types are registered by tests/test_cross_fidelity.py. -->
 <model schema-version="1.0" id="fixture-murphy-2024-full" type="vehicle-assembly" subtype="four-wheel">
     <parameters>
         <parameter name="total_mass" value="299.0" unit="kg"/>
@@ -15,10 +16,10 @@
         <parameter name="suspension_roll_axis_height" value="0.06" unit="m"/>
     </parameters>
     <components>
-        <component role="tire" ref="../tires/correlated_comp_2024.xml"/>
-        <component role="aero" ref="../aero/murphy_2024.xml"/>
-        <component role="drivetrain" ref="../drivetrains/murphy_4wd.xml"/>
-        <component role="transient_tire" ref="../tires/transient_comp_2024.xml"/>
-        <component role="suspension" ref="../suspension/lookup_2024.xml"/>
+        <component role="tire" ref="../../../models/tires/correlated_comp_2024.xml"/>
+        <component role="aero" ref="../../../models/aero/murphy_2024.xml"/>
+        <component role="drivetrain" ref="../../../models/drivetrains/murphy_4wd.xml"/>
+        <component role="transient_tire" ref="transient_comp_2024.xml"/>
+        <component role="suspension" ref="suspension_lookup_2024.xml"/>
     </components>
 </model>

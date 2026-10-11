@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- This assembly is the reduction fixture for the test-only adapter.
+<!-- This test fixture is the reduction assembly for the test-only adapter.
      The tire role holds a transient tire.
      No component provides tire-force-envelope directly.
      A registered adapter must reduce transient-combined-slip to tire-force-envelope. -->
@@ -14,8 +14,8 @@
         <parameter name="brake_bias" value="0.65" unit="1"/>
     </parameters>
     <components>
-        <component role="tire" ref="../tires/transient_comp_2024.xml"/>
-        <component role="aero" ref="../aero/murphy_2024.xml"/>
-        <component role="drivetrain" ref="../drivetrains/murphy_4wd.xml"/>
+        <component role="tire" ref="transient_comp_2024.xml"/>
+        <component role="aero" ref="../../../models/aero/murphy_2024.xml"/>
+        <component role="drivetrain" ref="../../../models/drivetrains/murphy_4wd.xml"/>
     </components>
 </model>

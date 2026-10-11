@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from simplified_vehicle_models.parameters.aero import AeroParameters
@@ -25,4 +25,9 @@ class PointMassVehicleParameters:
     tire: TireEnvelopeParameters
     aero: AeroParameters
     drivetrain: DrivetrainParameters
-    manifest: CompileManifest | None = None
+    manifest: CompileManifest | None = field(
+        default=None,
+        compare=False,
+        repr=False,
+        hash=False,
+    )

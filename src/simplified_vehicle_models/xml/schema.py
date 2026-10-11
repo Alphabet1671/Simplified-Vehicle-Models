@@ -45,8 +45,8 @@ def required_parameters(
     missing, unknown = _collect_names(model, expected_units)
     if missing:
         raise ValueError(
-            f"{model.path}: invalid parameters; "
-            f"missing={list(missing)}, unknown={list(unknown)}"
+            f"{model.path}: missing required parameters {list(missing)}; "
+            f"unconsumed parameters {list(unknown)}"
         )
     _check_units(model, expected_units)
     return _values(model, expected_units), tuple(unknown)

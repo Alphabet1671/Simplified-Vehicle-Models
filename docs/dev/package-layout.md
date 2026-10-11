@@ -31,11 +31,8 @@ src/simplified_vehicle_models/
 │   └── traces.py             # LapMode and LapResult
 ├── solvers/
 │   └── forward_backward.py   # solve_lap and its helpers
-├── suspension/
-│   └── lookup_table.py       # Fixture suspension compile function and capability
 ├── tires/
-│   ├── friction_ellipse.py   # Friction-ellipse compile function and capability
-│   └── transient_slip.py     # Fixture transient tire compile function
+│   └── friction_ellipse.py   # Friction-ellipse compile function and capability
 ├── tracks/
 │   ├── types.py              # TrackProfile
 │   └── profile.py            # load_track and its helpers
@@ -98,7 +95,16 @@ The compile path runs from a formulation to a compiled model.
 4. The formulation compiler builds the compiled model. Only the components that satisfy a request are compiled.
 5. `compiler/manifest.py` records the loaded components, the capability decisions, the unused components, and the unconsumed parameters. The compiled model holds its manifest.
 
-A component module declares its capability and registers itself. `compiler/registry.py` imports every component module one time.
+A component module declares its capability and registers itself. `compiler/registry.py` imports every production component module one time.
+
+## The Two Load Phases
+
+The loader reads a model in two phases.
+
+1. **Identity pass.** The loader reads the root attributes and the reference chain of every component. The loader validates the schema version, the model type, and the reference chain. The loader does not read the parameters.
+2. **Full load.** The loader reads and validates the components that satisfy a request. The loader abandons each unused component after the identity pass.
+
+A missing `schema-version`, an unknown `(type, subtype)`, and a reference cycle are errors in the identity pass.
 
 ## The Parameter Rule
 
@@ -107,6 +113,10 @@ A component owns a closed schema. An unknown parameter in a component is an erro
 An assembly owns an open schema. The compiler records each unknown assembly parameter as unconsumed. The compiler does not raise. An assembly may also carry a component that the formulation does not request. The compiler records that component as unused and never compiles it.
 
 A required parameter that is absent is always an error.
+
+## Test Fixtures
+
+The fixture components and the fixture assemblies live under `tests/fixtures/models/`. The test module `tests/test_cross_fidelity.py` registers the fixture schema types. The production bootstrap does not register them, so a production assembly cannot reference a fixture type.
 
 ## Import Rules
 

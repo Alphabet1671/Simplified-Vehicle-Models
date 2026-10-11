@@ -1,3 +1,4 @@
+from simplified_vehicle_models.compiler.compile import compile_formulation
 from simplified_vehicle_models.formulations.point_mass import (
     AccelerationLimits,
     EquilibriumState,
@@ -30,6 +31,7 @@ __all__ = [
     "TireEnvelopeParameters",
     "TrackProfile",
     "acceleration_limits",
+    "compile_formulation",
     "evaluate_equilibrium",
     "load_point_mass_vehicle",
     "load_track",

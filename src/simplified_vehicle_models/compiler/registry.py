@@ -15,6 +15,12 @@ from simplified_vehicle_models.xml.model import Model
 
 CompileFunction = Callable[[Model], object]
 
+COMPONENT_KIND = "component"
+ASSEMBLY_KIND = "assembly"
+FORMULATION_KIND = "formulation"
+
+MODEL_KINDS = (COMPONENT_KIND, ASSEMBLY_KIND, FORMULATION_KIND)
+
 
 @dataclass(frozen=True, slots=True)
 class ComponentDescriptor:
@@ -22,6 +28,7 @@ class ComponentDescriptor:
 
     model_type: str
     subtype: str
+    kind: str
     capability: str | None
     compile_function: CompileFunction | None
 
@@ -30,6 +37,12 @@ class ComponentDescriptor:
         """Return the type and the subtype of this descriptor."""
 
         return (self.model_type, self.subtype)
+
+    @property
+    def is_component(self) -> bool:
+        """Return true when the descriptor names a compilable component."""
+
+        return self.kind == COMPONENT_KIND
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,23 +94,29 @@ def register_component(
     model_type: str,
     subtype: str,
     *,
+    kind: str = COMPONENT_KIND,
     capability: str | None = None,
     compile_function: CompileFunction | None = None,
 ) -> ComponentDescriptor:
     """Register one model type and subtype.
 
+    The kind is COMPONENT for a compilable component.
+    The kind is ASSEMBLY or FORMULATION for a model that composes other models.
     The capability is None for an assembly or a formulation.
     The compile function is None for a model that composes other models.
     """
 
     if not model_type.strip() or not subtype.strip():
         raise ValueError("model_type and subtype must be nonempty")
+    if kind not in MODEL_KINDS:
+        raise ValueError(f"kind {kind!r} is not one of {list(MODEL_KINDS)}")
     key = (model_type, subtype)
     if key in _DESCRIPTORS:
         raise ValueError(f"model type {model_type}/{subtype} is already registered")
     descriptor = ComponentDescriptor(
         model_type=model_type,
         subtype=subtype,
+        kind=kind,
         capability=capability,
         compile_function=compile_function,
     )
@@ -125,20 +144,28 @@ def registered_descriptors() -> tuple[ComponentDescriptor, ...]:
 def register_builtin_components() -> None:
     """Register the production model types.
 
-    This function imports each component module one time.
+    This function imports each production component module one time.
     Each component module registers itself on import.
+    The bootstrap flag is set after the imports succeed.
     """
 
     global _BOOTSTRAPPED
 
     if _BOOTSTRAPPED:
         return
-    _BOOTSTRAPPED = True
-    register_component("vehicle-assembly", "four-wheel")
-    register_component("vehicle-formulation", "point-mass")
     from simplified_vehicle_models.aero import fixed_aero
     from simplified_vehicle_models.drivetrain import lumped
-    from simplified_vehicle_models.suspension import lookup_table
-    from simplified_vehicle_models.tires import friction_ellipse, transient_slip
+    from simplified_vehicle_models.tires import friction_ellipse
 
-    _ = (fixed_aero, lumped, lookup_table, friction_ellipse, transient_slip)
+    _ = (fixed_aero, lumped, friction_ellipse)
+    register_component(
+        "vehicle-assembly",
+        "four-wheel",
+        kind=ASSEMBLY_KIND,
+    )
+    register_component(
+        "vehicle-formulation",
+        "point-mass",
+        kind=FORMULATION_KIND,
+    )
+    _BOOTSTRAPPED = True

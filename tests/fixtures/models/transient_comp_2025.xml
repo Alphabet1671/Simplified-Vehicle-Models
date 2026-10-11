@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- This transient tire is a cross-fidelity fixture.
+<!-- This test fixture is a second transient tire.
      Promise 2 adds this component to the fixture assembly.
      The point-mass formulation does not request its capability. -->
 <model schema-version="1.0" id="fixture-transient-comp-2025" type="tire-model" subtype="transient-combined-slip">

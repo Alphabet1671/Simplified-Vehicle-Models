@@ -5,11 +5,21 @@ The loader keeps three duties:
 - resolve one component reference;
 - validate the model type against the registry descriptor.
 
+The loader parses a model in one of three modes.
+- FULL parses the model and every reference.
+- SHALLOW parses the model and the identity of every reference.
+- IDENTITY parses the root attributes and the reference chain only.
+
+The compiler uses SHALLOW for the formulation and the assembly.
+The compiler uses FULL for each component that the formulation uses.
+The compiler never parses the parameters of an unused component.
+
 The component modules own the parameter schemas and the compile functions.
 """
 
 from __future__ import annotations
 
+from enum import Enum
 import math
 from pathlib import Path
 import xml.etree.ElementTree as ElementTree
@@ -23,12 +33,28 @@ from simplified_vehicle_models.parameters.vehicle import PointMassVehicleParamet
 from simplified_vehicle_models.xml.model import Model, ModelReference
 
 
-def load_model(path: str | Path) -> Model:
-    """Load one XML model and resolve every reference."""
+class _LoadMode(Enum):
+    """Select how much of one model the loader reads."""
 
-    register_builtin_components()
-    source_path = Path(path).expanduser().resolve()
-    return _load_model(source_path, (), {}, {})
+    FULL = "full"
+    SHALLOW = "shallow"
+    IDENTITY = "identity"
+
+
+def load_model(path: str | Path) -> Model:
+    """Parse one XML model and every reference."""
+
+    return _load(path, _LoadMode.FULL)
+
+
+def load_model_shallow(path: str | Path) -> Model:
+    """Parse one XML model and the identity of every reference.
+
+    Read the parameters and the requirements of the named model.
+    Read only the root attributes and the reference chain of each reference.
+    """
+
+    return _load(path, _LoadMode.SHALLOW)
 
 
 def load_point_mass_vehicle(path: str | Path) -> PointMassVehicleParameters:
@@ -39,11 +65,18 @@ def load_point_mass_vehicle(path: str | Path) -> PointMassVehicleParameters:
     return cast(PointMassVehicleParameters, compile_formulation(path).model)
 
 
+def _load(path: str | Path, mode: _LoadMode) -> Model:
+    register_builtin_components()
+    source_path = Path(path).expanduser().resolve()
+    return _load_model(source_path, (), {}, {}, mode)
+
+
 def _load_model(
     path: Path,
     chain: tuple[Path, ...],
-    cache: dict[Path, Model],
+    cache: dict[tuple[Path, _LoadMode], Model],
     model_ids: dict[str, Path],
+    mode: _LoadMode,
 ) -> Model:
     path = path.resolve()
     if path in chain:
@@ -51,8 +84,9 @@ def _load_model(
         cycle = chain[cycle_start:] + (path,)
         cycle_text = " -> ".join(str(item) for item in cycle)
         raise ValueError(f"component-reference cycle: {cycle_text}")
-    if path in cache:
-        return cache[path]
+    key = (path, mode)
+    if key in cache:
+        return cache[key]
 
     try:
         root = ElementTree.parse(path).getroot()
@@ -79,8 +113,17 @@ def _load_model(
         )
     model_ids[model_id] = path
 
-    parameters, units = _parse_parameters(root, path)
-    requires = _parse_requires(root, path)
+    if mode is _LoadMode.IDENTITY:
+        parameters: dict[str, float] = {}
+        units: dict[str, str] = {}
+        requires: tuple[str, ...] = ()
+    else:
+        parameters, units = _parse_parameters(root, path)
+        requires = _parse_requires(root, path)
+
+    reference_mode = (
+        _LoadMode.FULL if mode is _LoadMode.FULL else _LoadMode.IDENTITY
+    )
     reference_models: list[ModelReference] = []
     next_chain = chain + (path,)
     for element in root.iter():
@@ -88,7 +131,13 @@ def _load_model(
         if reference_path is None:
             continue
         target_path = (path.parent / reference_path).resolve()
-        target = _load_model(target_path, next_chain, cache, model_ids)
+        target = _load_model(
+            target_path,
+            next_chain,
+            cache,
+            model_ids,
+            reference_mode,
+        )
         reference_models.append(
             ModelReference(tag=element.tag, role=element.get("role"), model=target)
         )
@@ -103,7 +152,7 @@ def _load_model(
         references=tuple(reference_models),
         requires=requires,
     )
-    cache[path] = model
+    cache[key] = model
     return model
 
 

@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- This assembly is the Promise 2 fixture.
+<!-- This test fixture is the Promise 2 assembly.
      It adds one further unused component to fixture_four_wheel.xml. -->
 <model schema-version="1.0" id="fixture-murphy-2024-extended" type="vehicle-assembly" subtype="four-wheel">
     <parameters>
@@ -13,11 +13,11 @@
         <parameter name="suspension_roll_axis_height" value="0.06" unit="m"/>
     </parameters>
     <components>
-        <component role="tire" ref="../tires/correlated_comp_2024.xml"/>
-        <component role="aero" ref="../aero/murphy_2024.xml"/>
-        <component role="drivetrain" ref="../drivetrains/murphy_4wd.xml"/>
-        <component role="transient_tire" ref="../tires/transient_comp_2024.xml"/>
-        <component role="suspension" ref="../suspension/lookup_2024.xml"/>
-        <component role="transient_tire_rear" ref="../tires/transient_comp_2025.xml"/>
+        <component role="tire" ref="../../../models/tires/correlated_comp_2024.xml"/>
+        <component role="aero" ref="../../../models/aero/murphy_2024.xml"/>
+        <component role="drivetrain" ref="../../../models/drivetrains/murphy_4wd.xml"/>
+        <component role="transient_tire" ref="transient_comp_2024.xml"/>
+        <component role="suspension" ref="suspension_lookup_2024.xml"/>
+        <component role="transient_tire_rear" ref="transient_comp_2025.xml"/>
     </components>
 </model>

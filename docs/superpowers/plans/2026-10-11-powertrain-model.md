@@ -761,6 +761,7 @@ src/simplified_vehicle_models/
 │   ├── vehicle.py
 │   ├── tire.py
 │   ├── aero.py
+│   ├── drivetrain.py
 │   └── powertrain.py
 ├── tracks/
 │   ├── types.py              # TrackProfile
@@ -836,6 +837,25 @@ tests/
 ```
 
 The powertrain models live in `powertrain/`, not in `controls/`. The master plan lists `powertrain.py`, `brakes.py`, and `torque_split_device.py` under `controls/`. A battery, a motor, and a gearbox are plant models, not controllers. Decision D19 records this correction to the master plan tree. The `controls/` package keeps the controllers that the master plan lists, such as the yaw reference, the yaw controller, the traction controller, and the torque allocator.
+
+**Task P0A moves whole modules. It does not split behavior.**
+
+A move is safe to review. A split that decides which function belongs to which domain is a judgment call and does not belong in a move-only commit. Task P0A therefore relocates every existing module and performs only the splits that are pure relocation:
+
+| Current | Target |
+|---|---|
+| `parameters.py` | `parameters/vehicle.py`, `parameters/tire.py`, `parameters/aero.py`, `parameters/drivetrain.py` |
+| `xml_loader.py` | `xml/loader.py`, plus `xml/model.py` for the two dataclasses |
+| `tracks.py` | `tracks/types.py` and `tracks/profile.py` |
+| `lap_solver.py` | `solvers/forward_backward.py`, plus `results/traces.py` for `LapMode` and `LapResult` |
+| `point_mass.py` | `formulations/point_mass.py` |
+| The `GRAVITY` constant and the `FloatArray` alias | `core/conventions.py` and `core/types.py` |
+
+`formulations/point_mass.py` keeps its aero and tire functions until Task P0B, which splits them into `aero/fixed_aero.py` and `tires/friction_ellipse.py` at the same time as it introduces the capability seam. The seam makes the boundary obvious. Splitting them during the move would require the same judgment twice.
+
+A module that a later task fills, such as `aero/fixed_aero.py`, `tires/friction_ellipse.py`, or the `compiler/` and `powertrain/` modules, appears in Task P0A only when that task creates it.
+
+The public names exported by `__init__.py` do not change. Tests may change their import paths and nothing else.
 
 `tools/` is not part of the installed package. It runs one time and records the source digest.
 

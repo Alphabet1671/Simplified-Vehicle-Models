@@ -220,20 +220,24 @@ The plan requires a joint least-squares fit over all points rather than a median
 
 Acceptance requirements for the fitted set:
 
-| Requirement | Tolerance | Basis |
-|---|---|---|
-| Resistance from the copper-loss relation, on points above 1000 W | within 6 percent | the best joint set achieves 5.86 percent |
-| Phase voltage, on points above 60 V | within 12 percent | the best joint set achieves 11.56 percent |
-| Shaft torque above 5 N*m | within 18 percent | the best joint set achieves 17.33 percent |
-| Zero-speed required voltage | within 5 percent of the measured 20.7 V | the best joint set achieves 4.98 percent |
-| Parameter stability under a 10 percent row removal | within 5 percent relative | guards against a fit dominated by a few points |
-| Reproduction of the committed parameter file | exact | reproducibility |
+| Requirement | Floor | Tolerance | Basis |
+|---|---|---|---|
+| Copper loss | above 1000 W | 6.1 percent | the joint optimum is 6.03 percent |
+| Phase voltage | above 60 V | 12.2 percent | the joint optimum is 12.05 percent |
+| Shaft torque | above 5 N*m | 18.2 percent | the joint optimum is 18.07 percent |
+| Zero-speed required voltage | the 1 rpm row | 5.1 percent | the joint optimum is 5.02 percent |
+| Parameter stability under a 10 percent row removal | — | 5 percent relative | guards against a fit dominated by a few points |
+| Reproduction of the committed parameter file | — | exact | reproducibility |
 
 A relative error against a near-zero reference value is meaningless. Each tolerance therefore applies only above the stated floor.
 
-**The tolerances are a regression guard, not a physics requirement.** They sit just above the best joint achievable set, so the fitted parameters stay within a few percent of the best that the model form allows. The downstream use is insensitive to them: the field-weakening loss correction is itself only a few tens of watts, so a twelve percent parameter error moves it by a few watts.
+**The zero-speed criterion is like for like.** It compares the model's required phase voltage at the 1 rpm anchor row against the measured voltage at that same row. It does not compare the resistive drop `resistance * current_limit` against the measured total, because the model also predicts the small rotational term at that row. The task must state which definition it uses, because the two differ by 0.045 percent in the resistance.
 
-**The fit must minimize the largest error-to-tolerance ratio.** The acceptance criterion is a set of maximum relative errors, so the fitting objective must be that same quantity. A least-squares fit minimizes a different objective and does not reach the joint optimum. Task P3 must use a minimax-ratio objective.
+**Each tolerance carries a one percent margin over the joint optimum.** A tolerance that sits within optimiser noise of the optimum is not a regression guard. It is a coin flip. The margin makes the guard fire on a real degradation rather than on optimiser jitter.
+
+The margin is not free room to relax. The four tolerances are the last adjustment. A further conflict means the model form is at fault, not the table, and it becomes a new decision.
+
+**The fit must minimize the largest error-to-tolerance ratio.** The acceptance criterion is a set of maximum relative errors, so the fitting objective must be that same quantity. A least-squares fit minimizes a different objective and does not reach the joint optimum.
 
 **The per-equation bounds are not simultaneously achievable.** The best set for phase voltage alone gives a torque error of 88 percent. The best set for torque alone gives a phase-voltage error of 31.85 percent. The two equations pull in opposite directions, so only a joint bound is meaningful.
 
@@ -1527,6 +1531,10 @@ Task P3 fitted the machine parameters jointly and measured the deviations betwee
 **The per-equation bounds cannot be met at the same time.** The set that best fits phase voltage alone gives a torque error of 88 percent. The set that best fits torque alone gives a phase-voltage error of 31.85 percent. Only a joint bound is meaningful.
 
 A joint search over 120 starts and a 40 000-point sample gives the best joint set: 5.86 percent copper, 11.56 percent phase voltage, 17.33 percent torque, and 4.98 percent zero-speed voltage. The smallest achievable largest-ratio against the original table of 6, 10, 15, and 5 percent is 1.156, so that table was not attainable by any parameter set. Section 4.3 carries the corrected table.
+
+A second measurement tightened those numbers, because the zero-speed criterion must compare like with like. Comparing the model phase voltage at the 1 rpm anchor row against the measurement at that row gives a joint optimum of 6.03 percent copper, 12.05 percent phase voltage, 18.07 percent torque, and 5.02 percent zero-speed voltage. The earlier zero-speed figure of 4.98 percent compared the resistive drop alone. The two definitions differ by 0.045 percent in the resistance, and the copper criterion pulls the opposite way, so the definition decides which of the two binds.
+
+Section 4.3 places each tolerance one percent above the joint optimum, so the guard fires on a real degradation rather than on optimiser noise.
 
 A least-squares fit does not reach the joint optimum, because it minimizes a different objective. The fit must minimize the largest error-to-tolerance ratio.
 

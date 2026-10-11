@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<model schema-version="1.0" id="2024-michigan-endurance-v11" type="track-model" subtype="distance-radius-profile">
+    <metadata>
+        <title>2024 Michigan Endurance V11</title>
+        <source sha256="7850d0546ecf3a25680b62dd57533d79365aeaa6ce8f022f4db1532d96319b39">2024_Michigan_Endurance_V11.mat</source>
+    </metadata>
+    <data ref="2024_michigan_endurance_v11.csv"/>
+    <parameters>
+        <parameter name="is_closed" value="true"/>
+        <parameter name="terminal_segment_is_duplicate" value="true"/>
+    </parameters>
+</model>

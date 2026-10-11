@@ -721,9 +721,25 @@ The result object must expose enough data for an independent check without calli
 
 ### 8.5 Expected effect on the MIS lap
 
-The plan expects no material change to the MIS lap time from the voltage model. The validated point-mass lap peaks at 10 334 motor rpm. The voltage limit in the source map is first reached near 16 300 rpm. Section 12 records the full calculation.
+The tire unit correction of decision D17 changed the picture. Before the correction the validated lap peaked at 10 334 motor rpm and the powertrain limits were far away. After the correction the same lap peaks at **15 551 motor rpm**, and the wheel power reaches **58.4 kW**.
 
-The binding limits on MIS are tire grip and the 80 kW system power limit. The voltage-dependent behavior therefore needs a synthetic high-speed case, which Task P10 adds.
+| Quantity | Value | Comparison |
+|---|---:|---|
+| Peak motor speed | 15 551 rpm | 95 percent of the 16 300 rpm corner at 600 V |
+| Peak wheel power | 58.4 kW | About 69 kW at the bus, within 15 percent of the 80 kW limit |
+| Positive work per lap | 619.0 kJ | 0.172 kWh at the shaft |
+| Braking work per lap | -318.7 kJ | Recoverable when regeneration is enabled |
+
+The consequence is that the voltage model is **not** a no-op on MIS, as an earlier version of this plan assumed. Two effects decide the matter:
+
+1. **Pack sag at full load.** At 100 percent state of charge the pack open-circuit voltage is 608.7 V with a resistance of 0.5311 ohm. A 69 kW bus load draws about 113 A, which sags the bus to about 549 V. The corner then falls to about 14 900 rpm, below the 15 551 rpm that the tire-limited lap wants.
+2. **State of charge.** The open-circuit voltage falls from 608.7 V to 448.8 V across the usable range, which scales the corner speed by the same factor.
+
+The two effects act together, so an endurance stint becomes progressively voltage-limited. The lap solve is self-consistent, so a voltage-limited car goes slower, draws less current, sags less, and recovers some corner speed. The equilibrium is the quantity that Task P10 must measure.
+
+The plan therefore expects a small lap-time increase over the current 69.3558 s, and it expects the increase to grow as the state of charge falls. It does not expect the large change that the pre-correction model would have produced.
+
+Section 12 records the motor-speed margin and the state-of-charge trend.
 
 ## 9\. Migration and backward compatibility
 
@@ -1063,15 +1079,17 @@ Against peak total losses near 6 200 W, the correction is a fraction of one perc
 **Motor speed on the MIS lap**
 
 ```text
-peak vehicle speed     = 19.2278 m/s
+peak vehicle speed     = 28.9352 m/s      (after the D17 tire correction)
 effective_radius       = 0.193675 m
 gear_ratio             = 10.9
-motor speed            = 19.2278 / 0.193675 * 10.9 = 1082 rad/s = 10 334 rpm
-corner speed           = 16 300 rpm
-margin                 = 5 966 rpm, or 63 percent of the corner speed
+motor speed            = 28.9352 / 0.193675 * 10.9 = 1628 rad/s = 15 551 rpm
+corner speed at 600 V  = 16 300 rpm
+margin                 = 749 rpm, or 4.6 percent of the corner speed
 ```
 
-The MIS lap stays entirely below the corner speed. Even a 20 percent bus sag, which moves the first-pass corner to about 11 273 rpm, leaves the MIS lap below the corner.
+The MIS lap now runs at 95 percent of the corner speed. It did not before the tire correction, when the same lap peaked at 10 334 rpm and 63 percent. The voltage model therefore has a small but real effect on MIS, and the effect grows as the state of charge falls.
+
+For comparison, the pre-correction values were a peak of 28.9352 m/s against 19.2278 m/s and a wheel power of 58.4 kW against 14.7 kW.
 
 **Cell curve detail, from `cosmx_cell_data_curves.csv`**
 
@@ -1178,6 +1196,21 @@ The pack uses 144 series cells and 1 parallel string. The steady-state current l
 **D16 — Regeneration as a pack power limit. RECORDED.**
 Regeneration is limited by the power that flows into the pack, not by a maximum regen torque. The model declares no regen torque limit. The charge current limit of 100 A produces a charge power limit from 53.2 to 66.2 kW across the state-of-charge range, which the model converts to a speed-dependent braking force. Section 4.7 records the calculation.
 
+**D17 — Tire load-sensitivity units. RECORDED.**
+The legacy MATLAB fit uses pound-force loads. The Python model evaluated the coefficients against newton loads. The model now uses the converted coefficient `-0.000404656098` per newton, and a regression test requires the lateral friction to stay between 1.0 and 1.4 over corner loads from 700 N to 1200 N.
+
+The correction changed the validated MIS results:
+
+| Quantity | Before | After |
+|---|---:|---:|
+| Flying lap | 95.2064 s | **69.3558 s** |
+| Standing start | 96.2448 s | **70.5198 s** |
+| Peak vehicle speed | 19.2278 m/s | 28.9352 m/s |
+| Peak wheel power | 14.7 kW | 58.4 kW |
+| Peak motor speed | 10 334 rpm | 15 551 rpm |
+
+The corrected flying lap is 0.94 s faster than the measured Lap 8 trace of about 70.30 s and 0.62 s faster than the cited 69.98 s fastest-lap reference. The unit defect was the dominant cause of the earlier 24.9 s gap.
+
 ### 14.2 Still open
 
 **D2 — Loss model fidelity.**
@@ -1211,25 +1244,6 @@ Options:
 
 *Recommendation:* option 1 for the first implementation, because it keeps the reduction-fidelity test meaningful. Add option 2 or 3 as a separate later task for the endurance study.
 *If wrong:* the endurance energy and state-of-charge study is optimistic, because the real car loses about 60 percent of its allowed power over a stint.
-
-**D17 — Tire load-sensitivity units.**
-The legacy MATLAB chain evaluates tire load in pounds force. The header of `calcTireLoad.m` states the unit, and `maxTireLongBrake.m` labels its traction results `%lbf`. The coefficients `load_sensitivity_slope = -0.0018` and `load_sensitivity_intercept = 2.9` were fitted against pound loads.
-
-The current Python model evaluates the same coefficients against newton loads. The load-sensitivity term is therefore 4.448 times too large, and the friction coefficient is understated:
-
-| Corner load | Legacy factor, lbf | Current factor, N | Lateral friction, legacy | Lateral friction, current |
-|---|---:|---:|---:|---:|
-| 700 N, 157 lbf | 2.617 | 1.640 | 1.242 | 0.778 |
-| 1 200 N, 270 lbf | 2.414 | 0.740 | 1.145 | 0.351 |
-
-Consequences:
-
-1. Friction is understated by about 37 percent, and corner speed by about 20 percent.
-2. This is a large part of the gap between the current 95.2 s lap and the measured 70.3 s lap. The validation document attributes that gap to model simplifications. A substantial share of it is a unit defect.
-3. It masks the powertrain. The validated MIS lap reaches only 14.7 kW of wheel power against an 80 kW limit, because the tire limit binds about 6.6 times harder than the motor. The powertrain limits become relevant only after this fix.
-
-*Recommendation:* convert the coefficient to `-0.0018 / 4.448 = -0.0004046` per newton, keep the unit declaration as `1/N`, add a regression test that requires the lateral friction to stay between 1.0 and 1.4 at corner loads from 700 N to 1 200 N, and re-run the MIS validation. Fix this before the powertrain tasks, because the powertrain effect is otherwise measured through a miscalibrated tire.
-*If wrong:* the model remains about 25 seconds slow, and the powertrain work is validated against a car whose grip is wrong.
 
 ## 15\. Legacy defects not to replicate
 

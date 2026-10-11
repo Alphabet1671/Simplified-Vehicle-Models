@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<model schema-version="1.0" id="murphy-point-mass" type="vehicle-formulation" subtype="point-mass">
+    <source ref="../vehicles/murphy_2024.xml"/>
+</model>

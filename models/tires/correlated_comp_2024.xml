@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<model schema-version="1.0" id="correlated-comp-2024" type="tire-model" subtype="load-sensitive-friction-ellipse">
+    <parameters>
+        <parameter name="longitudinal_mu_scale" value="0.25" unit="1"/>
+        <parameter name="lateral_mu_scale" value="0.4745" unit="1"/>
+        <parameter name="load_sensitivity_slope" value="-0.0018" unit="1/N"/>
+        <parameter name="load_sensitivity_intercept" value="2.9" unit="1"/>
+        <parameter name="effective_radius" value="0.193675" unit="m"/>
+    </parameters>
+</model>

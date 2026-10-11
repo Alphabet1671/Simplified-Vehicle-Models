@@ -20,6 +20,7 @@ def validate_monotone(abscissa: FloatArray, name: str) -> None:
     """Check that the abscissa is strictly increasing.
 
     A duplicate or a decreasing pair raises ``ValueError``.
+    A non-finite value raises ``ValueError``.
     The message names the argument and the index of the offending pair.
     """
     grid = np.asarray(abscissa, dtype=np.float64)
@@ -27,6 +28,13 @@ def validate_monotone(abscissa: FloatArray, name: str) -> None:
         raise ValueError(f"The abscissa '{name}' must be one-dimensional.")
     if grid.size < 2:
         raise ValueError(f"The abscissa '{name}' must hold at least two values.")
+    if not bool(np.all(np.isfinite(grid))):
+        offenders = np.flatnonzero(~np.isfinite(grid))
+        index = int(offenders[0])
+        raise ValueError(
+            f"The abscissa '{name}' must hold finite values. "
+            f"Index {index} holds {float(grid[index])}."
+        )
 
     step = np.diff(grid)
     offenders = np.flatnonzero(step <= 0.0)
@@ -46,11 +54,21 @@ def _check_query_range(
 ) -> None:
     """Raise ``ValueError`` when a query lies outside the abscissa range.
 
+    A non-finite query raises ``ValueError``.
     The message names the query, the range, and the argument.
     """
     low = float(abscissa[0])
     high = float(abscissa[-1])
     values = np.asarray(query, dtype=np.float64)
+    finite = np.isfinite(values)
+    if not bool(np.all(finite)):
+        flat = np.flatnonzero(~finite.reshape(-1))
+        offender = float(values.reshape(-1)[flat[0]])
+        raise ValueError(
+            f"The query {offender} for argument '{name}' is not finite. "
+            "The interpolation needs a finite query."
+        )
+
     outside = (values < low) | (values > high)
     if not bool(np.any(outside)):
         return

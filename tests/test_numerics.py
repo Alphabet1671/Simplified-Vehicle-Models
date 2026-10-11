@@ -48,6 +48,15 @@ class MonotoneValidationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_monotone(np.zeros((2, 2)), "speed")
 
+    def test_non_finite_abscissa_raises(self) -> None:
+        for value in (np.nan, np.inf, -np.inf):
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError) as context:
+                    validate_monotone(np.array([0.0, value, 2.0]), "speed")
+                message = str(context.exception)
+                self.assertIn("speed", message)
+                self.assertIn("finite", message)
+
 
 class InterpolateOneDimensionTests(unittest.TestCase):
     """Check the one-dimensional interpolation."""
@@ -106,6 +115,13 @@ class InterpolateOneDimensionTests(unittest.TestCase):
     def test_duplicate_abscissa_raises(self) -> None:
         with self.assertRaises(ValueError):
             interpolate_1d(np.array([0.0, 0.0, 1.0]), np.array([0.0, 1.0, 2.0]), 0.5)
+
+    def test_non_finite_query_raises(self) -> None:
+        for value in (np.nan, np.inf, -np.inf):
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError) as context:
+                    interpolate_1d(self.abscissa, self.values, value)
+                self.assertIn("query", str(context.exception))
 
 
 class InterpolateTwoDimensionTests(unittest.TestCase):
@@ -177,6 +193,28 @@ class InterpolateTwoDimensionTests(unittest.TestCase):
                 5.0,
                 1.0,
             )
+
+    def test_decreasing_ordinate_raises(self) -> None:
+        decreasing = np.array([0.0, 4.0, 1.0, 8.0])
+        with self.assertRaises(ValueError) as context:
+            interpolate_2d(self.abscissa, decreasing, self.values, 5.0, 1.0)
+        message = str(context.exception)
+        self.assertIn("ordinate", message)
+        self.assertIn("1", message)
+
+    def test_duplicate_ordinate_raises(self) -> None:
+        repeated = np.array([0.0, 1.0, 1.0, 8.0])
+        with self.assertRaises(ValueError) as context:
+            interpolate_2d(self.abscissa, repeated, self.values, 5.0, 1.0)
+        self.assertIn("ordinate", str(context.exception))
+
+    def test_non_finite_query_raises(self) -> None:
+        with self.assertRaises(ValueError) as context:
+            interpolate_2d(self.abscissa, self.ordinate, self.values, np.nan, 1.0)
+        self.assertIn("query_abscissa", str(context.exception))
+        with self.assertRaises(ValueError) as context:
+            interpolate_2d(self.abscissa, self.ordinate, self.values, 5.0, np.inf)
+        self.assertIn("query_ordinate", str(context.exception))
 
 
 class SmoothTests(unittest.TestCase):

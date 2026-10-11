@@ -756,20 +756,27 @@ def _minimum_voltage_at_speed(
 ) -> float:
     """Return the smallest phase voltage on the current circle.
 
-    The machine holds the current magnitude. The current angle is free.
+    The machine holds the current magnitude. The current angle is free
+    over the full circle, so the quadrature current may take either sign.
     The machine picks the angle that needs the least voltage.
     """
     direct = np.linspace(-current, current, ONSET_SAMPLE_COUNT)
     quadrature = np.sqrt(np.maximum(current * current - direct * direct, 0.0))
-    direct_voltage = (
-        parameters.resistance * direct
-        - electrical_speed * parameters.quadrature_inductance * quadrature
-    )
-    quadrature_voltage = parameters.resistance * quadrature + electrical_speed * (
-        parameters.direct_inductance * direct + parameters.flux_linkage
-    )
-    square = direct_voltage**2 + quadrature_voltage**2
+
+    def square_for(sign: float) -> np.ndarray:
+        direct_voltage = parameters.resistance * direct - (
+            sign * electrical_speed * parameters.quadrature_inductance * quadrature
+        )
+        quadrature_voltage = sign * parameters.resistance * quadrature + electrical_speed * (
+            parameters.direct_inductance * direct + parameters.flux_linkage
+        )
+        return direct_voltage**2 + quadrature_voltage**2
+
+    positive = square_for(1.0)
+    negative = square_for(-1.0)
+    square = np.minimum(positive, negative)
     index = int(np.argmin(square))
+    sign = 1.0 if positive[index] <= negative[index] else -1.0
 
     if index == 0:
         low, high = direct[0], direct[1]
@@ -779,8 +786,11 @@ def _minimum_voltage_at_speed(
         low, high = direct[index - 1], direct[index + 1]
 
     def evaluate(value: float) -> float:
-        other = math.sqrt(max(current * current - value * value, 0.0))
-        first = parameters.resistance * value - electrical_speed * parameters.quadrature_inductance * other
+        other = sign * math.sqrt(max(current * current - value * value, 0.0))
+        first = (
+            parameters.resistance * value
+            - electrical_speed * parameters.quadrature_inductance * other
+        )
         second = parameters.resistance * other + electrical_speed * (
             parameters.direct_inductance * value + parameters.flux_linkage
         )

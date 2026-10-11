@@ -311,11 +311,13 @@ as well as the resistive drop. The rule does not compare the resistive
 drop `resistance * maximum_current` with the measured total, because the
 model predicts both terms at that row. Decision D22 records this reading.
 
-**The tolerances carry a one percent margin over the joint optimum.**
-The margin is deliberate. A tolerance that sits within optimiser noise of
-the optimum is a coin flip rather than a regression guard. With the
-margin, the guard fires on a real degradation and stays silent when the
-optimiser lands a fraction of a percent away from the same optimum.
+**Each tolerance carries a guard band over the joint optimum, and the
+real band is about 1.4 percent.** The band is deliberate. It makes the
+test fire only on a degradation greater than about one percent. The
+optimiser repeats to about 0.002 percent of the ratio, and an independent
+300-start search differs by 0.0016 percent. The band is therefore not
+needed to absorb optimiser variation. An earlier justification that
+called a tighter tolerance "optimiser noise" was quantitatively wrong.
 
 **This is the last tolerance change.** A further conflict between the
 acceptance table and the data means the model form is at fault. That
@@ -375,10 +377,11 @@ from the map, through the scaling law of Section 4.2.
 The tool still computes the onset in two ways.
 
 - **Free current angle.** The machine holds the maximum current. The
-  current angle is free. At each speed the tool computes the smallest
-  phase voltage on the maximum-current circle. The onset is the lowest
-  speed where that voltage reaches the 600 V bus voltage. The fit gives
-  21 280.866 rpm.
+  current angle is free over the full current circle, so the quadrature
+  current may take either sign. At each speed the tool computes the
+  smallest phase voltage on that circle. The onset is the lowest speed
+  where that voltage reaches the 600 V bus voltage. The fit gives
+  21 295.618 rpm.
 - **Map current split.** The model evaluates the map current at the
   maximum-current point of every speed. The onset is the lowest speed
   where the predicted phase voltage reaches 600 V. The fit gives 14 900 rpm.
@@ -407,12 +410,50 @@ The largest ratio is 0.986489011.
 The tool does not force the fit. The objective is the same quantity as
 the rule, so the delivered set is the best that the model form allows.
 
+Two earlier tables were unattainable by any parameter set.
+
+- The original table of 6, 10, 15, and 5 percent had a smallest
+  achievable largest-ratio of **1.156**. No constant parameter set could
+  pass it.
+- The second table of 6, 12, 18, and 5 percent missed by 0.43 percent on
+  all four rules at once, for a largest ratio of 1.00433.
+- The adopted table carries a one percent guard band and passes at
+  0.98649.
+
 A joint search over the four parameters confirms the optimum. It finds
 0.986476512 against the table from 177 starts and a random sample of
-80 000 sets. The tool finds 0.986489011 from its 16 fixed starts, so the
-residue is 1.2e-5 against the best known value, which is 0.0013 percent
-relative. The optimum is a shallow valley, so the parameters are not
-unique; the ratio is.
+80 000 sets. A second independent search of 300 starts finds 0.986473561.
+The tool finds 0.986489011 from its 16 fixed starts, so the residue is
+1.5e-5 against the best known value, which is 0.0016 percent relative.
+
+The optimum is a shallow valley, so the parameters are not unique; the
+ratio is. The independent 300-start search lands at
+`resistance = 0.25376012 ohm`, `flux_linkage = 0.04120453 Wb`,
+`direct_inductance = 1.13234 mH`, and `quadrature_inductance = 0.89143 mH`.
+The delivered set holds `0.253759867616 ohm`, `0.0413386251631 Wb`,
+`1.10985727654 mH`, and `0.865849448966 mH`.
+The two sets differ by up to 2.9 percent in the inductances and by
+1.5e-5 in the ratio. A reader must not treat the inductances as precise
+beside a twelve-digit value.
+
+### Voltage basis
+
+The map stores `voltage_phase_peak = hypot(vd_peak, vq_peak)`.
+That value reaches 600 V at 16 300 rpm.
+The map also sets `voltage_line_rms` equal to that value divided by
+`sqrt(2)`.
+That divisor is the phase relation, not the line relation.
+A true phase peak would give `line_rms = phase_peak * sqrt(3) / sqrt(2)`.
+The map is self-consistent with a 600 V bus only if its d/q voltages are
+line-to-line peak values.
+The true per-phase peak value is then `600 / sqrt(3)`.
+The fitted `flux_linkage` and the two inductances inherit that basis,
+because the fit uses the map voltages directly.
+The acceptance criteria are unaffected, because all four rules share the
+map basis.
+**Task P5 must convert before it combines these values with the per-phase
+`available_voltage` of Section 4.2.** A factor of `sqrt(3)` changes every
+envelope speed by that factor.
 
 ### Known limitations
 
@@ -444,9 +485,9 @@ voltage, or an absolute corner speed. The reasons follow.
   resistance.** The zero-speed anchor wants the resistance at or below
   0.253695 ohm for a 5 percent error. The copper loss wants it at or above
   0.253808 ohm for a 6 percent error. The two demands cross by 0.045
-  percent. The original Decision D22 table of 6 / 12 / 18 / 5 percent
-  therefore missed by 0.43 percent on every rule at once. The one percent
-  margin of the adopted table absorbs the crossing.
+  percent. The second table of 6 / 12 / 18 / 5 percent therefore missed by
+  0.43 percent on every rule at once. The one percent guard band of the
+  adopted table covers the crossing.
 - **What follows.** The fitted parameters serve two purposes only: the
   direct-axis current that satisfies the voltage constraint at a reduced
   bus voltage, and diagnostics. A ten to twenty percent parameter error
@@ -457,10 +498,11 @@ voltage, or an absolute corner speed. The reasons follow.
   regression guard, not a physics requirement. The parameters feed the
   field-weakening loss correction and diagnostics only. That correction
   is itself only a few tens of watts, so a twelve percent parameter error
-  moves it by a few watts. The tolerances sit one percent above the best
-  joint set, so the guard fires on a real degradation and stays silent on
-  optimiser noise. A later reader must not think that the tolerances were
-  raised until the tests passed.
+  moves it by a few watts. The guard band is about 1.4 percent. The
+  optimiser repeats to about 0.002 percent of the ratio, so the band does
+  not absorb optimiser variation. It fires only on a degradation greater
+  than about one percent. A later reader must not think that the
+  tolerances were raised until the tests passed.
 - **This is the last tolerance change.** A further conflict between the
   acceptance table and the data means the model form is at fault. It
   becomes a new decision, not another adjustment.

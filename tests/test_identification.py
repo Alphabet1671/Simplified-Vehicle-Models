@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import csv
 import importlib.util
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -40,7 +41,7 @@ MEASURED_ONSET_SPEED_RPM = 16300.0
 MEASURED_ZERO_SPEED_VOLTAGE = 20.731300908660458
 
 # Decision D22 sets the floors and the tolerances.
-# The tolerances carry a one percent margin over the joint optimum.
+# The tolerances carry a one percent guard band over the joint optimum.
 COPPER_LOSS_FLOOR = 1000.0
 VOLTAGE_FLOOR = 60.0
 TORQUE_FLOOR = 5.0
@@ -85,6 +86,33 @@ def read_parameter_rows(path: Path = PARAMETER_PATH) -> dict[str, dict[str, str]
     ]
     rows = list(csv.DictReader(lines))
     return {row["name"]: row for row in rows}
+
+
+PROVENANCE_PATH = DATA_DIRECTORY / "provenance.md"
+RECORDED_NAMES = (
+    "Copper loss",
+    "Phase voltage",
+    "Shaft torque",
+    "Zero-speed required voltage",
+)
+
+
+def read_recorded_tolerances() -> dict[str, float]:
+    """Read the acceptance tolerances from the provenance file.
+
+    The reader takes the percent value from the acceptance table. It
+    keeps one entry per requirement name.
+    """
+    tolerances: dict[str, float] = {}
+    for line in PROVENANCE_PATH.read_text(encoding="utf-8").splitlines():
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        if len(cells) < 5 or cells[0] not in RECORDED_NAMES:
+            continue
+        match = re.search(r"([0-9]+(?:\.[0-9]+)?) percent", cells[3])
+        if match is None:
+            continue
+        tolerances[cells[0]] = float(match.group(1)) / 100.0
+    return tolerances
 
 
 class ParameterFileTests(unittest.TestCase):
@@ -159,6 +187,26 @@ class ParameterFileTests(unittest.TestCase):
         self.assertEqual(self.tool.VOLTAGE_TOLERANCE, VOLTAGE_TOLERANCE)
         self.assertEqual(self.tool.TORQUE_TOLERANCE, TORQUE_TOLERANCE)
         self.assertEqual(self.tool.ZERO_SPEED_TOLERANCE, ZERO_SPEED_TOLERANCE)
+
+    def test_tolerances_match_the_recorded_table(self) -> None:
+        # The provenance table is the record of Decision D22.
+        # A change to the tool and the test alone must not pass silently.
+        recorded = read_recorded_tolerances()
+        self.assertEqual(set(recorded), set(RECORDED_NAMES))
+        self.assertAlmostEqual(
+            recorded["Copper loss"], self.tool.COPPER_TOLERANCE, places=12
+        )
+        self.assertAlmostEqual(
+            recorded["Phase voltage"], self.tool.VOLTAGE_TOLERANCE, places=12
+        )
+        self.assertAlmostEqual(
+            recorded["Shaft torque"], self.tool.TORQUE_TOLERANCE, places=12
+        )
+        self.assertAlmostEqual(
+            recorded["Zero-speed required voltage"],
+            self.tool.ZERO_SPEED_TOLERANCE,
+            places=12,
+        )
 
 
 class FitBehaviourTests(unittest.TestCase):

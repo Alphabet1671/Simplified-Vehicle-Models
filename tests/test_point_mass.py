@@ -62,6 +62,17 @@ class PointMassTests(unittest.TestCase):
         self.assertTrue(np.all(np.diff(longitudinal / loads) < 0.0))
         self.assertTrue(np.all(np.diff(lateral / loads) < 0.0))
 
+    def test_measured_friction_is_physically_plausible(self) -> None:
+        loads = np.asarray([700.0, 850.0, 1000.0, 1200.0])
+        longitudinal, lateral = tire_force_capacities(self.vehicle, loads)
+        lateral_friction = lateral / loads
+        longitudinal_friction = longitudinal / loads
+
+        self.assertTrue(np.all(lateral_friction >= 1.0))
+        self.assertTrue(np.all(lateral_friction <= 1.4))
+        self.assertTrue(np.all(longitudinal_friction >= 0.5))
+        self.assertTrue(np.all(longitudinal_friction <= 0.8))
+
     def test_unloaded_tire_has_zero_capacity(self) -> None:
         longitudinal, lateral = tire_force_capacities(
             self.vehicle,

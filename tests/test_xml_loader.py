@@ -31,7 +31,7 @@ class XmlLoaderTests(unittest.TestCase):
         self.assertEqual(vehicle.lateral_load_transfer_distribution, 0.44)
         self.assertEqual(vehicle.tire.longitudinal_mu_scale, 0.25)
         self.assertEqual(vehicle.tire.lateral_mu_scale, 0.4745)
-        self.assertEqual(vehicle.tire.load_sensitivity_slope, -0.0018)
+        self.assertEqual(vehicle.tire.load_sensitivity_slope, -0.000404656098)
         self.assertEqual(vehicle.tire.load_sensitivity_intercept, 2.9)
         self.assertEqual(vehicle.tire.effective_radius, 0.193675)
         self.assertEqual(vehicle.aero.air_density, 1.22)
@@ -187,7 +187,7 @@ class XmlLoaderTests(unittest.TestCase):
     <parameters>
         <parameter name="longitudinal_mu_scale" value="0.25" unit="1"/>
         <parameter name="lateral_mu_scale" value="0.4745" unit="1"/>
-        <parameter name="load_sensitivity_slope" value="-0.0018" unit="1/N"/>
+        <parameter name="load_sensitivity_slope" value="-0.000404656098" unit="1/N"/>
         <parameter name="load_sensitivity_intercept" value="2.9" unit="1"/>
         <parameter name="effective_radius" value="0.193675" unit="m"/>
     </parameters>

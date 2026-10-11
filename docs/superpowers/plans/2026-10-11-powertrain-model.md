@@ -192,7 +192,9 @@ Decision D11. The plan identifies the machine parameters from `AMK_Characteristi
 
 The source map supplies, for every one of the 4 221 operating points, the shaft torque, the d/q currents, the d/q voltages, the electrical frequency, and the loss components.
 
-Task P1 confirmed that the map also stores the speed axis directly, as a `miUINT16` field named `Speed` with 201 unique values from 0 to 20 000 rpm in 100 rpm steps. Task P3 must use that field for the speed axis, and must use `Frequency` only as a cross-check that confirms 5 pole pairs.
+Task P1 confirmed that the map also stores the speed axis directly, in a field named `Speed` whose array class is `mxDOUBLE` and whose element type is `miUINT16`. It holds 201 unique values from 0 to 20 000 rpm in 100 rpm steps. Task P3 must use that field for the speed axis, and must use `Frequency` only as a cross-check that confirms 5 pole pairs.
+
+Read the element type, not the array class. Several fields in this file declare the `mxDOUBLE` class while storing integers with a narrow element type. A reader that dispatches on the class alone fails on `Speed`, `MaxRPM`, `type`, and `maxPower`.
 
 Task P1 also confirmed these relations against all points:
 

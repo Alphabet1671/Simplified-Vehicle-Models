@@ -30,6 +30,7 @@ import csv
 import math
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 import numpy as np
 
@@ -52,10 +53,21 @@ MINIMUM_QUADRATURE_CURRENT = 1.0
 
 # The acceptance rules use these floors on the relative error.
 # A floor stops a near-zero denominator from hiding a real absolute error.
-COPPER_LOSS_FLOOR = 1.0
-VOLTAGE_FLOOR = 1.0
-TORQUE_FLOOR = 1.0
+# Decision D22 sets the floors and the tolerances.
+COPPER_LOSS_FLOOR = 1000.0
+VOLTAGE_FLOOR = 60.0
+TORQUE_FLOOR = 5.0
 MINIMUM_ACCEPTANCE_TORQUE = 5.0
+
+# Decision D22 withdrew the onset criterion.
+# The onset speed stays as a diagnostic only.
+COPPER_TOLERANCE = 0.06
+VOLTAGE_TOLERANCE = 0.10
+TORQUE_TOLERANCE = 0.15
+ZERO_SPEED_TOLERANCE = 0.05
+
+# The bound search uses a small deterministic Nelder-Mead run.
+BOUND_ITERATIONS = 4000
 
 # The measured anchors come from Task P1 and the plan.
 MEASURED_ZERO_SPEED_VOLTAGE = 20.731300908660458
@@ -126,8 +138,22 @@ class AcceptanceRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class ResidualBounds:
+    """Hold the best possible maximum relative error of each equation.
+
+    One constant parameter set serves the whole model. Each bound is the
+    smallest maximum error that the model form can reach for one equation.
+    A single parameter set cannot reach every bound at the same time.
+    """
+
+    copper_loss: float
+    phase_voltage: float
+    shaft_torque: float
+
+
+@dataclass(frozen=True, slots=True)
 class MachineIdentificationResult:
-    """Hold every fitted value, residual, and acceptance record."""
+    """Hold every fitted value, residual, bound, and acceptance record."""
 
     parameters: MachineParameters
     resistance: ParameterEstimate
@@ -139,6 +165,7 @@ class MachineIdentificationResult:
     quadrature_voltage_residual: ResidualSummary
     phase_voltage_residual: ResidualSummary
     torque_residual: ResidualSummary
+    bounds: ResidualBounds
     maximum_current: float
     zero_speed_voltage: float
     measured_zero_speed_voltage: float
@@ -327,26 +354,215 @@ def _acceptance_record(name: str, measured: float, tolerance: float) -> Acceptan
 
 def _build_acceptance(
     copper: ResidualSummary,
-    direct_voltage: ResidualSummary,
-    quadrature_voltage: ResidualSummary,
     phase_voltage: ResidualSummary,
     torque: ResidualSummary,
     zero_speed_voltage: float,
-    onset_speed: float,
 ) -> tuple[AcceptanceRecord, ...]:
-    """Return every acceptance record of the task brief."""
+    """Return every acceptance record of Decision D22.
+
+    The records follow the new table. The onset criterion is withdrawn,
+    so the onset speed is a diagnostic and not a record.
+    """
     zero_speed_error = (
         abs(zero_speed_voltage - MEASURED_ZERO_SPEED_VOLTAGE) / MEASURED_ZERO_SPEED_VOLTAGE
     )
-    onset_error = abs(onset_speed - MEASURED_ONSET_SPEED_RPM) / MEASURED_ONSET_SPEED_RPM
     return (
-        _acceptance_record("copper loss at every point", copper.maximum, 0.03),
-        _acceptance_record("d voltage at every point", direct_voltage.maximum, 0.05),
-        _acceptance_record("q voltage at every point", quadrature_voltage.maximum, 0.05),
-        _acceptance_record("phase voltage at every point", phase_voltage.maximum, 0.05),
-        _acceptance_record("shaft torque above 5 N*m", torque.maximum, 0.05),
-        _acceptance_record("zero-speed required voltage", zero_speed_error, 0.05),
-        _acceptance_record("voltage-limit onset speed", onset_error, 0.05),
+        _acceptance_record(
+            f"copper loss above the {COPPER_LOSS_FLOOR:g} W floor",
+            copper.maximum,
+            COPPER_TOLERANCE,
+        ),
+        _acceptance_record(
+            f"phase voltage above the {VOLTAGE_FLOOR:g} V floor",
+            phase_voltage.maximum,
+            VOLTAGE_TOLERANCE,
+        ),
+        _acceptance_record(
+            f"shaft torque above {MINIMUM_ACCEPTANCE_TORQUE:g} N*m",
+            torque.maximum,
+            TORQUE_TOLERANCE,
+        ),
+        _acceptance_record(
+            "zero-speed required voltage",
+            zero_speed_error,
+            ZERO_SPEED_TOLERANCE,
+        ),
+    )
+
+
+# --------------------------------------------------------------------------
+# Best possible bounds for the model form
+# --------------------------------------------------------------------------
+
+
+def _nelder_mead(
+    objective: Callable[[np.ndarray], float],
+    start: np.ndarray,
+    steps: np.ndarray,
+    iterations: int = BOUND_ITERATIONS,
+) -> tuple[np.ndarray, float]:
+    """Return the best point of one deterministic Nelder-Mead search.
+
+    The search is small and fixed. The start and the steps set the result.
+    """
+    point = np.asarray(start, dtype=np.float64)
+    size = point.size
+    simplex = [point.copy()]
+    for index in range(size):
+        other = point.copy()
+        other[index] += steps[index]
+        simplex.append(other)
+    simplex = np.array(simplex)
+    values = np.array([float(objective(item)) for item in simplex])
+
+    for _ in range(iterations):
+        order = np.argsort(values)
+        simplex = simplex[order]
+        values = values[order]
+        if np.max(np.abs(simplex[1:] - simplex[0])) < 1.0e-13:
+            break
+        centre = simplex[:-1].mean(axis=0)
+        reflected = centre + (centre - simplex[-1])
+        reflected_value = float(objective(reflected))
+        if reflected_value < values[0]:
+            expanded = centre + 2.0 * (centre - simplex[-1])
+            expanded_value = float(objective(expanded))
+            if expanded_value < reflected_value:
+                simplex[-1] = expanded
+                values[-1] = expanded_value
+            else:
+                simplex[-1] = reflected
+                values[-1] = reflected_value
+        elif reflected_value < values[-2]:
+            simplex[-1] = reflected
+            values[-1] = reflected_value
+        else:
+            contracted = centre + 0.5 * (simplex[-1] - centre)
+            contracted_value = float(objective(contracted))
+            if contracted_value < values[-1]:
+                simplex[-1] = contracted
+                values[-1] = contracted_value
+            else:
+                for index in range(1, size + 1):
+                    simplex[index] = simplex[0] + 0.5 * (simplex[index] - simplex[0])
+                    values[index] = float(objective(simplex[index]))
+
+    order = np.argsort(values)
+    return simplex[order[0]], float(values[order[0]])
+
+
+def calculate_copper_loss_bound(columns: dict[str, np.ndarray]) -> float:
+    """Return the smallest maximum copper-loss relative error.
+
+    One constant resistance serves every row. The best value balances the
+    smallest and the largest per-point resistance. A fine scan finds it.
+    The denominator carries the copper-loss floor.
+    """
+    copper_loss = columns["stator_copper_loss"]
+    current_square = columns["id_peak"] ** 2 + columns["iq_peak"] ** 2
+    denominator = np.maximum(copper_loss, COPPER_LOSS_FLOOR)
+    nonzero = current_square > 0.0
+    per_point = copper_loss[nonzero] / (1.5 * current_square[nonzero])
+    low = float(per_point.min()) * 0.8
+    high = float(per_point.max()) * 1.2
+
+    def objective(resistance: float) -> float:
+        error = np.abs(1.5 * resistance * current_square - copper_loss) / denominator
+        return float(error.max())
+
+    grid = np.linspace(low, high, 20001)
+    values = np.array([objective(value) for value in grid])
+    best_index = int(np.argmin(values))
+    if 0 < best_index < grid.size - 1:
+        left = grid[best_index - 1]
+        right = grid[best_index + 1]
+        for _ in range(200):
+            first = left + (right - left) / 3.0
+            second = right - (right - left) / 3.0
+            if objective(first) < objective(second):
+                right = second
+            else:
+                left = first
+        return objective(0.5 * (left + right))
+    return float(values[best_index])
+
+
+def calculate_phase_voltage_bound(columns: dict[str, np.ndarray]) -> float:
+    """Return the smallest maximum phase-voltage relative error.
+
+    The four parameters are free. Several fixed starts avoid a local trap.
+    The denominator carries the voltage floor.
+    """
+    speed_rpm = columns["speed_rpm"]
+    direct_current = columns["id_peak"]
+    quadrature_current = columns["iq_peak"]
+    measured = np.hypot(columns["vd_peak"], columns["vq_peak"])
+    electrical_speed = calculate_electrical_speed(speed_rpm, POLE_PAIRS)
+    denominator = np.maximum(measured, VOLTAGE_FLOOR)
+
+    def objective(point: np.ndarray) -> float:
+        resistance, flux_linkage, direct, quadrature = point
+        direct *= 1.0e-3
+        quadrature *= 1.0e-3
+        voltage = np.hypot(
+            resistance * direct_current - electrical_speed * quadrature * quadrature_current,
+            resistance * quadrature_current
+            + electrical_speed * (direct * direct_current + flux_linkage),
+        )
+        return float((np.abs(voltage - measured) / denominator).max())
+
+    starts = (
+        np.array([0.249177, 0.0441524, 1.206438, 0.898731]),
+        np.array([0.210387, 0.0484010, 0.283260, 0.656740]),
+        np.array([0.259506, 0.0425340, 0.960350, 0.848110]),
+        np.array([0.230000, 0.0450000, 0.600000, 0.700000]),
+    )
+    steps = np.array([0.01, 0.002, 0.10, 0.10])
+    best = min(
+        (_nelder_mead(objective, start, steps)[1] for start in starts),
+    )
+    return float(best)
+
+
+def calculate_shaft_torque_bound(columns: dict[str, np.ndarray]) -> float:
+    """Return the smallest maximum shaft-torque relative error.
+
+    The four parameters are free. Several fixed starts avoid a local trap.
+    The row set holds the rows above the torque floor.
+    """
+    speed_rpm = columns["speed_rpm"]
+    direct_current = columns["id_peak"]
+    quadrature_current = columns["iq_peak"]
+    measured = columns["shaft_torque"]
+    mask = measured > MINIMUM_ACCEPTANCE_TORQUE
+
+    def objective(point: np.ndarray) -> float:
+        _, flux_linkage, direct, quadrature = point
+        direct *= 1.0e-3
+        quadrature *= 1.0e-3
+        torque = (
+            1.5
+            * POLE_PAIRS
+            * (flux_linkage * quadrature_current + (direct - quadrature) * direct_current * quadrature_current)
+        )
+        return float((np.abs(torque[mask] - measured[mask]) / measured[mask]).max())
+
+    starts = (
+        np.array([0.249177, 0.0441524, 1.206438, 0.898731]),
+        np.array([0.258407, 0.0393290, 1.082400, 0.912970]),
+        np.array([0.253850, 0.0393290, 0.798040, 0.628610]),
+        np.array([0.240000, 0.0420000, 1.000000, 0.800000]),
+    )
+    steps = np.array([0.01, 0.002, 0.10, 0.10])
+    return float(min(_nelder_mead(objective, start, steps)[1] for start in starts))
+
+
+def calculate_residual_bounds(columns: dict[str, np.ndarray]) -> ResidualBounds:
+    """Return the best possible bound of every mapped equation."""
+    return ResidualBounds(
+        copper_loss=calculate_copper_loss_bound(columns),
+        phase_voltage=calculate_phase_voltage_bound(columns),
+        shaft_torque=calculate_shaft_torque_bound(columns),
     )
 
 
@@ -418,15 +634,13 @@ def fit_machine_parameters(
         columns, parameters, reference_bus_voltage
     )
     measured_onset = calculate_measured_onset_speed(columns, reference_bus_voltage)
+    bounds = calculate_residual_bounds(columns)
 
     acceptance = _build_acceptance(
         copper_residual,
-        direct_voltage_residual,
-        quadrature_voltage_residual,
         phase_voltage_residual,
         torque_residual,
         zero_speed_voltage,
-        onset_speed,
     )
 
     return MachineIdentificationResult(
@@ -440,6 +654,7 @@ def fit_machine_parameters(
         quadrature_voltage_residual=quadrature_voltage_residual,
         phase_voltage_residual=phase_voltage_residual,
         torque_residual=torque_residual,
+        bounds=bounds,
         maximum_current=maximum_current,
         zero_speed_voltage=zero_speed_voltage,
         measured_zero_speed_voltage=MEASURED_ZERO_SPEED_VOLTAGE,
@@ -740,9 +955,14 @@ def format_report(result: MachineIdentificationResult) -> str:
         f"Maximum current        {result.maximum_current:.6f} A",
         f"Zero-speed voltage     {result.zero_speed_voltage:.6f} V"
         f" against {result.measured_zero_speed_voltage:.6f} V",
-        f"Onset speed            {result.onset_speed_rpm:.3f} rpm"
-        f" against {result.measured_onset_speed_rpm:.1f} rpm",
-        f"Onset at map split     {result.onset_speed_at_measured_split_rpm:.1f} rpm",
+        "Diagnostics (Decision D22 withdrew the onset criterion)",
+        f"  onset speed          {result.onset_speed_rpm:.3f} rpm"
+        f" against the measured {result.measured_onset_speed_rpm:.1f} rpm",
+        f"  onset at map split   {result.onset_speed_at_measured_split_rpm:.1f} rpm",
+        "Best possible bounds for this model form, one parameter set per bound",
+        f"  copper loss          {result.bounds.copper_loss:.6f}",
+        f"  phase voltage        {result.bounds.phase_voltage:.6f}",
+        f"  shaft torque         {result.bounds.shaft_torque:.6f}",
         "Acceptance",
     ]
     for record in result.acceptance:

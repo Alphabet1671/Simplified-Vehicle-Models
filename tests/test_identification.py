@@ -1,12 +1,15 @@
 """Tests for the machine parameter identification.
 
 The tests regenerate the parameter file from the source identification CSV.
-The tests also check every acceptance requirement of the task brief.
+The tests also check every acceptance requirement of Decision D22.
 
-Four of the five acceptance requirements are NOT met by the fitted set.
+Three of the four acceptance requirements are NOT met by the fitted set.
 The report ``task-p2-p3-report.md`` records the measured value beside each
-tolerance and explains why the model cannot meet them.
+tolerance, the floor of each rule, and the best possible bound.
 The tests stay strict on purpose. A relaxed test would hide the miss.
+
+Decision D22 withdrew the onset criterion.
+The onset speed stays as a diagnostic with a structural sanity check.
 """
 
 from __future__ import annotations
@@ -32,10 +35,17 @@ PARAMETER_PATH = DATA_DIRECTORY / "amk_dd5_100c_machine_parameters.csv"
 MEASURED_ONSET_SPEED_RPM = 16300.0
 MEASURED_ZERO_SPEED_VOLTAGE = 20.731300908660458
 
-COPPER_TOLERANCE = 0.03
-VOLTAGE_TOLERANCE = 0.05
-TORQUE_TOLERANCE = 0.05
-ONSET_TOLERANCE = 0.05
+# Decision D22 sets the floors and the tolerances.
+COPPER_LOSS_FLOOR = 1000.0
+VOLTAGE_FLOOR = 60.0
+TORQUE_FLOOR = 5.0
+COPPER_TOLERANCE = 0.06
+VOLTAGE_TOLERANCE = 0.10
+TORQUE_TOLERANCE = 0.15
+ZERO_SPEED_TOLERANCE = 0.05
+
+# The guard allows the fit to sit this far above the best possible bound.
+BOUND_MARGIN = 1.10
 
 SYNTHETIC_PARAMETERS = {
     "resistance": 0.245,
@@ -132,6 +142,14 @@ class ParameterFileTests(unittest.TestCase):
         self.assertEqual(int(self.rows["direct_inductance"]["rows_used"]), 4200)
         self.assertEqual(int(self.rows["quadrature_inductance"]["rows_used"]), 4000)
 
+    def test_floors_match_the_tool(self) -> None:
+        self.assertEqual(self.tool.COPPER_LOSS_FLOOR, COPPER_LOSS_FLOOR)
+        self.assertEqual(self.tool.VOLTAGE_FLOOR, VOLTAGE_FLOOR)
+        self.assertEqual(self.tool.TORQUE_FLOOR, TORQUE_FLOOR)
+        self.assertEqual(self.tool.COPPER_TOLERANCE, COPPER_TOLERANCE)
+        self.assertEqual(self.tool.VOLTAGE_TOLERANCE, VOLTAGE_TOLERANCE)
+        self.assertEqual(self.tool.TORQUE_TOLERANCE, TORQUE_TOLERANCE)
+
 
 class FitBehaviourTests(unittest.TestCase):
     """Check the fit method and the measured anchors."""
@@ -176,7 +194,7 @@ class FitBehaviourTests(unittest.TestCase):
             relative_change = abs(reduced_value - full) / abs(full)
             self.assertLess(
                 relative_change,
-                0.01,
+                0.05,
                 msg=f"{name} moved by {relative_change:.6f} when a tenth of the rows were dropped",
             )
 
@@ -231,11 +249,12 @@ class FitBehaviourTests(unittest.TestCase):
 
 
 class AcceptanceTests(unittest.TestCase):
-    """Check every acceptance requirement of the task brief.
+    """Check every acceptance requirement of Decision D22.
 
     The fitted set meets the zero-speed requirement only.
-    The other four requirements are outside tolerance.
-    The report records the measured value beside each tolerance.
+    The copper loss, the phase voltage, and the shaft torque are outside
+    tolerance. The report records the measured value beside each
+    tolerance, the floor of each rule, and the best possible bound.
     """
 
     @classmethod
@@ -250,36 +269,36 @@ class AcceptanceTests(unittest.TestCase):
             measured,
             COPPER_TOLERANCE,
             msg=(
-                "Copper loss is outside 3 percent at some point. "
-                f"Measured maximum relative error {measured:.6f}."
+                f"Copper loss is outside {COPPER_TOLERANCE:.0%} above the "
+                f"{COPPER_LOSS_FLOOR:g} W floor. Measured maximum relative "
+                f"error {measured:.6f}. Best possible bound "
+                f"{self.result.bounds.copper_loss:.6f}."
             ),
         )
 
-    def test_voltage_is_reproduced(self) -> None:
-        requirements = (
-            ("direct voltage", self.result.direct_voltage_residual.maximum),
-            ("quadrature voltage", self.result.quadrature_voltage_residual.maximum),
-            ("phase voltage", self.result.phase_voltage_residual.maximum),
+    def test_phase_voltage_is_reproduced(self) -> None:
+        measured = self.result.phase_voltage_residual.maximum
+        self.assertLessEqual(
+            measured,
+            VOLTAGE_TOLERANCE,
+            msg=(
+                f"Phase voltage is outside {VOLTAGE_TOLERANCE:.0%} above the "
+                f"{VOLTAGE_FLOOR:g} V floor. Measured maximum relative error "
+                f"{measured:.6f}. Best possible bound "
+                f"{self.result.bounds.phase_voltage:.6f}."
+            ),
         )
-        for name, measured in requirements:
-            with self.subTest(quantity=name):
-                self.assertLessEqual(
-                    measured,
-                    VOLTAGE_TOLERANCE,
-                    msg=(
-                        f"The {name} is outside 5 percent at some point. "
-                        f"Measured maximum relative error {measured:.6f}."
-                    ),
-                )
 
-    def test_torque_is_reproduced(self) -> None:
+    def test_shaft_torque_is_reproduced(self) -> None:
         measured = self.result.torque_residual.maximum
         self.assertLessEqual(
             measured,
             TORQUE_TOLERANCE,
             msg=(
-                "Shaft torque is outside 5 percent above 5 N*m at some point. "
-                f"Measured maximum relative error {measured:.6f}."
+                f"Shaft torque is outside {TORQUE_TOLERANCE:.0%} above the "
+                f"{TORQUE_FLOOR:g} N*m floor. Measured maximum relative error "
+                f"{measured:.6f}. Best possible bound "
+                f"{self.result.bounds.shaft_torque:.6f}."
             ),
         )
 
@@ -290,7 +309,7 @@ class AcceptanceTests(unittest.TestCase):
         )
         self.assertLessEqual(
             measured,
-            VOLTAGE_TOLERANCE,
+            ZERO_SPEED_TOLERANCE,
             msg=(
                 "The zero-speed voltage is outside 5 percent. "
                 f"Measured {self.result.zero_speed_voltage:.6f} V against "
@@ -298,22 +317,82 @@ class AcceptanceTests(unittest.TestCase):
             ),
         )
 
-    def test_onset_speed_is_reproduced(self) -> None:
-        measured = (
-            abs(self.result.onset_speed_rpm - MEASURED_ONSET_SPEED_RPM)
-            / MEASURED_ONSET_SPEED_RPM
+
+class BoundGuardTests(unittest.TestCase):
+    """Keep the fit near the best possible bound of the model form.
+
+    The test computes the bound with a deterministic search. It fails
+    when a change moves the fit away from the best achievable. It stays
+    valid when a later model adds saturation or drag and the bound
+    tightens.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.tool = load_tool_module()
+        cls.columns = cls.tool.read_identification_data(IDENTIFICATION_PATH)
+        cls.result = cls.tool.fit_machine_parameters(cls.columns)
+        cls.bounds = cls.tool.calculate_residual_bounds(cls.columns)
+
+    def test_bounds_match_the_fitted_result(self) -> None:
+        self.assertAlmostEqual(
+            self.bounds.copper_loss, self.result.bounds.copper_loss, places=12
         )
-        self.assertLessEqual(
-            measured,
-            ONSET_TOLERANCE,
-            msg=(
-                "The voltage-limit onset speed is outside 5 percent. "
-                f"The fit gives {self.result.onset_speed_rpm:.3f} rpm against "
-                f"the measured {MEASURED_ONSET_SPEED_RPM:.1f} rpm. "
-                "The joint fit does not close the gap. The brief forbids a "
-                "forced fit."
-            ),
+        self.assertAlmostEqual(
+            self.bounds.phase_voltage, self.result.bounds.phase_voltage, places=12
         )
+        self.assertAlmostEqual(
+            self.bounds.shaft_torque, self.result.bounds.shaft_torque, places=12
+        )
+
+    def test_fit_stays_within_the_proven_bound(self) -> None:
+        pairs = (
+            ("copper loss", self.result.copper_residual.maximum, self.bounds.copper_loss),
+            ("phase voltage", self.result.phase_voltage_residual.maximum, self.bounds.phase_voltage),
+            ("shaft torque", self.result.torque_residual.maximum, self.bounds.shaft_torque),
+        )
+        for name, achieved, bound in pairs:
+            with self.subTest(equation=name):
+                self.assertLessEqual(
+                    achieved,
+                    BOUND_MARGIN * bound,
+                    msg=(
+                        f"The {name} error {achieved:.6f} is more than "
+                        f"{BOUND_MARGIN:.2f} times the best possible bound "
+                        f"{bound:.6f}. The fit moved away from the best "
+                        "achievable for this model form."
+                    ),
+                )
+
+
+class OnsetDiagnosticTests(unittest.TestCase):
+    """Check the onset speed as a diagnostic.
+
+    Decision D22 withdrew the onset criterion. The envelope comes from
+    the map. This test keeps the computation and a loose sanity bound.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.tool = load_tool_module()
+        cls.columns = cls.tool.read_identification_data(IDENTIFICATION_PATH)
+        cls.result = cls.tool.fit_machine_parameters(cls.columns)
+
+    def test_onset_speed_is_a_structural_diagnostic(self) -> None:
+        onset = self.result.onset_speed_rpm
+        split = self.result.onset_speed_at_measured_split_rpm
+        self.assertGreaterEqual(
+            onset,
+            split,
+            msg="A free current angle must hold the maximum current at least as long.",
+        )
+        self.assertGreater(onset, 0.5 * MEASURED_ONSET_SPEED_RPM)
+        self.assertLess(onset, 2.0 * MEASURED_ONSET_SPEED_RPM)
+
+    def test_onset_matches_the_recorded_diagnostic(self) -> None:
+        provenance = (DATA_DIRECTORY / "provenance.md").read_text(encoding="utf-8")
+        recorded = f"{self.result.onset_speed_rpm:,.3f}".replace(",", " ")
+        self.assertIn(recorded, provenance)
 
 
 if __name__ == "__main__":

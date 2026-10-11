@@ -313,18 +313,18 @@ A `rows_used` value of zero marks a recorded constant, not a fitted value.
 
 The residual is the relative error of one equation.
 A floor on the denominator stops a near-zero value from hiding a real
-absolute error. The floors are 1 W for copper loss, 1 V for voltage, and
-1 N*m for torque.
+absolute error. Decision D22 sets the floors. The floors are 1 000 W for
+copper loss, 60 V for phase voltage, and 5 N*m for shaft torque.
 
 | Equation | 10th percentile | Median | 90th percentile | Maximum |
 |---|---:|---:|---:|---:|
-| Copper loss | 0.006059297 | 0.027159739 | 0.076590290 | 1.000000000 |
-| Direct voltage | 0.015885279 | 0.092096452 | 0.200865434 | 0.224597480 |
-| Quadrature voltage | 0.013077211 | 0.040754751 | 0.059823837 | 4.895675230 |
-| Phase voltage | 0.003772030 | 0.040891773 | 0.067079727 | 0.135238267 |
+| Copper loss | 0.000675470 | 0.011126413 | 0.033263320 | 0.077149553 |
+| Direct voltage | 0.002849801 | 0.072763708 | 0.170960120 | 0.213389152 |
+| Quadrature voltage | 0.010590045 | 0.039685381 | 0.059691638 | 1.463952392 |
+| Phase voltage | 0.003527441 | 0.040266697 | 0.066882591 | 0.135238267 |
 | Shaft torque above 5 N*m | 0.040443307 | 0.093418574 | 0.147510193 | 0.220568720 |
 
-The quadrature voltage maximum of 4.90 comes from the deep field-weakening
+The quadrature voltage maximum of 1.46 comes from the deep field-weakening
 points near 20 000 rpm. There the measured `vq_peak` falls near zero, and
 the fit gives a negative value.
 
@@ -335,9 +335,12 @@ The maximum current is 85.732141746 A.
 
 The zero-speed anchor is the maximum-current point of the 1 rpm row.
 The model gives 21.382253343 V against the measured 20.731300909 V.
-The error is +3.1399 percent.
+The error is +3.1399 percent. This anchor is an acceptance requirement.
 
-The tool defines the voltage-limit onset in two ways.
+**The onset speed is a diagnostic, not a criterion.**
+Decision D22 withdrew the onset criterion. The torque envelope comes
+from the map, through the scaling law of Section 4.2.
+The tool still computes the onset in two ways.
 
 - **Free current angle.** The machine holds the maximum current. The
   current angle is free. At each speed the tool computes the smallest
@@ -348,45 +351,66 @@ The tool defines the voltage-limit onset in two ways.
   maximum-current point of every speed. The onset is the lowest speed
   where the predicted phase voltage reaches 600 V. The fit gives 14 400 rpm.
 
-The measured onset is 16 300 rpm. The map reaches exactly 600.000 V at
-that speed at the maximum-current point.
+The measured map reaches exactly 600.000 V at 16 300 rpm at the
+maximum-current point. That value is recorded in Section 4.2 of the plan.
+The closed-form corner formula of Section 4.2 is an idealization. Do
+not use it, and do not use the fitted parameters, to predict an absolute
+corner speed.
 
 ### Acceptance
 
-| Requirement | Measured | Tolerance | Result |
-|---|---:|---:|---|
-| Copper loss at every point | 1.000000 (maximum relative error) | 3 percent | **NOT MET** |
-| d/q voltage at every point | 0.224597 (`vd`), 4.895675 (`vq`), 0.135238 (phase) | 5 percent | **NOT MET** |
-| Shaft torque above 5 N*m at every point | 0.220569 | 5 percent | **NOT MET** |
-| Zero-speed required voltage | +3.1399 percent | 5 percent | met |
-| Voltage-limit onset speed | +18.5210 percent (free angle), -11.6564 percent (map split) | 5 percent | **NOT MET** |
+The table follows Decision D22. The measured value sits beside each
+tolerance. The file `amk_dd5_100c_machine_parameters.csv` is unchanged.
 
-Four of the five requirements are not met.
-The tool does not force the fit. The tolerances stay at the plan values.
+| Requirement | Floor | Measured | Tolerance | Result |
+|---|---|---:|---:|---|
+| Copper loss | 1 000 W | 0.077149553 | 6 percent | **NOT MET** |
+| Phase voltage | 60 V | 0.135238267 | 10 percent | **NOT MET** |
+| Shaft torque | 5 N*m | 0.220568720 | 15 percent | **NOT MET** |
+| Zero-speed required voltage | none | 0.031399498 | 5 percent | met |
 
-### Why the tolerances are not met
+Three of the four requirements are not met.
+The tool does not force the fit. The tolerances follow Decision D22.
+
+### Known limitations
 
 The map does not follow the constant-parameter model at every point.
+The fitted parameters must not predict an absolute torque, an absolute
+voltage, or an absolute corner speed. The reasons follow.
 
-- **The copper loss needs a resistance that grows with speed.** The
-  per-point resistance from the copper loss runs from 0.241607 ohm at
-  low speed to 0.270008 ohm at 20 000 rpm over the points with at least
-  1 000 W of copper loss. One constant resistance cannot hold 3 percent
-  on both ends. The best possible maximum relative error over those
-  points is 5.5512 percent. Over the points with at least 10 W the bound
-  is 9.3182 percent.
+- **The per-point resistance rises with speed.** The per-point resistance
+  from the copper loss rises from 0.241607 ohm at low speed to 0.270008 ohm
+  at 20 000 rpm over the points above the 1 000 W floor. Extra AC copper
+  loss explains the rise. One constant resistance cannot follow it. The
+  best possible maximum relative error above the floor is 5.5512 percent.
+  The fitted resistance gives 7.71496 percent.
 - **The inductances saturate.** The per-point quadrature inductance from
   the d voltage falls from about 1.16 mH at low current to about 0.79 mH
   at full current. The flux linkage also falls as the quadrature current
-  rises. A constant set cannot hold 5 percent at every point. A search
-  over the four parameters gives a best possible maximum phase-voltage
-  error of 9.7720 percent.
+  rises. The phase-voltage equation alone can reach 4.4436 percent with a
+  free parameter set, but that set drives the torque error to 88 percent.
+  The fitted set gives 13.52383 percent on the phase voltage.
 - **The shaft torque holds a drag term.** The map shaft torque is
-  negative at zero current. The model torque equation holds no drag term.
-  A search over the four parameters gives a best possible maximum torque
-  error of 14.7018 percent above 5 N*m.
-- **The onset gap follows from the same saturation.** The fit reaches
-  19 318.915 rpm with a free current angle and 14 400 rpm with the map
-  current split. Both values sit outside the 16 300 rpm plus or minus
-  5 percent band. A careful joint fit does not close the gap. Only a
-  current-dependent or speed-dependent model can close it.
+  negative at zero current, down to -0.8491 N*m. The model torque equation
+  holds no drag term. The torque equation alone can reach 14.7018 percent,
+  but that set drives the phase-voltage error to 31.85 percent. The
+  fitted set gives 22.05687 percent above the 5 N*m floor.
+- **One parameter set cannot meet every tolerance at the same time.** A
+  joint search over the four parameters minimises the largest ratio of
+  each error to its tolerance. The best single set reaches copper loss
+  5.86 percent, phase voltage 11.556 percent, shaft torque 17.334 percent,
+  and zero-speed error 4.98 percent. The largest ratio is 1.156. The
+  binding pair is the phase voltage and the shaft torque.
+  The tool computes one bound per equation, with a free parameter set:
+  copper loss 5.5512 percent, phase voltage 4.4436 percent, and shaft
+  torque 14.7018 percent. Those three values need three different sets.
+  One shared set is bound to 11.556 percent on the phase voltage and
+  17.334 percent on the shaft torque, which is 1.156 times the
+  Decision D22 tolerances.
+- **What follows.** The fitted parameters serve two purposes only: the
+  direct-axis current that satisfies the voltage constraint at a reduced
+  bus voltage, and diagnostics. A ten to twenty percent parameter error
+  moves the field-weakening copper-loss correction by tens of watts.
+  The parameters must not set the torque envelope. Section 4.2 limits
+  the use to the closed-form direct-current trim.
+

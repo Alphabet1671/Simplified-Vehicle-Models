@@ -104,15 +104,24 @@ def read_data_element(buffer: bytes, offset: int) -> tuple[int, int, bytes, int]
 
     Return the data type, the size, the payload, and the next offset.
     """
+    if offset < 0 or offset + 8 > len(buffer):
+        raise ValueError(
+            f"the buffer holds no data element at offset {offset}"
+            f" of {len(buffer)} bytes"
+        )
     first, second = struct.unpack_from("<II", buffer, offset)
     if first >> 16:
         # Small-data-element form: the type and the size share one word.
         data_type = first & 0xFFFF
         size = first >> 16
+        if offset + 4 + size > len(buffer):
+            raise ValueError("the data element runs past the end of the buffer")
         payload = buffer[offset + 4 : offset + 4 + size]
         return data_type, size, payload, offset + 8
     data_type = first
     size = second
+    if offset + 8 + size > len(buffer):
+        raise ValueError("the data element runs past the end of the buffer")
     payload = buffer[offset + 8 : offset + 8 + size]
     next_offset = offset + 8 + ((size + 7) // 8) * 8
     return data_type, size, payload, next_offset
@@ -227,6 +236,8 @@ def load_mat_v5(path: Path) -> dict[str, Any]:
     raw = path.read_bytes()
     if not raw.startswith(MAT_HEADER):
         raise ValueError(f"{path} is not a MATLAB 5.0 MAT-file")
+    if len(raw) < FIRST_ELEMENT_OFFSET + 8:
+        raise ValueError(f"{path} holds a header but no data element")
     version = struct.unpack_from("<H", raw, MAT_VERSION_OFFSET)[0]
     if version != MAT_VERSION:
         raise ValueError(f"{path} has version {version}, not {MAT_VERSION}")
@@ -240,9 +251,14 @@ def load_mat_v5(path: Path) -> dict[str, Any]:
     variables: dict[str, Any] = {}
     offset = 0
     while offset < len(payload):
+        if offset + 8 > len(payload):
+            raise ValueError(f"{path} ends inside a data element at offset {offset}")
         element_type = struct.unpack_from("<I", payload, offset)[0]
         if element_type != MI_MATRIX:
-            break
+            raise ValueError(
+                f"{path} holds element type {element_type} at offset {offset},"
+                " not a matrix element"
+            )
         matrix, offset = parse_matrix_element(payload, offset)
         variables[matrix["name"] or f"variable_{len(variables)}"] = matrix
     return variables
@@ -253,11 +269,11 @@ def load_motor_characteristic(path: Path) -> dict[str, np.ndarray]:
     variables = load_mat_v5(path)
     if "MotorCharacteristic" not in variables:
         raise ValueError(f"{path} does not hold MotorCharacteristic")
-    struct = variables["MotorCharacteristic"]
-    if struct["class"] != MX_STRUCT:
+    characteristic = variables["MotorCharacteristic"]
+    if characteristic["class"] != MX_STRUCT:
         raise ValueError("MotorCharacteristic is not a struct")
     fields: dict[str, np.ndarray] = {}
-    for field_name, field in struct["fields"].items():
+    for field_name, field in characteristic["fields"].items():
         if "value" not in field:
             raise ValueError(f"MotorCharacteristic field {field_name} holds no data")
         value = field["value"]
@@ -497,6 +513,12 @@ def build_provenance(
     speed_rpm = derive_speed_axis(motor_fields)
     capacity = derive_cell_capacity(cell_rows)
     line = REFERENCE_BUS_VOLTAGE / np.sqrt(2.0)
+    shaft_torque = motor_fields["Shaft_Torque"]
+    column_zero_min = repr(float(np.min(shaft_torque[:, 0])))
+    column_twenty_gap = repr(
+        float(np.max(np.max(shaft_torque, axis=1) - shaft_torque[:, 20]))
+    )
+    column_twenty_rows = int(np.sum(np.argmax(shaft_torque, axis=1) == 20))
     motor_lines = "\n".join(
         [
             "| Field | Value |",
@@ -505,6 +527,7 @@ def build_provenance(
             "| Identical copy | `" + str(MOTOR_COPY) + "` |",
             "| SHA-256 | `" + MOTOR_SHA256 + "` |",
             "| Size | " + f"{MOTOR_BYTES} bytes" + " |",
+            "| Export date | " + export_date + " |",
             "| Top-level variable | `MotorCharacteristic`, a struct |",
             "| Grid | 201 speeds x 21 torque points |",
             f"| Speed range | {speed_rpm[0]:.4f} rpm to {speed_rpm[-1]:.4f} rpm |",
@@ -523,6 +546,7 @@ def build_provenance(
             "| Absolute path | `" + str(CELL_SOURCE) + "` |",
             "| SHA-256 | `" + CELL_SHA256 + "` |",
             "| Size | " + f"{CELL_BYTES} bytes" + " |",
+            "| Export date | " + export_date + " |",
             "| Data rows | " + str(len(cell_rows)) + " |",
             "| Header in source | `Voltage,IR, Wh,SOC` |",
             "| Encoding | UTF-8 with a byte-order mark |",
@@ -534,6 +558,9 @@ def build_provenance(
         motor_lines=motor_lines,
         cell_lines=cell_lines,
         line=line,
+        column_zero_min=column_zero_min,
+        column_twenty_gap=column_twenty_gap,
+        column_twenty_rows=column_twenty_rows,
     )
 
 
@@ -562,8 +589,18 @@ The steps follow.
 The struct is stored column-major.
 The tool reshapes each field to `(201, 21)` with Fortran order.
 Column 0 of `Frequency` holds the electrical frequency for each speed.
-Column 0 of `Shaft_Torque` is zero for every speed.
-Column 20 of `Shaft_Torque` holds the maximum torque for each speed.
+Row `i` and column `j` hold the value at speed `i` and torque point `j`.
+
+**The torque axis.** Column 0 of `Shaft_Torque` is the lowest torque point.
+It is zero at the first speed. It is slightly negative at the other 200
+speeds, down to {column_zero_min} N*m.
+The generator takes column 20 as the nominal maximum torque,
+`Shaft_Torque(:, 21)` in MATLAB.
+Column 20 is the exact row maximum for {column_twenty_rows} of the 201 rows.
+The other 17 rows peak at column 17, 18, or 19.
+The largest difference between the row maximum and column 20 is
+{column_twenty_gap} N*m.
+The torque map uses `np.max(axis=1)`, so it holds the true row maximum.
 
 The speed axis does not use the `Speed` field.
 The `Speed` field uses the character element type `miUINT16`.
@@ -733,9 +770,12 @@ Evidence:
    `motorLossCorrectionFactor = 1.60`.
    `Execute/Run Execution/FullCarCoolingSim.m` line 49 sets
    `motorLossCoefficient = 1.60`.
-   Both scripts multiply `MotorCharacteristic.Total_Loss` by the factor
-   only when they compute the heat that enters the motor thermal mass.
-   The factor is a heat-generation margin for the cooling study.
+   `FullCarCoolingSim.m` multiplies `Total_Loss` by the factor only when it
+   computes the heat that enters the motor thermal mass.
+   `amkCoolingLoadCalculator.m` also multiplies the loss term inside its
+   `inverterPower` estimate at lines 80 and 93.
+   Both uses are cooling study inputs.
+   The factor is a heat-generation margin.
    The lap-sim energy calculation keeps `Total_Loss` unscaled.
 6. The exported loss map therefore keeps the source `Total_Loss` unchanged.
 

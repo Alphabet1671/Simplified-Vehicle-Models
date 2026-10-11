@@ -15,6 +15,7 @@ It also records the unit conversions and two open data questions.
 | Identical copy | `/Users/alphabet1671/Dev/lap-sim/EV_Points_Sim/Input Files/Latest Input Files/AMK_Characteristic_100C.mat` |
 | SHA-256 | `1bff99223cb4537245350e6b15f2a669d2da85ac44154453146ab00f252802fd` |
 | Size | 488025 bytes |
+| Export date | 2026-10-11 |
 | Top-level variable | `MotorCharacteristic`, a struct |
 | Grid | 201 speeds x 21 torque points |
 | Speed range | 1.0000 rpm to 20000.0000 rpm |
@@ -37,8 +38,18 @@ The steps follow.
 The struct is stored column-major.
 The tool reshapes each field to `(201, 21)` with Fortran order.
 Column 0 of `Frequency` holds the electrical frequency for each speed.
-Column 0 of `Shaft_Torque` is zero for every speed.
-Column 20 of `Shaft_Torque` holds the maximum torque for each speed.
+Row `i` and column `j` hold the value at speed `i` and torque point `j`.
+
+**The torque axis.** Column 0 of `Shaft_Torque` is the lowest torque point.
+It is zero at the first speed. It is slightly negative at the other 200
+speeds, down to -0.8491055991497468 N*m.
+The generator takes column 20 as the nominal maximum torque,
+`Shaft_Torque(:, 21)` in MATLAB.
+Column 20 is the exact row maximum for 184 of the 201 rows.
+The other 17 rows peak at column 17, 18, or 19.
+The largest difference between the row maximum and column 20 is
+0.00237211840408591 N*m.
+The torque map uses `np.max(axis=1)`, so it holds the true row maximum.
 
 The speed axis does not use the `Speed` field.
 The `Speed` field uses the character element type `miUINT16`.
@@ -76,6 +87,7 @@ The tool records 600 V as the reference bus voltage.
 | Absolute path | `/Users/alphabet1671/Dev/lap-sim/EV_Points_Sim/Input Files/Battery Modelling/cosmx_cell_data_curves.csv` |
 | SHA-256 | `4f9cf03ecb298c2e153cfadd7b57ff83f8e4a9f4f27559ea9ec8f508d7c47314` |
 | Size | 732 bytes |
+| Export date | 2026-10-11 |
 | Data rows | 18 |
 | Header in source | `Voltage,IR, Wh,SOC` |
 | Encoding | UTF-8 with a byte-order mark |
@@ -216,9 +228,12 @@ Evidence:
    `motorLossCorrectionFactor = 1.60`.
    `Execute/Run Execution/FullCarCoolingSim.m` line 49 sets
    `motorLossCoefficient = 1.60`.
-   Both scripts multiply `MotorCharacteristic.Total_Loss` by the factor
-   only when they compute the heat that enters the motor thermal mass.
-   The factor is a heat-generation margin for the cooling study.
+   `FullCarCoolingSim.m` multiplies `Total_Loss` by the factor only when it
+   computes the heat that enters the motor thermal mass.
+   `amkCoolingLoadCalculator.m` also multiplies the loss term inside its
+   `inverterPower` estimate at lines 80 and 93.
+   Both uses are cooling study inputs.
+   The factor is a heat-generation margin.
    The lap-sim energy calculation keeps `Total_Loss` unscaled.
 6. The exported loss map therefore keeps the source `Total_Loss` unchanged.
 

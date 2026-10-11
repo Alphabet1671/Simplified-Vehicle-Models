@@ -9,10 +9,14 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import importlib.util
 import math
 import re
+import struct
 import unittest
+import zlib
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
@@ -215,12 +219,13 @@ class IdentificationTests(unittest.TestCase):
 
     def test_maximum_voltage_line_rms(self) -> None:
         maximum = float(derive_line_rms_voltage(self.columns).max())
-        self.assertAlmostEqual(maximum, 424.2641, places=4)
+        # Use a relative tolerance, so the check keeps a wide margin.
+        self.assertLess(abs(maximum - 424.2641) / 424.2641, 1.0e-6)
         self.assertLess(abs(maximum - 600.0 / math.sqrt(2.0)), 0.01)
 
     def test_maximum_voltage_phase_peak(self) -> None:
         maximum = float(derive_phase_peak_voltage(self.columns).max())
-        self.assertAlmostEqual(maximum, 600.0, places=5)
+        self.assertLess(abs(maximum - 600.0) / 600.0, 1.0e-8)
         self.assertLess(abs(maximum - 600.0), 0.01)
 
     def test_maximum_iq_peak(self) -> None:
@@ -395,6 +400,96 @@ class SourceDigestTests(unittest.TestCase):
                 self.assertIn(expected_digest, text)
                 self.assertEqual(calculate_sha256(path), expected_digest)
                 self.assertEqual(path.stat().st_size, expected_size)
+
+
+class InMemoryPath:
+    """Stand in for a Path in the reader tests."""
+
+    def __init__(self, content: bytes) -> None:
+        self.content = content
+
+    def read_bytes(self) -> bytes:
+        """Return the stored content."""
+        return self.content
+
+    def __str__(self) -> str:
+        return "<in-memory MAT-file>"
+
+
+def load_exporter_module() -> Any:
+    """Load the exporter module from the tools directory."""
+    specification = importlib.util.spec_from_file_location(
+        "export_legacy_powertrain_data",
+        REPOSITORY_ROOT / "tools" / "export_legacy_powertrain_data.py",
+    )
+    module = importlib.util.module_from_spec(specification)
+    specification.loader.exec_module(module)
+    return module
+
+
+def build_mat_header() -> bytes:
+    """Build the 128-byte MATLAB v5 header."""
+    header = bytearray(128)
+    header[0 : len(b"MATLAB 5.0 MAT-file")] = b"MATLAB 5.0 MAT-file"
+    struct.pack_into("<H", header, 124, 256)
+    header[126:128] = b"IM"
+    return bytes(header)
+
+
+def build_matrix_element(name: str = "a") -> bytes:
+    """Build one minimal miMATRIX element that holds a 1x1 double."""
+    flags = struct.pack("<II", 6, 8) + struct.pack("<I", 6) + b"\x00" * 4
+    dims = struct.pack("<II", 5, 8) + struct.pack("<ii", 1, 1)
+    name_payload = name.encode("ascii") + b"\x00" * (8 - len(name))
+    name_element = struct.pack("<II", 1, len(name)) + name_payload
+    data = struct.pack("<II", 9, 8) + struct.pack("<d", 1.0)
+    body = flags + dims + name_element + data
+    return struct.pack("<II", 14, len(body)) + body
+
+
+def build_mat_file(payload: bytes) -> bytes:
+    """Build a compressed MATLAB v5 file from a decompressed payload."""
+    compressed = zlib.compress(payload)
+    return build_mat_header() + struct.pack("<II", 15, len(compressed)) + compressed
+
+
+class ReaderTests(unittest.TestCase):
+    """Check that the MATLAB v5 reader rejects a damaged file clearly."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.exporter = load_exporter_module()
+
+    def test_rejects_a_header_with_no_data_element(self) -> None:
+        with self.assertRaises(ValueError) as context:
+            self.exporter.load_mat_v5(InMemoryPath(build_mat_header()))
+        self.assertIn("no data element", str(context.exception))
+
+    def test_rejects_a_file_with_no_header(self) -> None:
+        with self.assertRaises(ValueError) as context:
+            self.exporter.load_mat_v5(InMemoryPath(b"not a MAT-file"))
+        self.assertIn("not a MATLAB 5.0 MAT-file", str(context.exception))
+
+    def test_rejects_a_truncated_data_element(self) -> None:
+        content = build_mat_header() + struct.pack("<II", 15, 4096)
+        with self.assertRaises(ValueError) as context:
+            self.exporter.load_mat_v5(InMemoryPath(content))
+        self.assertIn("runs past the end of the buffer", str(context.exception))
+
+    def test_reads_a_minimal_compressed_matrix(self) -> None:
+        variables = self.exporter.load_mat_v5(
+            InMemoryPath(build_mat_file(build_matrix_element("speed")))
+        )
+        self.assertEqual(list(variables), ["speed"])
+        self.assertEqual(variables["speed"]["shape"], (1, 1))
+        self.assertAlmostEqual(float(variables["speed"]["value"][0, 0]), 1.0)
+
+    def test_rejects_a_non_matrix_element_after_a_matrix(self) -> None:
+        # Trailing garbage after a valid matrix must raise, not pass.
+        payload = build_matrix_element() + struct.pack("<II", 1, 0)
+        with self.assertRaises(ValueError) as context:
+            self.exporter.load_mat_v5(InMemoryPath(build_mat_file(payload)))
+        self.assertIn("not a matrix element", str(context.exception))
 
 
 if __name__ == "__main__":

@@ -260,3 +260,133 @@ The 2025 generator and the project both use 10.9.
 The value of 10.9 describes the Murphy 2024 car.
 The project value stays 10.9. This task changes no project value.
 Task P6 must decide which value the transmission model uses.
+
+## Machine parameter identification
+
+Export date: 2026-10-11
+
+The tool `tools/identify_motor_parameters.py` fits the four machine parameters.
+The tool reads `amk_dd5_100c_identification.csv`.
+The tool writes `amk_dd5_100c_machine_parameters.csv`.
+The tool is an offline tool. It is not part of the installed package.
+The runtime reads the fitted values from the data file.
+
+### Method
+
+The fit uses three linear least-squares steps.
+Every equation is linear in its parameters.
+Every step shares one resistance value, so the fit is a joint fit.
+The fit does not use a median of per-point estimates.
+
+1. The resistance follows from a least-squares fit through the origin of
+   `stator_copper_loss` against `1.5 * (id_peak^2 + iq_peak^2)`.
+   The step uses all 4 221 rows.
+2. The flux linkage and the direct inductance follow from a least-squares
+   fit of `(vq_peak - resistance * iq_peak) / electrical_speed` against
+   `1` and `id_peak`.
+   The step skips rows where `electrical_speed` is at or below 10 rad/s.
+   That rule removes the 1 rpm row only, because the next speed is 100 rpm.
+   The step uses 4 200 rows.
+3. The quadrature inductance follows from a least-squares fit through the
+   origin of `(resistance * id_peak - vd_peak)` against
+   `electrical_speed * iq_peak`.
+   The step also skips rows where `iq_peak` is at or below 1 A.
+   The step uses 4 000 rows.
+
+The tool writes `pole_pairs = 5` and `reference_bus_voltage = 600 V` as
+recorded constants. Task P1 confirmed both values from the source map.
+
+### Fitted values
+
+| Name | Value | Unit | Standard error | Rows used |
+|---|---|---:|---:|---:|
+| `pole_pairs` | 5 | 1 | recorded | 0 |
+| `reference_bus_voltage` | 600 | V | recorded | 0 |
+| `resistance` | 0.249176829829 | ohm | 1.133995523e-04 | 4 221 |
+| `flux_linkage` | 0.0441523945415 | Wb | 4.179605387e-05 | 4 200 |
+| `direct_inductance` | 0.00120643805075 | H | 3.526568576e-06 | 4 200 |
+| `quadrature_inductance` | 0.00089873061038 | H | 1.124345731e-06 | 4 000 |
+
+A `rows_used` value of zero marks a recorded constant, not a fitted value.
+
+### Residuals
+
+The residual is the relative error of one equation.
+A floor on the denominator stops a near-zero value from hiding a real
+absolute error. The floors are 1 W for copper loss, 1 V for voltage, and
+1 N*m for torque.
+
+| Equation | 10th percentile | Median | 90th percentile | Maximum |
+|---|---:|---:|---:|---:|
+| Copper loss | 0.006059297 | 0.027159739 | 0.076590290 | 1.000000000 |
+| Direct voltage | 0.015885279 | 0.092096452 | 0.200865434 | 0.224597480 |
+| Quadrature voltage | 0.013077211 | 0.040754751 | 0.059823837 | 4.895675230 |
+| Phase voltage | 0.003772030 | 0.040891773 | 0.067079727 | 0.135238267 |
+| Shaft torque above 5 N*m | 0.040443307 | 0.093418574 | 0.147510193 | 0.220568720 |
+
+The quadrature voltage maximum of 4.90 comes from the deep field-weakening
+points near 20 000 rpm. There the measured `vq_peak` falls near zero, and
+the fit gives a negative value.
+
+### Voltage anchors
+
+The largest current magnitude in the map is `hypot(id_peak, iq_peak)`.
+The maximum current is 85.732141746 A.
+
+The zero-speed anchor is the maximum-current point of the 1 rpm row.
+The model gives 21.382253343 V against the measured 20.731300909 V.
+The error is +3.1399 percent.
+
+The tool defines the voltage-limit onset in two ways.
+
+- **Free current angle.** The machine holds the maximum current. The
+  current angle is free. At each speed the tool computes the smallest
+  phase voltage on the maximum-current circle. The onset is the lowest
+  speed where that voltage reaches the 600 V bus voltage. The fit gives
+  19 318.915 rpm.
+- **Map current split.** The model evaluates the map current at the
+  maximum-current point of every speed. The onset is the lowest speed
+  where the predicted phase voltage reaches 600 V. The fit gives 14 400 rpm.
+
+The measured onset is 16 300 rpm. The map reaches exactly 600.000 V at
+that speed at the maximum-current point.
+
+### Acceptance
+
+| Requirement | Measured | Tolerance | Result |
+|---|---:|---:|---|
+| Copper loss at every point | 1.000000 (maximum relative error) | 3 percent | **NOT MET** |
+| d/q voltage at every point | 0.224597 (`vd`), 4.895675 (`vq`), 0.135238 (phase) | 5 percent | **NOT MET** |
+| Shaft torque above 5 N*m at every point | 0.220569 | 5 percent | **NOT MET** |
+| Zero-speed required voltage | +3.1399 percent | 5 percent | met |
+| Voltage-limit onset speed | +18.5210 percent (free angle), -11.6564 percent (map split) | 5 percent | **NOT MET** |
+
+Four of the five requirements are not met.
+The tool does not force the fit. The tolerances stay at the plan values.
+
+### Why the tolerances are not met
+
+The map does not follow the constant-parameter model at every point.
+
+- **The copper loss needs a resistance that grows with speed.** The
+  per-point resistance from the copper loss runs from 0.241607 ohm at
+  low speed to 0.270008 ohm at 20 000 rpm over the points with at least
+  1 000 W of copper loss. One constant resistance cannot hold 3 percent
+  on both ends. The best possible maximum relative error over those
+  points is 5.5512 percent. Over the points with at least 10 W the bound
+  is 9.3182 percent.
+- **The inductances saturate.** The per-point quadrature inductance from
+  the d voltage falls from about 1.16 mH at low current to about 0.79 mH
+  at full current. The flux linkage also falls as the quadrature current
+  rises. A constant set cannot hold 5 percent at every point. A search
+  over the four parameters gives a best possible maximum phase-voltage
+  error of 9.7720 percent.
+- **The shaft torque holds a drag term.** The map shaft torque is
+  negative at zero current. The model torque equation holds no drag term.
+  A search over the four parameters gives a best possible maximum torque
+  error of 14.7018 percent above 5 N*m.
+- **The onset gap follows from the same saturation.** The fit reaches
+  19 318.915 rpm with a free current angle and 14 400 rpm with the map
+  current split. Both values sit outside the 16 300 rpm plus or minus
+  5 percent band. A careful joint fit does not close the gap. Only a
+  current-dependent or speed-dependent model can close it.

@@ -116,7 +116,7 @@ def maximum_corner_speed(
     lower = 0.0
     if _corner_is_feasible(vehicle, upper, radius):
         return upper
-    for _ in range(48):
+    for _ in range(32):
         trial = 0.5 * (lower + upper)
         if _corner_is_feasible(vehicle, trial, radius):
             lower = trial
@@ -311,7 +311,7 @@ def _positive_root(function: Callable[[float], float], upper: float) -> float:
     lower = 0.0
     if function(upper) > 0.0:
         return upper
-    for _ in range(48):
+    for _ in range(32):
         trial = 0.5 * (lower + upper)
         if function(trial) > 0.0:
             lower = trial

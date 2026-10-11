@@ -111,20 +111,31 @@ def _forward_sweep(
     speed: FloatArray,
 ) -> None:
     for index, segment_length in enumerate(track.segment_length):
-        limits = acceleration_limits(
-            vehicle,
-            float(speed[index]),
-            float(track.curvature[index]),
+        start_speed = float(speed[index])
+        upper_speed = float(speed[index + 1])
+        if upper_speed <= start_speed:
+            continue
+        segment_curvature = max(
+            abs(float(track.curvature[index])),
+            abs(float(track.curvature[index + 1])),
         )
-        reachable = math.sqrt(
-            max(
-                speed[index] * speed[index]
-                + 2.0 * limits.maximum_acceleration * segment_length,
-                0.0,
+
+        candidate = upper_speed
+        for _ in range(6):
+            limits = acceleration_limits(
+                vehicle,
+                0.5 * (start_speed + candidate),
+                segment_curvature,
             )
-        )
-        if reachable < speed[index + 1]:
-            speed[index + 1] = reachable
+            reachable = math.sqrt(
+                start_speed * start_speed
+                + 2.0 * limits.maximum_acceleration * segment_length
+            )
+            updated = min(candidate, reachable)
+            if abs(updated - candidate) <= 1.0e-7:
+                break
+            candidate = updated
+        speed[index + 1] = min(candidate, updated)
 
 
 def _backward_sweep(
@@ -133,21 +144,32 @@ def _backward_sweep(
     speed: FloatArray,
 ) -> None:
     for index in range(len(track.segment_length) - 1, -1, -1):
-        next_index = index + 1
-        limits = acceleration_limits(
-            vehicle,
-            float(speed[next_index]),
-            float(track.curvature[next_index]),
+        next_speed = float(speed[index + 1])
+        upper_speed = float(speed[index])
+        if upper_speed <= next_speed:
+            continue
+        segment_length = float(track.segment_length[index])
+        segment_curvature = max(
+            abs(float(track.curvature[index])),
+            abs(float(track.curvature[index + 1])),
         )
-        reachable = math.sqrt(
-            max(
-                speed[next_index] * speed[next_index]
-                + 2.0 * limits.maximum_deceleration * track.segment_length[index],
-                0.0,
+
+        candidate = upper_speed
+        for _ in range(6):
+            limits = acceleration_limits(
+                vehicle,
+                0.5 * (candidate + next_speed),
+                segment_curvature,
             )
-        )
-        if reachable < speed[index]:
-            speed[index] = reachable
+            reachable = math.sqrt(
+                next_speed * next_speed
+                + 2.0 * limits.maximum_deceleration * segment_length
+            )
+            updated = min(candidate, reachable)
+            if abs(updated - candidate) <= 1.0e-7:
+                break
+            candidate = updated
+        speed[index] = min(candidate, updated)
 
 
 def _build_result(
@@ -163,7 +185,11 @@ def _build_result(
     acceleration = (
         end_speed * end_speed - start_speed * start_speed
     ) / (2.0 * track.segment_length)
-    lateral_acceleration = start_speed * start_speed * np.abs(track.curvature[:-1])
+    segment_curvature = np.maximum(
+        np.abs(track.curvature[:-1]),
+        np.abs(track.curvature[1:]),
+    )
+    lateral_acceleration = start_speed * start_speed * segment_curvature
     throttle = np.zeros_like(acceleration)
     brake = np.zeros_like(acceleration)
     for index, required_acceleration in enumerate(acceleration):
@@ -171,7 +197,7 @@ def _build_result(
         limits = acceleration_limits(
             vehicle,
             float(evaluation_speed),
-            float(track.curvature[index]),
+            float(segment_curvature[index]),
         )
         if required_acceleration > 0.0 and limits.maximum_acceleration > 0.0:
             throttle[index] = min(

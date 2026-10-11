@@ -502,7 +502,7 @@ The machine parameter values above are placeholders from the first identificatio
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
-<model schema-version="1.0" id="murphy-2024" type="vehicle-assembly" subtype="point-mass">
+<model schema-version="1.0" id="murphy-2024" type="vehicle-assembly" subtype="four-wheel">
     <parameters>
         <parameter name="total_mass" value="299.0" unit="kg"/>
         <parameter name="wheelbase" value="1.535" unit="m"/>
@@ -550,7 +550,7 @@ models/formulations/murphy_planar_7dof.xml
 models/formulations/murphy_full_14dof.xml
 ```
 
-The current `models/vehicles/murphy_2024.xml` declares `type="vehicle-assembly" subtype="point-mass"`. That welds the assembly to one fidelity and must change to a fidelity-neutral subtype. The current `models/formulations/murphy_point_mass.xml` already follows the correct pattern.
+`models/vehicles/murphy_2024.xml` declared `type="vehicle-assembly" subtype="point-mass"`. That welded the assembly to one fidelity. Task P0B changed the subtype to `four-wheel`, which describes the car rather than the simulation. `models/formulations/murphy_point_mass.xml` already followed the correct pattern.
 
 **2. The formulation declares capability requests.**
 

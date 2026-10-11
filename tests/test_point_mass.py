@@ -96,7 +96,7 @@ class PointMassTests(unittest.TestCase):
         )
 
     def test_lateral_forces_close_yaw_moment(self) -> None:
-        state = evaluate_equilibrium(self.vehicle, 10.0, 1.0 / 20.0, 0.0)
+        state = evaluate_equilibrium(self.vehicle, 10.0, 1.0 / 20.0, -2.0)
 
         self.assertTrue(state.is_feasible)
         self.assertAlmostEqual(state.yaw_moment_residual, 0.0, places=10)

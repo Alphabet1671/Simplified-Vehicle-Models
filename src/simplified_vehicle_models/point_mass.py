@@ -221,10 +221,16 @@ def evaluate_equilibrium(
         1.0 - vehicle.front_mass_fraction
     )
     distance_to_rear = vehicle.wheelbase * vehicle.front_mass_fraction
-    yaw_residual = (
+    lateral_moment = (
         float(np.sum(lateral_forces[:2])) * distance_to_front
         - float(np.sum(lateral_forces[2:])) * distance_to_rear
     )
+    left_longitudinal_force = longitudinal_forces[0] + longitudinal_forces[2]
+    right_longitudinal_force = longitudinal_forces[1] + longitudinal_forces[3]
+    longitudinal_moment = (
+        right_longitudinal_force - left_longitudinal_force
+    ) * vehicle.track_width * 0.5
+    yaw_residual = lateral_moment + longitudinal_moment
     arrays = (
         loads,
         longitudinal_capacity,
@@ -359,25 +365,32 @@ def _allocate_total_force(
     capacity: FloatArray,
     target: float,
 ) -> None:
-    total_capacity = float(np.sum(capacity))
-    if total_capacity > 0.0:
-        output[:] = capacity * (target / total_capacity)
+    side_target = target * 0.5
+    left_capacity = capacity[0] + capacity[2]
+    right_capacity = capacity[1] + capacity[3]
+    if left_capacity > 0.0:
+        output[[0, 2]] = capacity[[0, 2]] * (side_target / left_capacity)
+    if right_capacity > 0.0:
+        output[[1, 3]] = capacity[[1, 3]] * (side_target / right_capacity)
 
 
 def _allocate_brake_force(
     output: FloatArray,
-    capacity: FloatArray,
+    _capacity: FloatArray,
     target: float,
     front_bias: float,
 ) -> None:
-    front_target = target * front_bias
-    rear_target = target - front_target
-    front_capacity = float(np.sum(capacity[:2]))
-    rear_capacity = float(np.sum(capacity[2:]))
-    if front_capacity > 0.0:
-        output[:2] = -capacity[:2] * (front_target / front_capacity)
-    if rear_capacity > 0.0:
-        output[2:] = -capacity[2:] * (rear_target / rear_capacity)
+    front_wheel_target = target * front_bias * 0.5
+    rear_wheel_target = target * (1.0 - front_bias) * 0.5
+    output[:] = -np.asarray(
+        [
+            front_wheel_target,
+            front_wheel_target,
+            rear_wheel_target,
+            rear_wheel_target,
+        ],
+        dtype=np.float64,
+    )
 
 
 def _available_drive_force(
@@ -400,8 +413,10 @@ def _available_drive_force(
         if speed <= 1.0e-9
         else drivetrain.power_limit * drivetrain.efficiency / speed
     )
+    left_limit = float(tire_limits[0] + tire_limits[2])
+    right_limit = float(tire_limits[1] + tire_limits[3])
     limits = {
-        "tire": float(np.sum(tire_limits)),
+        "tire": 2.0 * min(left_limit, right_limit),
         "motor_torque": torque_force,
         "power": power_force,
     }
@@ -413,11 +428,15 @@ def _available_brake_force(
     vehicle: PointMassVehicleParameters,
     tire_limits: FloatArray,
 ) -> tuple[float, str]:
-    front_limit = float(np.sum(tire_limits[:2])) / vehicle.brake_bias
-    rear_limit = float(np.sum(tire_limits[2:])) / (1.0 - vehicle.brake_bias)
-    if front_limit <= rear_limit:
-        return front_limit, "front_tire"
-    return rear_limit, "rear_tire"
+    bias = vehicle.brake_bias
+    limits = {
+        "front_left_tire": 2.0 * float(tire_limits[0]) / bias,
+        "front_right_tire": 2.0 * float(tire_limits[1]) / bias,
+        "rear_left_tire": 2.0 * float(tire_limits[2]) / (1.0 - bias),
+        "rear_right_tire": 2.0 * float(tire_limits[3]) / (1.0 - bias),
+    }
+    constraint = min(limits, key=limits.get)
+    return limits[constraint], constraint
 
 
 def _positive_root(function: Callable[[float], float], upper: float) -> float:

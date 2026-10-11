@@ -74,10 +74,22 @@ class MisRegressionTests(unittest.TestCase):
             1.0 - vehicle.front_mass_fraction
         )
         distance_to_rear = vehicle.wheelbase * vehicle.front_mass_fraction
-        yaw_moment = (
+        lateral_moment = (
             np.sum(result.lateral_forces[:, :2], axis=1) * distance_to_front
             - np.sum(result.lateral_forces[:, 2:], axis=1) * distance_to_rear
         )
+        left_force = (
+            result.longitudinal_forces[:, 0]
+            + result.longitudinal_forces[:, 2]
+        )
+        right_force = (
+            result.longitudinal_forces[:, 1]
+            + result.longitudinal_forces[:, 3]
+        )
+        longitudinal_moment = (
+            right_force - left_force
+        ) * vehicle.track_width * 0.5
+        yaw_moment = lateral_moment + longitudinal_moment
         np.testing.assert_allclose(yaw_moment, 0.0, atol=1.0e-8)
 
         tire = vehicle.tire

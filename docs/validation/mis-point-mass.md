@@ -10,10 +10,10 @@ The source track has 1,407 nodes and 1,406 physical segments. Its represented la
 
 | Boundary condition | Lap time | Average speed | Maximum speed | Iterations |
 |---|---:|---:|---:|---:|
-| Flying lap | 94.9422 s | 10.6836 m/s | 19.4519 m/s | 2 |
-| Standing start | 95.9624 s | 10.5700 m/s | 19.4519 m/s | 2 |
+| Flying lap | 95.2064 s | 10.6540 m/s | 19.2278 m/s | 2 |
+| Standing start | 96.2448 s | 10.5390 m/s | 19.2278 m/s | 2 |
 
-The standing-start penalty is 1.0202 s. Both calculations met the `1e-5 m/s` convergence criterion. The final maximum speed change was `4.29e-10 m/s`.
+The standing-start penalty is 1.0384 s. Both calculations met the `1e-5 m/s` convergence criterion. The final maximum speed change was zero within floating-point resolution.
 
 ## Checks
 
@@ -33,7 +33,7 @@ The standing-start penalty is 1.0202 s. Both calculations met the `1e-5 m/s` con
 
 The measured Lap 8 trace spans approximately 70.30 s. A nearby legacy correlation script cites a 69.98 s fastest-lap reference and a 71.696 s median-lap reference. The legacy event workbook contains average-lap values from approximately 67.667 s to 94.253 s.
 
-The flying-lap result is 0.69 s above the broad event range. It is 24.64 s slower than the measured Lap 8 trace. The standing-start result is 1.71 s above the broad event range. The standing-start result is not directly comparable to flying event laps.
+The flying-lap result is 0.95 s above the broad event range. It is 24.91 s slower than the measured Lap 8 trace. The standing-start result is 1.99 s above the broad event range. The standing-start result is not directly comparable to flying event laps.
 
 The difference from the measured trace is plausible for this first model. The model uses a load-sensitive friction ellipse instead of a correlated transient tire model. The path contains unsigned radius only, so it does not contain turn direction, banking, or elevation. The segment calculation also uses the larger curvature at adjacent nodes to keep every transition feasible. These choices make the calculation conservative.
 

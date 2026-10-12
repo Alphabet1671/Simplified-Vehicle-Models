@@ -125,28 +125,31 @@ def _loss_grid(parameters):
     grid = _LOSS_GRID_CACHE.get(key)
     if grid is not None:
         return grid
-    speeds = np.unique(np.asarray(parameters.loss_speed, dtype=float))
-    torques = np.unique(np.asarray(parameters.loss_torque, dtype=float))
-    values = np.empty((len(speeds), len(torques)), dtype=float)
+    rows = {}
     for row_speed, torque_value, loss_value in zip(
         parameters.loss_speed, parameters.loss_torque, parameters.loss_values
     ):
-        speed_index = int(np.searchsorted(speeds, row_speed))
-        torque_index = int(np.searchsorted(torques, torque_value))
-        values[speed_index, torque_index] = loss_value
-    grid = (speeds, torques, values)
+        rows.setdefault(float(row_speed), []).append((float(torque_value), float(loss_value)))
+    speeds = np.asarray(sorted(rows), dtype=float)
+    torque_rows = []
+    loss_rows = []
+    for speed in speeds:
+        pairs = sorted(rows[float(speed)])
+        torque_rows.append(np.asarray([pair[0] for pair in pairs], dtype=float))
+        loss_rows.append(np.asarray([pair[1] for pair in pairs], dtype=float))
+    grid = (speeds, tuple(torque_rows), tuple(loss_rows))
     _LOSS_GRID_CACHE[key] = grid
     return grid
 
 
 def _loss_interpolate(parameters, speed, torque):
-    speeds, torques, values = _loss_grid(parameters)
-    clamped_torque = min(float(torques[-1]), max(float(torques[0]), torque))
+    speeds, torque_rows, loss_rows = _loss_grid(parameters)
+    speed = min(float(speeds[-1]), max(float(speeds[0]), speed))
     speed_index = int(np.searchsorted(speeds, speed, side="right"))
     upper = min(len(speeds) - 1, max(1, speed_index))
     lower = upper - 1
-    lower_value = float(np.interp(clamped_torque, torques, values[lower]))
-    upper_value = float(np.interp(clamped_torque, torques, values[upper]))
+    lower_value = float(np.interp(torque, torque_rows[lower], loss_rows[lower]))
+    upper_value = float(np.interp(torque, torque_rows[upper], loss_rows[upper]))
     if upper == lower:
         return lower_value
     fraction = (speed - speeds[lower]) / (speeds[upper] - speeds[lower])

@@ -99,6 +99,7 @@ class PowerPlantTests(unittest.TestCase):
                 self.assertGreaterEqual(result.efficiency, 0.0)
                 self.assertLessEqual(result.efficiency, 1.0)
         baseline = evaluate_shaft_power(parameters, 1000.0, 10.0, 600.0)
+        self.assertGreater(baseline.loss_power, 0.0)
         self.assertLess(baseline.loss_power, 1000.0)
 
     def test_infeasible_voltage_is_reported(self):

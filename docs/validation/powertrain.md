@@ -3,7 +3,7 @@
 ## Scope and execution limits
 
 This report validates the P8 assembled powertrain dispatch and the P9 energy interfaces at
-HEAD `b84dc9b` (P8/P9/P10 validation artifacts plus cached motor-loss interpolation and bounded torque-solve optimization). The full assembled point-mass solve is slower than the legacy
+Validation baseline `60043f3` (P8/P9/P10 artifacts plus cached motor-loss interpolation and bounded torque-solve optimization). The full assembled point-mass solve is slower than the legacy
 scalar MIS solve (the nested voltage/storage bracket is bounded, but is still evaluated at
 every spatial node). Consequently, the focused regression run below is intentionally bounded:
 it runs the motor-map tests, the MIS regression, P9 energy tests, and the lightweight
@@ -28,8 +28,8 @@ single-lap runtime target. Results are:
 
 | boundary | assembled lap time (s) | legacy reference (s) | difference (s) |
 |---|---:|---:|---:|
-| flying | 69.2064 | 69.3558 | -0.1494 |
-| standing start | 70.3694 | 70.5198 | -0.1504 |
+| flying | 69.2013 | 69.3558 | -0.1545 |
+| standing start | 70.3642 | 70.5198 | -0.1556 |
 
 Its motor-speed ceiling is 18,600 rpm, corresponding to 34.60897 m/s at the 0.193675 m
 effective radius and 10.9 ratio. Thus the MIS peak has 5.674 m/s (16.4%) vehicle-speed

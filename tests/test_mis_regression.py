@@ -185,7 +185,7 @@ class AssembledMisRegressionTests(unittest.TestCase):
 
     def test_assembled_flying_lap_matches_reported_reference(self) -> None:
         self.assertTrue(self.result.converged)
-        self.assertAlmostEqual(self.result.lap_time, 69.20636593794342, places=6)
+        self.assertAlmostEqual(self.result.lap_time, 69.20128624364081, places=6)
         self.assertEqual(len(self.result.speed), GOLDEN_NODE_COUNT)
 
 

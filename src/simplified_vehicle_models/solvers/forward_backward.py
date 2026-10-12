@@ -358,7 +358,6 @@ def _energy_trace(vehicle, track, lap, trace, regen_enabled):
                 )
                 shaft[i] = motor_torque * motor_speed * 2.0 * math.pi / 60.0 * motor.unit_count
                 bus[i] = -br.recovered_bus_power
-                recovered += br.recovered_bus_power * dt
             else:
                 # With regen disabled all braking is friction braking.
                 shaft[i] = 0.0
@@ -369,8 +368,17 @@ def _energy_trace(vehicle, track, lap, trace, regen_enabled):
         if storage:
             voltage[i] = evaluate_storage(storage, state).bus_voltage
             consumed += max(bus[i], 0.0) * dt
+            previous_soc = state.state_of_charge
             state = integrate_storage(storage, state, float(bus[i]), dt)
             nxt[i + 1] = state.state_of_charge
+            if bus[i] < 0.0:
+                accepted_energy = max(
+                    0.0,
+                    (state.state_of_charge - previous_soc)
+                    * storage.pack_capacity_joules,
+                )
+                recovered += accepted_energy
+                bus[i] = -accepted_energy / dt if dt > 0.0 else 0.0
     return bus, shaft, voltage, consumed, recovered, nxt
 
 

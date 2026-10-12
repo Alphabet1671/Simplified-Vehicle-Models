@@ -382,13 +382,72 @@ def _energy_trace(vehicle, track, lap, trace, regen_enabled):
     return bus, shaft, voltage, consumed, recovered, nxt
 
 
-def solve_stint(vehicle, track, mode=LapMode.FLYING, laps=1, initial_state=None, **kwargs):
-    """Repeat laps while carrying the final battery state into the next lap."""
-    if laps < 1: raise ValueError("laps must be positive")
-    results = []; state = initial_state
-    for _ in range(laps):
-        result = solve_lap_with_energy(vehicle, track, mode, state, **kwargs); results.append(result); state = result.energy.final_state_of_charge
-    times = np.asarray([r.lap_time for r in results]); energies = np.asarray([r.energy.net_energy for r in results])
+def _fixed_profile_energy_result(vehicle, track, result, initial_state, regen_enabled):
+    """Integrate energy on a solved lap profile without re-solving its speed."""
+    storage = getattr(getattr(vehicle.drivetrain, "powertrain", None), "energy_storage", None)
+    if isinstance(initial_state, StorageState):
+        state0 = initial_state.state_of_charge
+    elif initial_state is None and storage is not None:
+        state0 = storage.initial_state_of_charge
+    elif initial_state is None:
+        state0 = 1.0
+    else:
+        state0 = float(initial_state)
+    trace = np.full(len(track.distance), state0, dtype=np.float64)
+    bus, shaft, voltage, consumed, recovered, final_trace = _energy_trace(
+        vehicle, track, result.lap, trace, regen_enabled
+    )
+    maximum_change = float(np.max(np.abs(final_trace - trace)))
+    report = EnergyReport(
+        final_trace,
+        bus,
+        shaft,
+        voltage,
+        tuple(result.lap.active_longitudinal_constraint),
+        consumed,
+        recovered,
+        consumed - recovered,
+        float(final_trace[-1]),
+        float(np.nanmin(voltage)) if len(voltage) else math.inf,
+        True,
+        1,
+        maximum_change,
+        0.0,
+    )
+    return EnergyLapResult(result.lap, report)
+
+
+def solve_stint(
+    vehicle,
+    track,
+    mode=LapMode.FLYING,
+    laps=1,
+    initial_state=None,
+    reuse_profile=False,
+    **kwargs,
+):
+    """Repeat laps while carrying the final battery state into the next lap.
+
+    With ``reuse_profile=True``, only the first lap is state-coupled. Later
+    laps reuse its speed/force profile and integrate energy against the carried
+    SOC, which is substantially faster but is a fixed-profile approximation.
+    """
+    if laps < 1:
+        raise ValueError("laps must be positive")
+    results = []
+    state = initial_state
+    regen_enabled = kwargs.get("regen_enabled", False)
+    for lap_index in range(laps):
+        if lap_index == 0 or not reuse_profile:
+            result = solve_lap_with_energy(vehicle, track, mode, state, **kwargs)
+        else:
+            result = _fixed_profile_energy_result(
+                vehicle, track, results[0], state, regen_enabled
+            )
+        results.append(result)
+        state = result.energy.final_state_of_charge
+    times = np.asarray([r.lap_time for r in results])
+    energies = np.asarray([r.energy.net_energy for r in results])
     total_consumed = sum(r.energy.consumed_energy for r in results)
     total_recovered = sum(r.energy.recovered_energy for r in results)
     total_net = sum(r.energy.net_energy for r in results)

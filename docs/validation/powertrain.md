@@ -80,14 +80,16 @@ correction.
 
 ## 22-lap endurance SOC study (P9 interface)
 
-The endurance count is 22 laps. `solve_stint(..., laps=22, regen_enabled=False)` is the
-canonical study entry point and carries each lap's final SOC into the next lap; each report
-contains consumed/recovered/net energy, final SOC and minimum bus voltage. Regeneration is
-explicitly disabled for this baseline, so recovered energy must be zero. A bounded P9
-unit study confirms state carry-over and reports a positive usable-energy lap count; a full
-22-lap assembled MIS run is intentionally not included in the focused evidence because of
-the documented runtime cost. This is a limitation, not an extrapolated claim about whether
-the pack completes 22 laps.
+The endurance count is 22 laps. For a practical runtime, the study uses
+`solve_stint(..., laps=22, regen_enabled=False, reuse_profile=True)`: the first lap runs the
+state-coupled energy solve, then its solved speed/force profile is reused while storage
+integration carries SOC across the remaining laps. Each report contains
+consumed/recovered/net energy, final SOC and minimum bus voltage. Regeneration is explicitly
+disabled for this baseline, so recovered energy must be zero. This is a fixed-profile
+approximation: later-lap speed and force profiles are not re-solved as voltage/SOC changes,
+so it is not equivalent to the default fully state-coupled stint (`reuse_profile=False`).
+The approximation enables the complete 22-lap study under practical runtime, but results
+should not be interpreted as a converged voltage-limited lap trajectory.
 
 ## Assumptions and limits
 

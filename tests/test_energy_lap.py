@@ -1,5 +1,6 @@
 from pathlib import Path
 import unittest
+from unittest.mock import patch
 import numpy as np
 from simplified_vehicle_models.results.traces import LapMode
 from simplified_vehicle_models.solvers.forward_backward import solve_lap_with_energy, solve_stint
@@ -41,6 +42,30 @@ class EnergyLapTests(unittest.TestCase):
         self.assertLessEqual(report.final_state_of_charge, 1.0)
         self.assertGreater(report.usable_energy_lap_count, 0.0)
         self.assertLess(report.laps[1].energy.state_trace[0], report.laps[0].energy.state_trace[0])
+
+    def test_reuse_profile_integrates_each_lap_from_carried_soc(self):
+        with patch(
+            "simplified_vehicle_models.solvers.forward_backward.solve_lap_with_energy",
+            wraps=solve_lap_with_energy,
+        ) as solve:
+            report = solve_stint(
+                self.vehicle,
+                self.track,
+                laps=3,
+                regen_enabled=False,
+                reuse_profile=True,
+            )
+        self.assertEqual(solve.call_count, 1)
+        self.assertTrue(np.array_equal(report.laps[1].speed, report.laps[0].speed))
+        self.assertTrue(np.array_equal(report.laps[2].speed, report.laps[0].speed))
+        self.assertAlmostEqual(
+            report.laps[1].energy.state_trace[0],
+            report.laps[0].energy.final_state_of_charge,
+        )
+        self.assertAlmostEqual(
+            report.laps[2].energy.state_trace[0],
+            report.laps[1].energy.final_state_of_charge,
+        )
 
 if __name__ == '__main__':
     unittest.main()

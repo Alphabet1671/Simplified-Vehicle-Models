@@ -13,7 +13,7 @@ in rad/s, so assembled drive and regen paths convert with `rpm = rad/s * 60/(2*p
 The scalar speed-limit check applies the same conversion.
 
 Coupled drive voltage updates are explicitly bounded to two iterations and the torque
-bracket is bounded to twelve bisection steps. This prevents repeated point-mass
+bracket is bounded to eight bisection steps (a coarse, sub-percent force-resolution tradeoff). This prevents repeated point-mass
 bracketing from becoming an unbounded nested solve; returned diagnostics still expose
 convergence and residual information. The assembled-drive cache uses the exact operating
 speed, so neighboring speeds cannot reuse a stale coupled limit.

@@ -164,14 +164,16 @@ zero-load power) uses the exact analytical fallback, which is observable through
 the LUT counters.
 
 The canonical map is the regenerated 25x129x65 NPZ with SHA-256
-`0166bd0b42972e2d356d03ac462786ef5d0f79d6e131e78ef850f83471728608` and
-generator `motor-lut-v2`. It is reproducible byte-for-byte from:
+`31cfadc88b66d1425d210ad71cbc85ba0dea75564903014a1075efb7669d5fe9` and
+generator `motor-lut-v2`. The voltage axis was extended from 448.848-608.688 V to
+530-620 V to cover the observed loaded terminal voltage range (553.20-608.69 V)
+with margin. It is reproducible byte-for-byte from:
 
 ```text
 PYTHONPATH=src <bundled python3> tools/generate_motor_lut.py \
   models/power-plants/amk_dd5_100c.xml \
   models/data/amk_dd5_100c_operating_map.npz \
-  --voltage-points 25 --speed-points 129 --load-points 65
+  --voltage-points 25 --speed-points 129 --load-points 65 --voltage-min 530 --voltage-max 620
 ```
 
 `models/data/provenance.md` records the chosen grid and digest. Refining the
@@ -191,23 +193,26 @@ retains the full speed arrays and computes `max(abs(lut.speed -
 analytical.speed))`, along with median/min wall time, lap delta, force residual,
 query/fallback counters, and map-load cost.
 
-### Measured result (9014a71)
+### Measured result (bd861e4)
 
 | Quantity | Analytical | LUT | Gate | Result |
 |---|---|---|---|---|
-| Lap time | 69.201286244 s | 69.211083202 s | delta <= 1 ms | 9.797 ms, **fail** |
-| Max pointwise speed displacement | - | 0.134647 m/s | <= 0.05 m/s | **fail** |
+| Lap time | 69.201286244 s | 69.21108300 s | delta <= 1 ms | +9.797 ms, **fail** |
+| Max pointwise speed displacement | - | 0.134642 m/s | <= 0.05 m/s | **fail** |
 | Converged | yes | yes | both converged | pass |
-| Median wall time (runs=3) | 8.036 s | 9.151 s | LUT < analytical | **fail** |
+| Median wall time (runs=3) | 8.253 s | 4.394 s | LUT < analytical | **pass** (1.878x) |
 | Force residual max | 6.821e-13 | 6.821e-13 | existing tolerances | pass |
-| LUT forward / inverse / fallback queries | - | 39,339 / 24,854 / 360,611 | observable | pass |
+| LUT forward / inverse / fallback queries | - | 105,166 / 24,856 / 0 | observable | pass (zero fallback) |
 
-**The 1 ms lap-time and 0.05 m/s speed-displacement gates do not pass, and the
-LUT lap is not faster than the analytical baseline.** Two consequences:
+**The LUT is a genuine 1.878x wall-time win with zero fallback queries**, but
+the 1 ms lap-time and 0.05 m/s speed-displacement gates do not pass. The
+lap-time displacement is +9.797 ms and the maximum pointwise speed displacement
+is 0.134642 m/s. Two numerical gates are still failing.
 
-* `PowertrainParameters.motor_mode` remains `"analytical"`;
-* the LUT is a measured opt-in experiment and must not be described as a
-  performance win.
+The LUT is faster but not numerically equivalent enough to promote, so
+`PowertrainParameters.motor_mode` remains `"analytical"` and the LUT stays an
+explicit opt-in. The speedup is real and the numerical displacement is real;
+neither claim may be dropped.
 
 An intermediate state in fix round 2 measured the LUT at 4.83 s against an
 analytical 8.06 s (1.67x faster), but that state used the interpolated motor
@@ -225,6 +230,31 @@ The microbenchmark for the fixed inverse, with the bundled interpreter and
 
 The regen full-track comparison was not run: each mode exceeds the
 900-second-per-mode budget.
+
+### Numerical attribution of the residual displacement
+
+The +9.797 ms lap displacement is systematic, not a grid-resolution problem
+(grid refinement moves it by at most 0.038 ms). A converged analytical reference
+(48 bisection steps with properly converged voltage coupling) was computed at a
+representative sweep of 7 speeds x 5 SOC values (35 points). The error of each
+mode against this reference was reported in
+`.superpowers/sdd/2026-10-12-motor-lut/task-4-report.md` under the Task 7
+attribution section. Key findings:
+
+- The analytical default's drive limit bisects only 8 steps from
+  `maximum_motor_torque`, which is **not always feasible** — at 14540 rpm and
+  516.6 V it returns 19.622 Nm while the exact feasible limit is 12.710 Nm.
+  The analytical drive limit is itself an approximation.
+- The LUT mode is **not** numerically closer to the converged reference than
+  the analytical default. At high speeds where the terminal voltage drops below
+  the 530 V map floor, the LUT clamps to the map floor and reports feasible
+  torque where the converged reference correctly returns zero. The analytical
+  default returns 0 Nm (matching the reference) because its envelope is also
+  infeasible at those voltages.
+- Therefore the 9.8 ms lap displacement should be read as
+  "difference between an exact inverse and an 8-step approximation" rather than
+  "LUT error". Neither mode passes the numerical gates, and the analytical
+  default is not proven to be closer to the truth either.
 
 ## Reference checks and assumptions
 

@@ -392,10 +392,10 @@ def compile_analytical_motor_source(model: Model) -> PowerPlantParameters:
 
 def _validate_operating_map(data: dict[str, np.ndarray]) -> MotorOperatingMap:
     names = ("voltage", "speed", "load", "drive_torque", "regen_torque", "bus_power", "loss_power")
-    if any(name not in data for name in names):
+    if any(name not in data for name in (*names, "regen_feasible")):
         raise ValueError("operating map is missing required arrays")
     arrays = {name: np.array(data[name], dtype=np.float64, order="C", copy=True) for name in names}
-    feasible = np.array(data.get("regen_feasible", np.ones_like(data["bus_power"], dtype=bool)), dtype=bool, order="C", copy=True)
+    feasible = np.array(data["regen_feasible"], dtype=bool, order="C", copy=True)
     arrays["regen_feasible"] = feasible
     v, s, l = arrays["voltage"], arrays["speed"], arrays["load"]
     if v.ndim != 1 or s.ndim != 1 or l.ndim != 1 or v.size < 2 or s.size < 2 or l.size < 3:
@@ -429,19 +429,12 @@ def _validate_operating_map(data: dict[str, np.ndarray]) -> MotorOperatingMap:
         if np.any(valid[zero:]):
             raise ValueError("operating map regen feasibility is limited to negative loads")
         negative_row = row[:zero]
-        if negative_row.size > 1 and np.any(np.diff(negative_row) < -1.0e-9):
-            raise ValueError("operating map bus power is not monotone by direction")
         regen = valid[:zero]
-        true_indices = np.flatnonzero(regen)
-        if true_indices.size and not np.array_equal(true_indices, np.arange(true_indices[-1] + 1)):
-            raise ValueError("operating map regen feasibility must be contiguous")
-        if np.any(negative_row[regen] > 1.0e-9):
-            raise ValueError("operating map productive regen has invalid sign")
-        values = negative_row[regen]
-        if values.size > 1 and np.any(np.diff(values) < -1.0e-9):
-            raise ValueError("operating map bus power is not monotone by direction")
+        productive = negative_row < -1.0e-9
+        if not np.array_equal(regen, productive):
+            raise ValueError("operating map regen productive mask is inconsistent")
         if np.any(np.diff(row[zero:]) < -1.0e-9):
-            raise ValueError("operating map bus power is not monotone by direction")
+            raise ValueError("operating map drive bus power is not monotone")
     for array in arrays.values():
         array.setflags(write=False)
     return MotorOperatingMap(**arrays)

@@ -5,14 +5,14 @@
 | Field | Value |
 |---|---|
 | File | `amk_dd5_100c_operating_map.npz` |
-| SHA-256 | `beeca408c8339bbbb372cd379c9b60ad58020377e77a50ae9fcc0609e1fec508` |
+| SHA-256 | `1057b82c49953957e305407e48bf1cb5f9ab58b81ead3e08ab785d5ad0f4a852` |
 | Axes | voltage 9, speed 129, signed normalized load 65 |
 | Arrays | drive_torque (9,129), regen_torque (9,129), bus_power (9,129,65), loss_power (9,129,65), regen_feasible (9,129,65) |
 | Generator | `tools/generate_motor_lut.py`, motor-lut-v1 |
 | Command | `PYTHONPATH=src python3 tools/generate_motor_lut.py models/power-plants/amk_dd5_100c.xml models/data/amk_dd5_100c_operating_map.npz` |
-| Maximum monotonic repair | 0 W (generation fails above 1e-9 W; no repair is applied) |
-| Source digests | XML `d5003ed2b7c0fc5554cf283871391ea5c677efaeb32aed354abe8d0504378551`; machine parameters `122fda775bda425b6ec66e895db1017fac662abac476faf9fce508b901349dce`; torque map `1ccf1500764e5c5203919d2968ee6a626a1ba86dc117755f0e0974c00a24798d`; loss map `f79f651c13494373e638929556f9efcdf8220c6558dfdd007b706a8832ec6651`; identification `9078970586f7e0500b302ba70dfa960e23b6364a83d88535fca257f3e5fc5be8` |
-| Regen convention | Negative load is productive regen only; positive analytical bus draw is retained and marked infeasible in `regen_feasible`. Load zero is the physical zero-torque anchor. |
+| Maximum drive monotonic violation | 0 W (generation fails above 1e-9 W; no repair is applied) |
+| Source digests | XML `e9f88b3c13d93a78e52345d61bfe30afef5c6be4f32e651ab1a5878c0093fcc3`; machine parameters `122fda775bda425b6ec66e895db1017fac662abac476faf9fce508b901349dce`; torque map `1ccf1500764e5c5203919d2968ee6a626a1ba86dc117755f0e0974c00a24798d`; loss map `f79f651c13494373e638929556f9efcdf8220c6558dfdd007b706a8832ec6651`; identification `9078970586f7e0500b302ba70dfa960e23b6364a83d88535fca257f3e5fc5be8` |
+| Regen convention | The complete feasible negative-torque curve is retained without sign coercion or truncation. `regen_feasible` marks exactly the productive samples whose analytical bus power is below -1e-9 W; positive bus draw remains in the curve with a false mask. Regen bus power is not assumed monotone. Load zero is the physical zero-torque anchor. |
 
 
 Export date: 2026-10-11

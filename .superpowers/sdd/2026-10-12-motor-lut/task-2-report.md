@@ -90,3 +90,42 @@ passed
 Replaced `_regen_envelope`'s 257-point first-productive scan and branch truncation with the complete analytical negative-torque envelope supplied by the voltage/torque feasibility solve. The helper now validates the requested full directional row and returns the full feasible boundary; productive regen is determined later from the persisted row's zero-power crossover. Zero speed is handled analytically (shaft power is identically zero and losses are nonnegative), not by scanning. Added adversarial tests for a productive crossing between the former scan points and a nonmonotone region after the first crossing; the latter fails with voltage/speed diagnostics as required.
 
 The focused suite passes (60 tests). The canonical generator now correctly exposes an existing source-data issue at 145.3125 rpm: the analytical row contains a real narrow productive interval followed by nonproductive high torque, so strict directional monotonicity rejects generation rather than silently discarding that capability. The checked-in artifact and digest were intentionally not rewritten; resolving that source/model inconsistency is required before a reproducible replacement artifact can be declared.
+
+## Round 5/5 final fix report
+
+Applied the binding controller ruling that regen bus power is physically non-monotone. Corrected `_maximum_feasible` to solve in torque units rather than multiplying the torque envelope twice, removed zero-speed/productive-branch truncation and every regen monotonicity requirement, retained drive-row monotonic validation, and made `regen_feasible` a required pointwise productive-power mask. Generation now persists every feasible negative-load sample and rejects an analytically infeasible sample inside the selected envelope rather than hiding it.
+
+The adversarial tests now generate a complete synthetic non-monotone regen row and prove it survives in the NPZ, verify the torque-unit regression directly, accept a non-monotone loaded regen row, reject an incorrect productive mask, and inspect the canonical 608.688 V / 2470.3125 rpm row. That canonical row retains the full `21.242431532485426 Nm` envelope: full-envelope bus power is `-826.234637738434 W`, while the persisted interior node at `-17.92330160553458 Nm` reaches `-1112.5516180336492 W` and remains at index 5 rather than being zeroed or rejected.
+
+The spec and Task 3 plan now require scanning every piecewise-linear regen segment and selecting the most-negative torque satisfying the charge-power constraint. The analytical out-of-domain fallback design remains unchanged.
+
+Exact commands/results:
+
+```text
+# TDD red phase
+PYTHONPATH=src /Users/alphabet1671/.dsh/dsh-runtimes/dsh-primary-runtime/dependencies/python/bin/python3 -m unittest tests.test_powertrain.RegenGenerationTests tests.test_powertrain.OperatingMapValidationTests -v
+Ran 10 tests; FAILED (failures=3, errors=1)
+
+# Canonical generation and independent deterministic repeat
+PYTHONPATH=src /Users/alphabet1671/.dsh/dsh-runtimes/dsh-primary-runtime/dependencies/python/bin/python3 tools/generate_motor_lut.py models/power-plants/amk_dd5_100c.xml models/data/amk_dd5_100c_operating_map.npz
+SHA-256: 1057b82c49953957e305407e48bf1cb5f9ab58b81ead3e08ab785d5ad0f4a852
+maximum drive monotonic violation: 0
+
+PYTHONPATH=src /Users/alphabet1671/.dsh/dsh-runtimes/dsh-primary-runtime/dependencies/python/bin/python3 tools/generate_motor_lut.py models/power-plants/amk_dd5_100c.xml /tmp/amk_round5_repeat.npz
+SHA-256: 1057b82c49953957e305407e48bf1cb5f9ab58b81ead3e08ab785d5ad0f4a852
+cmp -s canonical repeat: passed
+XML SHA-256: e9f88b3c13d93a78e52345d61bfe30afef5c6be4f32e651ab1a5878c0093fcc3
+
+# Focused suite
+PYTHONPATH=src /Users/alphabet1671/.dsh/dsh-runtimes/dsh-primary-runtime/dependencies/python/bin/python3 -m unittest tests.test_powertrain tests.test_export_data -v
+Ran 61 tests in 0.671s; OK
+
+# Full suite
+PYTHONPATH=src /Users/alphabet1671/.dsh/dsh-runtimes/dsh-primary-runtime/dependencies/python/bin/python3 -m unittest discover -s tests -v
+Ran 228 tests in 74.109s; OK
+
+git diff --check
+passed
+```
+
+Canonical artifact size is 1,068,640 bytes. Its SHA-256 agrees exactly across the NPZ, XML declaration, provenance, hard-coded regression test, and independent regeneration.

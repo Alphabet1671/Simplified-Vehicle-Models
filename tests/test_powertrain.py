@@ -42,36 +42,57 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class RegenGenerationTests(unittest.TestCase):
-    def test_regen_uses_complete_feasible_envelope_not_first_productive_sample(self):
+    def test_maximum_feasible_uses_torque_units_and_keeps_full_envelope(self):
         calls = []
 
         def evaluate(_parameters, _speed, torque, _voltage):
             calls.append(torque)
-            return SimpleNamespace(feasible=True, bus_power=1.0 - abs(torque))
+            return SimpleNamespace(feasible=abs(torque) <= 20.0)
 
         with mock.patch.object(generate_motor_lut, "evaluate_shaft_power_exact", evaluate):
-            result = generate_motor_lut._regen_envelope(
-                object(), 100.0, 448.848, 20.0, np.array([1.0, 0.5, 0.0])
+            result = generate_motor_lut._maximum_feasible(
+                object(), 100.0, 448.848, -1.0, 20.0
             )
         self.assertEqual(result, 20.0)
-        # Only the requested directional row is evaluated; no 257-point
-        # productive scan is allowed to define the envelope.
-        self.assertEqual(calls, [-20.0, -20.0, -10.0, -0.0])
+        self.assertEqual(calls, [-0.0, -20.0])
 
-    def test_nonmonotonic_region_beyond_first_productive_crossing_fails(self):
+    def test_generator_persists_full_nonmonotonic_regen_envelope(self):
+        parameters = SimpleNamespace(
+            torque_speed=np.array([0.0, 18600.0]),
+            torque_values=np.array([20.0, 20.0]),
+        )
+
         def evaluate(_parameters, _speed, torque, _voltage):
-            magnitude = abs(torque)
-            # The first productive point is near zero, but a later region is
-            # nonmonotone and must not be discarded by branch selection.
-            bus_power = 0.1 - magnitude
-            if 8.0 < magnitude < 12.0:
-                bus_power += 20.0
-            return SimpleNamespace(feasible=True, bus_power=bus_power)
+            if torque >= 0.0:
+                bus_power = torque
+            else:
+                magnitude = abs(torque)
+                bus_power = -10.0 if magnitude <= 10.0 else -5.0
+            return SimpleNamespace(
+                feasible=abs(torque) <= 20.0,
+                bus_power=bus_power,
+                loss_power=1.0,
+            )
 
-        with mock.patch.object(generate_motor_lut, "evaluate_shaft_power_exact", evaluate):
-            with self.assertRaisesRegex(ValueError, "non-monotone analytical regen bus power"):
-                generate_motor_lut._regen_envelope(
-                    object(), 100.0, 448.848, 20.0, np.array([1.0, 0.5, 0.0])
+        with tempfile.TemporaryDirectory() as folder:
+            output = Path(folder) / "map.npz"
+            patches = (
+                mock.patch.object(generate_motor_lut, "load_model", return_value=object()),
+                mock.patch.object(generate_motor_lut, "compile_analytical_motor_source", return_value=parameters),
+                mock.patch.object(generate_motor_lut, "_source_paths", return_value=()),
+                mock.patch.object(generate_motor_lut, "evaluate_shaft_power_exact", evaluate),
+            )
+            with patches[0], patches[1], patches[2], patches[3]:
+                generate_motor_lut.generate(
+                    output, voltage_points=2, speed_points=2, load_points=5
+                )
+            with np.load(output, allow_pickle=False) as archive:
+                self.assertEqual(archive["regen_torque"][1, 1], 20.0)
+                np.testing.assert_array_equal(
+                    archive["bus_power"][1, 1, :3], [-5.0, -10.0, 0.0]
+                )
+                np.testing.assert_array_equal(
+                    archive["regen_feasible"][1, 1, :3], [True, True, False]
                 )
 
 
@@ -100,18 +121,19 @@ class OperatingMapValidationTests(unittest.TestCase):
         self.bad(lambda d: d["bus_power"].__setitem__((0, 1, 64), -1.0))
         self.bad(lambda d: (d["bus_power"].__setitem__((0, 1, 0), 1.0), d["regen_feasible"].__setitem__((0, 1, 0), True)))
 
-    def test_rejects_raw_negative_row_nonmonotonicity_even_when_infeasible(self):
-        def mutate(data):
-            row = data["bus_power"][0, 0]
-            row[1] = row[0] - 1.0
+    def test_accepts_complete_nonmonotonic_regen_row(self):
+        data = {name: value.copy() for name, value in self.data.items()}
+        row = data["bus_power"][0, 1, :32]
+        row[:] = np.linspace(-5.0, -1.0, row.size)
+        row[1] = -10.0
+        data["regen_feasible"][0, 1, :32] = True
+        loaded = _validate_operating_map(data)
+        self.assertEqual(loaded.bus_power[0, 1, 1], -10.0)
 
-        self.bad(mutate)
-
-    def test_rejects_regen_feasible_holes_and_reentry(self):
+    def test_rejects_incorrect_regen_productive_mask(self):
         def mutate(data):
-            feasible = data["regen_feasible"][0, 64]
-            feasible[10] = False
-            feasible[11] = True
+            index = np.flatnonzero(data["regen_feasible"])[0]
+            data["regen_feasible"].flat[index] = False
 
         self.bad(mutate)
 
@@ -123,11 +145,24 @@ class OperatingMapValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "digest mismatch"):
             _load_operating_map(bad_model)
 
+    def test_canonical_full_regen_envelope_preserves_nonmonotonic_region(self):
+        voltage_index, speed_index = 8, 17
+        self.assertEqual(self.data["voltage"][voltage_index], 608.688)
+        self.assertEqual(self.data["speed"][speed_index], 2470.3125)
+        self.assertAlmostEqual(
+            self.data["regen_torque"][voltage_index, speed_index],
+            21.242431532485426,
+        )
+        row = self.data["bus_power"][voltage_index, speed_index, :33]
+        self.assertAlmostEqual(row[0], -826.234638, places=5)
+        self.assertLess(np.min(row), row[0] - 200.0)
+        self.assertGreater(int(np.argmin(row)), 0)
+
     def test_canonical_shape_and_digest(self):
         loaded = _validate_operating_map(self.data)
         self.assertEqual(loaded.bus_power.shape, (9, 129, 65))
         digest = hashlib.sha256((ROOT / "models/data/amk_dd5_100c_operating_map.npz").read_bytes()).hexdigest()
-        self.assertEqual(digest, "beeca408c8339bbbb372cd379c9b60ad58020377e77a50ae9fcc0609e1fec508")
+        self.assertEqual(digest, "1057b82c49953957e305407e48bf1cb5f9ab58b81ead3e08ab785d5ad0f4a852")
 
 
 class PowertrainAssemblyTests(unittest.TestCase):

@@ -33,9 +33,13 @@ def _sha256(path: Path) -> str:
 def _maximum_feasible(parameters, speed, voltage, sign, envelope):
     if envelope <= 0.0:
         return 0.0
-    def feasible(load):
-        result = evaluate_shaft_power_exact(parameters, speed, sign * load * envelope, voltage)
+
+    def feasible(torque_magnitude):
+        result = evaluate_shaft_power_exact(
+            parameters, speed, sign * torque_magnitude, voltage
+        )
         return result.feasible
+
     if not feasible(0.0):
         return 0.0
     if feasible(envelope):
@@ -57,40 +61,19 @@ def _source_paths(xml_path: Path) -> tuple[Path, ...]:
             data / "amk_dd5_100c_identification.csv")
 
 
-def _raw_regen_row(parameters, speed, voltage, envelope, loads):
-    return np.array([
-        evaluate_shaft_power_exact(parameters, speed, -float(x) * envelope, voltage).bus_power
-        for x in loads
-    ], dtype=np.float64)
-
-
-def _regen_envelope(parameters, speed, voltage, envelope, loads):
+def _regen_envelope(parameters, speed, voltage, envelope):
     """Return the complete feasible negative-torque envelope.
 
-    ``envelope`` is the analytical voltage/torque-limit boundary found by
-    ``_maximum_feasible``.  It is deliberately *not* inferred from a sampled
-    productive-power crossing: doing that can truncate a valid envelope or
-    hide a later nonmonotone branch.  Productive feasibility is determined
-    separately from the persisted row's zero-power crossover.
+    Regenerative bus power is genuinely non-monotone at some operating points,
+    so neither a productive-power crossing nor bus-power ordering may reduce
+    this analytical torque boundary.
     """
     if envelope <= 0.0:
-        return 0.0
-    # At zero mechanical speed shaft power is identically zero, while the
-    # analytical loss map is nonnegative; productive regeneration is therefore
-    # impossible without sampling or guessing a branch.
-    if abs(float(speed)) <= 1.0e-12:
         return 0.0
     endpoint = evaluate_shaft_power_exact(parameters, speed, -float(envelope), voltage)
     if not endpoint.feasible:
         raise ValueError(
             f"analytical regen envelope is infeasible at voltage={voltage}, speed={speed}"
-        )
-    row = _raw_regen_row(parameters, speed, voltage, float(envelope), loads)
-    delta = float(np.max(np.maximum(0.0, -np.diff(row)))) if row.size > 1 else 0.0
-    if delta > 1.0e-9:
-        raise ValueError(
-            f"non-monotone analytical regen bus power at voltage={voltage}, "
-            f"speed={speed}: {delta} W"
         )
     return float(envelope)
 
@@ -119,7 +102,7 @@ def generate(path, voltage_points=9, speed_points=129, load_points=65, xml_path=
     bus_power = np.empty((voltage_points, speed_points, load_points), dtype=np.float64)
     loss_power = np.empty_like(bus_power)
     regen_feasible = np.zeros_like(bus_power, dtype=np.bool_)
-    max_repair = 0.0
+    max_drive_violation = 0.0
     for iv, bus_voltage in enumerate(voltage):
         for ix, motor_speed in enumerate(speed):
             envelope = float(np.interp(
@@ -133,35 +116,36 @@ def generate(path, voltage_points=9, speed_points=129, load_points=65, xml_path=
             regen_torque[iv, ix] = _regen_envelope(
                 parameters, motor_speed, bus_voltage,
                 _maximum_feasible(parameters, motor_speed, bus_voltage, -1.0, envelope),
-                -load[: load_points // 2 + 1],
             )
             for il, normalized_load in enumerate(load):
                 torque_limit = drive_torque[iv, ix] if normalized_load >= 0 else regen_torque[iv, ix]
                 result = evaluate_shaft_power_exact(parameters, motor_speed, normalized_load * torque_limit, bus_voltage)
-                # Negative normalized load is productive regen only.  A positive
-                # analytical bus draw is retained and marked infeasible; it is
-                # never fabricated into negative power.
+                if not result.feasible:
+                    raise ValueError(
+                        f"infeasible point inside analytical torque envelope at "
+                        f"voltage={bus_voltage}, speed={motor_speed}, load={normalized_load}"
+                    )
+                # Retain every finite analytical value.  The mask identifies
+                # productive negative-load samples only; it does not truncate
+                # or reorder a physically non-monotone regen curve.
                 bus_power[iv, ix, il] = result.bus_power
                 loss_power[iv, ix, il] = result.loss_power
                 regen_feasible[iv, ix, il] = (
-                    normalized_load < 0.0 and result.feasible and result.bus_power < -1.0e-9
+                    normalized_load < 0.0 and result.bus_power < -1.0e-9
                 )
             zero = load_points // 2
             row = bus_power[iv, ix]
-            # Validate complete raw directional rows before applying the
-            # productive-regen mask; parasitic points cannot hide violations.
-            for values in (row[:zero], row[zero:]):
-                if values.size > 1:
-                    delta = float(np.max(np.maximum(0.0, -np.diff(values))))
-                    max_repair = max(max_repair, delta)
-                    if delta > 1.0e-9:
-                        raise ValueError(f"non-monotone analytical bus power at voltage={bus_voltage}, speed={motor_speed}: {delta} W")
-            # Productive regen is a single prefix from maximum negative load
-            # toward the zero crossover; holes and re-entry are invalid.
-            regen = regen_feasible[iv, ix, :zero]
-            true_indices = np.flatnonzero(regen)
-            if true_indices.size and not np.array_equal(true_indices, np.arange(true_indices[-1] + 1)):
-                raise ValueError(f"non-contiguous analytical regen feasibility at voltage={bus_voltage}, speed={motor_speed}")
+            # Drive power remains monotone.  Regen is intentionally not subject
+            # to this check: Task 3 scans every piecewise-linear regen segment.
+            values = row[zero:]
+            if values.size > 1:
+                delta = float(np.max(np.maximum(0.0, -np.diff(values))))
+                max_drive_violation = max(max_drive_violation, delta)
+                if delta > 1.0e-9:
+                    raise ValueError(
+                        f"non-monotone analytical drive bus power at "
+                        f"voltage={bus_voltage}, speed={motor_speed}: {delta} W"
+                    )
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(path.name + ".tmp")
     np.savez_compressed(temporary, voltage=voltage, speed=speed, load=load,
@@ -174,7 +158,7 @@ def generate(path, voltage_points=9, speed_points=129, load_points=65, xml_path=
     print(f"SHA-256: {digest}")
     print(f"axes: voltage={voltage.shape}, speed={speed.shape}, load={load.shape}")
     print(f"array shapes: drive_torque={drive_torque.shape}, regen_torque={regen_torque.shape}, bus_power={bus_power.shape}, loss_power={loss_power.shape}")
-    print(f"maximum monotonic repair: {max_repair:.17g}")
+    print(f"maximum drive monotonic violation: {max_drive_violation:.17g}")
     print(f"generator version: {GENERATOR_VERSION}")
     for source, source_digest in source_digests.items():
         print(f"source SHA-256: {source} {source_digest}")

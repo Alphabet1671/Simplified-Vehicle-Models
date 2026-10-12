@@ -17,7 +17,10 @@ import numpy as np
 from simplified_vehicle_models.compiler.capabilities import TORQUE_SOURCE
 from simplified_vehicle_models.compiler.registry import register_component
 from simplified_vehicle_models.xml.model import Model
-from simplified_vehicle_models.xml.schema import closed_parameters, require_no_references
+from simplified_vehicle_models.xml.schema import (
+    closed_parameters,
+    require_no_references,
+)
 
 _ROOT = Path(__file__).resolve().parents[3]
 _DATA = _ROOT / "models" / "data"
@@ -102,7 +105,10 @@ def _read(name):
 
 
 def _parameter_file():
-    return {row[0]: float(row[1]) for row in _read("amk_dd5_100c_machine_parameters.csv")}
+    return {
+        row[0]: float(row[1])
+        for row in _read("amk_dd5_100c_machine_parameters.csv")
+    }
 
 
 def _interp(x_axis, y_axis, value):
@@ -145,7 +151,9 @@ def _map_values(speed, torque, parameters):
         raise ValueError("motor speed exceeds maximum_motor_speed")
     speed = max(speed, parameters.torque_speed[0])
     envelope = _interp(parameters.torque_speed, parameters.torque_values, speed)
-    loss = _loss_interpolate(parameters, max(speed, parameters.loss_speed[0]), abs(torque))
+    loss = _loss_interpolate(
+        parameters, max(speed, parameters.loss_speed[0]), abs(torque)
+    )
     return envelope, loss
 
 
@@ -156,7 +164,11 @@ def calculate_available_voltage(parameters, bus_voltage, current):
     resistive drop before the direct-axis solve and is refined by that solve.
     """
 
-    return bus_voltage / _SQRT_THREE - parameters.resistance * current - parameters.device_drop
+    return (
+        bus_voltage / _SQRT_THREE
+        - parameters.resistance * current
+        - parameters.device_drop
+    )
 
 
 def maximum_motor_torque(parameters, motor_speed, available_voltage):
@@ -265,7 +277,9 @@ def evaluate_shaft_power(parameters, motor_speed, motor_torque, bus_voltage):
         * 1.5
         * (current.direct_current**2 - reference.direct_current**2)
     )
-    loss_power = map_loss + correction
+    # Voltage correction represents an added physical loss. A lower current
+    # estimate cannot make total loss negative.
+    loss_power = map_loss + max(correction, 0.0)
     raw_bus_power = shaft_power + loss_power
     if raw_bus_power >= 0.0:
         bus_power = raw_bus_power / parameters.inverter_efficiency

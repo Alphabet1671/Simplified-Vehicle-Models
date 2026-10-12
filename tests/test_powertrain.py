@@ -12,8 +12,12 @@ from simplified_vehicle_models.powertrain.assembly import (
     resolve_braking,
     solve_shaft_torque_fixed_point,
 )
+from simplified_vehicle_models.drivetrain.lumped import compile_lumped_drivetrain
 from simplified_vehicle_models.xml.loader import load_model
-from simplified_vehicle_models.powertrain.power_plant import compile_electric_motor
+from simplified_vehicle_models.powertrain.power_plant import (
+    compile_electric_motor,
+    evaluate_shaft_power,
+)
 from simplified_vehicle_models.powertrain.energy_storage import StorageState
 from simplified_vehicle_models.xml.loader import load_point_mass_vehicle
 
@@ -117,6 +121,51 @@ class PowertrainAssemblyTests(unittest.TestCase):
             self.assertGreater(result.bus_power_at_limit, 0.0)
             self.assertLess(result.storage_state_rate, 0.0)
 
+    def test_drive_force_operating_point_has_positive_evaluated_bus_power(self):
+        powertrain = compile_powertrain_assembly(
+            load_model(ROOT / "models/powertrains/murphy_2024.xml")
+        )
+        drivetrain = compile_drivetrain_assembly(
+            load_model(ROOT / "models/drivetrains/murphy_2024_drivetrain.xml")
+        )
+        radius = 0.193675
+        result = maximum_drive_force(
+            powertrain, drivetrain, 10.0, StorageState(0.8), effective_radius=radius
+        )
+        motor = powertrain.power_plant
+        transmission = drivetrain.transmission
+        motor_speed = transmission.motor_speed(10.0 / radius)
+        motor_torque = result.maximum_wheel_torque / (
+            motor.unit_count * transmission.gear_ratio * transmission.gear_efficiency
+        )
+        evaluated = evaluate_shaft_power(
+            motor, motor_speed, motor_torque, result.bus_voltage
+        )
+        self.assertTrue(evaluated.feasible)
+        self.assertGreaterEqual(evaluated.bus_power, 0.0)
+        self.assertAlmostEqual(
+            evaluated.bus_power * motor.unit_count,
+            result.bus_power_at_limit,
+            places=6,
+        )
+
+    def test_full_and_lumped_assemblies_share_operating_point(self):
+        full = compile_powertrain_drivetrain(
+            load_model(ROOT / "models/vehicles/murphy_2024.xml")
+        )
+        lumped = compile_lumped_drivetrain(
+            load_model(ROOT / "models/drivetrains/murphy_4wd.xml")
+        )
+        for name in (
+            "motor_count",
+            "gear_ratio",
+            "peak_motor_torque",
+            "power_limit",
+            "efficiency",
+            "maximum_motor_speed",
+        ):
+            self.assertEqual(getattr(full, name), getattr(lumped, name))
+
     def test_regen_charge_power_constraint_is_active(self):
         powertrain = compile_powertrain_assembly(
             load_model(ROOT / "models/powertrains/murphy_2024.xml")
@@ -159,14 +208,16 @@ class PowertrainAssemblyTests(unittest.TestCase):
             tire_force_capacity=2500.0,
             effective_radius=0.193675,
         )
-        self.assertEqual(result.total_force, 2500.0)
-        self.assertGreater(result.regen_force, 0.0)
-        self.assertGreater(result.friction_force, 0.0)
+        self.assertEqual(result.total_force_limit, 2500.0)
+        self.assertGreater(result.regen_force_used, 0.0)
+        self.assertGreater(result.friction_force_used, 0.0)
         self.assertAlmostEqual(
-            result.regen_force + result.friction_force,
-            result.total_force,
+            result.regen_force_used + result.friction_force_used,
+            result.total_force_limit,
         )
-        self.assertGreater(result.recovered_power, 0.0)
+        self.assertGreater(result.recovered_bus_power, 0.0)
+        self.assertEqual(result.total_force, result.total_force_limit)
+        self.assertEqual(result.recovered_power, result.recovered_bus_power)
 
     def test_regen_rejects_motor_overspeed(self):
         powertrain = compile_powertrain_assembly(

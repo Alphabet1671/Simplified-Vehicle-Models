@@ -8,8 +8,6 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from pathlib import Path
-
 from simplified_vehicle_models.compiler.adapters import register_adapter
 from simplified_vehicle_models.compiler.capabilities import DRIVE_FORCE_LIMIT
 from simplified_vehicle_models.compiler.registry import register_component
@@ -96,19 +94,32 @@ class FixedPointResult:
 
 
 def _references(model: Model, tag: str) -> dict[str, Model]:
-    result = {reference.role: reference.model for reference in model.references if reference.tag == tag}
-    if any(reference.role is None for reference in model.references if reference.tag == tag):
+    result = {
+        reference.role: reference.model
+        for reference in model.references
+        if reference.tag == tag
+    }
+    if any(
+        reference.role is None
+        for reference in model.references
+        if reference.tag == tag
+    ):
         raise ValueError(f"{model.path}: every {tag} reference needs a role")
     return result
 
 
 def compile_powertrain_assembly(model: Model) -> PowertrainParameters:
     """Compile a power plant and an energy buffer from one assembly."""
-    if (model.model_type, model.subtype) != (POWERTRAIN_ASSEMBLY_TYPE, POWERTRAIN_SUBTYPE):
+    if (model.model_type, model.subtype) != (
+        POWERTRAIN_ASSEMBLY_TYPE,
+        POWERTRAIN_SUBTYPE,
+    ):
         raise ValueError(f"{model.path}: expected powertrain-assembly/electric")
     references = _references(model, "component")
     if set(references) != {"power-plant", "energy-storage"}:
-        raise ValueError(f"{model.path}: powertrain needs power-plant and energy-storage")
+        raise ValueError(
+            f"{model.path}: powertrain needs power-plant and energy-storage"
+        )
     from simplified_vehicle_models.powertrain.energy_storage import compile_battery_pack
     from simplified_vehicle_models.powertrain.power_plant import compile_electric_motor
     return PowertrainParameters(
@@ -119,12 +130,24 @@ def compile_powertrain_assembly(model: Model) -> PowertrainParameters:
 
 def compile_drivetrain_assembly(model: Model) -> DrivetrainAssemblyParameters:
     """Compile the transmission in one drivetrain assembly."""
-    if (model.model_type, model.subtype) != (DRIVETRAIN_ASSEMBLY_TYPE, DRIVETRAIN_SUBTYPE):
-        raise ValueError(f"{model.path}: expected drivetrain-assembly/electric-four-wheel")
+    if (model.model_type, model.subtype) != (
+        DRIVETRAIN_ASSEMBLY_TYPE,
+        DRIVETRAIN_SUBTYPE,
+    ):
+        raise ValueError(
+            f"{model.path}: expected drivetrain-assembly/electric-four-wheel"
+        )
     references = _references(model, "component")
-    if "transmission" not in references or set(references) - {"transmission", "differential"}:
-        raise ValueError(f"{model.path}: drivetrain needs transmission and optional differential")
-    from simplified_vehicle_models.drivetrain.transmission import compile_fixed_gear_transmission
+    if "transmission" not in references or set(references) - {
+        "transmission",
+        "differential",
+    }:
+        raise ValueError(
+            f"{model.path}: drivetrain needs transmission and optional differential"
+        )
+    from simplified_vehicle_models.drivetrain.transmission import (
+        compile_fixed_gear_transmission,
+    )
     return DrivetrainAssemblyParameters(
         compile_fixed_gear_transmission(load_model(references["transmission"].path)),
         differential_declared="differential" in references,
@@ -138,9 +161,15 @@ def compile_powertrain_drivetrain(model: Model) -> DrivetrainParameters:
     assembled values are derived from the reviewed motor and transmission, not
     from a hard-coded adapter chain.
     """
-    nested = {role: reference for role, reference in _references(model, "component").items() if role in {"powertrain", "drivetrain"}}
+    nested = {
+        role: reference
+        for role, reference in _references(model, "component").items()
+        if role in {"powertrain", "drivetrain"}
+    }
     if set(nested) != {"powertrain", "drivetrain"}:
-        raise ValueError(f"{model.path}: vehicle needs powertrain and drivetrain assemblies")
+        raise ValueError(
+            f"{model.path}: vehicle needs powertrain and drivetrain assemblies"
+        )
     powertrain = compile_powertrain_assembly(load_model(nested["powertrain"].path))
     drivetrain = compile_drivetrain_assembly(load_model(nested["drivetrain"].path))
     motor = powertrain.power_plant
@@ -150,8 +179,9 @@ def compile_powertrain_drivetrain(model: Model) -> DrivetrainParameters:
         and not drivetrain.differential_declared
     ):
         raise ValueError(
-            f"{model.path}: motor count {motor.unit_count} does not match driven wheels "
-            f"{len(transmission.driven_wheels)} without a declared differential"
+            f"{model.path}: motor count {motor.unit_count} does not match "
+            f"driven wheels {len(transmission.driven_wheels)} without a "
+            "declared differential"
         )
     state = StorageState(powertrain.energy_storage.initial_state_of_charge)
     limits = evaluate_storage(powertrain.energy_storage, state)
@@ -186,7 +216,9 @@ def solve_shaft_torque_fixed_point(
     reached.
     """
     if motor_speed < 0.0 or unit_count < 1 or tolerance <= 0.0 or max_iterations < 1:
-        raise ValueError("motor speed, unit count, tolerance, and max_iterations are invalid")
+        raise ValueError(
+            "motor speed, unit count, tolerance, and max_iterations are invalid"
+        )
     omega = motor_speed * 2.0 * math.pi / 60.0
     if omega == 0.0:
         residual = abs(bus_power)
@@ -244,29 +276,65 @@ def maximum_drive_force(
     envelope = maximum_motor_torque(
         motor, motor_speed, storage.bus_voltage / math.sqrt(3.0)
     )
-    if speed == 0.0:
-        fixed_point = FixedPointResult(envelope, 0.0, True, 0)
-    else:
-        fixed_point = solve_shaft_torque_fixed_point(
-            motor,
-            motor_speed,
-            storage.discharge_power_limit,
-            storage.bus_voltage,
-            unit_count=motor.unit_count,
+    # Solve the actual evaluated bus-power constraint directly.  A fixed-point
+    # torque estimate can have the wrong sign when losses dominate at low speed;
+    # taking its absolute value would then report motoring force with charging
+    # power.  Bisection preserves a physically valid positive-power operating
+    # point and never needs an artificial power floor.
+    def evaluate(torque: float):
+        return evaluate_shaft_power(
+            motor, motor_speed, torque, storage.bus_voltage
         )
-    torque = envelope if speed == 0.0 else min(abs(fixed_point.torque), envelope)
-    shaft = torque * motor.unit_count
-    result = evaluate_shaft_power(
-        motor, motor_speed, torque, storage.bus_voltage
-    )
-    bus = min(
-        storage.discharge_power_limit,
-        max(1.0e-9, result.bus_power * motor.unit_count),
-    )
+
+    lower = 0.0
+    upper = envelope
+    lower_result = evaluate(lower)
+    upper_result = evaluate(upper)
+    iterations = 0
+    tolerance = 1.0e-9
+    if not lower_result.feasible or lower_result.bus_power < 0.0:
+        torque = 0.0
+        operating = lower_result
+        converged = False
+    elif (
+        upper_result.feasible
+        and 0.0 <= upper_result.bus_power <= storage.discharge_power_limit
+    ):
+        torque = upper
+        operating = upper_result
+        converged = True
+    else:
+        # Find the largest torque whose evaluated bus power remains within the
+        # discharge limit.  The lower endpoint is valid by construction.
+        while iterations < 100 and upper - lower > tolerance:
+            midpoint = 0.5 * (lower + upper)
+            midpoint_result = evaluate(midpoint)
+            iterations += 1
+            if (
+                midpoint_result.feasible
+                and 0.0 <= midpoint_result.bus_power
+                <= storage.discharge_power_limit
+            ):
+                lower = midpoint
+                lower_result = midpoint_result
+            else:
+                upper = midpoint
+        torque = lower
+        operating = lower_result
+        converged = (
+            operating.feasible
+            and 0.0 <= operating.bus_power <= storage.discharge_power_limit
+        )
+    bus = operating.bus_power * motor.unit_count
     current, feasible = solve_current(powertrain.energy_storage, state, bus)
-    wheel_torque = shaft * transmission.gear_ratio * transmission.gear_efficiency
+    wheel_torque = (
+        torque
+        * motor.unit_count
+        * transmission.gear_ratio
+        * transmission.gear_efficiency
+    )
     force = wheel_torque / effective_radius
-    active = "motor_torque" if abs(fixed_point.torque) > envelope else "storage_power"
+    active = "motor_torque" if torque >= envelope - tolerance else "storage_power"
     if not feasible:
         active = "storage_power"
     state_rate = -current / powertrain.energy_storage.pack_capacity_joules
@@ -278,9 +346,9 @@ def maximum_drive_force(
         active,
         state_rate,
         current,
-        fixed_point.residual,
-        fixed_point.converged and feasible,
-        fixed_point.iterations,
+        0.0 if converged else abs(upper - lower),
+        converged and feasible,
+        iterations,
     )
 
 
@@ -365,12 +433,29 @@ def maximum_regen_force(
 class BrakingResult:
     """Report regenerative and friction braking allocation."""
 
-    regen_force: float
-    friction_force: float
-    total_force: float
-    recovered_power: float
+    regen_force_used: float
+    friction_force_used: float
+    total_force_limit: float
+    recovered_bus_power: float
     active_constraint: str
     regen_limit: RegenLimit
+
+    # Legacy aliases retained for callers of the initial P7 contract.
+    @property
+    def regen_force(self) -> float:
+        return self.regen_force_used
+
+    @property
+    def friction_force(self) -> float:
+        return self.friction_force_used
+
+    @property
+    def total_force(self) -> float:
+        return self.total_force_limit
+
+    @property
+    def recovered_power(self) -> float:
+        return self.recovered_bus_power
 
     @property
     def force_limit(self) -> float:
@@ -405,10 +490,10 @@ def resolve_braking(
     friction_force = demand - regen_force
     active = regen_limit.active_constraint
     return BrakingResult(
-        regen_force=regen_force,
-        friction_force=friction_force,
-        total_force=demand,
-        recovered_power=regen_force * speed,
+        regen_force_used=regen_force,
+        friction_force_used=friction_force,
+        total_force_limit=demand,
+        recovered_bus_power=regen_force * speed,
         active_constraint=active,
         regen_limit=regen_limit,
     )

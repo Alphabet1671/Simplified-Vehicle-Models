@@ -3,7 +3,8 @@ import unittest
 from unittest.mock import patch
 import numpy as np
 from simplified_vehicle_models.results.traces import LapMode
-from simplified_vehicle_models.solvers.forward_backward import solve_lap_with_energy, solve_stint
+from simplified_vehicle_models.solvers.forward_backward import solve_lap, solve_lap_with_energy, solve_stint
+from simplified_vehicle_models.formulations.point_mass import DriveCachePolicy
 from simplified_vehicle_models.powertrain.assembly import resolve_braking
 from simplified_vehicle_models.powertrain.energy_storage import StorageState
 from simplified_vehicle_models.tracks.types import TrackProfile
@@ -51,6 +52,47 @@ class EnergyLapTests(unittest.TestCase):
     def test_outer_nonconvergence_is_reported(self):
         r = solve_lap_with_energy(self.vehicle, self.track, LapMode.FLYING, maximum_iterations=1, tolerance=1e-15)
         self.assertEqual(r.energy.energy_iterations, 1)
+
+    def test_inner_controls_propagate_to_every_soc_and_reconciliation_pass(self):
+        policy = DriveCachePolicy(speed_resolution=0.25, soc_resolution=0.01)
+        with patch(
+            "simplified_vehicle_models.solvers.forward_backward.solve_lap",
+            wraps=solve_lap,
+        ) as solve:
+            solve_lap_with_energy(
+                self.vehicle,
+                self.track,
+                LapMode.FLYING,
+                tolerance=1e-12,
+                maximum_iterations=2,
+                lap_tolerance=2e-6,
+                lap_maximum_iterations=7,
+                root_tolerance=3e-7,
+                drive_cache_policy=policy,
+            )
+        self.assertGreaterEqual(solve.call_count, 2)
+        for call in solve.call_args_list:
+            self.assertEqual(call.kwargs["tolerance"], 2e-6)
+            self.assertEqual(call.kwargs["maximum_iterations"], 7)
+            self.assertEqual(call.kwargs["root_tolerance"], 3e-7)
+            self.assertIs(call.kwargs["drive_cache_policy"], policy)
+
+    def test_regen_cold_and_warm_hints_are_equivalent(self):
+        cold = solve_lap_with_energy(self.vehicle, self.track, LapMode.FLYING, regen_enabled=True)
+        warm = solve_lap_with_energy(
+            self.vehicle,
+            self.track,
+            LapMode.FLYING,
+            regen_enabled=True,
+            initial_speed=cold.speed,
+            corner_speed_hint=cold.speed,
+        )
+        self.assertEqual(cold.lap.converged, warm.lap.converged)
+        np.testing.assert_allclose(cold.speed, warm.speed, rtol=1e-8, atol=1e-8)
+        self.assertAlmostEqual(cold.lap_time, warm.lap_time, places=8)
+        self.assertAlmostEqual(cold.energy.final_state_of_charge, warm.energy.final_state_of_charge, places=8)
+        self.assertAlmostEqual(cold.energy.consumed_energy, warm.energy.consumed_energy, delta=1e-4)
+        self.assertAlmostEqual(cold.energy.recovered_energy, warm.energy.recovered_energy, delta=1e-4)
 
     def test_stint_carries_state(self):
         report = solve_stint(self.vehicle, self.track, laps=2, regen_enabled=False)

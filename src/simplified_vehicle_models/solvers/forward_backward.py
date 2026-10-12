@@ -337,10 +337,33 @@ def _build_result(
     )
 
 
-def solve_lap_with_energy(vehicle, track, mode, initial_state=None, tolerance=1e-5, maximum_iterations=50, regen_enabled=False, drive_cache_policy=DriveCachePolicy()):
-    """Solve a lap with an explicit, state-coupled outer SOC iteration."""
+def solve_lap_with_energy(
+    vehicle,
+    track,
+    mode,
+    initial_state=None,
+    tolerance=1e-5,
+    maximum_iterations=50,
+    regen_enabled=False,
+    lap_tolerance=1e-6,
+    lap_maximum_iterations=200,
+    root_tolerance=1e-8,
+    drive_cache_policy=DriveCachePolicy(),
+    initial_speed=None,
+    corner_speed_hint=None,
+):
+    """Solve a lap with an explicit, state-coupled outer SOC iteration.
+
+    ``tolerance`` and ``maximum_iterations`` control the SOC fixed point;
+    ``lap_*`` controls the inner profile solve.  Speed hints are validated by
+    ``solve_lap`` but never used as profile warm starts.
+    """
     if tolerance <= 0.0 or maximum_iterations < 1:
         raise ValueError("tolerance must be positive and maximum_iterations must be positive")
+    if lap_tolerance <= 0.0 or not math.isfinite(lap_tolerance) or lap_maximum_iterations < 1:
+        raise ValueError("lap_tolerance must be finite and positive and lap_maximum_iterations must be positive")
+    speed_hint = initial_speed
+    corner_hint = corner_speed_hint
     storage = getattr(getattr(vehicle.drivetrain, "powertrain", None), "energy_storage", None)
     state0 = (initial_state.state_of_charge if isinstance(initial_state, StorageState)
               else storage.initial_state_of_charge if initial_state is None and storage
@@ -349,8 +372,21 @@ def solve_lap_with_energy(vehicle, track, mode, initial_state=None, tolerance=1e
     converged = False
     change = math.inf
     for iteration in range(1, maximum_iterations + 1):
-        lap = solve_lap(vehicle, track, mode, drive_cache_policy=drive_cache_policy, _storage_trace=trace)
+        lap = solve_lap(
+            vehicle,
+            track,
+            mode,
+            tolerance=lap_tolerance,
+            maximum_iterations=lap_maximum_iterations,
+            initial_speed=speed_hint,
+            corner_speed_hint=corner_hint,
+            root_tolerance=root_tolerance,
+            drive_cache_policy=drive_cache_policy,
+            _storage_trace=trace,
+        )
         bus, shaft, voltage, consumed, recovered, nxt = _energy_trace(vehicle, track, lap, trace, regen_enabled)
+        speed_hint = lap.speed
+        corner_hint = lap.speed
         change = float(np.max(np.abs(nxt - trace)))
         trace = 0.5 * (trace + nxt)
         trace[0] = state0
@@ -362,11 +398,24 @@ def solve_lap_with_energy(vehicle, track, mode, initial_state=None, tolerance=1e
     # callers must not be told that the energy loop converged otherwise.
     profile_residual = math.inf
     for _ in range(max(1, maximum_iterations - iteration + 1)):
-        lap = solve_lap(vehicle, track, mode, drive_cache_policy=drive_cache_policy, _storage_trace=trace)
+        lap = solve_lap(
+            vehicle,
+            track,
+            mode,
+            tolerance=lap_tolerance,
+            maximum_iterations=lap_maximum_iterations,
+            initial_speed=speed_hint,
+            corner_speed_hint=corner_hint,
+            root_tolerance=root_tolerance,
+            drive_cache_policy=drive_cache_policy,
+            _storage_trace=trace,
+        )
         bus, shaft, voltage, consumed, recovered, final_trace = _energy_trace(
             vehicle, track, lap, trace, regen_enabled
         )
         profile_residual = float(np.max(np.abs(final_trace - trace)))
+        speed_hint = lap.speed
+        corner_hint = lap.speed
         if profile_residual <= tolerance:
             trace = final_trace
             break
@@ -495,6 +544,10 @@ def solve_stint(
     laps=1,
     initial_state=None,
     reuse_profile=False,
+    lap_tolerance=1e-6,
+    lap_maximum_iterations=200,
+    root_tolerance=1e-8,
+    drive_cache_policy=DriveCachePolicy(),
     **kwargs,
 ):
     """Repeat laps while carrying the final battery state into the next lap.
@@ -508,9 +561,25 @@ def solve_stint(
     results = []
     state = initial_state
     regen_enabled = kwargs.get("regen_enabled", False)
+    speed_hint = kwargs.pop("initial_speed", None)
+    corner_hint = kwargs.pop("corner_speed_hint", None)
     for lap_index in range(laps):
         if lap_index == 0 or not reuse_profile:
-            result = solve_lap_with_energy(vehicle, track, mode, state, **kwargs)
+            result = solve_lap_with_energy(
+                vehicle,
+                track,
+                mode,
+                state,
+                lap_tolerance=lap_tolerance,
+                lap_maximum_iterations=lap_maximum_iterations,
+                root_tolerance=root_tolerance,
+                drive_cache_policy=drive_cache_policy,
+                initial_speed=speed_hint,
+                corner_speed_hint=corner_hint,
+                **kwargs,
+            )
+            speed_hint = result.lap.speed
+            corner_hint = result.lap.speed
         else:
             result = _fixed_profile_energy_result(
                 vehicle, track, results[0], state, regen_enabled

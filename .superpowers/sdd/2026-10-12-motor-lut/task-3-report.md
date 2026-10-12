@@ -51,3 +51,10 @@ Queries outside persisted voltage/speed or normalized-load domains call `evaluat
 - Centralized exact fallback accounting; mapping-less and nonpositive-envelope directional queries are exact fallbacks.
 - Benchmark (100,000 queries, same process): old exact evaluator plus 40-step bisection = 41 calls/query, 627.18 us/query; LUT inverse = one inverse plus one forward, 68.06 us/query (9.22x faster). This is the motor-query baseline; assembled comparison remains Task 4.
 - Focused suite after remediation: 30 tests, OK. Full suite: 234 tests, OK.
+
+## Round 2/5 remediation evidence
+- Forward LUT evaluation now handles an in-map zero-torque query with a zero directional envelope as normalized load zero, avoiding division by zero; nonzero torque with a nonpositive directional envelope uses exact fallback.
+- Inverse LUT queries guard the selected directional envelope before interpolation/inversion and route zero-envelope cases through the analytical fallback, including honest infeasible results.
+- Removed the unused inverse bisection `f_right` variable and wrapped the remaining long core expressions.
+- Added targeted zero-envelope forward and drive/regen inverse tests, including fallback-counter assertions.
+- Focused suite: 32 tests, OK. Full suite: 236 tests, OK. `git diff --check` passed.

@@ -203,6 +203,38 @@ class MotorLutQueryTests(unittest.TestCase):
         self.assertEqual(lut, exact)
         self.assertGreaterEqual(motor_lut_counters()["fallback"], 1)
 
+    def _zero_envelope_motor(self):
+        mapping = MotorOperatingMap(
+            np.array([400.0, 500.0]), np.array([0.0, 2000.0]),
+            np.array([-1.0, 0.0, 1.0]),
+            np.zeros((2, 2)), np.zeros((2, 2)),
+            np.zeros((2, 2, 3)), np.zeros((2, 2, 3)),
+            np.zeros((2, 2, 3), dtype=bool),
+        )
+        return replace(self.motor, operating_map=mapping)
+
+    def test_zero_envelope_forward_handles_zero_and_falls_back_nonzero(self):
+        motor = self._zero_envelope_motor()
+        reset_motor_lut_counters()
+        zero = evaluate_motor(motor, 1000.0, 0.0, 450.0)
+        self.assertEqual(zero.bus_power, 0.0)
+        self.assertEqual(motor_lut_counters()["fallback"], 0)
+        nonzero = evaluate_motor(motor, 1000.0, 1.0, 450.0)
+        self.assertEqual(
+            nonzero, evaluate_shaft_power_exact(motor, 1000.0, 1.0, 450.0)
+        )
+        self.assertEqual(motor_lut_counters()["fallback"], 1)
+
+    def test_zero_envelope_inverse_uses_exact_fallback(self):
+        motor = self._zero_envelope_motor()
+        for direction in ("drive", "regen"):
+            reset_motor_lut_counters()
+            result = torque_for_bus_power(motor, 1000.0, 450.0, 0.0, direction)
+            self.assertTrue(result.used_fallback)
+            self.assertTrue(math.isfinite(result.torque))
+            self.assertTrue(math.isfinite(result.residual))
+            self.assertGreaterEqual(motor_lut_counters()["fallback"], 1)
+
     def test_inverse_drive_and_regen(self):
         m = self.motor.operating_map
         speed, voltage = 1000.0, 550.0

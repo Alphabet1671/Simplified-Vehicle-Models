@@ -400,11 +400,17 @@ def _lut_forward(parameters, motor_speed, shaft_torque, bus_voltage):
     drive, regen, vi, si, vf, sf = _interpolated_envelopes(
         mapping, bus_voltage, motor_speed
     )
-    if (shaft_torque > 0.0 and drive <= 0.0) or (
-        shaft_torque < 0.0 and regen <= 0.0
-    ):
-        return _exact_fallback(parameters, motor_speed, shaft_torque, bus_voltage)
-    load = shaft_torque / drive if shaft_torque >= 0.0 else -abs(shaft_torque) / regen
+    if shaft_torque == 0.0:
+        load = 0.0
+    else:
+        envelope = drive if shaft_torque > 0.0 else regen
+        if envelope <= 0.0:
+            return _exact_fallback(parameters, motor_speed, shaft_torque, bus_voltage)
+        load = (
+            shaft_torque / drive
+            if shaft_torque > 0.0
+            else -abs(shaft_torque) / regen
+        )
     if load < mapping.load[0] or load > mapping.load[-1]:
         return _exact_fallback(parameters, motor_speed, shaft_torque, bus_voltage)
     li, lf = _bracket(mapping.load, load)
@@ -454,7 +460,11 @@ def _exact_limit(parameters, speed, voltage, regen=False):
 
 def motor_torque_limits(parameters, motor_speed_rpm, bus_voltage):
     mapping = parameters.operating_map
-    in_map = mapping is not None and mapping.voltage[0] <= bus_voltage <= mapping.voltage[-1] and mapping.speed[0] <= motor_speed_rpm <= mapping.speed[-1]
+    in_map = (
+        mapping is not None
+        and mapping.voltage[0] <= bus_voltage <= mapping.voltage[-1]
+        and mapping.speed[0] <= motor_speed_rpm <= mapping.speed[-1]
+    )
     if not in_map:
         return TorqueLimits(
             _exact_limit(parameters, motor_speed_rpm, bus_voltage),
@@ -466,8 +476,7 @@ def motor_torque_limits(parameters, motor_speed_rpm, bus_voltage):
 
 
 def _inverse_fallback(parameters, speed, voltage, target, direction):
-    limits = motor_torque_limits(parameters, speed, voltage)
-    maximum = limits.maximum_drive_torque if direction == "drive" else limits.maximum_regen_torque
+    maximum = _exact_limit(parameters, speed, voltage, direction == "regen")
     lo, hi = (0.0, maximum) if direction == "drive" else (-maximum, 0.0)
     # Source-map breakpoints provide valid analytical brackets without a fixed
     # dense sample count, including the non-monotone regen branches.
@@ -489,8 +498,8 @@ def _inverse_fallback(parameters, speed, voltage, target, direction):
     for left, right, left_op, right_op in zip(points, points[1:], values, values[1:]):
         if not left_op.feasible or not right_op.feasible:
             continue
-        f_left, f_right = left_op.bus_power - target, right_op.bus_power - target
-        if f_left * f_right > 0.0:
+        f_left = left_op.bus_power - target
+        if f_left * (right_op.bus_power - target) > 0.0:
             continue
         a, b = left, right
         for _ in range(64):
@@ -500,7 +509,6 @@ def _inverse_fallback(parameters, speed, voltage, target, direction):
                 break
             if (op.bus_power - target) * f_left <= 0.0:
                 b = mid
-                f_right = op.bus_power - target
             else:
                 a = mid
                 f_left = op.bus_power - target
@@ -519,14 +527,32 @@ def torque_for_bus_power(parameters, motor_speed_rpm, bus_voltage, target_bus_po
     if direction not in ("drive", "regen"):
         raise ValueError("direction must be 'drive' or 'regen'")
     mapping = parameters.operating_map
-    in_map = mapping is not None and mapping.voltage[0] <= bus_voltage <= mapping.voltage[-1] and mapping.speed[0] <= motor_speed_rpm <= mapping.speed[-1]
+    in_map = (
+        mapping is not None
+        and mapping.voltage[0] <= bus_voltage <= mapping.voltage[-1]
+        and mapping.speed[0] <= motor_speed_rpm <= mapping.speed[-1]
+    )
     if not in_map:
         _LOOKUP_COUNTERS["inverse"] += 1
         return _inverse_fallback(parameters, motor_speed_rpm, bus_voltage, target_bus_power, direction)
-    drive, regen, vi, si, vf, sf = _interpolated_envelopes(mapping, bus_voltage, motor_speed_rpm)
+    drive, regen, vi, si, vf, sf = _interpolated_envelopes(
+        mapping, bus_voltage, motor_speed_rpm
+    )
+    if (direction == "drive" and drive <= 0.0) or (
+        direction == "regen" and regen <= 0.0
+    ):
+        _LOOKUP_COUNTERS["inverse"] += 1
+        return _inverse_fallback(
+            parameters, motor_speed_rpm, bus_voltage, target_bus_power, direction
+        )
     li0 = int(np.searchsorted(mapping.load, 0.0))
     def value(array, k):
-        return ((1 - vf) * (1 - sf) * array[vi, si, k] + vf * (1 - sf) * array[vi + 1, si, k] + (1 - vf) * sf * array[vi, si + 1, k] + vf * sf * array[vi + 1, si + 1, k])
+        return (
+            (1 - vf) * (1 - sf) * array[vi, si, k]
+            + vf * (1 - sf) * array[vi + 1, si, k]
+            + (1 - vf) * sf * array[vi, si + 1, k]
+            + vf * sf * array[vi + 1, si + 1, k]
+        )
     powers = np.array([value(mapping.bus_power, k) for k in range(mapping.load.size)])
     if direction == "drive":
         loads, vals = mapping.load[li0:], powers[li0:]

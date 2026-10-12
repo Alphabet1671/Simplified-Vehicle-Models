@@ -19,6 +19,7 @@ from simplified_vehicle_models.formulations.point_mass import (
     normal_loads,
     tire_force_capacities,
     _available_drive_force,
+    _positive_root,
 )
 from simplified_vehicle_models.drivetrain.lumped import compile_lumped_drivetrain
 from simplified_vehicle_models.xml.loader import load_model, load_point_mass_vehicle
@@ -251,6 +252,37 @@ class PointMassTests(unittest.TestCase):
         self.assertGreater(tight, 0.0)
         self.assertLess(tight, open_corner)
         self.assertLessEqual(open_corner, maximum_vehicle_speed(self.vehicle))
+
+    def test_positive_root_hint_preserves_root_and_reduces_evaluations(self) -> None:
+        tolerance = 1.0e-8
+        calls = {"cold": 0, "warm": 0}
+
+        def cold(value: float) -> float:
+            calls["cold"] += 1
+            return 4.0 - value
+
+        def warm(value: float) -> float:
+            calls["warm"] += 1
+            return 4.0 - value
+
+        unhinted = _positive_root(cold, 16.0, tolerance=tolerance)
+        hinted = _positive_root(warm, 16.0, tolerance=tolerance, hint=4.1)
+
+        self.assertLessEqual(abs(unhinted - hinted), 2.0 * tolerance)
+        self.assertLess(calls["warm"], calls["cold"])
+
+    def test_corner_speed_hint_is_equivalent_from_both_sides(self) -> None:
+        tolerance = 1.0e-8
+        unhinted = maximum_corner_speed(self.vehicle, 8.0, tolerance=tolerance)
+        lower_hint = maximum_corner_speed(
+            self.vehicle, 8.0, tolerance=tolerance, hint=unhinted * 0.9
+        )
+        upper_hint = maximum_corner_speed(
+            self.vehicle, 8.0, tolerance=tolerance, hint=unhinted * 1.1
+        )
+
+        self.assertLessEqual(abs(unhinted - lower_hint), 2.0 * tolerance)
+        self.assertLessEqual(abs(unhinted - upper_hint), 2.0 * tolerance)
 
 
 if __name__ == "__main__":

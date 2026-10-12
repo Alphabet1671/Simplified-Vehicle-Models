@@ -1,4 +1,5 @@
 from pathlib import Path
+from unittest.mock import patch
 import unittest
 
 import numpy as np
@@ -7,6 +8,7 @@ from simplified_vehicle_models.results.traces import LapMode
 from simplified_vehicle_models.solvers.forward_backward import solve_lap
 from simplified_vehicle_models.tracks.types import TrackProfile
 from simplified_vehicle_models.xml.loader import load_point_mass_vehicle
+from simplified_vehicle_models.formulations import point_mass
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -72,6 +74,38 @@ class LapSolverTests(unittest.TestCase):
         self.assertFalse(np.any((result.throttle > 0.0) & (result.brake > 0.0)))
         self.assertTrue(np.all(np.isfinite(result.speed)))
         self.assertTrue(np.all(result.speed >= 0.0))
+
+    def test_warm_start_matches_cold_lap_with_fewer_limit_evaluations(self) -> None:
+        track = make_track([30.0, 15.0, 8.0, 15.0, 30.0], 10.0)
+        with patch(
+            "simplified_vehicle_models.solvers.forward_backward.maximum_acceleration_limit",
+            wraps=point_mass.maximum_acceleration_limit,
+        ) as cold_accel, patch(
+            "simplified_vehicle_models.solvers.forward_backward.maximum_deceleration_limit",
+            wraps=point_mass.maximum_deceleration_limit,
+        ) as cold_brake:
+            cold = solve_lap(self.vehicle, track, LapMode.FLYING)
+        cold_evaluations = cold_accel.call_count + cold_brake.call_count
+
+        with patch(
+            "simplified_vehicle_models.solvers.forward_backward.maximum_acceleration_limit",
+            wraps=point_mass.maximum_acceleration_limit,
+        ) as warm_accel, patch(
+            "simplified_vehicle_models.solvers.forward_backward.maximum_deceleration_limit",
+            wraps=point_mass.maximum_deceleration_limit,
+        ) as warm_brake:
+            warm = solve_lap(
+                self.vehicle,
+                track,
+                LapMode.FLYING,
+                initial_speed=cold.speed,
+                corner_speed_hint=cold.speed,
+            )
+        warm_evaluations = warm_accel.call_count + warm_brake.call_count
+
+        np.testing.assert_allclose(warm.speed, cold.speed, atol=2.0e-8)
+        self.assertAlmostEqual(warm.lap_time, cold.lap_time, delta=2.0e-8)
+        self.assertLess(warm_evaluations, cold_evaluations)
 
     def test_reports_nonconvergence_for_one_iteration(self) -> None:
         track = make_track(

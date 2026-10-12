@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 
 import numpy as np
 
@@ -25,12 +26,17 @@ def solve_lap(
     mode: LapMode,
     tolerance: float = 1.0e-6,
     maximum_iterations: int = 200,
+    initial_speed: FloatArray | None = None,
+    corner_speed_hint: FloatArray | None = None,
+    root_tolerance: float = 1.0e-8,
     _storage_trace: FloatArray | None = None,
 ) -> LapResult:
     """Calculate a minimum-time speed profile on a prescribed path."""
 
     if tolerance <= 0.0 or not math.isfinite(tolerance):
         raise ValueError("tolerance must be finite and positive")
+    if root_tolerance <= 0.0 or not math.isfinite(root_tolerance):
+        raise ValueError("root_tolerance must be finite and positive")
     if maximum_iterations < 1:
         raise ValueError("maximum_iterations must be positive")
     if len(track.distance) != len(track.radius):
@@ -40,11 +46,33 @@ def solve_lap(
 
     if _storage_trace is not None and len(_storage_trace) != len(track.distance):
         raise ValueError("storage trace must match track nodes")
+    node_count = len(track.distance)
+    if corner_speed_hint is not None:
+        corner_speed_hint = np.asarray(corner_speed_hint, dtype=np.float64)
+        if corner_speed_hint.shape != (node_count,):
+            raise ValueError("corner speed hint must match track nodes")
+        if not np.all(np.isfinite(corner_speed_hint)):
+            raise ValueError("corner speed hint must be finite")
+    if initial_speed is not None:
+        initial_speed = np.asarray(initial_speed, dtype=np.float64)
+        if initial_speed.shape != (node_count,):
+            raise ValueError("initial speed must match track nodes")
+        if not np.all(np.isfinite(initial_speed)) or np.any(initial_speed < 0.0):
+            raise ValueError("initial speed must be finite and nonnegative")
     speed_limit = np.asarray(
-        [maximum_corner_speed(vehicle, float(radius), storage_state=(StorageState(float(_storage_trace[i])) if _storage_trace is not None else None)) for i, radius in enumerate(track.radius)],
+        [
+            maximum_corner_speed(
+                vehicle,
+                float(radius),
+                storage_state=(StorageState(float(_storage_trace[i])) if _storage_trace is not None else None),
+                tolerance=root_tolerance,
+                hint=(float(corner_speed_hint[i]) if corner_speed_hint is not None else None),
+            )
+            for i, radius in enumerate(track.radius)
+        ],
         dtype=np.float64,
     )
-    speed = speed_limit.copy()
+    speed = speed_limit.copy() if initial_speed is None else np.minimum(initial_speed, speed_limit)
     if mode is LapMode.FLYING:
         _apply_periodic_boundary(speed)
     elif mode is LapMode.STANDING_START:
@@ -57,12 +85,12 @@ def solve_lap(
     iterations = 0
     for iterations in range(1, maximum_iterations + 1):
         previous = speed.copy()
-        _forward_sweep(vehicle, track, speed, _storage_trace)
+        _forward_sweep(vehicle, track, speed, speed_limit, _storage_trace, root_tolerance)
         if mode is LapMode.FLYING:
             _apply_periodic_boundary(speed)
         else:
             speed[0] = 0.0
-        _backward_sweep(vehicle, track, speed, _storage_trace)
+        _backward_sweep(vehicle, track, speed, speed_limit, _storage_trace, root_tolerance)
         if mode is LapMode.FLYING:
             _apply_periodic_boundary(speed)
         else:
@@ -90,53 +118,102 @@ def _apply_periodic_boundary(speed: FloatArray) -> None:
     speed[-1] = boundary_speed
 
 
+def _bracketed_transition(
+    reachable: Callable[[float], float],
+    lower: float,
+    upper: float,
+    candidate: float,
+    tolerance: float,
+) -> float:
+    """Return the conservative fixed point, using candidate as a hint."""
+    candidate = min(max(candidate, lower), upper)
+    candidate_reachable = reachable(candidate)
+    candidate_residual = candidate_reachable - candidate
+    if abs(candidate_residual) <= tolerance:
+        return candidate
+
+    if candidate_residual < 0.0:
+        # Above the fixed point, retain the established conservative
+        # fixed-point descent.  This handles the non-monotone capability
+        # curves used by the assembled drivetrain without jumping to a
+        # different crossing of reachable(candidate) - candidate.
+        for _ in range(20):
+            updated = max(lower, min(candidate, reachable(candidate)))
+            if abs(updated - candidate) <= tolerance:
+                return updated
+            candidate = updated
+        return candidate
+    else:
+        # The candidate is below the fixed point.  Check the cap before
+        # bisecting so increases are possible even from a low warm start.
+        if candidate == upper or reachable(upper) - upper > 0.0:
+            return upper
+        lower = candidate
+
+    while upper - lower > tolerance:
+        trial = 0.5 * (lower + upper)
+        if trial == lower or trial == upper:
+            break
+        if reachable(trial) - trial > 0.0:
+            lower = trial
+        else:
+            upper = trial
+    return lower
+
+
 def _forward_sweep(
     vehicle: PointMassVehicleParameters,
     track: TrackProfile,
     speed: FloatArray,
+    speed_limit: FloatArray,
     storage_trace: FloatArray | None = None,
+    root_tolerance: float = 1.0e-8,
 ) -> None:
     for index, segment_length in enumerate(track.segment_length):
         start_speed = float(speed[index])
-        upper_speed = float(speed[index + 1])
-        if upper_speed <= start_speed:
+        cap = float(speed_limit[index + 1])
+        if cap <= start_speed:
+            speed[index + 1] = min(float(speed[index + 1]), cap)
             continue
         segment_curvature = max(
             abs(float(track.curvature[index])),
             abs(float(track.curvature[index + 1])),
         )
 
-        candidate = upper_speed
-        for _ in range(20):
+        def reachable(candidate: float) -> float:
             acceleration_limit = maximum_acceleration_limit(
                 vehicle,
                 0.5 * (start_speed + candidate),
                 segment_curvature,
                 StorageState(float(storage_trace[index])) if storage_trace is not None else None,
             )
-            reachable = math.sqrt(
+            return math.sqrt(
                 start_speed * start_speed
                 + 2.0 * acceleration_limit * segment_length
             )
-            updated = min(candidate, reachable)
-            if abs(updated - candidate) <= 1.0e-8:
-                break
-            candidate = updated
-        else:
-            raise RuntimeError("forward transition did not converge")
-        speed[index + 1] = updated
+
+        speed[index + 1] = _bracketed_transition(
+            reachable,
+            start_speed,
+            cap,
+            float(speed[index + 1]),
+            root_tolerance,
+        )
 
 
 def _backward_sweep(
     vehicle: PointMassVehicleParameters,
     track: TrackProfile,
     speed: FloatArray,
+    speed_limit: FloatArray,
     storage_trace: FloatArray | None = None,
+    root_tolerance: float = 1.0e-8,
 ) -> None:
     for index in range(len(track.segment_length) - 1, -1, -1):
         next_speed = float(speed[index + 1])
-        upper_speed = float(speed[index])
-        if upper_speed <= next_speed:
+        cap = float(speed_limit[index])
+        if cap <= next_speed:
+            speed[index] = min(float(speed[index]), cap)
             continue
         segment_length = float(track.segment_length[index])
         segment_curvature = max(
@@ -144,25 +221,25 @@ def _backward_sweep(
             abs(float(track.curvature[index + 1])),
         )
 
-        candidate = upper_speed
-        for _ in range(20):
+        def reachable(candidate: float) -> float:
             deceleration_limit = maximum_deceleration_limit(
                 vehicle,
                 0.5 * (candidate + next_speed),
                 segment_curvature,
                 StorageState(float(storage_trace[index + 1])) if storage_trace is not None else None,
             )
-            reachable = math.sqrt(
+            return math.sqrt(
                 next_speed * next_speed
                 + 2.0 * deceleration_limit * segment_length
             )
-            updated = min(candidate, reachable)
-            if abs(updated - candidate) <= 1.0e-8:
-                break
-            candidate = updated
-        else:
-            raise RuntimeError("backward transition did not converge")
-        speed[index] = updated
+
+        speed[index] = _bracketed_transition(
+            reachable,
+            next_speed,
+            cap,
+            float(speed[index]),
+            root_tolerance,
+        )
 
 
 def _build_result(

@@ -520,16 +520,25 @@ def maximum_corner_speed(
     radius: float,
     maximum_speed: float = 60.0,
     storage_state: StorageState | None = None,
+    tolerance: float = 1.0e-8,
+    hint: float | None = None,
 ) -> float:
     """Solve the maximum steady speed for one unsigned radius."""
 
     if not math.isfinite(radius) or radius <= 0.0:
         raise ValueError("radius must be finite and positive")
+    if not math.isfinite(tolerance) or tolerance <= 0.0:
+        raise ValueError("tolerance must be finite and positive")
     upper = min(maximum_speed, maximum_vehicle_speed(vehicle))
     lower = 0.0
     if evaluate_equilibrium(vehicle, upper, 1.0 / radius, 0.0, storage_state).is_feasible:
         return upper
-    for _ in range(32):
+    if hint is not None and math.isfinite(hint) and 0.0 < hint < upper:
+        if evaluate_equilibrium(vehicle, hint, 1.0 / radius, 0.0, storage_state).is_feasible:
+            lower = hint
+        else:
+            upper = hint
+    while upper - lower > tolerance:
         trial = 0.5 * (lower + upper)
         state = evaluate_equilibrium(vehicle, trial, 1.0 / radius, 0.0, storage_state)
         if state.is_feasible:
@@ -703,13 +712,27 @@ def _available_brake_force(
     return limits[constraint], constraint
 
 
-def _positive_root(function: Callable[[float], float], upper: float) -> float:
+def _positive_root(
+    function: Callable[[float], float],
+    upper: float,
+    tolerance: float = 1.0e-8,
+    hint: float | None = None,
+) -> float:
+    if not math.isfinite(upper) or upper < 0.0:
+        raise ValueError("upper must be finite and nonnegative")
+    if not math.isfinite(tolerance) or tolerance <= 0.0:
+        raise ValueError("tolerance must be finite and positive")
     lower = 0.0
     if function(lower) <= 0.0:
         return 0.0
     if function(upper) > 0.0:
         return upper
-    for _ in range(32):
+    if hint is not None and math.isfinite(hint) and 0.0 < hint < upper:
+        if function(hint) > 0.0:
+            lower = hint
+        else:
+            upper = hint
+    while upper - lower > tolerance:
         trial = 0.5 * (lower + upper)
         if function(trial) > 0.0:
             lower = trial

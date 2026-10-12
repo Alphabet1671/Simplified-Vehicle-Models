@@ -75,7 +75,7 @@ class LapSolverTests(unittest.TestCase):
         self.assertTrue(np.all(np.isfinite(result.speed)))
         self.assertTrue(np.all(result.speed >= 0.0))
 
-    def test_warm_start_matches_cold_lap_with_fewer_limit_evaluations(self) -> None:
+    def test_warm_start_matches_cold_lap_without_changing_evaluations(self) -> None:
         track = make_track([30.0, 15.0, 8.0, 15.0, 30.0], 10.0)
         with patch(
             "simplified_vehicle_models.solvers.forward_backward.maximum_acceleration_limit",
@@ -105,7 +105,9 @@ class LapSolverTests(unittest.TestCase):
 
         np.testing.assert_allclose(warm.speed, cold.speed, atol=2.0e-8)
         self.assertAlmostEqual(warm.lap_time, cold.lap_time, delta=2.0e-8)
-        self.assertLess(warm_evaluations, cold_evaluations)
+        # Transition/profile acceleration is intentionally unsupported until
+        # a non-monotone assembled capability bracket is proven safe.
+        self.assertEqual(warm_evaluations, cold_evaluations)
 
     def test_reports_nonconvergence_for_one_iteration(self) -> None:
         track = make_track(

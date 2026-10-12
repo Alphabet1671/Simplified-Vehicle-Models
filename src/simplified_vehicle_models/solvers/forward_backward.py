@@ -72,7 +72,11 @@ def solve_lap(
         ],
         dtype=np.float64,
     )
-    speed = speed_limit.copy() if initial_speed is None else np.minimum(initial_speed, speed_limit)
+    # Transition/profile warm starts are intentionally unsupported for now.  The
+    # assembled capability can be non-monotone, so reusing a prior profile can
+    # select a different fixed-point crossing.  Keep validating the public hint
+    # for forward compatibility, but always begin from the conservative caps.
+    speed = speed_limit.copy()
     if mode is LapMode.FLYING:
         _apply_periodic_boundary(speed)
     elif mode is LapMode.STANDING_START:
@@ -118,47 +122,23 @@ def _apply_periodic_boundary(speed: FloatArray) -> None:
     speed[-1] = boundary_speed
 
 
-def _bracketed_transition(
+def _fixed_point_transition(
     reachable: Callable[[float], float],
-    lower: float,
     upper: float,
-    candidate: float,
     tolerance: float,
 ) -> float:
-    """Return the conservative fixed point, using candidate as a hint."""
-    candidate = min(max(candidate, lower), upper)
-    candidate_reachable = reachable(candidate)
-    candidate_residual = candidate_reachable - candidate
-    if abs(candidate_residual) <= tolerance:
-        return candidate
+    """Return the established conservative fixed-point iteration.
 
-    if candidate_residual < 0.0:
-        # Above the fixed point, retain the established conservative
-        # fixed-point descent.  This handles the non-monotone capability
-        # curves used by the assembled drivetrain without jumping to a
-        # different crossing of reachable(candidate) - candidate.
-        for _ in range(20):
-            updated = max(lower, min(candidate, reachable(candidate)))
-            if abs(updated - candidate) <= tolerance:
-                return updated
-            candidate = updated
-        return candidate
-    else:
-        # The candidate is below the fixed point.  Check the cap before
-        # bisecting so increases are possible even from a low warm start.
-        if candidate == upper or reachable(upper) - upper > 0.0:
-            return upper
-        lower = candidate
-
-    while upper - lower > tolerance:
-        trial = 0.5 * (lower + upper)
-        if trial == lower or trial == upper:
-            break
-        if reachable(trial) - trial > 0.0:
-            lower = trial
-        else:
-            upper = trial
-    return lower
+    Do not bisect the residual here: assembled drivetrain capability may be
+    non-monotone, so residual bisection can converge to a different crossing.
+    """
+    candidate = upper
+    for _ in range(20):
+        updated = min(candidate, reachable(candidate))
+        if abs(updated - candidate) <= tolerance:
+            return updated
+        candidate = updated
+    raise RuntimeError("transition did not converge")
 
 
 def _forward_sweep(
@@ -171,9 +151,10 @@ def _forward_sweep(
 ) -> None:
     for index, segment_length in enumerate(track.segment_length):
         start_speed = float(speed[index])
+        upper_speed = float(speed[index + 1])
         cap = float(speed_limit[index + 1])
-        if cap <= start_speed:
-            speed[index + 1] = min(float(speed[index + 1]), cap)
+        if upper_speed <= start_speed:
+            speed[index + 1] = min(upper_speed, cap)
             continue
         segment_curvature = max(
             abs(float(track.curvature[index])),
@@ -192,12 +173,9 @@ def _forward_sweep(
                 + 2.0 * acceleration_limit * segment_length
             )
 
-        speed[index + 1] = _bracketed_transition(
-            reachable,
-            start_speed,
+        speed[index + 1] = min(
+            _fixed_point_transition(reachable, upper_speed, root_tolerance),
             cap,
-            float(speed[index + 1]),
-            root_tolerance,
         )
 
 
@@ -211,9 +189,10 @@ def _backward_sweep(
 ) -> None:
     for index in range(len(track.segment_length) - 1, -1, -1):
         next_speed = float(speed[index + 1])
+        upper_speed = float(speed[index])
         cap = float(speed_limit[index])
-        if cap <= next_speed:
-            speed[index] = min(float(speed[index]), cap)
+        if upper_speed <= next_speed:
+            speed[index] = min(upper_speed, cap)
             continue
         segment_length = float(track.segment_length[index])
         segment_curvature = max(
@@ -233,12 +212,9 @@ def _backward_sweep(
                 + 2.0 * deceleration_limit * segment_length
             )
 
-        speed[index] = _bracketed_transition(
-            reachable,
-            next_speed,
+        speed[index] = min(
+            _fixed_point_transition(reachable, upper_speed, root_tolerance),
             cap,
-            float(speed[index]),
-            root_tolerance,
         )
 
 

@@ -7,7 +7,8 @@ HEAD `17ec9c0` (P8/P9/P10 validation artifacts plus bounded torque-solve optimiz
 scalar MIS solve (the nested voltage/storage bracket is bounded, but is still evaluated at
 every spatial node). Consequently, the focused regression run below is intentionally bounded:
 it runs the motor-map tests, the MIS regression, P9 energy tests, and the lightweight
-high-speed constraint test. A broad `unittest discover` run was not used as evidence.
+high-speed constraint test. Full assembled MIS flying and standing-start benchmarks are
+reported below; a broad `unittest discover` run remains separate from this validation.
 
 ## MIS reference and full-model checks
 
@@ -20,12 +21,19 @@ results are the reference for the full model's unchanged vehicle/track data:
 | standing start | 70.5198 | 14.3836 | 28.9352 |
 
 The full assembled vehicle loads the same tire, aero, transmission, motor and storage
-assembly. Its motor-speed ceiling is 18,600 rpm, corresponding to 34.60897 m/s at the
-0.193675 m effective radius and 10.9 ratio. Thus the MIS peak has 5.674 m/s (16.4%)
-vehicle-speed margin, or 3,054 rpm (16.4%) motor-speed margin. MIS therefore does **not**
-exercise voltage-dependent field weakening; it is not a suitable voltage-regression track.
-The reported MIS values are retained as regression/reference values rather than claiming an
-unbounded full assembled endurance run.
+assembly. With cached motor-loss interpolation, assembled MIS flying and standing-start
+solves each complete in about 19 s on this machine (two inner iterations), meeting the
+single-lap runtime target. Results are:
+
+| boundary | assembled lap time (s) | legacy reference (s) | difference (s) |
+|---|---:|---:|---:|
+| flying | 69.2064 | 69.3558 | -0.1494 |
+| standing start | 70.3694 | 70.5198 | -0.1504 |
+
+Its motor-speed ceiling is 18,600 rpm, corresponding to 34.60897 m/s at the 0.193675 m
+effective radius and 10.9 ratio. Thus the MIS peak has 5.674 m/s (16.4%) vehicle-speed
+margin, or 3,054 rpm (16.4%) motor-speed margin. MIS therefore does **not** exercise
+voltage-dependent field weakening; it is not a suitable voltage-regression track.
 
 ## Synthetic high-speed case
 

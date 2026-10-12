@@ -174,5 +174,20 @@ class MisRegressionTests(unittest.TestCase):
         self.assertTrue(np.any(mild_deceleration & (result.throttle > 0.0)))
 
 
+class AssembledMisRegressionTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.vehicle = load_point_mass_vehicle(
+            REPOSITORY_ROOT / "models/formulations/murphy_point_mass.xml"
+        )
+        cls.track = load_track(TRACK_PATH)
+        cls.result = solve_lap(cls.vehicle, cls.track, LapMode.FLYING, tolerance=1.0e-6)
+
+    def test_assembled_flying_lap_matches_reported_reference(self) -> None:
+        self.assertTrue(self.result.converged)
+        self.assertAlmostEqual(self.result.lap_time, 69.20636593794342, places=6)
+        self.assertEqual(len(self.result.speed), GOLDEN_NODE_COUNT)
+
+
 if __name__ == "__main__":
     unittest.main()

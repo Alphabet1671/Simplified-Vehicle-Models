@@ -132,6 +132,25 @@ benchmark timing is informational and is not a test gate. Voltage, speed, and
 normalized-load queries outside the persisted domain use the exact analytical
 evaluator without clamping or extrapolation.
 
+## Task 3 round 1/5 remediation evidence
+
+Focused regression coverage now includes out-of-domain exact torque limits, exact
+regen nodes, all-endpoints-satisfy selection, mixed feasibility masks, and
+non-monotone branch crossings. Exact fallback accounting is centralized, including
+`operating_map=None`; nonzero torque never silently evaluates LUT load zero when
+the directional envelope is nonpositive.
+
+The inverse microbenchmark compares the prior repeated analytical evaluator plus
+40-step bisection against the LUT inverse, in one process with 100,000 queries:
+
+| operation | calls/query | microseconds/query |
+|---|---:|---:|
+| old exact evaluator + bisection | 41 | 627.18 |
+| LUT inverse | 1 inverse + 1 forward | 68.06 |
+
+The LUT inverse was 9.22x faster in this run. This is a motor-query baseline;
+assembled comparison remains Task 4.
+
 ## Reference checks and assumptions
 
 Legacy MIS flying and standing-start golden results remain 69.22653728547469 s

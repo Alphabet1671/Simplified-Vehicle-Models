@@ -36,6 +36,7 @@ from simplified_vehicle_models.powertrain.power_plant import (
     motor_lut_counters,
     _validate_operating_map,
     _load_operating_map,
+    MotorOperatingMap,
 )
 from simplified_vehicle_models.powertrain.energy_storage import (
     StorageState,
@@ -213,6 +214,37 @@ class MotorLutQueryTests(unittest.TestCase):
         self.assertTrue(regen.feasible)
         self.assertGreaterEqual(regen.operating_point.bus_power, -100.0 - 1.0e-6)
         self.assertLessEqual(regen.torque, 0.0)
+
+    def test_exact_limits_support_out_of_domain_voltage(self):
+        limits = motor_torque_limits(self.motor, 1000.0, 400.0)
+        self.assertTrue(limits.used_fallback)
+        self.assertGreater(limits.maximum_drive_torque, 0.0)
+        self.assertGreater(limits.maximum_regen_torque, 0.0)
+
+    def _branch_motor(self, powers, mask):
+        mapping = MotorOperatingMap(
+            np.array([400.0, 500.0]), np.array([0.0, 2000.0]),
+            np.array([-1.0, -0.5, 0.0, 0.5, 1.0]),
+            np.full((2, 2), 20.0), np.full((2, 2), 20.0),
+            np.tile(np.asarray(powers), (2, 2, 1)),
+            np.zeros((2, 2, 5)), np.tile(np.asarray(mask, dtype=bool), (2, 2, 1)),
+        )
+        return replace(self.motor, operating_map=mapping)
+
+    def test_regen_inverse_exact_node_and_all_endpoints(self):
+        motor = self._branch_motor([-20.0, -12.0, -5.0, 0.0, 100.0], [True, True, True, False, False])
+        node = torque_for_bus_power(motor, 1000.0, 450.0, -12.0, "regen")
+        self.assertTrue(node.feasible)
+        self.assertAlmostEqual(node.torque, -10.0)
+        broad = torque_for_bus_power(motor, 1000.0, 450.0, -25.0, "regen")
+        self.assertTrue(broad.feasible)
+        self.assertAlmostEqual(broad.torque, -20.0)
+
+    def test_regen_inverse_mixed_mask_skips_invalid_segment(self):
+        motor = self._branch_motor([-8.0, -12.0, -5.0, 0.0, 100.0], [False, True, True, False, False])
+        result = torque_for_bus_power(motor, 1000.0, 450.0, -10.0, "regen")
+        self.assertTrue(result.feasible)
+        self.assertAlmostEqual(result.torque, -7.142857142857143)
 
 
 class PowertrainAssemblyTests(unittest.TestCase):

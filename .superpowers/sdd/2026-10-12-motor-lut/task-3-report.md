@@ -43,3 +43,11 @@ Queries outside persisted voltage/speed or normalized-load domains call `evaluat
 ## Concerns
 - The inverse API uses signed bus-power targets (drive positive, regen negative); callers should not pass unsigned charge magnitudes.
 - LUT interpolation can have larger worst-case error near sharp non-monotone regen features (328 W in the 100-sample exploratory distribution), though the reviewed 95th-percentile gate passes.
+
+## Round 1/5 remediation evidence
+- Corrected `_exact_limit` argument order and added out-of-domain voltage limit coverage.
+- Regen inversion now scans negative-load segments inclusively, applies endpoint feasibility masks, retains exact/interior crossings, and chooses the most-negative satisfying torque. Tests cover exact nodes, both endpoints satisfying, mixed masks, and non-monotone branches.
+- Replaced the fixed 257-point analytical inverse fallback with source-breakpoint bracket identification and bisection, returning signed residual and honest feasibility.
+- Centralized exact fallback accounting; mapping-less and nonpositive-envelope directional queries are exact fallbacks.
+- Benchmark (100,000 queries, same process): old exact evaluator plus 40-step bisection = 41 calls/query, 627.18 us/query; LUT inverse = one inverse plus one forward, 68.06 us/query (9.22x faster). This is the motor-query baseline; assembled comparison remains Task 4.
+- Focused suite after remediation: 30 tests, OK. Full suite: 234 tests, OK.

@@ -293,15 +293,16 @@ class CrossFidelityTests(unittest.TestCase):
 
         self.assertEqual(manifest.unused_roles(), ())
         self.assertEqual(manifest.unconsumed_names(), ())
-        for capability in (
-            TIRE_FORCE_ENVELOPE,
-            AERO_LOADS,
-            DRIVE_FORCE_LIMIT,
-        ):
+        for capability in (TIRE_FORCE_ENVELOPE, AERO_LOADS):
             record = manifest.capability(capability)
             assert record is not None
             self.assertTrue(record.is_direct)
             self.assertEqual(record.adapter_names, ())
+        record = manifest.capability(DRIVE_FORCE_LIMIT)
+        assert record is not None
+        self.assertTrue(record.is_reduced)
+        self.assertEqual(record.source_capability, "powertrain-and-drivetrain")
+        self.assertEqual(record.adapter_names, ("reduce_powertrain_and_drivetrain",))
 
     def test_manifest_reports_a_reduced_capability(self) -> None:
         manifest = self.reduced.manifest

@@ -14,7 +14,6 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from simplified_vehicle_models.compiler.capabilities import DRIVE_FORCE_LIMIT
 from simplified_vehicle_models.compiler.adapters import (
     CapabilityResolutionError,
     ResolutionResult,
@@ -191,24 +190,11 @@ def _assembly_candidates(assembly: Model) -> tuple[ComponentCandidate, ...]:
             reference.model.subtype,
         )
         if not descriptor.is_component:
-            if reference.model.model_type in {"powertrain-assembly", "drivetrain-assembly"}:
-                from simplified_vehicle_models.powertrain.assembly import (
-                    ASSEMBLY_SOURCE_CAPABILITY,
-                    compile_powertrain_drivetrain,
-                )
-                descriptor = ComponentDescriptor(
-                    model_type=reference.model.model_type,
-                    subtype=reference.model.subtype,
-                    kind=COMPONENT_KIND,
-                    capability=ASSEMBLY_SOURCE_CAPABILITY,
-                    compile_function=compile_powertrain_drivetrain,
-                )
-            else:
-                raise ValueError(
-                    f"{assembly.path}: component role {reference.role!r} references "
-                    f"{reference.model.model_type}/{reference.model.subtype}, "
-                    "which is not a component type"
-                )
+            raise ValueError(
+                f"{assembly.path}: component role {reference.role!r} references "
+                f"{reference.model.model_type}/{reference.model.subtype}, "
+                "which is not a component type"
+            )
         candidates.append(
             ComponentCandidate(
                 role=reference.role,
@@ -238,7 +224,7 @@ def _assembly_candidates(assembly: Model) -> tuple[ComponentCandidate, ...]:
             model_type="vehicle-powertrain",
             subtype="assembled",
             kind=COMPONENT_KIND,
-            capability=DRIVE_FORCE_LIMIT,
+            capability=ASSEMBLY_SOURCE_CAPABILITY,
             compile_function=compile_powertrain_drivetrain,
         )
         candidates.append(ComponentCandidate("powertrain_drivetrain", assembly, descriptor))

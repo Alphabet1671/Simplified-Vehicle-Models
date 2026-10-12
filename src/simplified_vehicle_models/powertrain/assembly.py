@@ -180,21 +180,32 @@ def solve_shaft_torque_fixed_point(
         return FixedPointResult(0.0, residual, residual <= tolerance, 0)
     torque = bus_power / max(unit_count, 1) / omega
     residual = math.inf
-    for iteration in range(1, max_iterations + 1):
-        result = evaluate_shaft_power(motor, motor_speed, torque, bus_voltage)
+    def map_target(current_torque: float) -> float:
+        result = evaluate_shaft_power(motor, motor_speed, current_torque, bus_voltage)
         if bus_power >= 0.0:
-            target_shaft_power = bus_power / unit_count * motor.inverter_efficiency - result.loss_power
+            target_shaft_power = (
+                bus_power / unit_count * motor.inverter_efficiency
+                - result.loss_power
+            )
         else:
-            target_shaft_power = bus_power / unit_count / motor.inverter_efficiency - result.loss_power
-        target = target_shaft_power / omega
+            target_shaft_power = (
+                bus_power / unit_count / motor.inverter_efficiency
+                - result.loss_power
+            )
+        return target_shaft_power / omega
+
+    for iteration in range(1, max_iterations + 1):
+        target = map_target(torque)
         residual = abs(target - torque)
         if residual <= tolerance:
             return FixedPointResult(target, residual, True, iteration)
         # Loss maps can be stiff near the charge-power limit. Under-relax the
         # update while retaining the residual of the actual fixed-point map.
-        # The factor is explicit so iteration behavior is reproducible.
         relaxation = 0.25
         torque = (1.0 - relaxation) * torque + relaxation * target
+    # Report the residual at the torque that is actually returned, not at the
+    # pre-relaxation iterate used to produce it.
+    residual = abs(map_target(torque) - torque)
     return FixedPointResult(torque, residual, False, max_iterations)
 
 
@@ -258,18 +269,35 @@ def maximum_regen_force(
             "motor_speed", 0.0, True, 0,
         )
     envelope = maximum_motor_torque(motor, motor_speed, storage.bus_voltage / math.sqrt(3.0))
-    torque_force = envelope * motor.unit_count * transmission.gear_ratio * transmission.gear_efficiency / effective_radius
-    power_force = math.inf if speed == 0.0 else abs(storage.charge_power_limit) * motor.inverter_efficiency * transmission.gear_efficiency / speed
+    # Regeneration is directional: wheel power is reduced by the gear and
+    # inverter losses before it reaches the battery.  The wheel force allowed
+    # by a battery charge-power limit therefore uses reciprocal efficiencies.
+    regen_gear_factor = 1.0 / transmission.gear_efficiency
+    regen_inverter_factor = 1.0 / motor.inverter_efficiency
+    torque_force = (
+        envelope * motor.unit_count * transmission.gear_ratio
+        * regen_gear_factor / effective_radius
+    )
+    power_force = (
+        math.inf if speed == 0.0 else abs(storage.charge_power_limit)
+        * regen_gear_factor * regen_inverter_factor / speed
+    )
     limit = min(torque_force, power_force)
     active = "motor_torque" if torque_force <= power_force else "storage_power"
-    crossover = math.inf if torque_force == 0.0 else abs(storage.charge_power_limit) * motor.inverter_efficiency * transmission.gear_efficiency / torque_force
+    crossover = (
+        math.inf if torque_force == 0.0 else abs(storage.charge_power_limit)
+        * regen_gear_factor * regen_inverter_factor / torque_force
+    )
     if speed == 0.0:
         return RegenLimit(limit, torque_force, power_force, storage.charge_power_limit, crossover, active, 0.0, True, 0)
     fixed_point = solve_shaft_torque_fixed_point(
         motor, motor_speed, -abs(storage.charge_power_limit), storage.bus_voltage,
         unit_count=motor.unit_count, tolerance=tolerance, max_iterations=max_iterations,
     )
-    loss_limited_force = abs(fixed_point.torque) * motor.unit_count * transmission.gear_ratio * transmission.gear_efficiency / effective_radius
+    loss_limited_force = (
+        abs(fixed_point.torque) * motor.unit_count * transmission.gear_ratio
+        * regen_gear_factor / effective_radius
+    )
     if active == "storage_power":
         limit = min(limit, loss_limited_force)
     return RegenLimit(

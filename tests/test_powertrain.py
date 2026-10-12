@@ -20,6 +20,7 @@ from simplified_vehicle_models.powertrain.assembly import (
 )
 from simplified_vehicle_models.drivetrain.lumped import compile_lumped_drivetrain
 from simplified_vehicle_models.xml.loader import load_model
+from simplified_vehicle_models.xml.model import DataReference
 from simplified_vehicle_models.powertrain.power_plant import (
     compile_electric_motor,
     evaluate_shaft_power,
@@ -61,11 +62,34 @@ class OperatingMapValidationTests(unittest.TestCase):
         self.bad(lambda d: d["bus_power"].__setitem__((0, 1, 64), -1.0))
         self.bad(lambda d: (d["bus_power"].__setitem__((0, 1, 0), 1.0), d["regen_feasible"].__setitem__((0, 1, 0), True)))
 
+    def test_rejects_raw_negative_row_nonmonotonicity_even_when_infeasible(self):
+        def mutate(data):
+            row = data["bus_power"][0, 0]
+            row[1] = row[0] - 1.0
+
+        self.bad(mutate)
+
+    def test_rejects_regen_feasible_holes_and_reentry(self):
+        def mutate(data):
+            feasible = data["regen_feasible"][0, 64]
+            feasible[10] = False
+            feasible[11] = True
+
+        self.bad(mutate)
+
+    def test_rejects_digest_mismatch(self):
+        model = load_model(ROOT / "models/power-plants/amk_dd5_100c.xml")
+        reference = model.data[0]
+        bad_reference = DataReference(reference.role, reference.path, reference.format, "0" * 64)
+        bad_model = replace(model, data=(bad_reference,))
+        with self.assertRaisesRegex(ValueError, "digest mismatch"):
+            _load_operating_map(bad_model)
+
     def test_canonical_shape_and_digest(self):
         loaded = _validate_operating_map(self.data)
         self.assertEqual(loaded.bus_power.shape, (9, 129, 65))
         digest = hashlib.sha256((ROOT / "models/data/amk_dd5_100c_operating_map.npz").read_bytes()).hexdigest()
-        self.assertEqual(digest, "9cd1cd29818677e86bc60c21e36b985485fe87fffeeaae4f8b1b49cce8c17602")
+        self.assertEqual(digest, "fa670ac4abd4bb81a8be923c493a54cc9ea424021301a750718de05cb057fbee")
 
 
 class PowertrainAssemblyTests(unittest.TestCase):

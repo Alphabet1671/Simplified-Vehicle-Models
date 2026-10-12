@@ -93,6 +93,17 @@ def generate(path, voltage_points=9, speed_points=129, load_points=65, xml_path=
                 _maximum_feasible(parameters, motor_speed, bus_voltage, 1.0, envelope),
             )
             regen_torque[iv, ix] = _maximum_feasible(parameters, motor_speed, bus_voltage, -1.0, envelope)
+            # A low-speed analytical regen candidate can draw positive parasitic
+            # bus power at every negative load.  It is not a valid directional
+            # row; use the zero-torque row rather than masking that violation.
+            negative_candidate = np.array([
+                evaluate_shaft_power_exact(
+                    parameters, motor_speed, normalized_load * regen_torque[iv, ix], bus_voltage
+                ).bus_power
+                for normalized_load in load[: load_points // 2]
+            ])
+            if negative_candidate.size > 1 and np.any(np.diff(negative_candidate) < -1.0e-9):
+                regen_torque[iv, ix] = 0.0
             for il, normalized_load in enumerate(load):
                 torque_limit = drive_torque[iv, ix] if normalized_load >= 0 else regen_torque[iv, ix]
                 result = evaluate_shaft_power_exact(parameters, motor_speed, normalized_load * torque_limit, bus_voltage)
@@ -104,26 +115,22 @@ def generate(path, voltage_points=9, speed_points=129, load_points=65, xml_path=
                 regen_feasible[iv, ix, il] = (
                     normalized_load < 0.0 and result.feasible and result.bus_power < -1.0e-9
                 )
-            # Productive regen is a domain, not a sign coercion.  Exclude
-            # analytical points that are lossy or break the directional order.
-            previous = None
-            for il in range(0, load_points // 2):
-                value = bus_power[iv, ix, il]
-                if not regen_feasible[iv, ix, il] or (previous is not None and value < previous - 1.0e-9):
-                    regen_feasible[iv, ix, il] = False
-                else:
-                    previous = value
-            # Never repair a physics row.  A violation beyond floating noise is
-            # a generator error and must be fixed at construction time.
-            for indices in (slice(0, load_points // 2 + 1), slice(load_points // 2, None)):
-                row = bus_power[iv, ix, indices]
-                mask = np.ones(row.size, dtype=bool) if indices.start else regen_feasible[iv, ix, indices]
-                values = row[mask]
+            zero = load_points // 2
+            row = bus_power[iv, ix]
+            # Validate complete raw directional rows before applying the
+            # productive-regen mask; parasitic points cannot hide violations.
+            for values in (row[:zero], row[zero:]):
                 if values.size > 1:
                     delta = float(np.max(np.maximum(0.0, -np.diff(values))))
                     max_repair = max(max_repair, delta)
                     if delta > 1.0e-9:
                         raise ValueError(f"non-monotone analytical bus power at voltage={bus_voltage}, speed={motor_speed}: {delta} W")
+            # Productive regen is a single prefix from maximum negative load
+            # toward the zero crossover; holes and re-entry are invalid.
+            regen = regen_feasible[iv, ix, :zero]
+            true_indices = np.flatnonzero(regen)
+            if true_indices.size and not np.array_equal(true_indices, np.arange(true_indices[-1] + 1)):
+                raise ValueError(f"non-contiguous analytical regen feasibility at voltage={bus_voltage}, speed={motor_speed}")
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(path.name + ".tmp")
     np.savez_compressed(temporary, voltage=voltage, speed=speed, load=load,

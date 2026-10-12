@@ -5,13 +5,13 @@
 | Field | Value |
 |---|---|
 | File | `amk_dd5_100c_operating_map.npz` |
-| SHA-256 | `9cd1cd29818677e86bc60c21e36b985485fe87fffeeaae4f8b1b49cce8c17602` |
+| SHA-256 | `fa670ac4abd4bb81a8be923c493a54cc9ea424021301a750718de05cb057fbee` |
 | Axes | voltage 9, speed 129, signed normalized load 65 |
 | Arrays | drive_torque (9,129), regen_torque (9,129), bus_power (9,129,65), loss_power (9,129,65), regen_feasible (9,129,65) |
 | Generator | `tools/generate_motor_lut.py`, motor-lut-v1 |
 | Command | `PYTHONPATH=src python3 tools/generate_motor_lut.py models/power-plants/amk_dd5_100c.xml models/data/amk_dd5_100c_operating_map.npz` |
 | Maximum monotonic repair | 0 W (generation fails above 1e-9 W; no repair is applied) |
-| Source digests | XML `06366f357e5581a7738be2a703c2a60296a3a5b1b74b9d8c1990023dba37d59c`; machine parameters `122fda775bda425b6ec66e895db1017fac662abac476faf9fce508b901349dce`; torque map `1ccf1500764e5c5203919d2968ee6a626a1ba86dc117755f0e0974c00a24798d`; loss map `f79f651c13494373e638929556f9efcdf8220c6558dfdd007b706a8832ec6651`; identification `9078970586f7e0500b302ba70dfa960e23b6364a83d88535fca257f3e5fc5be8` |
+| Source digests | XML `91e9b6524fe10518018d92c495736176e11f5434acc3194afe90526060a7202e`; machine parameters `122fda775bda425b6ec66e895db1017fac662abac476faf9fce508b901349dce`; torque map `1ccf1500764e5c5203919d2968ee6a626a1ba86dc117755f0e0974c00a24798d`; loss map `f79f651c13494373e638929556f9efcdf8220c6558dfdd007b706a8832ec6651`; identification `9078970586f7e0500b302ba70dfa960e23b6364a83d88535fca257f3e5fc5be8` |
 | Regen convention | Negative load is productive regen only; positive analytical bus draw is retained and marked infeasible in `regen_feasible`. Load zero is the physical zero-torque anchor. |
 
 

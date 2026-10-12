@@ -426,10 +426,18 @@ def _validate_operating_map(data: dict[str, np.ndarray]) -> MotorOperatingMap:
             raise ValueError("operating map zero-load bus power has invalid sign")
         if np.any(row[zero + 1:] < -1.0e-9):
             raise ValueError("operating map drive bus power has invalid sign")
+        if np.any(valid[zero:]):
+            raise ValueError("operating map regen feasibility is limited to negative loads")
+        negative_row = row[:zero]
+        if negative_row.size > 1 and np.any(np.diff(negative_row) < -1.0e-9):
+            raise ValueError("operating map bus power is not monotone by direction")
         regen = valid[:zero]
-        if np.any(row[:zero][regen] > 1.0e-9):
+        true_indices = np.flatnonzero(regen)
+        if true_indices.size and not np.array_equal(true_indices, np.arange(true_indices[-1] + 1)):
+            raise ValueError("operating map regen feasibility must be contiguous")
+        if np.any(negative_row[regen] > 1.0e-9):
             raise ValueError("operating map productive regen has invalid sign")
-        values = row[:zero][regen]
+        values = negative_row[regen]
         if values.size > 1 and np.any(np.diff(values) < -1.0e-9):
             raise ValueError("operating map bus power is not monotone by direction")
         if np.any(np.diff(row[zero:]) < -1.0e-9):

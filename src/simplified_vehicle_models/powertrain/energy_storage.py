@@ -131,6 +131,16 @@ def evaluate_storage(parameters: EnergyStorageParameters, state: StorageState):
     return StorageLimits(voltage, discharge, charge, energy)
 
 
+def terminal_voltage(
+    parameters: EnergyStorageParameters,
+    state: StorageState,
+    current: float,
+) -> float:
+    """Return terminal voltage after internal resistance drop."""
+    voltage, resistance = _pack_values(parameters, _validate_state(state))
+    return voltage - resistance * current
+
+
 def solve_current(
     parameters: EnergyStorageParameters,
     state: StorageState,

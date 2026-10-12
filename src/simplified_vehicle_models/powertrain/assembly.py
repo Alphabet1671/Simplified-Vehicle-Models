@@ -21,6 +21,7 @@ from simplified_vehicle_models.powertrain.energy_storage import (
     StorageState,
     evaluate_storage,
     solve_current,
+    terminal_voltage,
 )
 from simplified_vehicle_models.powertrain.power_plant import (
     PowerPlantParameters,
@@ -273,60 +274,53 @@ def maximum_drive_force(
             0.0, 0.0, storage.bus_voltage, 0.0, "motor_speed", 0.0,
             0.0, True, 0, 0.0,
         )
-    envelope = maximum_motor_torque(
-        motor, motor_speed, storage.bus_voltage / math.sqrt(3.0)
-    )
-    # Solve the actual evaluated bus-power constraint directly.  A fixed-point
-    # torque estimate can have the wrong sign when losses dominate at low speed;
-    # taking its absolute value would then report motoring force with charging
-    # power.  Bisection preserves a physically valid positive-power operating
-    # point and never needs an artificial power floor.
-    def evaluate(torque: float):
-        return evaluate_shaft_power(
-            motor, motor_speed, torque, storage.bus_voltage
+    voltage = storage.bus_voltage
+    torque = 0.0
+    operating = evaluate_shaft_power(motor, motor_speed, 0.0, voltage)
+    current = 0.0
+    converged = False
+    iterations = 0
+    residual = math.inf
+    tolerance = 1.0e-9
+    for iterations in range(1, 51):
+        envelope = maximum_motor_torque(
+            motor, motor_speed, voltage / math.sqrt(3.0)
         )
 
-    lower = 0.0
-    upper = envelope
-    lower_result = evaluate(lower)
-    upper_result = evaluate(upper)
-    iterations = 0
-    tolerance = 1.0e-9
-    if not lower_result.feasible or lower_result.bus_power < 0.0:
-        torque = 0.0
-        operating = lower_result
-        converged = False
-    elif (
-        upper_result.feasible
-        and 0.0 <= upper_result.bus_power <= storage.discharge_power_limit
-    ):
-        torque = upper
-        operating = upper_result
-        converged = True
-    else:
-        # Find the largest torque whose evaluated bus power remains within the
-        # discharge limit.  The lower endpoint is valid by construction.
-        while iterations < 100 and upper - lower > tolerance:
-            midpoint = 0.5 * (lower + upper)
-            midpoint_result = evaluate(midpoint)
-            iterations += 1
-            if (
-                midpoint_result.feasible
-                and 0.0 <= midpoint_result.bus_power
-                <= storage.discharge_power_limit
-            ):
-                lower = midpoint
-                lower_result = midpoint_result
+        def evaluate(candidate: float):
+            return evaluate_shaft_power(motor, motor_speed, candidate, voltage)
+
+        lower = 0.0
+        upper = envelope
+        lower_result = evaluate(lower)
+        upper_result = evaluate(upper)
+        if lower_result.feasible and lower_result.bus_power >= 0.0:
+            if upper_result.feasible and upper_result.bus_power <= storage.discharge_power_limit:
+                torque = upper
+                operating = upper_result
             else:
-                upper = midpoint
-        torque = lower
-        operating = lower_result
-        converged = (
-            operating.feasible
-            and 0.0 <= operating.bus_power <= storage.discharge_power_limit
-        )
-    bus = operating.bus_power * motor.unit_count
-    current, feasible = solve_current(powertrain.energy_storage, state, bus)
+                for _ in range(60):
+                    midpoint = 0.5 * (lower + upper)
+                    midpoint_result = evaluate(midpoint)
+                    if midpoint_result.feasible and 0.0 <= midpoint_result.bus_power <= storage.discharge_power_limit:
+                        lower = midpoint
+                        lower_result = midpoint_result
+                    else:
+                        upper = midpoint
+                torque = lower
+                operating = lower_result
+        else:
+            torque = 0.0
+            operating = lower_result
+        bus = max(0.0, operating.bus_power * motor.unit_count)
+        current, feasible = solve_current(powertrain.energy_storage, state, bus)
+        new_voltage = terminal_voltage(powertrain.energy_storage, state, current)
+        residual = abs(new_voltage - voltage)
+        voltage = 0.5 * (voltage + new_voltage)
+        if residual <= tolerance:
+            converged = feasible and operating.feasible
+            break
+    bus = max(0.0, operating.bus_power * motor.unit_count)
     wheel_torque = (
         torque
         * motor.unit_count
@@ -341,12 +335,12 @@ def maximum_drive_force(
     return DriveLimit(
         force,
         force * effective_radius,
-        storage.bus_voltage,
+        voltage,
         bus,
         active,
         state_rate,
         current,
-        0.0 if converged else abs(upper - lower),
+        residual,
         converged and feasible,
         iterations,
     )
@@ -493,7 +487,12 @@ def resolve_braking(
         regen_force_used=regen_force,
         friction_force_used=friction_force,
         total_force_limit=demand,
-        recovered_bus_power=regen_force * speed,
+        recovered_bus_power=(
+            regen_force
+            * speed
+            * drivetrain.transmission.gear_efficiency
+            * powertrain.power_plant.inverter_efficiency
+        ),
         active_constraint=active,
         regen_limit=regen_limit,
     )

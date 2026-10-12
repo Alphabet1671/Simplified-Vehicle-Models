@@ -18,7 +18,10 @@ from simplified_vehicle_models.powertrain.power_plant import (
     compile_electric_motor,
     evaluate_shaft_power,
 )
-from simplified_vehicle_models.powertrain.energy_storage import StorageState
+from simplified_vehicle_models.powertrain.energy_storage import (
+    StorageState,
+    evaluate_storage,
+)
 from simplified_vehicle_models.xml.loader import load_point_mass_vehicle
 
 
@@ -138,6 +141,8 @@ class PowertrainAssemblyTests(unittest.TestCase):
         motor_torque = result.maximum_wheel_torque / (
             motor.unit_count * transmission.gear_ratio * transmission.gear_efficiency
         )
+        open_limits = evaluate_storage(powertrain.energy_storage, StorageState(0.8))
+        self.assertLess(result.bus_voltage, open_limits.bus_voltage)
         evaluated = evaluate_shaft_power(
             motor, motor_speed, motor_torque, result.bus_voltage
         )

@@ -10,8 +10,10 @@ Completed the powertrain/drivetrain assembly draft. The nested electric powertra
 
 ## Verification
 
-- Focused: `PYTHONPATH=src python3 -m unittest tests.test_powertrain tests.test_cross_fidelity -q` — 27 tests passed.
-- Full: `PYTHONPATH=src python3 -m unittest discover -s tests -q` — 181 tests passed.
+- Focused: `PYTHONPATH=src python3 -m unittest tests.test_powertrain tests.test_cross_fidelity -q` — 29 tests passed.
+- Full: `PYTHONPATH=src python3 -m unittest discover -s tests -q` — 183 tests passed.
+
+The final runtime correction feeds battery terminal-voltage sag back into the motor/loss iteration, reports the converged terminal voltage and residual, and computes recovered bus power after reverse-direction drivetrain and inverter losses.
 
 The final correction preserves the underlying motor/storage active constraint in `BrakingResult` while reporting friction allocation separately. Standstill and forward motoring tests verify positive force, bus power, and charging-current direction.
 
@@ -29,7 +31,9 @@ Fixed-point nonconvergence now recomputes the residual at the under-relaxed torq
 
 Correction verification:
 
-- Focused: `PYTHONPATH=src python3 -m unittest tests.test_powertrain tests.test_cross_fidelity -q` — 27 tests passed.
-- Full: `PYTHONPATH=src python3 -m unittest discover -s tests -q` — 181 tests passed.
+- Focused: `PYTHONPATH=src python3 -m unittest tests.test_powertrain tests.test_cross_fidelity -q` — 29 tests passed.
+- Full: `PYTHONPATH=src python3 -m unittest discover -s tests -q` — 183 tests passed.
+
+The final runtime correction feeds battery terminal-voltage sag back into the motor/loss iteration, reports the converged terminal voltage and residual, and computes recovered bus power after reverse-direction drivetrain and inverter losses.
 
 The final correction preserves the underlying motor/storage active constraint in `BrakingResult` while reporting friction allocation separately. Standstill and forward motoring tests verify positive force, bus power, and charging-current direction.

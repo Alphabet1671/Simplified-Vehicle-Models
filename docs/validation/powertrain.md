@@ -153,31 +153,78 @@ assembled comparison remains Task 4.
 
 ## Task 4 LUT assembly integration
 
-The assembled path keeps analytical motor evaluation as the safe default until
-all numerical and performance gates pass. LUT assembly is an explicit
-`motor_mode="lut"` opt-in. In LUT mode, drive limits call `motor_torque_limits`
-and `torque_for_bus_power` for each voltage-coupling pass, and the selected
-operating point remains on `evaluate_motor` (analytical evaluation is used only
-by explicit LUT fallback). Regen inverse queries conservatively validate the
-requested voltage/speed interpolation and re-evaluate candidates before
-acceptance; invalid candidates use the exact analytical fallback.
+The assembled path keeps analytical motor evaluation as the default and the
+`motor_mode="lut"` path as an explicit opt-in. In LUT mode the drive limit solves
+the monotone mapped bus-power row directly through `torque_for_bus_power`, the
+regen inverse scans every productive segment of the non-monotone row
+vectorized, and the inverse's own operating point is reused instead of being
+recomputed. Any genuinely out-of-domain query (no map, voltage or speed outside
+the map, a nonpositive directional envelope, a target below the mapped row's
+zero-load power) uses the exact analytical fallback, which is observable through
+the LUT counters.
+
+The canonical map is the regenerated 25x129x65 NPZ with SHA-256
+`0166bd0b42972e2d356d03ac462786ef5d0f79d6e131e78ef850f83471728608` and
+generator `motor-lut-v2`. It is reproducible byte-for-byte from:
+
+```text
+PYTHONPATH=src <bundled python3> tools/generate_motor_lut.py \
+  models/power-plants/amk_dd5_100c.xml \
+  models/data/amk_dd5_100c_operating_map.npz \
+  --voltage-points 25 --speed-points 129 --load-points 65
+```
+
+`models/data/provenance.md` records the chosen grid and digest. Refining the
+grid to 33x257x65 or 41x257x65 changes the assembled lap-time displacement by at
+most 0.04 ms and the maximum pointwise speed displacement by at most
+0.001 m/s, so the finer grids buy no gate margin at 3x-10x the file size.
 
 The maintained comparison command is:
 
 ```text
-PYTHONPATH=src /Users/alphabet1671/.dsh/dsh-runtimes/dsh-primary-runtime/dependencies/python/bin/python3 examples/benchmark_soc_solver.py --mode compare --runs 3
+PYTHONPATH=src <bundled python3> examples/benchmark_soc_solver.py --mode compare --runs 3
 ```
 
-It performs one untimed warm-up and three same-process timed flying laps per mode,
-resetting LUT counters before every lap so warm-up work is excluded. JSON retains
-the full speed arrays and computes `max(abs(lut.speed-analytical.speed))`, along
-with median/min wall time, lap delta, force residual, query/fallback counters,
-and map-load cost. The canonical map remains the Task 3 generated NPZ (digest and
-provenance validated by the operating-map tests); no generated map contents were
-changed in Task 4. Regen energy comparison is conditional on each mode completing
-within 900 seconds; accepted energy must be recomputed in joules from physical bus
-power and elapsed time rather than using the known dimensionally defective legacy
-field.
+It performs one untimed warm-up and three same-process timed flying laps per
+mode, resetting LUT counters before every lap so warm-up work is excluded. JSON
+retains the full speed arrays and computes `max(abs(lut.speed -
+analytical.speed))`, along with median/min wall time, lap delta, force residual,
+query/fallback counters, and map-load cost.
+
+### Measured result (9014a71)
+
+| Quantity | Analytical | LUT | Gate | Result |
+|---|---|---|---|---|
+| Lap time | 69.201286244 s | 69.211083202 s | delta <= 1 ms | 9.797 ms, **fail** |
+| Max pointwise speed displacement | - | 0.134647 m/s | <= 0.05 m/s | **fail** |
+| Converged | yes | yes | both converged | pass |
+| Median wall time (runs=3) | 8.036 s | 9.151 s | LUT < analytical | **fail** |
+| Force residual max | 6.821e-13 | 6.821e-13 | existing tolerances | pass |
+| LUT forward / inverse / fallback queries | - | 39,339 / 24,854 / 360,611 | observable | pass |
+
+**The 1 ms lap-time and 0.05 m/s speed-displacement gates do not pass, and the
+LUT lap is not faster than the analytical baseline.** Two consequences:
+
+* `PowertrainParameters.motor_mode` remains `"analytical"`;
+* the LUT is a measured opt-in experiment and must not be described as a
+  performance win.
+
+An intermediate state in fix round 2 measured the LUT at 4.83 s against an
+analytical 8.06 s (1.67x faster), but that state used the interpolated motor
+envelope even when it exceeded the storage discharge limit. The speedup came
+from a correctness defect (NEW-1) and is not a valid claim.
+
+The microbenchmark for the fixed inverse, with the bundled interpreter and
+`PYTHONPATH=src`:
+
+| Arm | Before (33971fd) | After (9014a71) |
+|---|---|---|
+| In-map drive targets | 70.2 us/call, 0 fallback evals | 25.2 us/call, 0 fallback evals |
+| Targets above the row maximum | 52,238 us/call, 3,110 evals/call | 22.0 us/call, 0 evals/call |
+| Voltage below the map floor (437 V) | 52,591 us/call, 3,098 evals/call | 734 us/call, 40.6 evals/call |
+
+The regen full-track comparison was not run: each mode exceeds the
+900-second-per-mode budget.
 
 ## Reference checks and assumptions
 

@@ -13,7 +13,7 @@ Completed the powertrain/drivetrain assembly draft. The nested electric powertra
 - Focused: `PYTHONPATH=src python3 -m unittest tests.test_powertrain tests.test_cross_fidelity -q` — 29 tests passed.
 - Full: `PYTHONPATH=src python3 -m unittest discover -s tests -q` — 183 tests passed.
 
-The final runtime correction feeds battery terminal-voltage sag back into the motor/loss iteration, reports the converged terminal voltage and residual, and computes recovered bus power after reverse-direction drivetrain and inverter losses.
+The final runtime correction feeds battery terminal-voltage sag back into the motor/loss iteration, reports the converged terminal voltage and residual, and computes recovered bus power after reverse-direction drivetrain and inverter losses. The full nested runtime and legacy lumped reduction are compared at the same 10 m/s, 80% SOC operating point for force, bus power, active constraint, storage current, and SOC rate.
 
 The final correction preserves the underlying motor/storage active constraint in `BrakingResult` while reporting friction allocation separately. Standstill and forward motoring tests verify positive force, bus power, and charging-current direction.
 
@@ -34,6 +34,6 @@ Correction verification:
 - Focused: `PYTHONPATH=src python3 -m unittest tests.test_powertrain tests.test_cross_fidelity -q` — 29 tests passed.
 - Full: `PYTHONPATH=src python3 -m unittest discover -s tests -q` — 183 tests passed.
 
-The final runtime correction feeds battery terminal-voltage sag back into the motor/loss iteration, reports the converged terminal voltage and residual, and computes recovered bus power after reverse-direction drivetrain and inverter losses.
+The final runtime correction feeds battery terminal-voltage sag back into the motor/loss iteration, reports the converged terminal voltage and residual, and computes recovered bus power after reverse-direction drivetrain and inverter losses. The full nested runtime and legacy lumped reduction are compared at the same 10 m/s, 80% SOC operating point for force, bus power, active constraint, storage current, and SOC rate.
 
 The final correction preserves the underlying motor/storage active constraint in `BrakingResult` while reporting friction allocation separately. Standstill and forward motoring tests verify positive force, bus power, and charging-current direction.

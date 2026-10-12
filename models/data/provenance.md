@@ -134,7 +134,7 @@ declares the cell capacity in A*h. Multiply by 3600 to get joules.
 | `InputPower` | Electrical input power at the motor terminals | kW |
 | `inverterEfficiency` | Efficiency of the inverter | 1 |
 | `ratio` | Gear ratio of the gearbox in the source car | 1 |
-| `Voltage_Line_RMS` | Line RMS voltage | V |
+| `Voltage_Line_RMS` | Source RMS-equivalent voltage field | V |
 | `Voltage_Phase_Peak` | Phase peak voltage | V |
 
 The export does not use the fields `Speed`, `MaxRPM`, `type`, and `maxPower`.

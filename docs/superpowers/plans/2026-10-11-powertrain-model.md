@@ -956,7 +956,7 @@ The tire unit correction of decision D17 changed the picture. Before the correct
 
 The voltage model is implemented and exercised by the assembled runtime, but the validated MIS peak remains below the 18,600 rpm ceiling by about 14.5 percent. MIS therefore does not exercise voltage-dependent field weakening; voltage sensitivity is validated separately on the synthetic high-speed case and through the SOC-coupled energy interface.
 
-The plan therefore expects a small lap-time increase over the current 69.2265 s, and it expects the increase to grow as the state of charge falls. It does not expect the large change that the pre-correction model would have produced.
+The original expectation was a small lap-time increase as state of charge fell; the validated assembled MIS result instead remains within 0.03 s of the legacy baseline because the lap stays below the field-weakening ceiling. SOC sensitivity is covered by the energy-coupled and synthetic high-speed validations.
 
 Section 12 records the motor-speed margin and the state-of-charge trend.
 

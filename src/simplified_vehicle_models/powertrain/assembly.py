@@ -304,7 +304,7 @@ def maximum_drive_force(
                 torque = upper
                 operating = upper_result
             else:
-                # Force integration only needs sub-millinewton precision here;
+                # Force integration only needs bounded torque precision here;
                 # avoid multiplying every point-mass evaluation by a deep solve.
                 for _ in range(12):
                     midpoint = 0.5 * (lower + upper)

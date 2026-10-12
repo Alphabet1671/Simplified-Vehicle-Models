@@ -1,5 +1,5 @@
-from pathlib import Path
 from dataclasses import replace
+from pathlib import Path
 import unittest
 
 import numpy as np
@@ -101,17 +101,44 @@ class PointMassTests(unittest.TestCase):
         self.assertIsInstance(self.vehicle.drivetrain, FullDrivetrainRuntime)
         tire_limits = np.full(4, 10_000.0)
         force, constraint = _available_drive_force(self.vehicle, 10.0, tire_limits)
+        initial_soc = (
+            self.vehicle.drivetrain.powertrain.energy_storage.initial_state_of_charge
+        )
         expected = maximum_drive_force(
             self.vehicle.drivetrain.powertrain,
             self.vehicle.drivetrain.drivetrain,
             10.0,
-            StorageState(
-                self.vehicle.drivetrain.powertrain.energy_storage.initial_state_of_charge
-            ),
+            StorageState(initial_soc),
             effective_radius=self.vehicle.tire.effective_radius,
         )
         self.assertEqual(constraint, expected.active_constraint)
         self.assertAlmostEqual(force, expected.maximum_drive_force, places=9)
+
+    def test_neighboring_speeds_dispatch_independently(self) -> None:
+        self.assertIsInstance(self.vehicle.drivetrain, FullDrivetrainRuntime)
+        tire_limits = np.full(4, 10_000.0)
+        speeds = (10.0, 10.1)
+        initial_soc = (
+            self.vehicle.drivetrain.powertrain.energy_storage.initial_state_of_charge
+        )
+        actual = [
+            _available_drive_force(self.vehicle, speed, tire_limits)[0]
+            for speed in speeds
+        ]
+        expected = [
+            maximum_drive_force(
+                self.vehicle.drivetrain.powertrain,
+                self.vehicle.drivetrain.drivetrain,
+                speed,
+                StorageState(initial_soc),
+                effective_radius=self.vehicle.tire.effective_radius,
+            ).maximum_drive_force
+            for speed in speeds
+        ]
+
+        self.assertNotEqual(expected[0], expected[1])
+        for actual_force, expected_force in zip(actual, expected):
+            self.assertAlmostEqual(actual_force, expected_force, places=9)
 
     def test_legacy_dispatch_keeps_scalar_force_reduction(self) -> None:
         legacy = compile_lumped_drivetrain(

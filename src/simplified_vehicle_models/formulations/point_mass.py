@@ -521,10 +521,8 @@ def _available_drive_force(
         state = StorageState(drivetrain.powertrain.energy_storage.initial_state_of_charge)
         key = (
             id(drivetrain),
-            # The coupled limit is smooth; quantizing the cache key avoids
-            # re-solving the same operating point for every root-bracket
-            # perturbation in a lap sweep.
-            round(speed / 5.0, 0),
+            # Each speed is a distinct operating point for the coupled limit.
+            speed,
             vehicle.tire.effective_radius,
             state.state_of_charge,
         )

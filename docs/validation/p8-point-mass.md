@@ -15,12 +15,14 @@ The scalar speed-limit check applies the same conversion.
 Coupled drive voltage updates are explicitly bounded to two iterations and the torque
 bracket is bounded to twelve bisection steps. This prevents repeated point-mass
 bracketing from becoming an unbounded nested solve; returned diagnostics still expose
-convergence and residual information.
+convergence and residual information. The assembled-drive cache uses the exact operating
+speed, so neighboring speeds cannot reuse a stale coupled limit.
 
 ## Focused coverage
 
 - assembled vehicle compilation produces `FullDrivetrainRuntime`;
 - assembled point-mass drive dispatch agrees with `maximum_drive_force`;
+- neighboring assembled operating speeds dispatch independently without cache reuse;
 - assembled regen reports torque and charge-power limits through
   `maximum_regen_force`;
 - legacy scalar dispatch remains selectable and uses the original force reduction;

@@ -14,6 +14,7 @@ from simplified_vehicle_models.parameters.vehicle import PointMassVehicleParamet
 from simplified_vehicle_models.results.traces import LapMode, LapResult, EnergyLapResult, EnergyReport, StintReport
 from simplified_vehicle_models.powertrain.energy_storage import StorageState, evaluate_storage, integrate_storage
 from simplified_vehicle_models.powertrain.assembly import FullDrivetrainRuntime, resolve_braking
+from simplified_vehicle_models.powertrain.power_plant import evaluate_shaft_power
 from simplified_vehicle_models.tracks.types import TrackProfile
 
 
@@ -23,6 +24,7 @@ def solve_lap(
     mode: LapMode,
     tolerance: float = 1.0e-6,
     maximum_iterations: int = 200,
+    _storage_trace: FloatArray | None = None,
 ) -> LapResult:
     """Calculate a minimum-time speed profile on a prescribed path."""
 
@@ -35,8 +37,10 @@ def solve_lap(
     if len(track.segment_length) != len(track.distance) - 1:
         raise ValueError("track segment count must be one less than node count")
 
+    if _storage_trace is not None and len(_storage_trace) != len(track.distance):
+        raise ValueError("storage trace must match track nodes")
     speed_limit = np.asarray(
-        [maximum_corner_speed(vehicle, float(radius)) for radius in track.radius],
+        [maximum_corner_speed(vehicle, float(radius), storage_state=(StorageState(float(_storage_trace[i])) if _storage_trace is not None else None)) for i, radius in enumerate(track.radius)],
         dtype=np.float64,
     )
     speed = speed_limit.copy()
@@ -52,12 +56,12 @@ def solve_lap(
     iterations = 0
     for iterations in range(1, maximum_iterations + 1):
         previous = speed.copy()
-        _forward_sweep(vehicle, track, speed)
+        _forward_sweep(vehicle, track, speed, _storage_trace)
         if mode is LapMode.FLYING:
             _apply_periodic_boundary(speed)
         else:
             speed[0] = 0.0
-        _backward_sweep(vehicle, track, speed)
+        _backward_sweep(vehicle, track, speed, _storage_trace)
         if mode is LapMode.FLYING:
             _apply_periodic_boundary(speed)
         else:
@@ -75,6 +79,7 @@ def solve_lap(
         converged,
         iterations,
         maximum_change,
+        _storage_trace,
     )
 
 
@@ -88,6 +93,7 @@ def _forward_sweep(
     vehicle: PointMassVehicleParameters,
     track: TrackProfile,
     speed: FloatArray,
+    storage_trace: FloatArray | None = None,
 ) -> None:
     for index, segment_length in enumerate(track.segment_length):
         start_speed = float(speed[index])
@@ -105,6 +111,7 @@ def _forward_sweep(
                 vehicle,
                 0.5 * (start_speed + candidate),
                 segment_curvature,
+                StorageState(float(storage_trace[index])) if storage_trace is not None else None,
             )
             reachable = math.sqrt(
                 start_speed * start_speed
@@ -123,6 +130,7 @@ def _backward_sweep(
     vehicle: PointMassVehicleParameters,
     track: TrackProfile,
     speed: FloatArray,
+    storage_trace: FloatArray | None = None,
 ) -> None:
     for index in range(len(track.segment_length) - 1, -1, -1):
         next_speed = float(speed[index + 1])
@@ -141,6 +149,7 @@ def _backward_sweep(
                 vehicle,
                 0.5 * (candidate + next_speed),
                 segment_curvature,
+                StorageState(float(storage_trace[index + 1])) if storage_trace is not None else None,
             )
             reachable = math.sqrt(
                 next_speed * next_speed
@@ -162,6 +171,7 @@ def _build_result(
     converged: bool,
     iterations: int,
     maximum_change: float,
+    storage_trace: FloatArray | None = None,
 ) -> LapResult:
     start_speed = speed[:-1]
     end_speed = speed[1:]
@@ -192,6 +202,7 @@ def _build_result(
             float(evaluation_speed[index]),
             float(segment_curvature[index]),
             float(required_acceleration),
+            StorageState(float(storage_trace[index])) if storage_trace is not None else None,
         )
         wheel_force = float(np.sum(state.longitudinal_forces))
         if wheel_force > 0.0 and state.drive_force_limit > 0.0:
@@ -256,42 +267,68 @@ def _build_result(
     )
 
 
-def solve_lap_with_energy(vehicle, track, mode, initial_state=None, tolerance=1e-5, maximum_iterations=50, regen_enabled=True):
-    """Solve a lap and integrate a self-consistent battery state trace."""
+def solve_lap_with_energy(vehicle, track, mode, initial_state=None, tolerance=1e-5, maximum_iterations=50, regen_enabled=False):
+    """Solve a lap with an explicit, state-coupled outer SOC iteration."""
+    if tolerance <= 0.0 or maximum_iterations < 1:
+        raise ValueError("tolerance must be positive and maximum_iterations must be positive")
     storage = getattr(getattr(vehicle.drivetrain, "powertrain", None), "energy_storage", None)
     state0 = (initial_state.state_of_charge if isinstance(initial_state, StorageState)
-              else storage.initial_state_of_charge if initial_state is None and storage else 1.0 if initial_state is None else float(initial_state))
+              else storage.initial_state_of_charge if initial_state is None and storage
+              else 1.0 if initial_state is None else float(initial_state))
     trace = np.full(len(track.distance), state0, dtype=np.float64)
     converged = False
     change = math.inf
     for iteration in range(1, maximum_iterations + 1):
-        lap = solve_lap(vehicle, track, mode)
+        lap = solve_lap(vehicle, track, mode, _storage_trace=trace)
         bus, shaft, voltage, consumed, recovered, nxt = _energy_trace(vehicle, track, lap, trace, regen_enabled)
         change = float(np.max(np.abs(nxt - trace)))
-        trace = 0.5 * (trace + nxt); trace[0] = state0
+        trace = 0.5 * (trace + nxt)
+        trace[0] = state0
         if change <= tolerance:
-            converged = True; break
-    lap = solve_lap(vehicle, track, mode)
-    bus, shaft, voltage, consumed, recovered, nxt = _energy_trace(vehicle, track, lap, trace, regen_enabled)
+            converged = True
+            break
+    lap = solve_lap(vehicle, track, mode, _storage_trace=trace)
+    bus, shaft, voltage, consumed, recovered, final_trace = _energy_trace(vehicle, track, lap, trace, regen_enabled)
+    # Report the integrated final iterate, rather than the pre-integration guess.
+    trace = final_trace
     report = EnergyReport(trace, bus, shaft, voltage, tuple(lap.active_longitudinal_constraint), consumed, recovered, consumed-recovered, float(trace[-1]), float(np.nanmin(voltage)) if len(voltage) else math.inf, converged, iteration, change)
     return EnergyLapResult(lap, report)
 
 
 def _energy_trace(vehicle, track, lap, trace, regen_enabled):
-    n = len(track.segment_length); bus = np.zeros(n); shaft = np.zeros(n); voltage = np.full(n, np.nan)
-    nxt = trace.copy(); state = StorageState(float(trace[0])); consumed = recovered = 0.0
+    n = len(track.segment_length)
+    bus = np.zeros(n, dtype=np.float64)
+    shaft = np.zeros(n, dtype=np.float64)
+    voltage = np.full(n, np.nan, dtype=np.float64)
+    nxt = np.asarray(trace, dtype=np.float64).copy()
+    state = StorageState(float(trace[0]))
+    consumed = recovered = 0.0
     storage = getattr(getattr(vehicle.drivetrain, "powertrain", None), "energy_storage", None)
     for i in range(n):
-        speed = 0.5 * (float(lap.speed[i]) + float(lap.speed[i+1])); dt = float(lap.elapsed_time[i+1]-lap.elapsed_time[i])
-        shaft[i] = float(np.sum(lap.longitudinal_forces[i])) * speed
-        if shaft[i] >= 0: bus[i] = shaft[i] / 0.9
-        elif regen_enabled and isinstance(vehicle.drivetrain, FullDrivetrainRuntime):
-            br = resolve_braking(vehicle.drivetrain.powertrain, vehicle.drivetrain.drivetrain, speed, state, -shaft[i]/max(speed, 1e-9), -shaft[i]/max(speed, 1e-9), vehicle.tire.effective_radius)
-            bus[i] = -br.recovered_bus_power; recovered += br.recovered_bus_power * dt
+        speed = 0.5 * (float(lap.speed[i]) + float(lap.speed[i + 1]))
+        dt = float(lap.elapsed_time[i + 1] - lap.elapsed_time[i])
+        wheel_force = float(np.sum(lap.longitudinal_forces[i]))
+        if isinstance(vehicle.drivetrain, FullDrivetrainRuntime):
+            motor = vehicle.drivetrain.powertrain.power_plant
+            transmission = vehicle.drivetrain.drivetrain.transmission
+            motor_speed = transmission.motor_speed(speed / vehicle.tire.effective_radius) * 60.0 / (2.0 * math.pi)
+            motor_torque = wheel_force * vehicle.tire.effective_radius / (motor.unit_count * transmission.gear_ratio * transmission.gear_efficiency)
+            operating = evaluate_shaft_power(motor, motor_speed, motor_torque, evaluate_storage(storage, state).bus_voltage)
+            shaft[i] = operating.bus_power * motor.unit_count if motor_torque >= 0.0 else motor_torque * motor_speed * 2.0 * math.pi / 60.0 * motor.unit_count
+            if motor_torque >= 0.0:
+                bus[i] = operating.bus_power * motor.unit_count
+            elif regen_enabled:
+                br = resolve_braking(vehicle.drivetrain.powertrain, vehicle.drivetrain.drivetrain, speed, state, -wheel_force, -wheel_force, vehicle.tire.effective_radius)
+                bus[i] = -br.recovered_bus_power
+                recovered += br.recovered_bus_power * dt
+        else:
+            shaft[i] = wheel_force * speed
+            bus[i] = shaft[i] / vehicle.drivetrain.efficiency if shaft[i] >= 0.0 else 0.0
         if storage:
             voltage[i] = evaluate_storage(storage, state).bus_voltage
             consumed += max(bus[i], 0.0) * dt
-            state = integrate_storage(storage, state, float(bus[i]), dt); nxt[i+1] = state.state_of_charge
+            state = integrate_storage(storage, state, float(bus[i]), dt)
+            nxt[i + 1] = state.state_of_charge
     return bus, shaft, voltage, consumed, recovered, nxt
 
 
@@ -302,4 +339,10 @@ def solve_stint(vehicle, track, mode=LapMode.FLYING, laps=1, initial_state=None,
     for _ in range(laps):
         result = solve_lap_with_energy(vehicle, track, mode, state, **kwargs); results.append(result); state = result.energy.final_state_of_charge
     times = np.asarray([r.lap_time for r in results]); energies = np.asarray([r.energy.net_energy for r in results])
-    return StintReport(tuple(results), times, energies, float(state), sum(r.energy.consumed_energy for r in results), sum(r.energy.recovered_energy for r in results), sum(r.energy.net_energy for r in results))
+    total_consumed = sum(r.energy.consumed_energy for r in results)
+    total_recovered = sum(r.energy.recovered_energy for r in results)
+    total_net = sum(r.energy.net_energy for r in results)
+    storage = getattr(getattr(vehicle.drivetrain, "powertrain", None), "energy_storage", None)
+    usable = evaluate_storage(storage, StorageState(float(state))).usable_energy if storage else math.inf
+    lap_count = usable / float(np.mean(energies)) if usable < math.inf and np.mean(energies) > 0.0 else math.inf
+    return StintReport(tuple(results), times, energies, float(state), total_consumed, total_recovered, total_net, lap_count)

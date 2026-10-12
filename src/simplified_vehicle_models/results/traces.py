@@ -76,3 +76,4 @@ class StintReport:
     total_consumed_energy: float
     total_recovered_energy: float
     total_net_energy: float
+    usable_energy_lap_count: float = 0.0

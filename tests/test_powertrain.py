@@ -664,6 +664,95 @@ class PowertrainAssemblyTests(unittest.TestCase):
         self.assertEqual(record.adapter_names, ("reduce_powertrain_and_drivetrain",))
         self.assertEqual(record.component_role, "powertrain_drivetrain")
 
+    def test_lut_drive_limit_never_exceeds_storage_discharge_power(self):
+        """A LUT drive limit must respect the storage discharge limit.
+
+        This is the out-of-domain case: the voltage-coupling point can fall
+        below the compiled map's minimum voltage, where ``row_range`` is None.
+        The interpolated envelope is then not an authority, so the bounded exact
+        inverse must answer and must not report a bus power above the storage
+        discharge limit.
+        """
+        powertrain = compile_powertrain_assembly(
+            load_model(ROOT / "models/powertrains/murphy_2024.xml")
+        )
+        drivetrain = compile_drivetrain_assembly(
+            load_model(ROOT / "models/drivetrains/murphy_2024_drivetrain.xml")
+        )
+        lut = replace(powertrain, motor_mode="lut")
+        radius = 0.193675
+        checked = 0
+        for state_of_charge in (0.05, 0.02, 0.005, 0.3, 0.8):
+            state = StorageState(state_of_charge)
+            storage = evaluate_storage(lut.energy_storage, state)
+            for speed in (20.0, 30.0, 40.0):
+                result = maximum_drive_force(lut, drivetrain, speed, state, radius)
+                checked += 1
+                self.assertLessEqual(
+                    result.bus_power_at_limit,
+                    storage.discharge_power_limit + 1.0e-6,
+                    (state_of_charge, speed, result.bus_power_at_limit,
+                     storage.discharge_power_limit),
+                )
+        self.assertGreater(checked, 0)
+
+    def test_lut_drive_coupling_tolerance_is_not_widened(self):
+        """LUT mode must keep the analytical voltage-coupling acceptance.
+
+        The 1.0e-3 row tolerance is a local variable; if it shadowed the 1.0e-6
+        coupling tolerance the LUT would accept a coupling residual 1000x larger
+        and report ``converged`` on points the analytical baseline rejects.
+        """
+        powertrain = compile_powertrain_assembly(
+            load_model(ROOT / "models/powertrains/murphy_2024.xml")
+        )
+        drivetrain = compile_drivetrain_assembly(
+            load_model(ROOT / "models/drivetrains/murphy_2024_drivetrain.xml")
+        )
+        lut = replace(powertrain, motor_mode="lut")
+        radius = 0.193675
+        for state_of_charge in (0.05, 0.3, 0.8):
+            for speed in (5.0, 20.0, 30.0, 60.0):
+                state = StorageState(state_of_charge)
+                baseline = maximum_drive_force(
+                    powertrain, drivetrain, speed, state, radius
+                )
+                result = maximum_drive_force(lut, drivetrain, speed, state, radius)
+                # The two loops run the same coupling iteration, so a widened
+                # tolerance would show up as a converged LUT point whose
+                # residual the analytical baseline still rejects.
+                if result.converged:
+                    self.assertLessEqual(
+                        result.shaft_torque_residual, 1.0e-6 + 1.0e-12,
+                        (state_of_charge, speed, result.shaft_torque_residual),
+                    )
+                if result.converged:
+                    # A converged LUT point must also satisfy the storage limit.
+                    storage = evaluate_storage(lut.energy_storage, state)
+                    self.assertLessEqual(
+                        result.bus_power_at_limit,
+                        storage.discharge_power_limit + 1.0e-6,
+                        (state_of_charge, speed),
+                    )
+
+    def test_lut_active_constraint_matches_storage_limit(self):
+        """A storage-limited LUT result must not be labelled motor_torque."""
+        powertrain = compile_powertrain_assembly(
+            load_model(ROOT / "models/powertrains/murphy_2024.xml")
+        )
+        drivetrain = compile_drivetrain_assembly(
+            load_model(ROOT / "models/drivetrains/murphy_2024_drivetrain.xml")
+        )
+        lut = replace(powertrain, motor_mode="lut")
+        radius = 0.193675
+        for state_of_charge in (0.05, 0.3, 0.8):
+            state = StorageState(state_of_charge)
+            storage = evaluate_storage(lut.energy_storage, state)
+            for speed in (5.0, 20.0, 30.0, 45.0):
+                result = maximum_drive_force(lut, drivetrain, speed, state, radius)
+                if result.bus_power_at_limit > storage.discharge_power_limit + 1.0e-6:
+                    self.assertNotEqual(result.active_constraint, "motor_torque")
+
     def test_regen_force_report_has_both_limits(self):
         powertrain = compile_powertrain_assembly(
             load_model(ROOT / "models/powertrains/murphy_2024.xml")

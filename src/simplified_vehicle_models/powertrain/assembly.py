@@ -323,26 +323,31 @@ def maximum_drive_force(
             envelope = limits.maximum_drive_torque
             envelope_result = evaluate_motor(motor, motor_speed, envelope, voltage)
             target = storage.discharge_power_limit / motor.unit_count
-            # The inverse query is only meaningful when the requested storage
-            # power crosses the motor's achievable row at this voltage: below the
-            # row's zero-load power, or above the row's maximum.  A target above
-            # the maximum is unreachable by the motor, so the envelope torque is
-            # the answer; asking the inverse for it would run a full exact
-            # analytical fallback for no gain.
+            # The motor envelope may only be used when it genuinely respects the
+            # storage discharge limit.  ``row_range is None`` means the
+            # requested voltage is outside the compiled map, so the interpolated
+            # envelope is not an authority at that point; the bounded exact
+            # inverse below answers it instead.  The row tolerance keeps a
+            # near-boundary target on the row without relaxing the surrounding
+            # voltage-coupling tolerance, which keeps ``converged`` and
+            # ``active_constraint`` comparable across motor modes.
             row_range = lut_bus_power_range(motor, motor_speed, voltage)
-            tolerance = 1.0e-3
-            if row_range is not None and row_range[0] <= target <= row_range[1] + tolerance:
-                # The storage limit crosses the row, so it is the binding
-                # constraint and the inverse solves for it directly.
+            row_tolerance = 1.0e-3
+            if row_range is not None and row_range[0] <= target <= row_range[1] + row_tolerance:
+                # The storage limit crosses the mapped row, so the storage
+                # constraint is binding and the inverse solves for it directly.
                 solved = torque_for_bus_power(motor, motor_speed, voltage, target, "drive")
                 torque, operating = solved.torque, solved.operating_point
-            elif envelope_result.feasible and (
-                row_range is None or target >= row_range[1]
+            elif (
+                envelope_result.feasible
+                and envelope_result.bus_power <= target
+                and row_range is not None
+                and target >= row_range[1]
             ):
-                # A target above the row's maximum is unreachable by the motor
-                # at this voltage, so the envelope torque is the answer; asking
-                # the inverse for it would run a full exact analytical fallback
-                # for no gain.
+                # The motor cannot reach the requested storage power, so the
+                # envelope torque is the limit at this voltage.  Asking the
+                # inverse for that unreachable target would run a full exact
+                # analytical fallback for no gain.
                 torque, operating = envelope, envelope_result
             else:
                 solved = torque_for_bus_power(motor, motor_speed, voltage, target, "drive")

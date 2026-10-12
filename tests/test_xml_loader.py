@@ -12,7 +12,7 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPOSITORY_ROOT / "src"))
 
 from simplified_vehicle_models.parameters.vehicle import PointMassVehicleParameters
-from simplified_vehicle_models.xml.loader import load_point_mass_vehicle
+from simplified_vehicle_models.xml.loader import load_model, load_point_mass_vehicle
 
 
 FORMULATION_PATH = REPOSITORY_ROOT / "models/formulations/murphy_point_mass.xml"
@@ -171,6 +171,82 @@ class XmlLoaderTests(unittest.TestCase):
                 load_point_mass_vehicle(
                     target / "formulations/murphy_point_mass.xml"
                 )
+
+    def test_parses_external_data_reference_relative_to_model(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            data_path = root / "tables" / "operating-map.npz"
+            data_path.parent.mkdir()
+            data_path.write_bytes(b"table")
+            model_path = root / "model.xml"
+            model_path.write_text(
+                """<model schema-version=\"1.0\" id=\"model\"
+    type=\"tire-model\" subtype=\"load-sensitive-friction-ellipse\">
+    <data role=\"operating-map\" path=\"tables/operating-map.npz\"
+          format=\"npz\" sha256=\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"/>
+</model>""",
+                encoding="utf-8",
+            )
+
+            model = load_model(model_path)
+
+            self.assertEqual(model.data[0].role, "operating-map")
+            self.assertEqual(model.data[0].path, data_path.resolve())
+            self.assertEqual(model.data[0].format, "npz")
+            self.assertEqual(model.data[0].sha256, "a" * 64)
+
+    def test_rejects_duplicate_data_roles(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "one.npz").write_bytes(b"one")
+            (root / "two.npz").write_bytes(b"two")
+            model_path = root / "model.xml"
+            model_path.write_text(
+                """<model schema-version=\"1.0\" id=\"model\" type=\"tire-model\" subtype=\"load-sensitive-friction-ellipse\">
+    <data role=\"map\" path=\"one.npz\" format=\"npz\"/>
+    <data role=\"map\" path=\"two.npz\" format=\"npz\"/>
+</model>""",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "duplicate data role"):
+                load_model(model_path)
+
+    def test_rejects_invalid_external_data_declarations(self) -> None:
+        cases = (
+            ("missing", "missing.npz", "npz", None, "regular file"),
+            ("format", "file.bin", "bin", None, "unsupported data format"),
+            ("sha", "file.npz", "npz", "not-a-digest", "sha256"),
+            ("role", "file.npz", "npz", None, "role"),
+        )
+        for case, relative_path, data_format, digest, error_text in cases:
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                if case != "missing":
+                    (root / relative_path).write_bytes(b"data")
+                digest_attribute = "" if digest is None else f' sha256="{digest}"'
+                model_path = root / "model.xml"
+                role = "" if case == "role" else "map"
+                model_path.write_text(
+                    f'<model schema-version="1.0" id="model" type="tire-model" subtype="load-sensitive-friction-ellipse">'
+                    f'<data role="{role}" path="{relative_path}" format="{data_format}"{digest_attribute}/>'
+                    "</model>",
+                    encoding="utf-8",
+                )
+                with self.assertRaisesRegex(ValueError, error_text):
+                    load_model(model_path)
+
+    def test_allows_uppercase_sha256(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "file.csv").write_text("x,y\\n1,2\\n", encoding="utf-8")
+            model_path = root / "model.xml"
+            model_path.write_text(
+                '<model schema-version="1.0" id="model" type="tire-model" subtype="load-sensitive-friction-ellipse">'
+                '<data role="map" path="file.csv" format="csv" sha256="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"/>'
+                "</model>",
+                encoding="utf-8",
+            )
+            self.assertEqual(load_model(model_path).data[0].sha256, "A" * 64)
 
     def _write_formulation(self, root: Path) -> None:
         (root / "formulation.xml").write_text(

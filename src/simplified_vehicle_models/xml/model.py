@@ -5,6 +5,14 @@ from pathlib import Path
 
 
 @dataclass(frozen=True, slots=True)
+class DataReference:
+    role: str
+    path: Path
+    format: str
+    sha256: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class ModelReference:
     tag: str
     role: str | None
@@ -20,5 +28,6 @@ class Model:
     parameters: dict[str, float]
     units: dict[str, str]
     references: tuple[ModelReference, ...]
+    data: tuple[DataReference, ...] = ()
     requires: tuple[str, ...] = ()
     driven_wheels: tuple[str, ...] = ()

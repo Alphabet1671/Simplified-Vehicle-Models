@@ -22,6 +22,7 @@ from __future__ import annotations
 from enum import Enum
 import math
 from pathlib import Path
+import re
 import xml.etree.ElementTree as ElementTree
 from typing import cast
 
@@ -30,7 +31,7 @@ from simplified_vehicle_models.compiler.registry import (
     register_builtin_components,
 )
 from simplified_vehicle_models.parameters.vehicle import PointMassVehicleParameters
-from simplified_vehicle_models.xml.model import Model, ModelReference
+from simplified_vehicle_models.xml.model import DataReference, Model, ModelReference
 
 
 class _LoadMode(Enum):
@@ -122,6 +123,7 @@ def _load_model(
         requires = _parse_requires(root, path)
 
     driven_wheels = _parse_driven_wheels(root, path)
+    data = _parse_data(root, path)
 
     reference_mode = (
         _LoadMode.FULL if mode is _LoadMode.FULL else _LoadMode.IDENTITY
@@ -152,6 +154,7 @@ def _load_model(
         parameters=parameters,
         units=units,
         references=tuple(reference_models),
+        data=data,
         requires=requires,
         driven_wheels=driven_wheels,
     )
@@ -192,6 +195,39 @@ def _parse_parameters(
         parameters[name] = value
         units[name] = _required_attribute(element, "unit", path)
     return parameters, units
+
+
+def _parse_data(
+    root: ElementTree.Element,
+    path: Path,
+) -> tuple[DataReference, ...]:
+    data_references: list[DataReference] = []
+    roles: set[str] = set()
+    for element in root.findall("./data"):
+        role = _required_attribute(element, "role", path)
+        if not role.strip():
+            raise ValueError(f"{path}: data role must be nonempty")
+        if role in roles:
+            raise ValueError(f"{path}: duplicate data role {role!r}")
+        roles.add(role)
+        data_path = (path.parent / _required_attribute(element, "path", path)).resolve()
+        if not data_path.is_file():
+            raise ValueError(f"{path}: data path {data_path} must be a regular file")
+        data_format = _required_attribute(element, "format", path)
+        if data_format not in {"npz", "csv"}:
+            raise ValueError(f"{path}: unsupported data format {data_format!r}")
+        sha256 = element.get("sha256")
+        if sha256 is not None and re.fullmatch(r"[0-9a-fA-F]{64}", sha256) is None:
+            raise ValueError(f"{path}: data sha256 must be 64 hexadecimal digits")
+        data_references.append(
+            DataReference(
+                role=role,
+                path=data_path,
+                format=data_format,
+                sha256=sha256,
+            )
+        )
+    return tuple(data_references)
 
 
 def _parse_driven_wheels(

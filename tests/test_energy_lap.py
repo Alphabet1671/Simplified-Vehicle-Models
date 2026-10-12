@@ -4,6 +4,8 @@ from unittest.mock import patch
 import numpy as np
 from simplified_vehicle_models.results.traces import LapMode
 from simplified_vehicle_models.solvers.forward_backward import solve_lap_with_energy, solve_stint
+from simplified_vehicle_models.powertrain.assembly import resolve_braking
+from simplified_vehicle_models.powertrain.energy_storage import StorageState
 from simplified_vehicle_models.tracks.types import TrackProfile
 from simplified_vehicle_models.xml.loader import load_point_mass_vehicle
 
@@ -31,6 +33,20 @@ class EnergyLapTests(unittest.TestCase):
         powered = r.energy.shaft_power > 1.0
         self.assertTrue(np.any(powered))
         self.assertTrue(np.any(np.abs(r.energy.bus_power[powered] - r.energy.shaft_power[powered]) > 1.0e-6))
+
+    def test_regeneration_is_tire_force_limited(self):
+        runtime = self.vehicle.drivetrain
+        result = resolve_braking(
+            runtime.powertrain,
+            runtime.drivetrain,
+            speed=12.0,
+            state=StorageState(0.8),
+            braking_demand=5000.0,
+            tire_force_capacity=250.0,
+            effective_radius=self.vehicle.tire.effective_radius,
+        )
+        self.assertLessEqual(result.regen_force_used, 250.0 + 1.0e-9)
+        self.assertGreaterEqual(result.recovered_bus_power, 0.0)
 
     def test_outer_nonconvergence_is_reported(self):
         r = solve_lap_with_energy(self.vehicle, self.track, LapMode.FLYING, maximum_iterations=1, tolerance=1e-15)

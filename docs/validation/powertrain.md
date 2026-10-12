@@ -92,7 +92,8 @@ The approximation enables the complete 22-lap study without repeating the expens
 solve, but results should not be interpreted as a converged voltage-limited lap trajectory.
 On the assembled MIS run, the 22-lap result was 613.34 s wall time, final SOC 0.333721,
 and 17.934 MJ consumed/net energy; lap time stayed fixed at 69.1973 s by construction.
-The remaining runtime is the per-node storage and energy integration cost.
+The report's remaining usable-energy estimate is 0.1117 equivalent average-energy laps
+at the final SOC. The remaining runtime is the per-node storage and energy integration cost.
 
 ## Assumptions and limits
 

@@ -54,6 +54,8 @@ class EnergyReport:
     energy_converged: bool
     energy_iterations: int
     maximum_state_change: float
+    # Maximum SOC mismatch between the profile input and its integrated trace.
+    state_profile_residual: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)

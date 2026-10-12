@@ -287,17 +287,27 @@ def solve_lap_with_energy(vehicle, track, mode, initial_state=None, tolerance=1e
         if change <= tolerance:
             converged = True
             break
-    # Re-solve once on the integrated iterate so the speed/force profile and
-    # reported SOC trace refer to the same storage state.
-    lap = solve_lap(vehicle, track, mode, _storage_trace=trace)
-    bus, shaft, voltage, consumed, recovered, final_trace = _energy_trace(vehicle, track, lap, trace, regen_enabled)
-    trace = final_trace
-    # Re-run after the integrated final trace so returned constraints and
-    # speed are evaluated at the SOC represented by the report.
-    lap = solve_lap(vehicle, track, mode, _storage_trace=trace)
-    bus, shaft, voltage, consumed, recovered, final_trace = _energy_trace(vehicle, track, lap, trace, regen_enabled)
-    trace = final_trace
-    report = EnergyReport(trace, bus, shaft, voltage, tuple(lap.active_longitudinal_constraint), consumed, recovered, consumed-recovered, float(trace[-1]), float(np.nanmin(voltage)) if len(voltage) else math.inf, converged, iteration, change)
+    # Reconcile one final profile with the integrated SOC trace.  Keep the
+    # profile input and reported state together to a measurable residual;
+    # callers must not be told that the energy loop converged otherwise.
+    profile_residual = math.inf
+    for _ in range(max(1, maximum_iterations - iteration + 1)):
+        lap = solve_lap(vehicle, track, mode, _storage_trace=trace)
+        bus, shaft, voltage, consumed, recovered, final_trace = _energy_trace(
+            vehicle, track, lap, trace, regen_enabled
+        )
+        profile_residual = float(np.max(np.abs(final_trace - trace)))
+        if profile_residual <= tolerance:
+            trace = final_trace
+            break
+        if iteration >= maximum_iterations:
+            trace = final_trace
+            break
+        trace = 0.5 * (trace + final_trace)
+        trace[0] = state0
+        iteration += 1
+    energy_converged = converged and profile_residual <= tolerance
+    report = EnergyReport(trace, bus, shaft, voltage, tuple(lap.active_longitudinal_constraint), consumed, recovered, consumed-recovered, float(trace[-1]), float(np.nanmin(voltage)) if len(voltage) else math.inf, energy_converged, iteration, max(change, profile_residual), profile_residual)
     return EnergyLapResult(lap, report)
 
 
@@ -322,25 +332,37 @@ def _energy_trace(vehicle, track, lap, trace, regen_enabled):
                 motor_torque = wheel_force * vehicle.tire.effective_radius / (
                     motor.unit_count * transmission.gear_ratio * transmission.gear_efficiency
                 )
-            else:
-                # The transmission applies reciprocal efficiency in regeneration.
-                motor_torque = wheel_force * vehicle.tire.effective_radius * transmission.gear_efficiency / (
-                    motor.unit_count * transmission.gear_ratio
+                operating = evaluate_shaft_power(
+                    motor,
+                    motor_speed,
+                    motor_torque,
+                    evaluate_storage(storage, state).bus_voltage,
                 )
-            operating = evaluate_shaft_power(
-                motor,
-                motor_speed,
-                motor_torque,
-                evaluate_storage(storage, state).bus_voltage,
-            )
-            # Shaft power is mechanical motor output, never inverter bus power.
-            shaft[i] = motor_torque * motor_speed * 2.0 * math.pi / 60.0 * motor.unit_count
-            if motor_torque >= 0.0:
+                # Shaft power is mechanical motor output, never inverter bus power.
+                shaft[i] = motor_torque * motor_speed * 2.0 * math.pi / 60.0 * motor.unit_count
                 bus[i] = operating.bus_power * motor.unit_count
             elif regen_enabled:
-                br = resolve_braking(vehicle.drivetrain.powertrain, vehicle.drivetrain.drivetrain, speed, state, -wheel_force, -wheel_force, vehicle.tire.effective_radius)
+                # Friction absorbs the remainder; only the force actually
+                # allocated to regen contributes motor shaft/recovered power.
+                br = resolve_braking(
+                    vehicle.drivetrain.powertrain,
+                    vehicle.drivetrain.drivetrain,
+                    speed,
+                    state,
+                    -wheel_force,
+                    -wheel_force,
+                    vehicle.tire.effective_radius,
+                )
+                motor_torque = -br.regen_force_used * vehicle.tire.effective_radius * transmission.gear_efficiency / (
+                    motor.unit_count * transmission.gear_ratio
+                )
+                shaft[i] = motor_torque * motor_speed * 2.0 * math.pi / 60.0 * motor.unit_count
                 bus[i] = -br.recovered_bus_power
                 recovered += br.recovered_bus_power * dt
+            else:
+                # With regen disabled all braking is friction braking.
+                shaft[i] = 0.0
+                bus[i] = 0.0
         else:
             shaft[i] = wheel_force * speed
             bus[i] = shaft[i] / vehicle.drivetrain.efficiency if shaft[i] >= 0.0 else 0.0

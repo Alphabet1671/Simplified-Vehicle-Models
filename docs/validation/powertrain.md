@@ -251,10 +251,23 @@ attribution section. Key findings:
   torque where the converged reference correctly returns zero. The analytical
   default returns 0 Nm (matching the reference) because its envelope is also
   infeasible at those voltages.
-- Therefore the 9.8 ms lap displacement should be read as
-  "difference between an exact inverse and an 8-step approximation" rather than
-  "LUT error". Neither mode passes the numerical gates, and the analytical
-  default is not proven to be closer to the truth either.
+- On the attribution sweep the analytical default tracked the converged
+  reference much more closely than the LUT did (force maximum error 2.63 Nm and
+  95th percentile 2.07 Nm, against 443.98 Nm and 424.91 Nm for the LUT), because
+  the LUT over-reports available force once the terminal voltage leaves the map.
+- A controller-run side-by-side at matched speed and state of charge confirms
+  that this over-reporting is a LUT defect rather than a coupling artifact of
+  both modes. At SOC 0.30 and 34 m/s the LUT reported 2070.4 N of available
+  drive force while the analytical default reported 0.0 N; the same pattern
+  appeared at SOC 0.15 (30 and 34 m/s), SOC 0.08 (30 and 34 m/s), SOC 0.04
+  (30 m/s) and SOC 0.02 (25, 30 and 34 m/s).
+- The +9.797 ms lap displacement is therefore dominated by LUT error, not by
+  the analytical default's 8-step bisection being replaced by an exact inverse.
+  The LUT must not be promoted, and its 1.878x wall-time result holds only for
+  the in-domain part of the operating envelope that the assembled MIS flying lap
+  visits (roughly 555-609 V). Making the LUT usable for the SOC-coupled
+  endurance case requires covering the loaded terminal voltage range and
+  re-passing the numerical gates.
 
 ## Reference checks and assumptions
 

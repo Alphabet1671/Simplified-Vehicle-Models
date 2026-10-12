@@ -47,7 +47,9 @@ def lap_summary(result, elapsed: float, label: str) -> dict[str, object]:
         "label": label,
         "wall_seconds": elapsed,
         "lap_time_s": result.lap_time,
-        "average_speed_mps": result.lap_time and result.speed.size and float(result.speed.size),
+        # Retain the complete trace so comparison uses pointwise displacement,
+        # not just peak values.
+        "speed_trace_mps": [float(value) for value in result.speed],
         "maximum_speed_mps": float(np.max(result.speed)),
         "minimum_speed_mps": float(np.min(result.speed)),
         "converged": result.converged,
@@ -56,7 +58,6 @@ def lap_summary(result, elapsed: float, label: str) -> dict[str, object]:
         "cache_entries": result.drive_cache_entries,
         "max_speed_bucket_displacement_mps": result.drive_cache_max_speed_displacement,
         "max_soc_bucket_displacement": result.drive_cache_max_soc_displacement,
-        "maximum_speed_displacement_mps": 0.0,
         "force_residual_max": float(np.max(np.abs(result.force_balance_residual))),
         "motor_forward_queries": result.motor_forward_queries,
         "motor_inverse_queries": result.motor_inverse_queries,
@@ -65,12 +66,13 @@ def lap_summary(result, elapsed: float, label: str) -> dict[str, object]:
 
 
 def run_lap(vehicle, track, policy: DriveCachePolicy, label: str) -> dict[str, object]:
+    # Counters are per-lap diagnostics; the untimed warm-up must not leak into
+    # measured samples.
+    reset_motor_lut_counters()
     started = time.perf_counter()
     result = solve_lap(vehicle, track, LapMode.FLYING, drive_cache_policy=policy)
     elapsed = time.perf_counter() - started
-    summary = lap_summary(result, elapsed, label)
-    summary["average_speed_mps"] = track.lap_length / result.lap_time
-    return summary
+    return lap_summary(result, elapsed, label)
 
 
 def energy_summary(result, elapsed: float, label: str) -> dict[str, object]:
@@ -165,9 +167,13 @@ def main() -> None:
     if options.mode == "regen-22":
         results["regen_22"] = run_regen_22(vehicle, track, progress_callback)
     if "analytical" in results and "lut" in results:
+        analytical_trace = np.asarray(results["analytical"]["speed_trace_mps"], dtype=float)
+        lut_trace = np.asarray(results["lut"]["speed_trace_mps"], dtype=float)
+        if analytical_trace.shape != lut_trace.shape:
+            raise RuntimeError("analytical and LUT speed traces have different shapes")
         results["comparison"] = {
             "lap_time_delta_s": results["lut"]["lap_time_s"] - results["analytical"]["lap_time_s"],
-            "maximum_speed_delta_mps": results["lut"]["maximum_speed_mps"] - results["analytical"]["maximum_speed_mps"],
+            "maximum_speed_displacement_mps": float(np.max(np.abs(lut_trace - analytical_trace))),
             "median_wall_delta_s": results["lut"]["median_wall_seconds"] - results["analytical"]["median_wall_seconds"],
             "both_converged": bool(results["lut"]["converged"] and results["analytical"]["converged"]),
         }

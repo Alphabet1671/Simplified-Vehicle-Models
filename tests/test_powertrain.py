@@ -2,6 +2,7 @@ from pathlib import Path
 from dataclasses import replace
 import math
 import tempfile
+import time
 import unittest
 import hashlib
 from types import SimpleNamespace
@@ -35,6 +36,7 @@ from simplified_vehicle_models.powertrain.power_plant import (
     reset_motor_lut_counters,
     motor_lut_counters,
     _validate_operating_map,
+    _interpolated_row,
     _load_operating_map,
     MotorOperatingMap,
 )
@@ -46,6 +48,26 @@ from simplified_vehicle_models.xml.loader import load_point_mass_vehicle
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _voltage_fraction(mapping, voltage):
+    """Return the map voltage bracket index and interpolation fraction."""
+    index = int(np.searchsorted(mapping.voltage, voltage, side="right")) - 1
+    index = max(0, min(index, mapping.voltage.size - 2))
+    fraction = (voltage - mapping.voltage[index]) / (
+        mapping.voltage[index + 1] - mapping.voltage[index]
+    )
+    return index, fraction
+
+
+def _speed_fraction(mapping, speed):
+    """Return the map speed bracket index and interpolation fraction."""
+    index = int(np.searchsorted(mapping.speed, speed, side="right")) - 1
+    index = max(0, min(index, mapping.speed.size - 2))
+    fraction = (speed - mapping.speed[index]) / (
+        mapping.speed[index + 1] - mapping.speed[index]
+    )
+    return index, fraction
 
 
 class RegenGenerationTests(unittest.TestCase):
@@ -247,36 +269,289 @@ class MotorLutQueryTests(unittest.TestCase):
         self.assertGreaterEqual(regen.operating_point.bus_power, -100.0 - 1.0e-6)
         self.assertLessEqual(regen.torque, 0.0)
 
+    def test_out_of_domain_limit_query_is_cached(self):
+        """A repeated off-map limit query must not re-run the bisection."""
+        reset_motor_lut_counters()
+        first = motor_torque_limits(self.motor, 1000.0, 437.0)
+        self.assertTrue(first.used_fallback)
+        evaluations = motor_lut_counters()["fallback"]
+        self.assertGreaterEqual(evaluations, 1)
+        for _ in range(5):
+            again = motor_torque_limits(self.motor, 1000.0, 437.0)
+            self.assertEqual(again, first)
+        self.assertEqual(motor_lut_counters()["fallback"], evaluations)
+
     def test_exact_limits_support_out_of_domain_voltage(self):
         limits = motor_torque_limits(self.motor, 1000.0, 400.0)
         self.assertTrue(limits.used_fallback)
         self.assertGreater(limits.maximum_drive_torque, 0.0)
         self.assertGreater(limits.maximum_regen_torque, 0.0)
 
-    def _branch_motor(self, powers, mask):
-        mapping = MotorOperatingMap(
-            np.array([400.0, 500.0]), np.array([0.0, 2000.0]),
-            np.array([-1.0, -0.5, 0.0, 0.5, 1.0]),
-            np.full((2, 2), 20.0), np.full((2, 2), 20.0),
-            np.tile(np.asarray(powers), (2, 2, 1)),
-            np.zeros((2, 2, 5)), np.tile(np.asarray(mask, dtype=bool), (2, 2, 1)),
-        )
-        return replace(self.motor, operating_map=mapping)
+    def _row_reference(self, mapping, voltage, speed):
+        """Build one load row with the scalar four-corner accessor.
 
-    def test_regen_inverse_exact_node_and_all_endpoints(self):
-        motor = self._branch_motor([-20.0, -12.0, -5.0, 0.0, 100.0], [True, True, True, False, False])
-        node = torque_for_bus_power(motor, 1000.0, 450.0, -12.0, "regen")
-        self.assertTrue(node.feasible)
-        self.assertAlmostEqual(node.torque, -10.0)
-        broad = torque_for_bus_power(motor, 1000.0, 450.0, -25.0, "regen")
-        self.assertTrue(broad.feasible)
-        self.assertAlmostEqual(broad.torque, -20.0)
+        This is the review reference for the vectorized production row.
+        """
+        vi = int(np.searchsorted(mapping.voltage, voltage, side="right")) - 1
+        vi = max(0, min(vi, len(mapping.voltage) - 2))
+        vf = (voltage - mapping.voltage[vi]) / (mapping.voltage[vi + 1] - mapping.voltage[vi])
+        si = int(np.searchsorted(mapping.speed, speed, side="right")) - 1
+        si = max(0, min(si, len(mapping.speed) - 2))
+        sf = (speed - mapping.speed[si]) / (mapping.speed[si + 1] - mapping.speed[si])
+
+        def value(array, k):
+            return (
+                (1 - vf) * (1 - sf) * array[vi, si, k]
+                + vf * (1 - sf) * array[vi + 1, si, k]
+                + (1 - vf) * sf * array[vi, si + 1, k]
+                + vf * sf * array[vi + 1, si + 1, k]
+            )
+
+        return np.array(
+            [value(mapping.bus_power, k) for k in range(mapping.load.size)]
+        )
+
+    def test_vectorized_row_matches_scalar_reference(self):
+        rng = np.random.default_rng(23)
+        mapping = self.motor.operating_map
+        for _ in range(25):
+            voltage = float(rng.uniform(mapping.voltage[0], mapping.voltage[-1]))
+            speed = float(rng.uniform(mapping.speed[0], mapping.speed[-1]))
+            reference = self._row_reference(mapping, voltage, speed)
+            vi = int(np.searchsorted(mapping.voltage, voltage, side="right")) - 1
+            vi = max(0, min(vi, len(mapping.voltage) - 2))
+            vf = (voltage - mapping.voltage[vi]) / (mapping.voltage[vi + 1] - mapping.voltage[vi])
+            si = int(np.searchsorted(mapping.speed, speed, side="right")) - 1
+            si = max(0, min(si, len(mapping.speed) - 2))
+            sf = (speed - mapping.speed[si]) / (mapping.speed[si + 1] - mapping.speed[si])
+            vector = _interpolated_row(mapping.bus_power, vi, si, vf, sf)
+            np.testing.assert_array_equal(vector, reference)
+
+    def _in_map_targets(self, count, seed):
+        """Return in-map (voltage, speed, drive target) triples.
+
+        Targets are drawn strictly inside the achievable drive row range, which
+        is the assembled solver's storage-limited regime.
+        """
+        mapping = self.motor.operating_map
+        rng = np.random.default_rng(seed)
+        cases = []
+        while len(cases) < count:
+            voltage = float(rng.uniform(mapping.voltage[0], mapping.voltage[-1]))
+            speed = float(rng.uniform(mapping.speed[0], mapping.speed[-1]))
+            vi, vf = _voltage_fraction(mapping, voltage)
+            si, sf = _speed_fraction(mapping, speed)
+            row = _interpolated_row(mapping.bus_power, vi, si, vf, sf)
+            zero = int(np.searchsorted(mapping.load, 0.0))
+            low, high = float(row[zero]), float(row[-1])
+            if not high > low:
+                continue
+            cases.append(
+                (voltage, speed, low + rng.uniform(0.02, 0.98) * (high - low))
+            )
+        return cases
+
+    def test_in_map_drive_inverse_does_not_fall_back(self):
+        """A representative in-map drive sweep must stay on the LUT row.
+
+        Every target is strictly inside the achievable row range, so the
+        monotone row solves it directly and no analytical fallback is needed.
+        """
+        cases = self._in_map_targets(200, 101)
+        reset_motor_lut_counters()
+        for voltage, speed, target in cases:
+            result = torque_for_bus_power(self.motor, speed, voltage, target, "drive")
+            self.assertGreaterEqual(result.torque, 0.0)
+            self.assertFalse(result.used_fallback)
+            self.assertLessEqual(
+                result.operating_point.bus_power, target + 1.0e-3
+            )
+        counters = motor_lut_counters()
+        self.assertEqual(counters["inverse"], len(cases))
+        self.assertEqual(counters["fallback"], 0)
+
+    def test_in_map_drive_inverse_is_cheap(self):
+        """A fallback must not be orders of magnitude more expensive than a row solve."""
+        cases = self._in_map_targets(300, 202)
+        for voltage, speed, target in cases[:20]:
+            torque_for_bus_power(self.motor, speed, voltage, target, "drive")
+        reset_motor_lut_counters()
+        started = time.perf_counter()
+        for voltage, speed, target in cases:
+            torque_for_bus_power(self.motor, speed, voltage, target, "drive")
+        elapsed = time.perf_counter() - started
+        self.assertEqual(motor_lut_counters()["fallback"], 0)
+        # The old row build was ~45 us/call; acceptance-driven fallbacks reached
+        # tens of milliseconds per call.  This ceiling still fails loudly if a
+        # fallback storm returns.
+        self.assertLess(elapsed / len(cases), 1.0e-3)
+
+    def test_exact_fallback_is_bounded(self):
+        """One exact fallback must stay near the analytical bisection cost."""
+        reset_motor_lut_counters()
+        # 437.0 V is below the persisted map voltage range, so this is genuinely
+        # out of domain and must use the exact analytical fallback.
+        result = torque_for_bus_power(self.motor, 1000.0, 437.0, 20_000.0, "drive")
+        self.assertTrue(result.used_fallback)
+        self.assertTrue(result.feasible)
+        evaluations = motor_lut_counters()["fallback"]
+        self.assertLessEqual(evaluations, 200)
+        self.assertGreaterEqual(evaluations, 1)
+
+    def test_regen_inverse_respects_constraint_on_canonical_nonmonotone_row(self):
+        """The canonical regen row is non-monotone; the scan must stay correct."""
+        mapping = self.motor.operating_map
+        # Task 3 records this exact node as a non-monotone regen row.
+        vi, si = 8, 17
+        voltage, speed = float(mapping.voltage[vi]), float(mapping.speed[si])
+        row = mapping.bus_power[vi, si, :]
+        negative = int(np.searchsorted(mapping.load, 0.0))
+        self.assertLess(float(np.min(row)), float(row[0]) - 200.0)
+        for fraction in (0.05, 0.25, 0.5, 0.75, 0.95):
+            target = float(np.min(row[:negative])) * fraction
+            reset_motor_lut_counters()
+            result = torque_for_bus_power(self.motor, speed, voltage, target, "regen")
+            self.assertTrue(result.feasible)
+            self.assertFalse(result.used_fallback)
+            self.assertLessEqual(result.torque, 0.0)
+            self.assertGreaterEqual(
+                result.operating_point.bus_power, target - 1.0e-3
+            )
+
+    def test_regen_inverse_selects_deepest_admissible_node(self):
+        """On a monotone row the deepest admissible mapped node must win.
+
+        Load zero is non-productive in this fixture, and the deepest node
+        overshoots the -50 W constraint, so the crossing onto the second node
+        is the answer.
+        """
+        powers = [40.0, -15.0, -30.0, -50.0, -75.0, 0.0, 30.0, 60.0, 90.0]
+        motor = self._regen_row_motor(powers)
+        result = torque_for_bus_power(motor, 1000.0, 450.0, -50.0, "regen")
+        self.assertTrue(result.feasible)
+        self.assertFalse(result.used_fallback)
+        # The -50 W node is already inadmissible, so the crossing sits at -0.75.
+        self.assertAlmostEqual(result.torque, -15.0)
+        self.assertGreaterEqual(
+            result.operating_point.bus_power, -50.0 - 1.0e-3
+        )
+
+    def test_regen_inverse_deeper_than_row_returns_deepest_admissible_node(self):
+        """A request below every mapped power still respects the constraint."""
+        powers = [40.0, -15.0, -30.0, -50.0, -75.0, 0.0, 30.0, 60.0, 90.0]
+        motor = self._regen_row_motor(powers)
+        result = torque_for_bus_power(motor, 1000.0, 450.0, -200.0, "regen")
+        self.assertTrue(result.feasible)
+        # No mapped point reaches -200 W, so the deepest admissible crossing is
+        # returned and still charges at least as much as the constraint allows.
+        self.assertAlmostEqual(result.torque, -15.0)
+        self.assertGreaterEqual(
+            result.operating_point.bus_power, -200.0 - 1.0e-3
+        )
+
+    def test_regen_inverse_interpolates_inside_the_admissible_segment(self):
+        """An interior request is solved on its own piecewise-linear segment."""
+        powers = [-60.0, -45.0, -30.0, -15.0, 0.0, 20.0, 40.0, 60.0, 80.0]
+        motor = self._regen_row_motor(powers)
+        result = torque_for_bus_power(motor, 1000.0, 450.0, -95.0, "regen")
+        self.assertTrue(result.feasible)
+        self.assertFalse(result.used_fallback)
+        # -95 W lies between the -90 W and -105 W nodes, so it is interior.
+        self.assertAlmostEqual(result.torque, -20.0)
+
+    def test_regen_inverse_shallow_target_needs_no_braking(self):
+        """A request weaker than the zero-load point needs no braking."""
+        powers = [0.0, -8.0, -15.0, -25.0, -5.0, 0.0, 0.0, 0.0, 100.0]
+        motor = self._regen_row_motor(powers)
+        result = torque_for_bus_power(motor, 1000.0, 450.0, -3.0, "regen")
+        self.assertTrue(result.feasible)
+        self.assertAlmostEqual(result.torque, 0.0)
 
     def test_regen_inverse_mixed_mask_skips_invalid_segment(self):
-        motor = self._branch_motor([-8.0, -12.0, -5.0, 0.0, 100.0], [False, True, True, False, False])
+        """An invalid corner excludes every segment it bounds."""
+        powers = [40.0, -50.0, -12.0, -8.0, 0.0, 30.0, 60.0, 90.0, 120.0]
+        mask = [False, False, True, True, False, False, False, False, False]
+        motor = self._regen_row_motor(powers, mask)
         result = torque_for_bus_power(motor, 1000.0, 450.0, -10.0, "regen")
         self.assertTrue(result.feasible)
-        self.assertAlmostEqual(result.torque, -7.142857142857143)
+        # The -50 W node is masked out, so the admissible crossing comes from
+        # the first valid segment and yields -7.5 N.m.
+        self.assertAlmostEqual(result.torque, -7.5)
+        self.assertAlmostEqual(result.operating_point.bus_power, -10.0)
+
+    def test_regen_scan_matches_independent_row_reference(self):
+        """Every regen case must equal an independent piecewise-linear scan.
+
+        The reference below re-derives the deepest admissible load straight from
+        the mapped row and mask, independently of the production vectorization.
+        """
+        cases = (
+            ([40.0, -15.0, -30.0, -50.0, -75.0, 0.0, 30.0, 60.0, 90.0], None, -50.0),
+            ([40.0, -15.0, -30.0, -50.0, -75.0, 0.0, 30.0, 60.0, 90.0], None, -200.0),
+            ([-60.0, -45.0, -30.0, -15.0, 0.0, 20.0, 40.0, 60.0, 80.0], None, -95.0),
+            (
+                [40.0, -50.0, -12.0, -8.0, 0.0, 30.0, 60.0, 90.0, 120.0],
+                [False, False, True, True, False, False, False, False, False],
+                -10.0,
+            ),
+            ([0.0, -8.0, -15.0, -25.0, -5.0, 0.0, 0.0, 0.0, 100.0], None, -10.0),
+        )
+        for powers, mask, target in cases:
+            motor = self._regen_row_motor(powers, mask)
+            expected = self._reference_regen_load(powers, mask, target)
+            self.assertIsNotNone(expected, (powers, target))
+            result = torque_for_bus_power(motor, 1000.0, 450.0, target, "regen")
+            self.assertAlmostEqual(result.torque, 20.0 * expected)
+            self.assertGreaterEqual(
+                result.operating_point.bus_power, target - 1.0e-3
+            )
+
+    def _reference_regen_load(self, powers, mask, target):
+        """Independent scalar scan for the deepest admissible mapped load."""
+        loads = np.linspace(-1.0, 1.0, 9)
+        values = np.asarray(powers, dtype=float)
+        valid = (
+            np.asarray(mask, dtype=bool) if mask is not None else values < -1.0e-9
+        )
+        zero = int(np.searchsorted(loads, 0.0))
+        candidates = []
+        for k in range(zero + 1):
+            if valid[k] and values[k] >= target - 1.0e-9:
+                candidates.append(float(loads[k]))
+        for k in range(zero):
+            if not (valid[k] and valid[k + 1]):
+                continue
+            if values[k + 1] == values[k]:
+                continue
+            if (values[k] - target) * (values[k + 1] - target) > 0.0:
+                continue
+            fraction = (target - values[k]) / (values[k + 1] - values[k])
+            candidates.append(float(loads[k] + fraction * (loads[k + 1] - loads[k])))
+        return min(candidates) if candidates else None
+
+
+    REGEN_LOADS = np.linspace(-1.0, 1.0, 9)
+
+    def _regen_row_motor(self, powers, mask=None):
+        """Build a nine-node map around one regen row.
+
+        When ``mask`` is omitted it is derived from the powers, which is the
+        invariant the compiled map validates: a node is productive exactly when
+        its bus power is negative.
+        """
+        values = np.asarray(powers, dtype=float)
+        valid = (
+            np.asarray(mask, dtype=bool) if mask is not None else values < -1.0e-9
+        )
+        mapping = MotorOperatingMap(
+            np.array([400.0, 500.0]), np.array([0.0, 2000.0]),
+            self.REGEN_LOADS,
+            np.full((2, 2), 20.0), np.full((2, 2), 20.0),
+            np.tile(values, (2, 2, 1)),
+            np.zeros((2, 2, self.REGEN_LOADS.size)),
+            np.tile(valid, (2, 2, 1)),
+        )
+        return replace(self.motor, operating_map=mapping)
 
 
 class PowertrainAssemblyTests(unittest.TestCase):

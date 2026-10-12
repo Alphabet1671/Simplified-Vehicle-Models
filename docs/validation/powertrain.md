@@ -17,7 +17,7 @@ Maintained reproducer command (Python and `/usr/bin/time`; historical cProfile f
 
 ```text
 PYTHONPATH=src /usr/bin/time -p \
-  python examples/benchmark_soc_solver.py --mode exact
+  /Users/alphabet1671/.dsh/dsh-runtimes/dsh-primary-runtime/dependencies/python/bin/python3 examples/benchmark_soc_solver.py --mode exact
 ```
 
 The exact run converged in 2 iterations. Wall time was 23.77 s (`real`),
@@ -66,7 +66,7 @@ same explicit controls: `tolerance=1e-5`, `maximum_iterations=50`,
 
 ```text
 PYTHONPATH=src /usr/bin/time -p \
-  python examples/benchmark_soc_solver.py --mode regen-one --progress
+  /Users/alphabet1671/.dsh/dsh-runtimes/dsh-primary-runtime/dependencies/python/bin/python3 examples/benchmark_soc_solver.py --mode regen-one --progress
 ```
 
 Both cold and warm runs completed within the allowed 900 s per run. The warm
@@ -97,7 +97,7 @@ The requested fully coupled (`reuse_profile=False`) attempt used a managed
 background job and explicit progress callback:
 
 ```text
-PYTHONPATH=src python examples/benchmark_soc_solver.py --mode regen-22 --progress
+PYTHONPATH=src /Users/alphabet1671/.dsh/dsh-runtimes/dsh-primary-runtime/dependencies/python/bin/python3 examples/benchmark_soc_solver.py --mode regen-22 --progress
 ```
 
 It was stopped at the practical 120 s limit. Progress evidence: lap 1
@@ -153,22 +153,25 @@ assembled comparison remains Task 4.
 
 ## Task 4 LUT assembly integration
 
-The assembled path now uses the XML-declared motor LUT by default. Drive limits call
-`motor_torque_limits` and `torque_for_bus_power` for each voltage-coupling pass;
-regeneration scans the complete inverse envelope and applies the signed storage
-charge-power target without a second inverter-efficiency loss. Analytical assembly
-is retained as an explicit `motor_mode="analytical"` benchmark baseline, and all
-out-of-domain voltage/speed/load queries use the exact fallback.
+The assembled path keeps analytical motor evaluation as the safe default until
+all numerical and performance gates pass. LUT assembly is an explicit
+`motor_mode="lut"` opt-in. In LUT mode, drive limits call `motor_torque_limits`
+and `torque_for_bus_power` for each voltage-coupling pass, and the selected
+operating point remains on `evaluate_motor` (analytical evaluation is used only
+by explicit LUT fallback). Regen inverse queries conservatively validate the
+requested voltage/speed interpolation and re-evaluate candidates before
+acceptance; invalid candidates use the exact analytical fallback.
 
 The maintained comparison command is:
 
 ```text
-PYTHONPATH=src python examples/benchmark_soc_solver.py --mode compare --runs 3
+PYTHONPATH=src /Users/alphabet1671/.dsh/dsh-runtimes/dsh-primary-runtime/dependencies/python/bin/python3 examples/benchmark_soc_solver.py --mode compare --runs 3
 ```
 
 It performs one untimed warm-up and three same-process timed flying laps per mode,
-using the default exact drive-cache policy. JSON reports median/min wall time, lap
-and maximum-speed deltas, force residual, LUT forward/inverse/fallback counters,
+resetting LUT counters before every lap so warm-up work is excluded. JSON retains
+the full speed arrays and computes `max(abs(lut.speed-analytical.speed))`, along
+with median/min wall time, lap delta, force residual, query/fallback counters,
 and map-load cost. The canonical map remains the Task 3 generated NPZ (digest and
 provenance validated by the operating-map tests); no generated map contents were
 changed in Task 4. Regen energy comparison is conditional on each mode completing

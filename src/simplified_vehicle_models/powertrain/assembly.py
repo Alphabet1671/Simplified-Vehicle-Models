@@ -27,6 +27,7 @@ from simplified_vehicle_models.powertrain.power_plant import (
     PowerPlantParameters,
     evaluate_motor,
     evaluate_shaft_power,
+    lut_bus_power_range,
     maximum_motor_torque,
     motor_torque_limits,
     torque_for_bus_power,
@@ -43,7 +44,9 @@ ASSEMBLY_SOURCE_CAPABILITY = "powertrain-and-drivetrain"
 class PowertrainParameters:
     power_plant: PowerPlantParameters
     energy_storage: EnergyStorageParameters
-    motor_mode: str = "lut"
+    # Analytical is the safe default until LUT numerical/performance gates pass.
+    # ``lut`` remains an explicit opt-in comparison mode.
+    motor_mode: str = "analytical"
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,6 +75,7 @@ class RegenLimit:
     residual: float = 0.0
     converged: bool = True
     iterations: int = 0
+    used_fallback: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -204,12 +208,12 @@ def compile_powertrain_drivetrain(model: Model) -> DrivetrainParameters:
 
 
 def _motor_operating_point(motor, mode, speed, torque, voltage):
-    """Select the explicit analytical baseline or canonical LUT evaluator."""
+    """Select one motor operating-point evaluator for the whole assembly."""
     if mode == "analytical":
         return evaluate_shaft_power(motor, speed, torque, voltage)
-    if mode != "lut":
-        raise ValueError("motor_mode must be 'lut' or 'analytical'")
-    return evaluate_motor(motor, speed, torque, voltage)
+    if mode == "lut":
+        return evaluate_motor(motor, speed, torque, voltage)
+    raise ValueError("motor_mode must be 'lut' or 'analytical'")
 
 
 def solve_shaft_torque_fixed_point(
@@ -317,15 +321,35 @@ def maximum_drive_force(
         else:
             limits = motor_torque_limits(motor, motor_speed, voltage)
             envelope = limits.maximum_drive_torque
-            envelope_result = _motor_operating_point(motor, powertrain.motor_mode, motor_speed, envelope, voltage)
+            envelope_result = evaluate_motor(motor, motor_speed, envelope, voltage)
             target = storage.discharge_power_limit / motor.unit_count
-            if envelope_result.feasible and envelope_result.bus_power <= target:
+            # The inverse query is only meaningful when the requested storage
+            # power crosses the motor's achievable row at this voltage: below the
+            # row's zero-load power, or above the row's maximum.  A target above
+            # the maximum is unreachable by the motor, so the envelope torque is
+            # the answer; asking the inverse for it would run a full exact
+            # analytical fallback for no gain.
+            row_range = lut_bus_power_range(motor, motor_speed, voltage)
+            tolerance = 1.0e-3
+            if row_range is not None and row_range[0] <= target <= row_range[1] + tolerance:
+                # The storage limit crosses the row, so it is the binding
+                # constraint and the inverse solves for it directly.
+                solved = torque_for_bus_power(motor, motor_speed, voltage, target, "drive")
+                torque, operating = solved.torque, solved.operating_point
+            elif envelope_result.feasible and (
+                row_range is None or target >= row_range[1]
+            ):
+                # A target above the row's maximum is unreachable by the motor
+                # at this voltage, so the envelope torque is the answer; asking
+                # the inverse for it would run a full exact analytical fallback
+                # for no gain.
                 torque, operating = envelope, envelope_result
             else:
                 solved = torque_for_bus_power(motor, motor_speed, voltage, target, "drive")
                 torque, operating = solved.torque, solved.operating_point
-        bus_operating = (evaluate_shaft_power(motor, motor_speed, torque, voltage)
-                         if powertrain.motor_mode == "lut" else operating)
+        # ``operating`` is the selected torque's canonical operating point:
+        # LUT mode stays on evaluate_motor (or its explicit inverse result).
+        bus_operating = operating
         bus = max(0.0, bus_operating.bus_power * motor.unit_count)
         current, feasible = solve_current(powertrain.energy_storage, state, bus)
         new_voltage = terminal_voltage(powertrain.energy_storage, state, current)
@@ -334,8 +358,7 @@ def maximum_drive_force(
         if residual <= tolerance:
             converged = feasible and operating.feasible
             break
-    bus_operating = (evaluate_shaft_power(motor, motor_speed, torque, voltage)
-                     if powertrain.motor_mode == "lut" else operating)
+    bus_operating = operating
     bus = max(0.0, bus_operating.bus_power * motor.unit_count)
     current, feasible = solve_current(powertrain.energy_storage, state, bus)
     wheel_torque = (
@@ -457,6 +480,7 @@ def maximum_regen_force(
     if envelope_result.feasible and envelope_result.bus_power >= target:
         torque, operating = -envelope, envelope_result
         active = "motor_torque"
+        residual, converged, iterations, used_fallback = 0.0, True, 1, False
     elif powertrain.motor_mode == "analytical":
         fixed_point = solve_shaft_torque_fixed_point(
             motor, motor_speed, -abs(storage.charge_power_limit), storage.bus_voltage,
@@ -465,17 +489,28 @@ def maximum_regen_force(
         torque = fixed_point.torque
         operating = _motor_operating_point(motor, powertrain.motor_mode, motor_speed, torque, storage.bus_voltage)
         active = "storage_power"
+        residual, converged, iterations, used_fallback = (
+            operating.bus_power - target, fixed_point.converged, fixed_point.iterations, False
+        )
     else:
         solved = torque_for_bus_power(motor, motor_speed, storage.bus_voltage, target, "regen")
         torque, operating = solved.torque, solved.operating_point
         active = "storage_power"
+        residual, converged, iterations, used_fallback = (
+            solved.residual, solved.feasible, 1, solved.used_fallback
+        )
+    # Never report a successful inverse unless its selected operating point is
+    # feasible at the requested voltage/speed.
+    if not operating.feasible:
+        converged = False
     torque_limited_force = abs(torque) * motor.unit_count * transmission.gear_ratio * regen_gear_factor / effective_radius
     limit = min(torque_limited_force, power_force)
     if limit < torque_limited_force:
         active = "storage_power"
     return RegenLimit(
         limit, torque_force, power_force, storage.charge_power_limit, crossover,
-        active, (operating.bus_power - target if active == "storage_power" else 0.0), operating.feasible, 1,
+        active, residual if active == "storage_power" else 0.0,
+        converged, iterations, used_fallback,
     )
 
 

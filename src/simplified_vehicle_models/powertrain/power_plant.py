@@ -384,6 +384,58 @@ def _interpolated_envelopes(mapping, voltage, speed):
     )
 
 
+_ROW_MASK_TOLERANCE = 1.0e-12
+
+
+def _row_power_tolerance(magnitude):
+    """Return the tolerated row/forward bus-power disagreement in watts.
+
+    ``_validate_operating_map`` admits up to 1.0e-9 W of monotonicity slack per
+    drive node and 1.0e-9 W of productive-regen slack per node.  Bilinear
+    interpolation over the four voltage/speed corners keeps that bound, and
+    float64 accumulation at map magnitudes near 1.0e5 W adds roughly 1.0e-11 W.
+    A tolerance of 1.0e-6 W is therefore several orders of magnitude above the
+    map's own numerical slack, while still negligible against the ~100 W
+    interpolation error of the underlying map.  It exists so an inverse solved
+    on the row is never rejected merely because the trilinear forward evaluator
+    reconstructs the load from a rounded torque.
+    """
+
+    return 1.0e-6 + 1.0e-12 * abs(float(magnitude))
+
+
+def _interpolated_row(array, vi, si, vf, sf):
+    """Return one load row using one vectorized four-corner interpolation.
+
+    This is the same convex combination as ``_bilinear`` evaluated over the
+    whole load axis at once, replacing a per-node scalar corner accessor.
+    """
+
+    return (
+        (1.0 - vf) * (1.0 - sf) * array[vi, si, :]
+        + vf * (1.0 - sf) * array[vi + 1, si, :]
+        + (1.0 - vf) * sf * array[vi, si + 1, :]
+        + vf * sf * array[vi + 1, si + 1, :]
+    )
+
+
+def _interpolated_regen_mask(mapping, vi, si, vf, sf):
+    """Return the conservative regen feasibility mask for one requested point."""
+
+    weighted = _interpolated_row(
+        mapping.regen_feasible.astype(np.float64), vi, si, vf, sf
+    )
+    return weighted >= 1.0 - _ROW_MASK_TOLERANCE
+
+
+def _segment_load(row, load, k):
+    """Return the load-axis fraction at which row segment ``k`` reaches ``load``."""
+
+    if row[k + 1] == row[k]:
+        return 0.0
+    return (load - row[k]) / (row[k + 1] - row[k])
+
+
 def _exact_fallback(parameters, motor_speed, shaft_torque, bus_voltage):
     """Evaluate the analytical oracle and account for one exact fallback."""
     _LOOKUP_COUNTERS["fallback"] += 1
@@ -437,13 +489,49 @@ def evaluate_motor(parameters, motor_speed_rpm, shaft_torque, bus_voltage):
     return _lut_forward(parameters, motor_speed_rpm, shaft_torque, bus_voltage)
 
 
+_EXACT_LIMIT_CACHE = {}
+_EXACT_LIMIT_CACHE_MAX = 65536
+_LIMIT_CACHE_QUANTUM = 1.0e-3
+
+
+def _exact_limit_cache_key(parameters, speed, voltage, regen):
+    return (
+        id(parameters),
+        regen,
+        round(float(speed) / _LIMIT_CACHE_QUANTUM),
+        round(float(voltage) / _LIMIT_CACHE_QUANTUM),
+    )
+
+
 def _exact_limit(parameters, speed, voltage, regen=False):
+    """Return the exact directional torque limit at one operating point.
+
+    The analytical bisection costs dozens of oracle evaluations and a lap
+    revisits the same voltage-coupling operating point thousands of times, so
+    results are memoized on a 1.0e-3 V/rpm-quantized key.  That quantum is far
+    below the maps' own accuracy while keeping the cache bounded and observable.
+    """
+
+    key = _exact_limit_cache_key(parameters, speed, voltage, regen)
+    cached = _EXACT_LIMIT_CACHE.get(key)
+    if cached is not None:
+        return cached
+    value = _exact_limit_uncached(parameters, speed, voltage, regen)
+    if len(_EXACT_LIMIT_CACHE) >= _EXACT_LIMIT_CACHE_MAX:
+        _EXACT_LIMIT_CACHE.clear()
+    _EXACT_LIMIT_CACHE[key] = value
+    return value
+
+
+def _exact_limit_uncached(parameters, speed, voltage, regen=False):
     envelope = _map_values(max(0.0, speed), 0.0, parameters)[0]
     if envelope <= 0.0:
         return 0.0
     lo, hi = (-envelope, 0.0) if regen else (0.0, envelope)
     feasible_limit = 0.0
-    for _ in range(64):
+    # 24 bisections resolve the limit to ~1e-7 of the directional envelope,
+    # far below the maps' own accuracy, at half the analytical cost.
+    for _ in range(24):
         mid = (lo + hi) * 0.5
         if _exact_fallback(parameters, speed, mid, voltage).feasible:
             feasible_limit = mid
@@ -456,6 +544,31 @@ def _exact_limit(parameters, speed, voltage, regen=False):
         else:
             hi = mid
     return abs(feasible_limit)
+
+
+def lut_bus_power_range(parameters, motor_speed_rpm, bus_voltage):
+    """Return the achievable drive bus-power row range at one requested point.
+
+    The returned ``(zero_load, maximum)`` pair comes from the same bilinear row
+    the inverse solves on, so callers can decide whether a requested storage
+    power crosses the mapped motor capability without invoking the inverse (and
+    its exact fallback) for an unreachable target.  ``None`` is returned when no
+    LUT is compiled.
+    """
+
+    mapping = parameters.operating_map
+    if mapping is None:
+        return None
+    if not (
+        mapping.voltage[0] <= bus_voltage <= mapping.voltage[-1]
+        and mapping.speed[0] <= motor_speed_rpm <= mapping.speed[-1]
+    ):
+        return None
+    vi, vf = _bracket(mapping.voltage, bus_voltage)
+    si, sf = _bracket(mapping.speed, motor_speed_rpm)
+    row = _interpolated_row(mapping.bus_power, vi, si, vf, sf)
+    zero = int(np.searchsorted(mapping.load, 0.0))
+    return float(row[zero]), float(np.max(row))
 
 
 def motor_torque_limits(parameters, motor_speed_rpm, bus_voltage):
@@ -475,55 +588,125 @@ def motor_torque_limits(parameters, motor_speed_rpm, bus_voltage):
     return TorqueLimits(drive, regen, False)
 
 
+def _fallback_fractions(parameters):
+    """Return deterministic dimensionless sample points along a limit.
+
+    A uniform grid resolves the source envelope, combined with the normalized
+    breakpoints of the compact torque-envelope map.  The loss map is sampled row
+    by row and stores thousands of torque knots, so it is deliberately excluded:
+    using every loss knot made one exact fallback thousands of analytical
+    evaluations long.  The grid is coarse enough to keep the total fallback cost
+    bounded, and the bracketed bisection removes any residual sampling error.
+    """
+
+    fractions = {index / 16.0 for index in range(17)}
+    envelope_axis = parameters.torque_values
+    last = max(abs(float(envelope_axis[-1])), 1.0e-12)
+    for value in envelope_axis:
+        fraction = abs(float(value)) / last
+        if 0.0 < fraction < 1.0:
+            fractions.add(fraction)
+    return sorted(fractions)
+
+
+_DRIVE_FALLBACK_STEPS = 24
+
+
+def _drive_fallback_torque(parameters, speed, voltage, target, maximum):
+    """Bisect the monotone drive bus-power curve for one exact fallback.
+
+    Drive bus power is monotone increasing in torque up to the directional
+    envelope, so a single bounded bisection finds the largest feasible torque
+    without sampling the whole range.
+    """
+
+    lo, hi = 0.0, maximum
+    best = 0.0
+    for _ in range(_DRIVE_FALLBACK_STEPS):
+        mid = 0.5 * (lo + hi)
+        op = _exact_fallback(parameters, speed, mid, voltage)
+        if op.feasible and op.bus_power <= target + 1.0e-9:
+            best, lo = mid, mid
+        else:
+            hi = mid
+    return best
+
+
 def _inverse_fallback(parameters, speed, voltage, target, direction):
+    """Exact analytical fallback for genuinely out-of-domain targets."""
     maximum = _exact_limit(parameters, speed, voltage, direction == "regen")
-    lo, hi = (0.0, maximum) if direction == "drive" else (-maximum, 0.0)
-    # Source-map breakpoints provide valid analytical brackets without a fixed
-    # dense sample count, including the non-monotone regen branches.
-    fractions = {0.0, 1.0}
-    for axis in (parameters.torque_values, parameters.loss_torque):
-        for value in axis:
-            fraction = abs(float(value)) / max(abs(float(axis[-1])), 1.0e-12)
-            if 0.0 < fraction < 1.0:
-                fractions.add(fraction)
-    fractions = sorted(fractions)
+    if maximum <= 0.0:
+        op = _exact_fallback(parameters, speed, 0.0, voltage)
+        return TorqueSolveResult(0.0, op, op.bus_power - target, False, op.active_limit, True)
+    if direction == "drive":
+        torque = _drive_fallback_torque(parameters, speed, voltage, target, maximum)
+        op = _exact_fallback(parameters, speed, torque, voltage)
+        tolerance = _row_power_tolerance(target)
+        feasible = op.feasible and op.bus_power <= target + tolerance
+        return TorqueSolveResult(torque, op, op.bus_power - target, feasible, op.active_limit, True)
+    # Regeneration bus power is genuinely non-monotone, so sample the complete
+    # negative-torque range, then refine every segment that straddles the target
+    # and keep the most-negative admissible torque.
+    lo, hi = -maximum, 0.0
+    fractions = _fallback_fractions(parameters)
     points = [lo + (hi - lo) * fraction for fraction in fractions]
-    values = []
-    for torque in points:
-        values.append(_exact_fallback(parameters, speed, torque, voltage))
-    candidates = []
-    for torque, op in zip(points, values):
-        if op.feasible and ((op.bus_power <= target + 1.0e-9) if direction == "drive" else op.bus_power >= target - 1.0e-9):
-            candidates.append(torque)
+    values = [
+        _exact_fallback(parameters, speed, torque, voltage) for torque in points
+    ]
+    admissible = [
+        torque
+        for torque, op in zip(points, values)
+        if op.feasible and op.bus_power >= target - 1.0e-9
+    ]
+    stop = 1.0e-7 + 1.0e-9 * abs(target)
     for left, right, left_op, right_op in zip(points, points[1:], values, values[1:]):
         if not left_op.feasible or not right_op.feasible:
             continue
-        f_left = left_op.bus_power - target
-        if f_left * (right_op.bus_power - target) > 0.0:
+        if left_op.bus_power == right_op.bus_power:
+            continue
+        span = right_op.bus_power - left_op.bus_power
+        fraction = min(1.0, max(0.0, (target - left_op.bus_power) / span))
+        torque = left + (right - left) * fraction
+        op = _exact_fallback(parameters, speed, torque, voltage)
+        if op.feasible and op.bus_power >= target - 1.0e-9 and abs(op.bus_power - target) <= stop:
+            admissible.append(torque)
+            continue
+        if not (
+            min(left_op.bus_power, right_op.bus_power) - 1.0e-9
+            <= target
+            <= max(left_op.bus_power, right_op.bus_power) + 1.0e-9
+        ):
             continue
         a, b = left, right
-        for _ in range(64):
-            mid = (a + b) * 0.5
-            op = _exact_fallback(parameters, speed, mid, voltage)
-            if not op.feasible:
+        f_left = left_op.bus_power - target
+        for _ in range(24):
+            mid = 0.5 * (a + b)
+            mid_op = _exact_fallback(parameters, speed, mid, voltage)
+            if not mid_op.feasible:
                 break
-            if (op.bus_power - target) * f_left <= 0.0:
+            if (mid_op.bus_power - target) * f_left <= 0.0:
                 b = mid
             else:
-                a = mid
-                f_left = op.bus_power - target
-        candidates.append((a + b) * 0.5)
-    if direction == "drive":
-        torque = max(candidates) if candidates else 0.0
-    else:
-        torque = min(candidates) if candidates else 0.0
+                a, f_left = mid, mid_op.bus_power - target
+        admissible.append(0.5 * (a + b))
+    torque = min(admissible) if admissible else 0.0
     op = _exact_fallback(parameters, speed, torque, voltage)
-    feasible = op.feasible and ((op.bus_power <= target + 1.0e-7) if direction == "drive" else op.bus_power >= target - 1.0e-7)
+    tolerance = _row_power_tolerance(target)
+    feasible = op.feasible and op.bus_power >= target - tolerance
     return TorqueSolveResult(torque, op, op.bus_power - target, feasible, op.active_limit, True)
 
 
 def torque_for_bus_power(parameters, motor_speed_rpm, bus_voltage, target_bus_power, direction):
-    """Invert LUT bus power, scanning every regen segment inclusively."""
+    """Invert LUT bus power, scanning every regen segment inclusively.
+
+    The drive row is monotone, so the inverse is solved directly on the same
+    piecewise-linear row the forward evaluator reconstructs; the acceptance
+    check is the row's own range plus the map's discretization tolerance rather
+    than sub-1e-7 W agreement with a differently ordered interpolation.  The
+    regen row is genuinely non-monotone, so every valid negative-load segment is
+    scanned and the most-negative feasible torque is selected.
+    """
+
     if direction not in ("drive", "regen"):
         raise ValueError("direction must be 'drive' or 'regen'")
     mapping = parameters.operating_map
@@ -546,42 +729,94 @@ def torque_for_bus_power(parameters, motor_speed_rpm, bus_voltage, target_bus_po
             parameters, motor_speed_rpm, bus_voltage, target_bus_power, direction
         )
     li0 = int(np.searchsorted(mapping.load, 0.0))
-    def value(array, k):
-        return (
-            (1 - vf) * (1 - sf) * array[vi, si, k]
-            + vf * (1 - sf) * array[vi + 1, si, k]
-            + (1 - vf) * sf * array[vi, si + 1, k]
-            + vf * sf * array[vi + 1, si + 1, k]
-        )
-    powers = np.array([value(mapping.bus_power, k) for k in range(mapping.load.size)])
+    row = _interpolated_row(mapping.bus_power, vi, si, vf, sf)
     if direction == "drive":
-        loads, vals = mapping.load[li0:], powers[li0:]
-        if target_bus_power < vals[0] - 1.0e-9 or target_bus_power > vals[-1] + 1.0e-9:
+        loads, vals = mapping.load[li0:], row[li0:]
+        tolerance = _row_power_tolerance(target_bus_power)
+        if (
+            target_bus_power < vals[0] - tolerance
+            or target_bus_power > vals[-1] + tolerance
+        ):
+            # The target is outside the mapped load axis, so the exact oracle
+            # must answer it.
             _LOOKUP_COUNTERS["inverse"] += 1
             return _inverse_fallback(parameters, motor_speed_rpm, bus_voltage, target_bus_power, direction)
         j = min(len(vals) - 2, max(0, int(np.searchsorted(vals, target_bus_power, side="right") - 1)))
-        load = loads[j] if vals[j + 1] == vals[j] else loads[j] + (target_bus_power - vals[j]) * (loads[j + 1] - loads[j]) / (vals[j + 1] - vals[j])
+        fraction = _segment_load(vals, target_bus_power, j)
+        load = float(loads[j] + fraction * (loads[j + 1] - loads[j]))
         found = True
     else:
-        candidates = [0.0] if powers[li0] >= target_bus_power - 1.0e-9 else []
-        for j in range(li0):
-            x0, x1 = mapping.load[j], mapping.load[j + 1]
-            y0, y1 = powers[j], powers[j + 1]
-            valid0, valid1 = mapping.regen_feasible[vi, si, j], mapping.regen_feasible[vi, si, j + 1]
-            for x, y, valid in ((x0, y0, valid0), (x1, y1, valid1)):
-                if valid and y >= target_bus_power - 1.0e-9:
-                    candidates.append(float(x))
-            if valid0 and valid1 and (y0 - target_bus_power) * (y1 - target_bus_power) <= 0.0 and y1 != y0:
-                candidates.append(float(x0 + (target_bus_power - y0) * (x1 - x0) / (y1 - y0)))
+        mask = _interpolated_regen_mask(mapping, vi, si, vf, sf)
+        # Vectorized node scan over every mapped negative-load node.  A node is
+        # admissible only when its row bus power already satisfies the charge
+        # constraint.  The zero-load anchor is included because it bounds the
+        # shallow end of the mapped range: a request weaker than the zero-load
+        # bus power needs no braking at all.
+        node_hit = mask[:li0 + 1] & (row[:li0 + 1] >= target_bus_power - 1.0e-9)
+        candidates = [float(value) for value in mapping.load[:li0 + 1][node_hit]]
+        # Zero regen is always physically available: coasting draws no charge
+        # power, so a target weaker than the row's zero-load point resolves to
+        # no braking even when that mapped node reports a small loss.
+        if row[li0] >= target_bus_power - 1.0e-9 or target_bus_power <= 0.0:
+            candidates.append(float(mapping.load[li0]))
+        # Vectorized segment scan for interior crossings.
+        if li0 >= 1:
+            y_low = row[:li0]
+            y_high = row[1:li0 + 1]
+            valid_low = mask[:li0]
+            valid_high = mask[1:li0 + 1]
+            crossing = (
+                valid_low
+                & valid_high
+                & ((y_low - target_bus_power) * (y_high - target_bus_power) <= 0.0)
+                & (y_high != y_low)
+            )
+            if np.any(crossing):
+                x_low = mapping.load[:li0][crossing]
+                y_cross_low = y_low[crossing]
+                y_cross_high = y_high[crossing]
+                fractions = (target_bus_power - y_cross_low) / (y_cross_high - y_cross_low)
+                crossing_loads = x_low + fractions * (
+                    mapping.load[1:li0 + 1][crossing] - x_low
+                )
+                candidates.extend(float(value) for value in crossing_loads)
         if not candidates:
             _LOOKUP_COUNTERS["inverse"] += 1
             return _inverse_fallback(parameters, motor_speed_rpm, bus_voltage, target_bus_power, direction)
         load, found = min(candidates), True
     torque = float(drive * load if load >= 0.0 else regen * load)
-    op = _lut_forward(parameters, motor_speed_rpm, torque, bus_voltage)
+    # The row solved the load.  The reported operating point comes from the
+    # trilinear forward evaluator at the selected torque so consumers see the
+    # same power they would compute themselves.  Acceptance is the row's own
+    # signed bus-power inequality within the map tolerance; demanding sub-1e-7 W
+    # agreement between the row's interpolation order and the forward order is
+    # what previously routed almost every in-map query into the expensive exact
+    # analytical fallback.
+    if torque == 0.0:
+        # Zero regenerative torque is always physically available and draws no
+        # charge power, so the request is satisfied without braking.  The row's
+        # own zero-load power reports the mapped loss at that node.
+        _LOOKUP_COUNTERS["inverse"] += 1
+        op = ShaftPowerResult(
+            float(row[li0]), float(mapping.loss_power[vi, si, li0]), 0.0, 0.0,
+            1.0,
+            "power" if abs(motor_speed_rpm * 2.0 * math.pi / 60.0) >= parameters.unit_power_limit else "torque",
+            True,
+        )
+        return TorqueSolveResult(0.0, op, float(row[li0]) - target_bus_power, True, op.active_limit, False)
+    fallback_before = _LOOKUP_COUNTERS["fallback"]
+    op = evaluate_motor(parameters, motor_speed_rpm, torque, bus_voltage)
+    stayed_in_domain = _LOOKUP_COUNTERS["fallback"] == fallback_before
+    tolerance = _row_power_tolerance(target_bus_power)
+    feasible = stayed_in_domain and op.feasible and (
+        (op.bus_power <= target_bus_power + tolerance)
+        if direction == "drive"
+        else (op.bus_power >= target_bus_power - tolerance)
+    )
     _LOOKUP_COUNTERS["inverse"] += 1
-    feasible = op.feasible and ((op.bus_power <= target_bus_power + 1.0e-7) if direction == "drive" else op.bus_power >= target_bus_power - 1.0e-7)
-    return TorqueSolveResult(torque, op, op.bus_power - target_bus_power, feasible and found, op.active_limit, False)
+    if not feasible:
+        return _inverse_fallback(parameters, motor_speed_rpm, bus_voltage, target_bus_power, direction)
+    return TorqueSolveResult(torque, op, op.bus_power - target_bus_power, True, op.active_limit, False)
 
 
 # Existing assembly/solver callers retain the analytical oracle's strict

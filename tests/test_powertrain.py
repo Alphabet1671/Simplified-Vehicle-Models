@@ -90,6 +90,10 @@ class PowertrainAssemblyTests(unittest.TestCase):
             folder = Path(directory)
             motor = motor_path.read_text().replace('value="4"', 'value="3"', 1)
             (folder / "motor.xml").write_text(motor)
+            (folder.parent / "data").mkdir(exist_ok=True)
+            (folder.parent / "data" / "amk_dd5_100c_operating_map.npz").write_bytes(
+                (ROOT / "models/data/amk_dd5_100c_operating_map.npz").read_bytes()
+            )
             (folder / "powertrain.xml").write_text(
                 '<model schema-version="1.0" id="test-powertrain" '
                 'type="powertrain-assembly" subtype="electric">'

@@ -8,6 +8,7 @@ square root of three before the voltage solve. Resistance remains physical.
 from __future__ import annotations
 
 import csv
+import hashlib
 import math
 from dataclasses import dataclass
 from pathlib import Path
@@ -49,6 +50,19 @@ class ShaftPowerResult:
 
 
 @dataclass(frozen=True, slots=True)
+class MotorOperatingMap:
+    """Validated immutable normalized-load motor operating table."""
+
+    voltage: np.ndarray
+    speed: np.ndarray
+    load: np.ndarray
+    drive_torque: np.ndarray
+    regen_torque: np.ndarray
+    bus_power: np.ndarray
+    loss_power: np.ndarray
+
+
+@dataclass(frozen=True, slots=True)
 class PowerPlantParameters:
     """Store motor maps and identified machine parameters."""
 
@@ -74,6 +88,7 @@ class PowerPlantParameters:
     measured_reference_direct_voltage: float
     measured_reference_quadrature_voltage: float
     measured_reference_voltage: float
+    operating_map: MotorOperatingMap | None = None
 
     @property
     def phase_flux_linkage(self) -> float:
@@ -240,8 +255,8 @@ def solve_direct_current(
     return DirectCurrentResult(min(roots, key=abs), True)
 
 
-def evaluate_shaft_power(parameters, motor_speed, motor_torque, bus_voltage):
-    """Evaluate shaft and bus power, or report an infeasible voltage demand."""
+def evaluate_shaft_power_exact(parameters, motor_speed, motor_torque, bus_voltage):
+    """Analytical motor oracle: evaluate power or report voltage infeasibility."""
 
     quadrature_current = motor_torque / (
         1.5 * parameters.pole_pairs * parameters.phase_flux_linkage
@@ -311,6 +326,10 @@ def evaluate_shaft_power(parameters, motor_speed, motor_torque, bus_voltage):
     )
 
 
+# Backward-compatible name retained until LUT-first queries are introduced.
+evaluate_shaft_power = evaluate_shaft_power_exact
+
+
 def scalar_efficiency_bus_power(shaft_power, efficiency):
     """Convert shaft power to bus power using one scalar efficiency."""
 
@@ -336,9 +355,7 @@ _UNITS = {
 }
 
 
-def compile_electric_motor(model: Model) -> PowerPlantParameters:
-    """Compile the motor XML model and validate its data."""
-
+def _compile_motor_source(model: Model, operating_map=None) -> PowerPlantParameters:
     values = closed_parameters(model, _UNITS)
     require_no_references(model)
     if not values["unit_count"].is_integer() or values["unit_count"] < 1:
@@ -355,29 +372,71 @@ def compile_electric_motor(model: Model) -> PowerPlantParameters:
     loss_map = _read("amk_dd5_100c_loss_map.csv")
     reference = _reference_row()
     return PowerPlantParameters(
-        int(values["unit_count"]),
-        values["maximum_motor_speed"],
-        values["unit_power_limit"],
-        values["inverter_efficiency"],
-        values["device_drop"],
-        int(parameters["pole_pairs"]),
-        parameters["reference_bus_voltage"],
-        parameters["resistance"],
-        parameters["flux_linkage"],
-        parameters["direct_inductance"],
-        parameters["quadrature_inductance"],
-        tuple(float(row[0]) for row in torque_map),
-        tuple(float(row[1]) for row in torque_map),
-        tuple(float(row[0]) for row in loss_map),
-        tuple(float(row[1]) for row in loss_map),
-        tuple(float(row[2]) for row in loss_map),
-        float(reference[0]),
-        float(reference[2]),
-        float(reference[3]),
-        float(reference[4]),
-        float(reference[5]),
-        math.hypot(float(reference[4]), float(reference[5])),
+        int(values["unit_count"]), values["maximum_motor_speed"], values["unit_power_limit"],
+        values["inverter_efficiency"], values["device_drop"], int(parameters["pole_pairs"]),
+        parameters["reference_bus_voltage"], parameters["resistance"], parameters["flux_linkage"],
+        parameters["direct_inductance"], parameters["quadrature_inductance"],
+        tuple(float(row[0]) for row in torque_map), tuple(float(row[1]) for row in torque_map),
+        tuple(float(row[0]) for row in loss_map), tuple(float(row[1]) for row in loss_map),
+        tuple(float(row[2]) for row in loss_map), float(reference[0]), float(reference[2]),
+        float(reference[3]), float(reference[4]), float(reference[5]),
+        math.hypot(float(reference[4]), float(reference[5])), operating_map,
     )
+
+
+def compile_analytical_motor_source(model: Model) -> PowerPlantParameters:
+    """Private generator-only construction path without a persisted LUT."""
+    return _compile_motor_source(model)
+
+
+def _validate_operating_map(data: dict[str, np.ndarray]) -> MotorOperatingMap:
+    names = ("voltage", "speed", "load", "drive_torque", "regen_torque", "bus_power", "loss_power")
+    if any(name not in data for name in names):
+        raise ValueError("operating map is missing required arrays")
+    arrays = {name: np.array(data[name], dtype=np.float64, order="C", copy=True) for name in names}
+    v, s, l = arrays["voltage"], arrays["speed"], arrays["load"]
+    if v.ndim != 1 or s.ndim != 1 or l.ndim != 1 or v.size < 2 or s.size < 2 or l.size < 3:
+        raise ValueError("operating map axes have invalid shape")
+    if not all(np.all(np.isfinite(a)) for a in arrays.values()):
+        raise ValueError("operating map contains nonfinite values")
+    if not np.all(np.diff(v) > 0) or not np.all(np.diff(s) > 0) or not np.all(np.diff(l) > 0):
+        raise ValueError("operating map axes must be strictly increasing")
+    if l[0] != -1.0 or l[-1] != 1.0:
+        raise ValueError("operating map load axis must span -1 to 1")
+    shape2, shape3 = (v.size, s.size), (v.size, s.size, l.size)
+    if arrays["drive_torque"].shape != shape2 or arrays["regen_torque"].shape != shape2:
+        raise ValueError("operating map torque envelope shape mismatch")
+    if arrays["bus_power"].shape != shape3 or arrays["loss_power"].shape != shape3:
+        raise ValueError("operating map power shape mismatch")
+    if np.any(arrays["drive_torque"] < 0) or np.any(arrays["regen_torque"] < 0):
+        raise ValueError("operating map torque envelopes must be nonnegative")
+    if np.any(arrays["loss_power"] < 0):
+        raise ValueError("operating map loss must be nonnegative")
+    for row in arrays["bus_power"].reshape(-1, l.size):
+        if np.any(np.diff(row[: l.size // 2 + 1]) < -1e-9) or np.any(np.diff(row[l.size // 2 :]) < -1e-9):
+            raise ValueError("operating map bus power is not monotone by direction")
+    for array in arrays.values():
+        array.setflags(write=False)
+    return MotorOperatingMap(**arrays)
+
+
+def _load_operating_map(model: Model) -> MotorOperatingMap:
+    references = [item for item in model.data if item.role == "operating-map"]
+    if len(references) != 1 or references[0].format != "npz":
+        raise ValueError("electric motor requires one operating-map NPZ declaration")
+    reference = references[0]
+    if not reference.sha256:
+        raise ValueError("operating-map declaration requires sha256")
+    digest = hashlib.sha256(reference.path.read_bytes()).hexdigest()
+    if digest.lower() != reference.sha256.lower():
+        raise ValueError("operating-map digest mismatch")
+    with np.load(reference.path, allow_pickle=False) as archive:
+        return _validate_operating_map({name: archive[name] for name in archive.files})
+
+
+def compile_electric_motor(model: Model) -> PowerPlantParameters:
+    """Compile the XML motor and require its declared, validated LUT."""
+    return _compile_motor_source(model, _load_operating_map(model))
 
 
 register_component(

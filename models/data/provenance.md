@@ -1,5 +1,18 @@
 # Provenance of the legacy powertrain data
 
+## Deterministic motor operating map
+
+| Field | Value |
+|---|---|
+| File | `amk_dd5_100c_operating_map.npz` |
+| SHA-256 | `15dc8ca95cab3194003bc138af172336321c9e9a10281987694a96e1afd5f20c` |
+| Axes | voltage 9, speed 129, signed normalized load 65 |
+| Arrays | drive_torque (9,129), regen_torque (9,129), bus_power (9,129,65), loss_power (9,129,65) |
+| Generator | `tools/generate_motor_lut.py`, motor-lut-v1 |
+| Command | `PYTHONPATH=src python3 tools/generate_motor_lut.py models/power-plants/amk_dd5_100c.xml models/data/amk_dd5_100c_operating_map.npz` |
+| Maximum monotonic repair | 1563.3094661356702 W |
+
+
 Export date: 2026-10-11
 
 This file records the source of every exported data file.

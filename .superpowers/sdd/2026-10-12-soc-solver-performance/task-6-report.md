@@ -3,10 +3,10 @@
 ## Status
 
 Implemented and documented Task 6. Exact assembled mode remains the default;
-quantized drive caching remains explicit opt-in because it has not been compared
-against the completed full SOC/regen numerical gates. The exact full-track
-cold/warm regen benchmark now completes within 900 s per run. No merge or push
-was performed.
+quantized drive caching remains explicit opt-in because its SOC/regen promotion
+gates remain incomplete. The exact full-track cold/warm regen benchmark
+completed within 900 s per run. The quantized SOC/regen gates and the fully
+coupled 22-lap stint remain incomplete. No merge or push was performed.
 
 ## Step 1: exact assembled MIS flying lap
 
@@ -55,8 +55,11 @@ The controls were `tolerance=1e-5`, `maximum_iterations=50`,
 `lap_tolerance=1e-6`, `lap_maximum_iterations=200`, `root_tolerance=1e-8`,
 `regen_enabled=True`, and `drive_cache_policy=DriveCachePolicy()` (exact
 cache). The script enabled progress callbacks and ran cold first, then warm
-with cold's `initial_speed` and `corner_speed_hint`. Transition `initial_speed`
-is currently ignored; only the corner hint is expected to affect work.
+with cold's `initial_speed` and `corner_speed_hint`. Transition/profile
+`initial_speed` acceleration is unsupported and ignored; only the
+bracket-preserving `corner_speed_hint` is supported. The corner hint is exact,
+not approximate profile reuse, and is the source of any warm-run work
+reduction.
 
 Exact command output:
 
@@ -124,10 +127,11 @@ Results: 6.52 s real, 69.20126421237728 s lap time, converged in 2
 iterations, 209,479 cache hits, 7,007 entries, and maximum speed displacement
 9.9017e-4 m/s. Compared with exact, the speedup was 23.77/6.52 = 3.64x and
 lap-time delta was -2.2031e-05 s, passing the <0.01 s lap gate. However, SOC
-and recovered-energy deltas were not measured because the full regen benchmark
-did not finish. Therefore the candidate is not promoted and exact remains the
-default. The test suite now also asserts that the exact default reports zero
-speed/SOC approximation displacement.
+and recovered-energy deltas were not measured because the quantized candidate's
+full SOC/regen gates were not completed. The exact full-track cold/warm
+benchmark above did complete. Therefore the candidate is not promoted and
+exact remains the default. The test suite now also asserts that the exact
+default reports zero speed/SOC approximation displacement.
 
 Promotion gates used: assembled lap-time delta <0.01 s, final-SOC delta
 <1e-4, recovered-energy delta <0.5%, and matching convergence/constraints.

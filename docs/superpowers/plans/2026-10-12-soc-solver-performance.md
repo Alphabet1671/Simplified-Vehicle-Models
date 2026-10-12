@@ -4,7 +4,7 @@
 
 **Goal:** Apply the eight identified solver optimizations while preserving default numerical behavior, exposing approximations explicitly, and reducing assembled MIS SOC-coupled runtime.
 
-**Architecture:** Keep the existing forward/backward minimum-time formulation, but remove redundant work at each nesting level. Add direction-specific acceleration/braking limit kernels, tolerance-based scalar roots, warm-start hints that retain bracketing correctness, solver-local drive-limit caching with an explicit optional quantization policy, propagated inner-solver controls, and structured progress callbacks. Validate each layer against the current solver before changing benchmark defaults.
+**Architecture:** Keep the existing forward/backward minimum-time formulation, but remove redundant work at each nesting level. Add direction-specific acceleration/braking limit kernels, tolerance-based scalar roots, bracket-preserving corner-root hints, solver-local drive-limit caching with an explicit optional quantization policy, propagated inner-solver controls, and structured progress callbacks. Transition/profile `initial_speed` acceleration remains unsupported and is ignored after API validation; do not imply approximate profile reuse. Validate each layer against the current solver before changing benchmark defaults.
 
 **Tech Stack:** Python 3.12, NumPy, `unittest`, `cProfile`, existing XML model compiler and MIS regression fixtures.
 
@@ -114,15 +114,15 @@ Evaluate `hint` once. If feasible/positive, move only the lower bracket to the h
 
 - [ ] **Step 3: Use previous node corner speeds as hints**
 
-`solve_lap` accepts `corner_speed_hint` but still solves every node against its current SOC and full bracket, so the hint cannot change correctness. Validate shape and finiteness.
+`solve_lap` accepts `corner_speed_hint` and uses each finite hint as a bracket-preserving root candidate for the current SOC. It may reduce root work but cannot change the exact corner-root result; validate shape and finiteness.
 
-- [ ] **Step 4: Implement bidirectional transition warm starts**
+- [ ] **Step 4: Keep transition/profile initial-speed warm starts unsupported**
 
-Use `initial_speed` only as a candidate hint. For each segment, evaluate whether the hinted candidate is below or above the reachable fixed point, establish a valid bracket against the node cap, and iterate inside that bracket. Never simply clamp the profile to a previous lower solution because the solver must be able to increase speed when regeneration or SOC changes improve capability.
+Validate `initial_speed` for shape, finiteness, and nonnegative values for API compatibility, then ignore it and initialize the profile from conservative corner caps. Do not add approximate profile reuse or imply a default change. Only `corner_speed_hint` uses bracket-preserving exact root acceleration.
 
 - [ ] **Step 5: Add cold-versus-warm lap tests**
 
-Solve a synthetic lap cold, then solve with its speed and corner limits as hints. Require matching speed and lap time within the configured root tolerance and fewer counted limit evaluations.
+Solve a synthetic lap cold, then solve with its corner limits as exact bracket-preserving hints. Supply `initial_speed` only to verify it is accepted and ignored. Require matching speed and lap time within the configured root tolerance and fewer counted limit evaluations from the corner hints.
 
 - [ ] **Step 6: Run focused and MIS tests**
 
@@ -194,9 +194,9 @@ Patch `solve_lap` and assert every SOC and reconciliation call receives `lap_tol
 
 Keep energy `tolerance` and `maximum_iterations` semantically separate from lap profile controls.
 
-- [ ] **Step 3: Carry speed and corner hints between SOC passes and between stint laps**
+- [ ] **Step 3: Carry corner hints between SOC passes and between stint laps**
 
-Pass the previous coupled pass result as a hint only through Task 2’s bracket-preserving interfaces. Reset hints if mode, track, vehicle, or array shape differs.
+Pass previous coupled corner-speed results through Task 2’s bracket-preserving interface. `initial_speed` remains unsupported and ignored for transition/profile acceleration; do not reuse a prior profile approximately. Reset corner hints if mode, track, vehicle, or array shape differs.
 
 - [ ] **Step 4: Add regen-enabled cold-versus-warm equivalence test**
 

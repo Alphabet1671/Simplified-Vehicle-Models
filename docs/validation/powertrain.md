@@ -5,8 +5,10 @@
 This validation covers the assembled point-mass solver and the P9 SOC/energy
 interface on the 1,014.32575 m, 1,407-node Michigan endurance track. The
 normal assembled default is **exact** drive evaluation (`DriveCachePolicy()`);
-the quantized cache is an explicit opt-in only. Transition/profile warm-start
-acceleration remains intentionally unsupported. No approximate setting is
+the quantized cache is an explicit opt-in only. Transition/profile
+initial-speed acceleration is unsupported and ignored. Bracket-preserving
+corner-root hints are supported and exact (not approximate); no approximate
+profile reuse or default change is implied. No approximate setting is
 promoted to a default without the numerical gates below.
 
 ## Assembled MIS flying-lap benchmark
@@ -69,10 +71,11 @@ PYTHONPATH=src /usr/bin/time -p \
   /tmp/task6_energy_round1.py > /tmp/task6_energy_round1_fixed.log 2>&1
 ```
 
-Both cold and warm runs completed within the allowed 900 s per run. Warm passed
-both `initial_speed` and `corner_speed_hint` from cold; `initial_speed` is
-currently ignored by the transition solver, so only the corner hint can affect
-work. Results:
+Both cold and warm runs completed within the allowed 900 s per run. The warm
+run supplied both `initial_speed` and `corner_speed_hint` from cold, but
+transition/profile `initial_speed` acceleration is unsupported and ignored.
+Only the bracket-preserving, exact `corner_speed_hint` can affect work; it is
+not approximate profile reuse. Results:
 
 | metric | cold | warm | warm-cold |
 |---|---:|---:|---:|

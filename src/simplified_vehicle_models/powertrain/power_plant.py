@@ -327,7 +327,197 @@ def evaluate_shaft_power_exact(parameters, motor_speed, motor_torque, bus_voltag
     )
 
 
-# Backward-compatible name retained until LUT-first queries are introduced.
+_LOOKUP_COUNTERS = {"forward": 0, "inverse": 0, "fallback": 0}
+
+
+@dataclass(frozen=True, slots=True)
+class TorqueLimits:
+    maximum_drive_torque: float
+    maximum_regen_torque: float
+    used_fallback: bool
+
+
+@dataclass(frozen=True, slots=True)
+class TorqueSolveResult:
+    torque: float
+    operating_point: ShaftPowerResult
+    residual: float
+    feasible: bool
+    active_limit: str
+    used_fallback: bool
+
+
+def reset_motor_lut_counters():
+    """Reset production LUT lookup counters used by validation benchmarks."""
+    for key in _LOOKUP_COUNTERS:
+        _LOOKUP_COUNTERS[key] = 0
+
+
+def motor_lut_counters():
+    """Return a snapshot of forward, inverse, and fallback lookup counts."""
+    return dict(_LOOKUP_COUNTERS)
+
+
+def _bracket(axis, value):
+    index = int(np.searchsorted(axis, value, side="right")) - 1
+    index = max(0, min(index, len(axis) - 2))
+    fraction = (value - axis[index]) / (axis[index + 1] - axis[index])
+    return index, fraction
+
+
+def _bilinear(values, voltage_index, speed_index, vf, sf):
+    return float(
+        (1.0 - vf) * (1.0 - sf) * values[voltage_index, speed_index]
+        + vf * (1.0 - sf) * values[voltage_index + 1, speed_index]
+        + (1.0 - vf) * sf * values[voltage_index, speed_index + 1]
+        + vf * sf * values[voltage_index + 1, speed_index + 1]
+    )
+
+
+def _interpolated_envelopes(mapping, voltage, speed):
+    vi, vf = _bracket(mapping.voltage, voltage)
+    si, sf = _bracket(mapping.speed, speed)
+    return (
+        _bilinear(mapping.drive_torque, vi, si, vf, sf),
+        _bilinear(mapping.regen_torque, vi, si, vf, sf),
+        vi, si, vf, sf,
+    )
+
+
+def _lut_forward(parameters, motor_speed, shaft_torque, bus_voltage):
+    mapping = parameters.operating_map
+    if mapping is None:
+        return evaluate_shaft_power_exact(parameters, motor_speed, shaft_torque, bus_voltage)
+    if not (mapping.voltage[0] <= bus_voltage <= mapping.voltage[-1] and
+            mapping.speed[0] <= motor_speed <= mapping.speed[-1]):
+        _LOOKUP_COUNTERS["fallback"] += 1
+        return evaluate_shaft_power_exact(parameters, motor_speed, shaft_torque, bus_voltage)
+    drive, regen, vi, si, vf, sf = (*_interpolated_envelopes(mapping, bus_voltage, motor_speed),)
+    load = shaft_torque / drive if shaft_torque >= 0.0 and drive > 0.0 else (
+        -abs(shaft_torque) / regen if shaft_torque < 0.0 and regen > 0.0 else 0.0
+    )
+    if load < mapping.load[0] or load > mapping.load[-1]:
+        _LOOKUP_COUNTERS["fallback"] += 1
+        return evaluate_shaft_power_exact(parameters, motor_speed, shaft_torque, bus_voltage)
+    li, lf = _bracket(mapping.load, load)
+    def interp3(array):
+        a = array[:, :, li]
+        b = array[:, :, li + 1]
+        return (1.0 - lf) * _bilinear(a, vi, si, vf, sf) + lf * _bilinear(b, vi, si, vf, sf)
+    bus = float(interp3(mapping.bus_power))
+    loss = float(interp3(mapping.loss_power))
+    shaft = motor_speed * 2.0 * math.pi / 60.0 * shaft_torque
+    if abs(bus) < 1.0e-12:
+        efficiency = 1.0
+    elif shaft >= 0.0:
+        efficiency = shaft / bus
+    else:
+        efficiency = bus / shaft
+    _LOOKUP_COUNTERS["forward"] += 1
+    return ShaftPowerResult(bus, loss, 0.0, 0.0, efficiency,
+                            "power" if abs(shaft) >= parameters.unit_power_limit else "torque", True)
+
+
+def evaluate_motor(parameters, motor_speed_rpm, shaft_torque, bus_voltage):
+    """Evaluate a motor through the persisted LUT, with exact fallback."""
+    return _lut_forward(parameters, motor_speed_rpm, shaft_torque, bus_voltage)
+
+
+def _exact_limit(parameters, speed, voltage, regen=False):
+    envelope = _map_values(parameters, max(0.0, speed), 0.0)[0]
+    lo, hi = (0.0, envelope)
+    if regen:
+        lo, hi = (-envelope, 0.0)
+    for _ in range(60):
+        mid = (lo + hi) * 0.5
+        if evaluate_shaft_power_exact(parameters, speed, mid, voltage).feasible:
+            if regen:
+                lo = mid
+            else:
+                lo = mid
+        else:
+            if regen:
+                hi = mid
+            else:
+                hi = mid
+    return abs(lo if regen else hi)
+
+
+def motor_torque_limits(parameters, motor_speed_rpm, bus_voltage):
+    mapping = parameters.operating_map
+    if mapping is None or not (mapping.voltage[0] <= bus_voltage <= mapping.voltage[-1] and mapping.speed[0] <= motor_speed_rpm <= mapping.speed[-1]):
+        _LOOKUP_COUNTERS["fallback"] += 1
+        return TorqueLimits(_exact_limit(parameters, motor_speed_rpm, bus_voltage), _exact_limit(parameters, motor_speed_rpm, bus_voltage, True), True)
+    drive, regen, *_ = _interpolated_envelopes(mapping, bus_voltage, motor_speed_rpm)
+    return TorqueLimits(drive, regen, False)
+
+
+def _inverse_fallback(parameters, speed, voltage, target, direction):
+    limits = motor_torque_limits(parameters, speed, voltage)
+    maximum = limits.maximum_drive_torque if direction == "drive" else limits.maximum_regen_torque
+    sign = 1.0 if direction == "drive" else -1.0
+    samples = np.linspace(0.0, maximum, 257)
+    if direction == "regen":
+        samples = -samples
+    points = [(float(t), evaluate_shaft_power_exact(parameters, speed, float(t), voltage)) for t in samples]
+    candidates = [
+        t for t, op in points
+        if op.feasible and ((op.bus_power <= target + 1e-9) if direction == "drive"
+                            else (-1.0e-9 >= op.bus_power >= target - 1e-9))
+    ]
+    found = bool(candidates)
+    torque = (max(candidates) if direction == "drive" else min(candidates)) if found else 0.0
+    op = evaluate_shaft_power_exact(parameters, speed, torque, voltage)
+    return TorqueSolveResult(torque, op, op.bus_power - target,
+                             found and op.feasible, "power", True)
+
+
+def torque_for_bus_power(parameters, motor_speed_rpm, bus_voltage, target_bus_power, direction):
+    """Invert LUT bus power; regen scans every negative-load segment."""
+    if direction not in ("drive", "regen"):
+        raise ValueError("direction must be 'drive' or 'regen'")
+    mapping = parameters.operating_map
+    if mapping is None or not (mapping.voltage[0] <= bus_voltage <= mapping.voltage[-1] and mapping.speed[0] <= motor_speed_rpm <= mapping.speed[-1]):
+        _LOOKUP_COUNTERS["inverse"] += 1
+        _LOOKUP_COUNTERS["fallback"] += 1
+        return _inverse_fallback(parameters, motor_speed_rpm, bus_voltage, target_bus_power, direction)
+    drive, regen, vi, si, vf, sf = (*_interpolated_envelopes(mapping, bus_voltage, motor_speed_rpm),)
+    li0 = int(np.searchsorted(mapping.load, 0.0))
+    def row(array):
+        return np.array([(1-lf) * _bilinear(array[:, :, k], vi, si, vf, sf) + lf * _bilinear(array[:, :, k], vi, si, vf, sf) for k, lf in []])
+    # Explicit scalar row interpolation (no allocation in the common drive path).
+    def value(array, k): return (1-vf)*(1-sf)*array[vi,si,k] + vf*(1-sf)*array[vi+1,si,k] + (1-vf)*sf*array[vi,si+1,k] + vf*sf*array[vi+1,si+1,k]
+    powers = np.array([value(mapping.bus_power, k) for k in range(mapping.load.size)])
+    if direction == "drive":
+        loads = mapping.load[li0:]
+        vals = powers[li0:]
+        if target_bus_power < vals[0] - 1e-9 or target_bus_power > vals[-1] + 1e-9:
+            _LOOKUP_COUNTERS["fallback"] += 1
+            return _inverse_fallback(parameters, motor_speed_rpm, bus_voltage, target_bus_power, direction)
+        j = min(len(vals)-2, max(0, int(np.searchsorted(vals, target_bus_power, side="right") - 1)))
+        load = loads[j] + (target_bus_power - vals[j]) * (loads[j+1]-loads[j]) / (vals[j+1]-vals[j]) if vals[j+1] != vals[j] else loads[j]
+    else:
+        candidates = [0.0]
+        for j in range(li0 - 1):
+            x0, x1, y0, y1 = mapping.load[j], mapping.load[j+1], powers[j], powers[j+1]
+            if y0 < -1.0e-9 and y0 >= target_bus_power - 1.0e-12:
+                candidates.append(float(x0))
+            if (y0-target_bus_power)*(y1-target_bus_power) < 0.0:
+                crossing = float(x0 + (target_bus_power-y0)*(x1-x0)/(y1-y0))
+                if target_bus_power < -1.0e-9:
+                    candidates.append(crossing)
+        found = len(candidates) > 1
+        load = min(candidates)
+    torque = float((drive * load) if load >= 0.0 else (regen * load))
+    op = _lut_forward(parameters, motor_speed_rpm, torque, bus_voltage)
+    _LOOKUP_COUNTERS["inverse"] += 1
+    return TorqueSolveResult(torque, op, op.bus_power - target_bus_power,
+                             op.feasible and (found if direction == "regen" else True),
+                             "power", False)
+
+
+# Existing assembly/solver callers retain the analytical oracle's strict
+# fixed-point behavior; new production callers use evaluate_motor explicitly.
 evaluate_shaft_power = evaluate_shaft_power_exact
 
 

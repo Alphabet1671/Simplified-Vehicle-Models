@@ -28,6 +28,12 @@ from simplified_vehicle_models.xml.model import DataReference
 from simplified_vehicle_models.powertrain.power_plant import (
     compile_electric_motor,
     evaluate_shaft_power,
+    evaluate_motor,
+    evaluate_shaft_power_exact,
+    motor_torque_limits,
+    torque_for_bus_power,
+    reset_motor_lut_counters,
+    motor_lut_counters,
     _validate_operating_map,
     _load_operating_map,
 )
@@ -163,6 +169,50 @@ class OperatingMapValidationTests(unittest.TestCase):
         self.assertEqual(loaded.bus_power.shape, (9, 129, 65))
         digest = hashlib.sha256((ROOT / "models/data/amk_dd5_100c_operating_map.npz").read_bytes()).hexdigest()
         self.assertEqual(digest, "1057b82c49953957e305407e48bf1cb5f9ab58b81ead3e08ab785d5ad0f4a852")
+
+
+class MotorLutQueryTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.motor = compile_electric_motor(load_model(ROOT / "models/power-plants/amk_dd5_100c.xml"))
+
+    def test_exact_node_and_random_forward_accuracy(self):
+        m = self.motor.operating_map
+        for vi, si in ((0, 0), (4, 40), (8, 128)):
+            torque = float(m.drive_torque[vi, si])
+            lut = evaluate_motor(self.motor, float(m.speed[si]), torque, float(m.voltage[vi]))
+            exact = evaluate_shaft_power_exact(self.motor, float(m.speed[si]), torque, float(m.voltage[vi]))
+            self.assertAlmostEqual(lut.bus_power, exact.bus_power, places=8)
+        rng = np.random.default_rng(7)
+        errors = []
+        for _ in range(100):
+            voltage = rng.uniform(m.voltage[0], m.voltage[-1])
+            speed = rng.uniform(m.speed[0], m.speed[-1])
+            limits = motor_torque_limits(self.motor, speed, voltage)
+            torque = rng.uniform(-limits.maximum_regen_torque, limits.maximum_drive_torque)
+            lut = evaluate_motor(self.motor, speed, torque, voltage)
+            exact = evaluate_shaft_power_exact(self.motor, speed, torque, voltage)
+            errors.append(abs(lut.bus_power - exact.bus_power))
+        self.assertLess(float(np.quantile(errors, 0.95)), 120.0)
+
+    def test_fallback_is_exact_and_observable(self):
+        reset_motor_lut_counters()
+        lut = evaluate_motor(self.motor, 1000.0, 1.0, 400.0)
+        exact = evaluate_shaft_power_exact(self.motor, 1000.0, 1.0, 400.0)
+        self.assertEqual(lut, exact)
+        self.assertGreaterEqual(motor_lut_counters()["fallback"], 1)
+
+    def test_inverse_drive_and_regen(self):
+        m = self.motor.operating_map
+        speed, voltage = 1000.0, 550.0
+        drive_target = evaluate_motor(self.motor, speed, 10.0, voltage).bus_power
+        drive = torque_for_bus_power(self.motor, speed, voltage, drive_target, "drive")
+        self.assertTrue(drive.feasible)
+        self.assertLess(abs(drive.residual), 2.0)
+        regen = torque_for_bus_power(self.motor, speed, voltage, -100.0, "regen")
+        self.assertTrue(regen.feasible)
+        self.assertGreaterEqual(regen.operating_point.bus_power, -100.0 - 1.0e-6)
+        self.assertLessEqual(regen.torque, 0.0)
 
 
 class PowertrainAssemblyTests(unittest.TestCase):

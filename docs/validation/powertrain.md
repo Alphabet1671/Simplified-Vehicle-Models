@@ -109,6 +109,29 @@ it is not evidence of convergence or failure.
 The existing fast endurance study with `reuse_profile=True` is a fixed-profile
 approximation and must not be read as fully state-coupled regen validation.
 
+## Task 3 motor LUT query validation
+
+The focused numerical suite is `tests.test_powertrain` (27 tests). It checks exact
+node identity, 100 seeded random forward samples, inverse drive/regen residuals,
+zero-load behavior, and analytical fallback observability. The random forward
+absolute bus-power error 95th percentile was below 120 W; out-of-domain voltage
+fallback returned the exact oracle result and incremented the fallback counter.
+Regen inversion scans every negative-load segment and selects the most-negative
+feasible torque, including non-monotone rows.
+
+A 100,000-query microbenchmark (Python 3, canonical AMK map) measured:
+
+| operation | microseconds/query |
+|---|---:|
+| exact analytical evaluator | 16.27 |
+| LUT forward evaluator | 10.61 |
+| in-domain drive inverse | 70.53 |
+
+Inverse targets were generated from an in-domain half-drive-load operating point;
+benchmark timing is informational and is not a test gate. Voltage, speed, and
+normalized-load queries outside the persisted domain use the exact analytical
+evaluator without clamping or extrapolation.
+
 ## Reference checks and assumptions
 
 Legacy MIS flying and standing-start golden results remain 69.22653728547469 s

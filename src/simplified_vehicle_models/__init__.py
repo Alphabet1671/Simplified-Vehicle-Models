@@ -19,6 +19,13 @@ from simplified_vehicle_models.solvers.forward_backward import solve_lap
 from simplified_vehicle_models.tracks.profile import load_track
 from simplified_vehicle_models.tracks.types import TrackProfile
 from simplified_vehicle_models.xml.loader import load_point_mass_vehicle
+from simplified_vehicle_models.powertrain.power_plant import (
+    TorqueLimits,
+    TorqueSolveResult,
+    evaluate_motor,
+    motor_torque_limits,
+    torque_for_bus_power,
+)
 
 
 __all__ = [
@@ -42,4 +49,9 @@ __all__ = [
     "normal_loads",
     "solve_lap",
     "tire_force_capacities",
+    "TorqueLimits",
+    "TorqueSolveResult",
+    "evaluate_motor",
+    "motor_torque_limits",
+    "torque_for_bus_power",
 ]

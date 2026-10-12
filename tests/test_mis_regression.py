@@ -188,6 +188,10 @@ class AssembledMisRegressionTests(unittest.TestCase):
         self.assertAlmostEqual(self.result.lap_time, 69.20128624364081, places=6)
         self.assertEqual(len(self.result.speed), GOLDEN_NODE_COUNT)
 
+    def test_exact_default_keeps_cache_approximation_disabled(self) -> None:
+        self.assertEqual(self.result.drive_cache_max_speed_displacement, 0.0)
+        self.assertEqual(self.result.drive_cache_max_soc_displacement, 0.0)
+
     def test_quantized_cache_stays_within_mis_policy(self) -> None:
         quantized = solve_lap(
             self.vehicle,

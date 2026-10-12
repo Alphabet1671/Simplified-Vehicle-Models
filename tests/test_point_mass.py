@@ -20,6 +20,8 @@ from simplified_vehicle_models.formulations.point_mass import (
     tire_force_capacities,
     _available_drive_force,
     _positive_root,
+    DriveCache,
+    DriveCachePolicy,
 )
 from simplified_vehicle_models.drivetrain.lumped import compile_lumped_drivetrain
 from simplified_vehicle_models.xml.loader import load_model, load_point_mass_vehicle
@@ -100,6 +102,38 @@ class PointMassTests(unittest.TestCase):
         self.assertGreater(moving.maximum_acceleration, 0.0)
         self.assertGreater(moving.maximum_deceleration, 0.0)
         self.assertTrue(np.isfinite(moving.maximum_acceleration))
+
+    def test_exact_drive_cache_is_solver_local_and_reuses_identical_points(self) -> None:
+        cache = DriveCache(DriveCachePolicy())
+        limits = np.full(4, 10_000.0)
+        first = _available_drive_force(self.vehicle, 10.0, limits, drive_cache=cache)
+        second = _available_drive_force(self.vehicle, 10.0, limits, drive_cache=cache)
+        other = DriveCache(DriveCachePolicy())
+        fresh = _available_drive_force(self.vehicle, 10.0, limits, drive_cache=other)
+        self.assertEqual(first, second)
+        self.assertEqual(first, fresh)
+        self.assertEqual(cache.hits, 1)
+        self.assertEqual(len(cache.values), 1)
+        self.assertEqual(len(other.values), 1)
+        self.assertEqual(cache.max_speed_displacement, 0.0)
+        self.assertEqual(cache.max_soc_displacement, 0.0)
+
+    def test_quantized_drive_cache_reports_bucket_displacement(self) -> None:
+        cache = DriveCache(DriveCachePolicy(speed_resolution=1.0, soc_resolution=0.1))
+        limits = np.full(4, 10_000.0)
+        state = StorageState(0.94)
+        _available_drive_force(self.vehicle, 10.0, limits, state, cache)
+        _available_drive_force(self.vehicle, 10.4, limits, StorageState(0.95), cache)
+        self.assertEqual(cache.hits, 1)
+        self.assertGreater(cache.max_speed_displacement, 0.0)
+        self.assertGreater(cache.max_soc_displacement, 0.0)
+
+    def test_drive_cache_policy_is_immutable_and_validated(self) -> None:
+        policy = DriveCachePolicy()
+        with self.assertRaises(Exception):
+            policy.speed_resolution = 1.0
+        with self.assertRaises(ValueError):
+            DriveCachePolicy(speed_resolution=-1.0)
 
     def test_assembled_dispatch_matches_compiled_drive_capability(self) -> None:
         self.assertIsInstance(self.vehicle.drivetrain, FullDrivetrainRuntime)

@@ -11,6 +11,8 @@ from simplified_vehicle_models.formulations.point_mass import (
     maximum_acceleration_limit,
     maximum_corner_speed,
     maximum_deceleration_limit,
+    DriveCache,
+    DriveCachePolicy,
 )
 from simplified_vehicle_models.parameters.vehicle import PointMassVehicleParameters
 from simplified_vehicle_models.results.traces import LapMode, LapResult, EnergyLapResult, EnergyReport, StintReport
@@ -29,6 +31,7 @@ def solve_lap(
     initial_speed: FloatArray | None = None,
     corner_speed_hint: FloatArray | None = None,
     root_tolerance: float = 1.0e-8,
+    drive_cache_policy: DriveCachePolicy = DriveCachePolicy(),
     _storage_trace: FloatArray | None = None,
 ) -> LapResult:
     """Calculate a minimum-time speed profile on a prescribed path."""
@@ -47,6 +50,7 @@ def solve_lap(
     if _storage_trace is not None and len(_storage_trace) != len(track.distance):
         raise ValueError("storage trace must match track nodes")
     node_count = len(track.distance)
+    drive_cache = DriveCache(drive_cache_policy)
     if corner_speed_hint is not None:
         corner_speed_hint = np.asarray(corner_speed_hint, dtype=np.float64)
         if corner_speed_hint.shape != (node_count,):
@@ -67,6 +71,7 @@ def solve_lap(
                 storage_state=(StorageState(float(_storage_trace[i])) if _storage_trace is not None else None),
                 tolerance=root_tolerance,
                 hint=(float(corner_speed_hint[i]) if corner_speed_hint is not None else None),
+                drive_cache=drive_cache,
             )
             for i, radius in enumerate(track.radius)
         ],
@@ -89,12 +94,12 @@ def solve_lap(
     iterations = 0
     for iterations in range(1, maximum_iterations + 1):
         previous = speed.copy()
-        _forward_sweep(vehicle, track, speed, speed_limit, _storage_trace, root_tolerance)
+        _forward_sweep(vehicle, track, speed, speed_limit, _storage_trace, root_tolerance, drive_cache)
         if mode is LapMode.FLYING:
             _apply_periodic_boundary(speed)
         else:
             speed[0] = 0.0
-        _backward_sweep(vehicle, track, speed, speed_limit, _storage_trace, root_tolerance)
+        _backward_sweep(vehicle, track, speed, speed_limit, _storage_trace, root_tolerance, drive_cache)
         if mode is LapMode.FLYING:
             _apply_periodic_boundary(speed)
         else:
@@ -113,6 +118,7 @@ def solve_lap(
         iterations,
         maximum_change,
         _storage_trace,
+        drive_cache,
     )
 
 
@@ -148,6 +154,7 @@ def _forward_sweep(
     speed_limit: FloatArray,
     storage_trace: FloatArray | None = None,
     root_tolerance: float = 1.0e-8,
+    drive_cache: DriveCache | None = None,
 ) -> None:
     for index, segment_length in enumerate(track.segment_length):
         start_speed = float(speed[index])
@@ -167,6 +174,7 @@ def _forward_sweep(
                 0.5 * (start_speed + candidate),
                 segment_curvature,
                 StorageState(float(storage_trace[index])) if storage_trace is not None else None,
+                drive_cache,
             )
             return math.sqrt(
                 start_speed * start_speed
@@ -186,6 +194,7 @@ def _backward_sweep(
     speed_limit: FloatArray,
     storage_trace: FloatArray | None = None,
     root_tolerance: float = 1.0e-8,
+    drive_cache: DriveCache | None = None,
 ) -> None:
     for index in range(len(track.segment_length) - 1, -1, -1):
         next_speed = float(speed[index + 1])
@@ -206,6 +215,7 @@ def _backward_sweep(
                 0.5 * (candidate + next_speed),
                 segment_curvature,
                 StorageState(float(storage_trace[index + 1])) if storage_trace is not None else None,
+                drive_cache,
             )
             return math.sqrt(
                 next_speed * next_speed
@@ -226,6 +236,7 @@ def _build_result(
     iterations: int,
     maximum_change: float,
     storage_trace: FloatArray | None = None,
+    drive_cache: DriveCache | None = None,
 ) -> LapResult:
     start_speed = speed[:-1]
     end_speed = speed[1:]
@@ -318,10 +329,14 @@ def _build_result(
         converged=converged,
         iterations=iterations,
         maximum_speed_change=maximum_change,
+        drive_cache_hits=drive_cache.hits if drive_cache is not None else 0,
+        drive_cache_entries=len(drive_cache.values) if drive_cache is not None else 0,
+        drive_cache_max_speed_displacement=(drive_cache.max_speed_displacement if drive_cache is not None else 0.0),
+        drive_cache_max_soc_displacement=(drive_cache.max_soc_displacement if drive_cache is not None else 0.0),
     )
 
 
-def solve_lap_with_energy(vehicle, track, mode, initial_state=None, tolerance=1e-5, maximum_iterations=50, regen_enabled=False):
+def solve_lap_with_energy(vehicle, track, mode, initial_state=None, tolerance=1e-5, maximum_iterations=50, regen_enabled=False, drive_cache_policy=DriveCachePolicy()):
     """Solve a lap with an explicit, state-coupled outer SOC iteration."""
     if tolerance <= 0.0 or maximum_iterations < 1:
         raise ValueError("tolerance must be positive and maximum_iterations must be positive")
@@ -333,7 +348,7 @@ def solve_lap_with_energy(vehicle, track, mode, initial_state=None, tolerance=1e
     converged = False
     change = math.inf
     for iteration in range(1, maximum_iterations + 1):
-        lap = solve_lap(vehicle, track, mode, _storage_trace=trace)
+        lap = solve_lap(vehicle, track, mode, drive_cache_policy=drive_cache_policy, _storage_trace=trace)
         bus, shaft, voltage, consumed, recovered, nxt = _energy_trace(vehicle, track, lap, trace, regen_enabled)
         change = float(np.max(np.abs(nxt - trace)))
         trace = 0.5 * (trace + nxt)
@@ -346,7 +361,7 @@ def solve_lap_with_energy(vehicle, track, mode, initial_state=None, tolerance=1e
     # callers must not be told that the energy loop converged otherwise.
     profile_residual = math.inf
     for _ in range(max(1, maximum_iterations - iteration + 1)):
-        lap = solve_lap(vehicle, track, mode, _storage_trace=trace)
+        lap = solve_lap(vehicle, track, mode, drive_cache_policy=drive_cache_policy, _storage_trace=trace)
         bus, shaft, voltage, consumed, recovered, final_trace = _energy_trace(
             vehicle, track, lap, trace, regen_enabled
         )

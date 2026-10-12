@@ -5,7 +5,7 @@ import unittest
 import numpy as np
 
 from simplified_vehicle_models.core.conventions import GRAVITY
-from simplified_vehicle_models.formulations.point_mass import maximum_vehicle_speed
+from simplified_vehicle_models.formulations.point_mass import DriveCachePolicy, maximum_vehicle_speed
 from simplified_vehicle_models.results.traces import LapMode, LapResult
 from simplified_vehicle_models.solvers.forward_backward import solve_lap
 from simplified_vehicle_models.tracks.profile import load_track
@@ -187,6 +187,20 @@ class AssembledMisRegressionTests(unittest.TestCase):
         self.assertTrue(self.result.converged)
         self.assertAlmostEqual(self.result.lap_time, 69.20128624364081, places=6)
         self.assertEqual(len(self.result.speed), GOLDEN_NODE_COUNT)
+
+    def test_quantized_cache_stays_within_mis_policy(self) -> None:
+        quantized = solve_lap(
+            self.vehicle,
+            self.track,
+            LapMode.FLYING,
+            tolerance=1.0e-6,
+            drive_cache_policy=DriveCachePolicy(1.0e-3, 1.0e-5),
+        )
+        self.assertTrue(quantized.converged)
+        self.assertLess(abs(quantized.lap_time - self.result.lap_time), 0.01)
+        self.assertLessEqual(float(np.max(quantized.speed)), maximum_vehicle_speed(self.vehicle) + 1.0e-8)
+        self.assertGreater(quantized.drive_cache_hits, 0)
+        self.assertGreater(quantized.drive_cache_max_speed_displacement, 0.0)
 
 
 if __name__ == "__main__":

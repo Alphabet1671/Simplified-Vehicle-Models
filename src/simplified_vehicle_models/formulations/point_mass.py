@@ -41,7 +41,54 @@ POINT_MASS_REQUESTED_CAPABILITIES: tuple[str, ...] = (
 )
 
 _CapabilityValue = TypeVar("_CapabilityValue")
-_ASSEMBLED_DRIVE_CACHE: dict[tuple[int, float, float, float], object] = {}
+
+
+@dataclass(frozen=True, slots=True)
+class DriveCachePolicy:
+    """Control solver-local drive-force cache key approximation."""
+
+    speed_resolution: float = 0.0
+    soc_resolution: float = 0.0
+
+    def __post_init__(self) -> None:
+        for name, value in (("speed_resolution", self.speed_resolution), ("soc_resolution", self.soc_resolution)):
+            if not math.isfinite(value) or value < 0.0:
+                raise ValueError(f"{name} must be finite and nonnegative")
+
+
+class DriveCache:
+    """Per-solve cache and approximation diagnostics for assembled drive limits."""
+
+    def __init__(self, policy: DriveCachePolicy) -> None:
+        self.policy = policy
+        self.values: dict[tuple[int, int] | tuple[float, float], tuple[float, float, object]] = {}
+        self.hits = 0
+        self.max_speed_displacement = 0.0
+        self.max_soc_displacement = 0.0
+
+    def key(self, speed: float, soc: float) -> tuple[int, int] | tuple[float, float]:
+        if self.policy.speed_resolution > 0.0:
+            speed_key: int | float = round(speed / self.policy.speed_resolution)
+        else:
+            speed_key = speed
+        if self.policy.soc_resolution > 0.0:
+            soc_key: int | float = round(soc / self.policy.soc_resolution)
+        else:
+            soc_key = soc
+        return speed_key, soc_key
+
+    def get(self, speed: float, soc: float) -> object | None:
+        item = self.values.get(self.key(speed, soc))
+        if item is None:
+            return None
+        actual_speed, actual_soc, value = item
+        self.hits += 1
+        self.max_speed_displacement = max(self.max_speed_displacement, abs(speed - actual_speed))
+        self.max_soc_displacement = max(self.max_soc_displacement, abs(soc - actual_soc))
+        return value
+
+    def put(self, speed: float, soc: float, value: object) -> None:
+        self.values.setdefault(self.key(speed, soc), (speed, soc, value))
 
 POINT_MASS_VEHICLE_PARAMETER_UNITS: dict[str, str] = {
     "total_mass": "kg",
@@ -249,6 +296,7 @@ def evaluate_equilibrium(
     curvature: float,
     longitudinal_acceleration: float,
     storage_state: StorageState | None = None,
+    drive_cache: DriveCache | None = None,
 ) -> EquilibriumState:
     """Evaluate wheel forces for one prescribed vehicle acceleration."""
 
@@ -294,6 +342,7 @@ def evaluate_equilibrium(
         speed,
         remaining,
         storage_state,
+        drive_cache,
     )
     brake_limit, brake_constraint = _available_brake_force(vehicle, remaining)
     _, drag = aerodynamic_forces(vehicle, speed)
@@ -384,6 +433,7 @@ def _equilibrium_limits(
     curvature: float,
     longitudinal_acceleration: float,
     storage_state: StorageState | None = None,
+    drive_cache: DriveCache | None = None,
 ) -> tuple[bool, bool, float, float, float]:
     """Evaluate only scalar feasibility and force limits for root solves."""
 
@@ -454,7 +504,7 @@ def _equilibrium_limits(
             longitudinal_capacities, lateral_capacities, lateral_forces
         )
     )
-    drive_limit, _ = _available_drive_force(vehicle, speed, remaining, storage_state)
+    drive_limit, _ = _available_drive_force(vehicle, speed, remaining, storage_state, drive_cache)
     brake_limit, _ = _available_brake_force(vehicle, remaining)
     return contact_feasible, lateral_feasible, drag, drive_limit, brake_limit
 
@@ -472,16 +522,17 @@ def maximum_acceleration_limit(
     speed: float,
     curvature: float,
     storage_state: StorageState | None = None,
+    drive_cache: DriveCache | None = None,
 ) -> float:
     """Solve only the positive longitudinal acceleration limit."""
 
     curvature = _validate_limit_inputs(speed, curvature)
-    if not _equilibrium_limits(vehicle, speed, curvature, 0.0, storage_state)[1]:
+    if not _equilibrium_limits(vehicle, speed, curvature, 0.0, storage_state, drive_cache)[1]:
         return 0.0
 
     def residual(acceleration: float) -> float:
         contact, lateral, drag, drive, _ = _equilibrium_limits(
-            vehicle, speed, curvature, acceleration, storage_state
+            vehicle, speed, curvature, acceleration, storage_state, drive_cache
         )
         required = vehicle.total_mass * acceleration + drag
         if not contact or not lateral:
@@ -496,16 +547,17 @@ def maximum_deceleration_limit(
     speed: float,
     curvature: float,
     storage_state: StorageState | None = None,
+    drive_cache: DriveCache | None = None,
 ) -> float:
     """Solve only the positive longitudinal deceleration limit."""
 
     curvature = _validate_limit_inputs(speed, curvature)
-    if not _equilibrium_limits(vehicle, speed, curvature, 0.0, storage_state)[1]:
+    if not _equilibrium_limits(vehicle, speed, curvature, 0.0, storage_state, drive_cache)[1]:
         return 0.0
 
     def residual(deceleration: float) -> float:
         contact, lateral, drag, _, brake = _equilibrium_limits(
-            vehicle, speed, curvature, -deceleration, storage_state
+            vehicle, speed, curvature, -deceleration, storage_state, drive_cache
         )
         required = vehicle.total_mass * deceleration - drag
         if not contact or not lateral:
@@ -522,6 +574,7 @@ def maximum_corner_speed(
     storage_state: StorageState | None = None,
     tolerance: float = 1.0e-8,
     hint: float | None = None,
+    drive_cache: DriveCache | None = None,
 ) -> float:
     """Solve the maximum steady speed for one unsigned radius."""
 
@@ -531,16 +584,16 @@ def maximum_corner_speed(
         raise ValueError("tolerance must be finite and positive")
     upper = min(maximum_speed, maximum_vehicle_speed(vehicle))
     lower = 0.0
-    if evaluate_equilibrium(vehicle, upper, 1.0 / radius, 0.0, storage_state).is_feasible:
+    if evaluate_equilibrium(vehicle, upper, 1.0 / radius, 0.0, storage_state, drive_cache).is_feasible:
         return upper
     if hint is not None and math.isfinite(hint) and 0.0 < hint < upper:
-        if evaluate_equilibrium(vehicle, hint, 1.0 / radius, 0.0, storage_state).is_feasible:
+        if evaluate_equilibrium(vehicle, hint, 1.0 / radius, 0.0, storage_state, drive_cache).is_feasible:
             lower = hint
         else:
             upper = hint
     while upper - lower > tolerance:
         trial = 0.5 * (lower + upper)
-        state = evaluate_equilibrium(vehicle, trial, 1.0 / radius, 0.0, storage_state)
+        state = evaluate_equilibrium(vehicle, trial, 1.0 / radius, 0.0, storage_state, drive_cache)
         if state.is_feasible:
             lower = trial
         else:
@@ -641,6 +694,7 @@ def _available_drive_force(
     speed: float,
     tire_limits: FloatArray,
     storage_state: StorageState | None = None,
+    drive_cache: DriveCache | None = None,
 ) -> tuple[float, str]:
     if speed > maximum_vehicle_speed(vehicle) + 1.0e-9:
         return 0.0, "motor_speed"
@@ -653,14 +707,10 @@ def _available_drive_force(
         # coupling.  Point mass supplies only the operating speed and tire cap;
         # it does not reproduce the powertrain equations here.
         state = storage_state or StorageState(drivetrain.powertrain.energy_storage.initial_state_of_charge)
-        key = (
-            id(drivetrain),
-            # Each speed is a distinct operating point for the coupled limit.
-            speed,
-            vehicle.tire.effective_radius,
-            state.state_of_charge,
-        )
-        drive = _ASSEMBLED_DRIVE_CACHE.get(key)
+        if drive_cache is not None:
+            drive = drive_cache.get(speed, state.state_of_charge)
+        else:
+            drive = None
         if drive is None:
             drive = maximum_drive_force(
                 drivetrain.powertrain,
@@ -669,7 +719,8 @@ def _available_drive_force(
                 state,
                 effective_radius=vehicle.tire.effective_radius,
             )
-            _ASSEMBLED_DRIVE_CACHE[key] = drive
+            if drive_cache is not None:
+                drive_cache.put(speed, state.state_of_charge, drive)
         limits = {"tire": tire_force, drive.active_constraint: drive.maximum_drive_force}
         constraint = min(limits, key=limits.get)
         return limits[constraint], constraint

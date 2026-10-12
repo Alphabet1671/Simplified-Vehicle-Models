@@ -36,6 +36,10 @@ class LapResult:
     converged: bool
     iterations: int
     maximum_speed_change: float
+    drive_cache_hits: int = 0
+    drive_cache_entries: int = 0
+    drive_cache_max_speed_displacement: float = 0.0
+    drive_cache_max_soc_displacement: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)

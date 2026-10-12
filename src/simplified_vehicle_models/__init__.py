@@ -2,6 +2,7 @@ from simplified_vehicle_models.compiler.compile import compile_formulation
 from simplified_vehicle_models.formulations.point_mass import (
     AccelerationLimits,
     EquilibriumState,
+    DriveCachePolicy,
     acceleration_limits,
     evaluate_equilibrium,
     maximum_corner_speed,
@@ -25,6 +26,7 @@ __all__ = [
     "AeroParameters",
     "DrivetrainParameters",
     "EquilibriumState",
+    "DriveCachePolicy",
     "LapMode",
     "LapResult",
     "PointMassVehicleParameters",

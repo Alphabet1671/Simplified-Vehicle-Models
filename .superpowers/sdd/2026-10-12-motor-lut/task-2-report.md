@@ -39,5 +39,27 @@ Regeneration in a separate output produced the same SHA-256 digest and stable ar
 - Exact analytical behavior remains available without LUT via the private generator-only source construction path.
 
 ## Concerns
-- The source analytical loss model is not strictly monotone in signed load near zero for every node. Generation applies cumulative monotonic repair; the recorded maximum repair is **1563.3094661356702 W**, materially above the brief's `1e-9` floating-noise threshold. This is documented in provenance and should be reviewed before Task 3 treats the repaired table as a physics-accurate inverse map.
 - Task 3's LUT-first forward/inverse APIs are intentionally not implemented here.
+
+## Round 1/5 fix report
+
+Resolved all open findings. The generator now uses the supplied XML path, hashes every consumed XML/CSV source and prints those digests, and fails on analytical monotonicity violations above `1e-9 W`; no cumulative repair is performed. Drive envelopes are selected from the largest analytical monotone envelope. Negative normalized load preserves analytical bus-power sign and carries a `regen_feasible` mask: only net-negative productive regen is invertible, while parasitic positive-draw points remain explicitly infeasible. Load zero remains the physical zero-torque anchor. Loader validation now checks zero-anchor uniqueness/tolerance, directional signs, feasible regen signs, shapes, finite values, axes, losses, monotonicity, and file digest before parsing.
+
+The canonical artifact digest is `9cd1cd29818677e86bc60c21e36b985485fe87fffeeaae4f8b1b49cce8c17602`; regeneration to `/tmp/repeat.npz` produced the identical digest.
+
+Exact commands and output:
+
+```text
+PYTHONPATH=src python3 tools/generate_motor_lut.py models/power-plants/amk_dd5_100c.xml models/data/amk_dd5_100c_operating_map.npz
+SHA-256: 9cd1cd29818677e86bc60c21e36b985485fe87fffeeaae4f8b1b49cce8c17602
+maximum monotonic repair: 0
+
+PYTHONPATH=src python3 tools/generate_motor_lut.py models/power-plants/amk_dd5_100c.xml /tmp/repeat.npz
+SHA-256: 9cd1cd29818677e86bc60c21e36b985485fe87fffeeaae4f8b1b49cce8c17602
+
+PYTHONPATH=src python3 -m unittest tests.test_powertrain tests.test_export_data -v
+Ran 55 tests in 0.528s; OK
+
+git diff --check
+passed
+```

@@ -60,6 +60,7 @@ class MotorOperatingMap:
     regen_torque: np.ndarray
     bus_power: np.ndarray
     loss_power: np.ndarray
+    regen_feasible: np.ndarray
 
 
 @dataclass(frozen=True, slots=True)
@@ -394,6 +395,8 @@ def _validate_operating_map(data: dict[str, np.ndarray]) -> MotorOperatingMap:
     if any(name not in data for name in names):
         raise ValueError("operating map is missing required arrays")
     arrays = {name: np.array(data[name], dtype=np.float64, order="C", copy=True) for name in names}
+    feasible = np.array(data.get("regen_feasible", np.ones_like(data["bus_power"], dtype=bool)), dtype=bool, order="C", copy=True)
+    arrays["regen_feasible"] = feasible
     v, s, l = arrays["voltage"], arrays["speed"], arrays["load"]
     if v.ndim != 1 or s.ndim != 1 or l.ndim != 1 or v.size < 2 or s.size < 2 or l.size < 3:
         raise ValueError("operating map axes have invalid shape")
@@ -406,14 +409,30 @@ def _validate_operating_map(data: dict[str, np.ndarray]) -> MotorOperatingMap:
     shape2, shape3 = (v.size, s.size), (v.size, s.size, l.size)
     if arrays["drive_torque"].shape != shape2 or arrays["regen_torque"].shape != shape2:
         raise ValueError("operating map torque envelope shape mismatch")
-    if arrays["bus_power"].shape != shape3 or arrays["loss_power"].shape != shape3:
+    if arrays["bus_power"].shape != shape3 or arrays["loss_power"].shape != shape3 or feasible.shape != shape3:
         raise ValueError("operating map power shape mismatch")
     if np.any(arrays["drive_torque"] < 0) or np.any(arrays["regen_torque"] < 0):
         raise ValueError("operating map torque envelopes must be nonnegative")
     if np.any(arrays["loss_power"] < 0):
         raise ValueError("operating map loss must be nonnegative")
-    for row in arrays["bus_power"].reshape(-1, l.size):
-        if np.any(np.diff(row[: l.size // 2 + 1]) < -1e-9) or np.any(np.diff(row[l.size // 2 :]) < -1e-9):
+    zero_indices = np.flatnonzero(np.isclose(l, 0.0, atol=1.0e-9, rtol=0.0))
+    if zero_indices.size != 1:
+        raise ValueError("operating map load axis requires one zero anchor")
+    zero = int(zero_indices[0])
+    power_rows = arrays["bus_power"].reshape(-1, l.size)
+    feasible_rows = feasible.reshape(-1, l.size)
+    for row, valid in zip(power_rows, feasible_rows):
+        if row[zero] < -1.0e-9:
+            raise ValueError("operating map zero-load bus power has invalid sign")
+        if np.any(row[zero + 1:] < -1.0e-9):
+            raise ValueError("operating map drive bus power has invalid sign")
+        regen = valid[:zero]
+        if np.any(row[:zero][regen] > 1.0e-9):
+            raise ValueError("operating map productive regen has invalid sign")
+        values = row[:zero][regen]
+        if values.size > 1 and np.any(np.diff(values) < -1.0e-9):
+            raise ValueError("operating map bus power is not monotone by direction")
+        if np.any(np.diff(row[zero:]) < -1.0e-9):
             raise ValueError("operating map bus power is not monotone by direction")
     for array in arrays.values():
         array.setflags(write=False)

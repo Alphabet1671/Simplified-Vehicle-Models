@@ -3,6 +3,9 @@ from dataclasses import replace
 import math
 import tempfile
 import unittest
+import hashlib
+
+import numpy as np
 
 from simplified_vehicle_models.powertrain.assembly import (
     compile_drivetrain_assembly,
@@ -20,6 +23,8 @@ from simplified_vehicle_models.xml.loader import load_model
 from simplified_vehicle_models.powertrain.power_plant import (
     compile_electric_motor,
     evaluate_shaft_power,
+    _validate_operating_map,
+    _load_operating_map,
 )
 from simplified_vehicle_models.powertrain.energy_storage import (
     StorageState,
@@ -29,6 +34,38 @@ from simplified_vehicle_models.xml.loader import load_point_mass_vehicle
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+class OperatingMapValidationTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        with np.load(ROOT / "models/data/amk_dd5_100c_operating_map.npz", allow_pickle=False) as archive:
+            cls.data = {name: archive[name] for name in archive.files}
+
+    def bad(self, mutate):
+        data = {name: value.copy() for name, value in self.data.items()}
+        mutate(data)
+        with self.assertRaises(ValueError):
+            _validate_operating_map(data)
+
+    def test_rejects_missing_arrays_and_wrong_shapes(self):
+        self.bad(lambda d: d.pop("loss_power"))
+        self.bad(lambda d: d.__setitem__("drive_torque", d["drive_torque"][:-1]))
+
+    def test_rejects_bad_axes_values_and_negative_loss(self):
+        self.bad(lambda d: d["speed"].__setitem__(1, d["speed"][0]))
+        self.bad(lambda d: d["loss_power"].__setitem__((0, 0, 0), -1.0))
+        self.bad(lambda d: d["bus_power"].__setitem__((0, 0, 32), np.nan))
+
+    def test_rejects_direction_sign_and_monotonicity(self):
+        self.bad(lambda d: d["bus_power"].__setitem__((0, 1, 64), -1.0))
+        self.bad(lambda d: (d["bus_power"].__setitem__((0, 1, 0), 1.0), d["regen_feasible"].__setitem__((0, 1, 0), True)))
+
+    def test_canonical_shape_and_digest(self):
+        loaded = _validate_operating_map(self.data)
+        self.assertEqual(loaded.bus_power.shape, (9, 129, 65))
+        digest = hashlib.sha256((ROOT / "models/data/amk_dd5_100c_operating_map.npz").read_bytes()).hexdigest()
+        self.assertEqual(digest, "9cd1cd29818677e86bc60c21e36b985485fe87fffeeaae4f8b1b49cce8c17602")
 
 
 class PowertrainAssemblyTests(unittest.TestCase):

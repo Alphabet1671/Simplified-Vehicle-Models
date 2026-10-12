@@ -268,6 +268,7 @@ def _build_result(
             float(segment_curvature[index]),
             float(required_acceleration),
             StorageState(float(storage_trace[index])) if storage_trace is not None else None,
+            drive_cache,
         )
         wheel_force = float(np.sum(state.longitudinal_forces))
         if wheel_force > 0.0 and state.drive_force_limit > 0.0:

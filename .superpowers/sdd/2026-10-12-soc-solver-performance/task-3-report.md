@@ -1,7 +1,7 @@
 # Task 3 Report: Solver-Local Drive Cache
 
 ## Status
-Implemented and committed. Exact caching is the default; quantization is opt-in through `DriveCachePolicy`.
+Implemented; round 1 review fixes applied. Exact caching is the default; quantization is opt-in through `DriveCachePolicy`.
 
 ## RED/GREEN
 
@@ -92,7 +92,52 @@ PYTHONPATH=src python3 -m unittest tests.test_mis_regression.AssembledMisRegress
 - Confirmed legacy lumped drivetrain behavior remains unchanged.
 - Added lifecycle, immutability/validation, approximation, and MIS policy tests.
 
+## Round 1 review fixes
+
+- Fixed the build-result equilibrium evaluations to receive the same solver-local `DriveCache` used by corner, sweep, and root evaluations. Added a regression test that verifies every final equilibrium call receives that exact cache object.
+- The prior 37.219 s figure combined setup and two solve paths. Individual MIS `solve_lap` wall times are now measured separately below; each is under 30 s.
+- Added bounded assembled-MIS energy evidence with `maximum_iterations=1`. Neither run is claimed converged; both report the status and profile residual explicitly.
+
+## Round 1 commands/output
+
+Focused suites:
+
+```bash
+PYTHONPATH=src python3 -m unittest tests.test_point_mass tests.test_mis_regression -v
+# Ran 33 tests in 14.879s
+# OK
+```
+
+Cache propagation test:
+
+```bash
+PYTHONPATH=src python3 -m unittest tests.test_point_mass.PointMassTests.test_final_equilibrium_evaluations_use_solver_cache -v
+# test_final_equilibrium_evaluations_use_solver_cache ... ok
+# Ran 1 test in 0.018s
+# OK
+```
+
+Separate assembled MIS `solve_lap` wall-time measurements:
+
+```bash
+# exact:     7.837250 s, lap=69.201286243641, converged=True, iterations=2, under_30=True
+# quantized: 3.762589 s, lap=69.201264212377, converged=True, iterations=2, under_30=True
+```
+
+Bounded assembled MIS energy comparison (`maximum_iterations=1`):
+
+```bash
+# exact:     19.373918 s, lap=69.199296148966, lap_converged=True,
+#            energy_converged=False, energy_iterations=1,
+#            final_soc=0.971249884143, profile_residual=1.437866797950e-02
+# quantized: 10.277722 s, lap=69.199298753958, lap_converged=True,
+#            energy_converged=False, energy_iterations=1,
+#            final_soc=0.971249872600, profile_residual=1.437859280210e-02
+# lap delta=0.000002604992 s; final-SOC delta=0.000000011543
+```
+
 ## Concerns
 
-- Full MIS `solve_lap_with_energy` exact-vs-quantized benchmarking was too slow for the practical command timeout; SOC delta was validated on the focused energy track instead.
+- The bounded assembled MIS energy comparison intentionally does not establish convergence: both energy loops stopped at one iteration and reported `energy_converged=False`, with approximately `1.44e-2` SOC profile residual.
+- Full converged MIS `solve_lap_with_energy` exact-vs-quantized benchmarking belongs to Task 6.
 - Speed and SOC displacement are reported as separate diagnostics because their units differ.

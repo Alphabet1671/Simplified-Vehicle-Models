@@ -1,5 +1,6 @@
 from dataclasses import replace
 from pathlib import Path
+from unittest.mock import patch
 import unittest
 
 import numpy as np
@@ -24,6 +25,9 @@ from simplified_vehicle_models.formulations.point_mass import (
     DriveCachePolicy,
 )
 from simplified_vehicle_models.drivetrain.lumped import compile_lumped_drivetrain
+from simplified_vehicle_models.solvers import forward_backward
+from simplified_vehicle_models.solvers.forward_backward import _build_result
+from simplified_vehicle_models.tracks.types import TrackProfile
 from simplified_vehicle_models.xml.loader import load_model, load_point_mass_vehicle
 
 
@@ -117,6 +121,28 @@ class PointMassTests(unittest.TestCase):
         self.assertEqual(len(other.values), 1)
         self.assertEqual(cache.max_speed_displacement, 0.0)
         self.assertEqual(cache.max_soc_displacement, 0.0)
+
+    def test_final_equilibrium_evaluations_use_solver_cache(self) -> None:
+        track = TrackProfile(
+            distance=np.asarray([0.0, 1.0, 2.0]),
+            segment_length=np.asarray([1.0, 1.0]),
+            radius=np.asarray([np.inf, np.inf, np.inf]),
+            curvature=np.zeros(3),
+            is_closed=False,
+            title="cache regression",
+        )
+        speed = np.full(3, 10.0)
+        cache = DriveCache(DriveCachePolicy(speed_resolution=1.0))
+        with patch.object(
+            forward_backward,
+            "evaluate_equilibrium",
+            wraps=forward_backward.evaluate_equilibrium,
+        ) as evaluate:
+            _build_result(self.vehicle, track, speed, True, 1, 0.0, drive_cache=cache)
+
+        self.assertEqual(evaluate.call_count, 2)
+        for call in evaluate.call_args_list:
+            self.assertIs(call.args[5], cache)
 
     def test_quantized_drive_cache_reports_bucket_displacement(self) -> None:
         cache = DriveCache(DriveCachePolicy(speed_resolution=1.0, soc_resolution=0.1))

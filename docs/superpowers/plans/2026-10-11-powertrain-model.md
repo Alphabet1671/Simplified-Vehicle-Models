@@ -1370,15 +1370,18 @@ Against peak total losses near 6 200 W, the correction is a fraction of one perc
 **Motor speed on the MIS lap**
 
 ```text
-peak vehicle speed     = 28.9352 m/s      (after the D17 tire correction)
+peak vehicle speed     = 29.5823 m/s      (after the D17 tire correction)
 effective_radius       = 0.193675 m
 gear_ratio             = 10.9
-motor speed            = 28.9352 / 0.193675 * 10.9 = 1628 rad/s = 15 551 rpm
+motor speed            = 29.5823 / 0.193675 * 10.9 = 1663 rad/s = 15 899 rpm
 corner speed at 600 V  = 16 300 rpm
-margin                 = 749 rpm, or 4.6 percent of the corner speed
+margin                 = 401 rpm, or 2.5 percent of the corner speed
 ```
 
-The MIS lap now runs at 95 percent of the corner speed. It did not before the tire correction, when the same lap peaked at 10 334 rpm and 63 percent. The voltage model therefore has a small but real effect on MIS, and the effect grows as the state of charge falls.
+The MIS lap now runs at 97.5 percent of the measured corner speed and remains below the
+18,600 rpm maximum motor speed. It did not before the tire correction, when the same lap
+peaked at 10 334 rpm. MIS therefore does not exercise voltage-dependent field weakening;
+voltage sensitivity is validated on the synthetic high-speed case and in the SOC interface.
 
 For comparison, the pre-correction values were a peak of 28.9352 m/s against 19.2278 m/s and a wheel power of 58.4 kW against 14.7 kW.
 

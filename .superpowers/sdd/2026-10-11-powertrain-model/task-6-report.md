@@ -25,3 +25,15 @@ Implemented the independent drivetrain transmission component. Powertrain and dr
 ## Concerns
 
 None.
+
+## Fix round 1
+
+Added the `TorqueTransmission` protocol contract with `motor_speed`, `wheel_torque`,
+and `driven_wheels`, and made the compiled transmission satisfy that contract.
+Added registry capability, XML driven-wheel configuration, invalid position/
+duplicate/missing-position coverage, parameter boundary coverage, and fixed all
+reported line-length issues.
+
+- Focused suite: 9 tests passed.
+- Full discovery: 170 tests passed.
+- Remaining concerns: none.

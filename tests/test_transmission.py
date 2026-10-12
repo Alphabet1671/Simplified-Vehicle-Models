@@ -1,6 +1,11 @@
 import unittest
 from dataclasses import replace
 
+from simplified_vehicle_models.compiler.capabilities import (
+    TORQUE_TRANSMISSION,
+    TorqueTransmission,
+)
+from simplified_vehicle_models.compiler.registry import component_descriptor
 from simplified_vehicle_models.drivetrain.transmission import (
     compile_fixed_gear_transmission,
     motor_speed_from_wheel_speed,
@@ -16,8 +21,32 @@ class TransmissionTests(unittest.TestCase):
             load_model("models/transmissions/murphy_2024_fixed_gear.xml")
         )
 
+    def test_registry_descriptor_and_protocol(self):
+        descriptor = component_descriptor("transmission", "fixed-gear")
+        self.assertEqual(descriptor.capability, TORQUE_TRANSMISSION)
+        self.assertIs(descriptor.compile_function, compile_fixed_gear_transmission)
+        self.assertIsInstance(self.parameters, TorqueTransmission)
+        self.assertEqual(self.parameters.driven_wheels, ("fl", "fr", "rl", "rr"))
+
+    def test_driven_wheel_xml_configuration(self):
+        model = load_model("models/transmissions/murphy_2024_fixed_gear.xml")
+        self.assertEqual(model.driven_wheels, ("fl", "fr", "rl", "rr"))
+
+    def test_rejects_invalid_driven_wheels(self):
+        model = load_model("models/transmissions/murphy_2024_fixed_gear.xml")
+        invalid_wheels = (
+            ("xx", "fr", "rl", "rr"),
+            ("fl", "fl", "rl", "rr"),
+            ("fl", "fr", "rl"),
+        )
+        for wheels in invalid_wheels:
+            with self.subTest(wheels=wheels), self.assertRaises(ValueError):
+                compile_fixed_gear_transmission(replace(model, driven_wheels=wheels))
+
     def test_speed_conversion(self):
-        self.assertAlmostEqual(motor_speed_from_wheel_speed(self.parameters, 100.0), 1090.0)
+        self.assertAlmostEqual(
+            motor_speed_from_wheel_speed(self.parameters, 100.0), 1090.0
+        )
 
     def test_motoring_torque_conversion(self):
         torques = wheel_torque_from_motor_torque(self.parameters, 20.0)
@@ -36,11 +65,23 @@ class TransmissionTests(unittest.TestCase):
         self.assertAlmostEqual(torques[2], torques[3])
         self.assertAlmostEqual(torques[0] * 2.0 / (torques[2] * 2.0), 3.0)
 
+    def test_front_fraction_endpoints(self):
+        for fraction, expected_front, expected_rear in (
+            (0.0, 0.0, 1.0),
+            (1.0, 1.0, 0.0),
+        ):
+            parameters = replace(self.parameters, front_torque_fraction=fraction)
+            torques = wheel_torque_from_motor_torque(parameters, 20.0)
+            self.assertAlmostEqual(torques[0], 103.55 * expected_front)
+            self.assertAlmostEqual(torques[2], 103.55 * expected_rear)
+
     def test_invalid_parameters(self):
         model = load_model("models/transmissions/murphy_2024_fixed_gear.xml")
         for name, value in (
             ("gear_ratio", 0.0),
+            ("gear_ratio", -1.0),
             ("gear_efficiency", 0.0),
+            ("gear_efficiency", -0.1),
             ("gear_efficiency", 1.1),
             ("front_torque_fraction", -0.1),
             ("front_torque_fraction", 1.1),

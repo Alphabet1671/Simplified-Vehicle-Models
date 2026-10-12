@@ -39,6 +39,16 @@ class FixedGearParameters:
     front_torque_fraction: float
     driven_wheels: tuple[str, ...]
 
+    def motor_speed(self, wheel_speed: float) -> float:
+        """Convert one wheel speed to motor speed."""
+
+        return motor_speed_from_wheel_speed(self, wheel_speed)
+
+    def wheel_torque(self, motor_torque: float) -> FloatArray:
+        """Convert motor torque to per-wheel torque."""
+
+        return wheel_torque_from_motor_torque(self, motor_torque)
+
 
 def motor_speed_from_wheel_speed(
     transmission: FixedGearParameters, wheel_speed: float
@@ -59,16 +69,22 @@ def wheel_torque_from_motor_torque(
 
     efficiency = transmission.gear_efficiency
     directional_factor = efficiency if motor_torque >= 0.0 else 1.0 / efficiency
-    total_wheel_torque = transmission.gear_ratio * motor_torque * directional_factor
+    total_wheel_torque = (
+        transmission.gear_ratio * motor_torque * directional_factor
+    )
     front_torque = total_wheel_torque * transmission.front_torque_fraction / 2.0
-    rear_torque = total_wheel_torque * (1.0 - transmission.front_torque_fraction) / 2.0
+    rear_torque = (
+        total_wheel_torque * (1.0 - transmission.front_torque_fraction) / 2.0
+    )
     values = {
         "fl": front_torque,
         "fr": front_torque,
         "rl": rear_torque,
         "rr": rear_torque,
     }
-    return np.asarray([values[position] for position in transmission.driven_wheels], dtype=float)
+    return np.asarray(
+        [values[position] for position in transmission.driven_wheels], dtype=float
+    )
 
 
 def wheel_speed_to_motor_speed(

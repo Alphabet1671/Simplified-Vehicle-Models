@@ -16,6 +16,8 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
+from simplified_vehicle_models.core.types import FloatArray
+
 
 TIRE_FORCE_ENVELOPE = "tire-force-envelope"
 AERO_LOADS = "aero-loads"
@@ -47,6 +49,19 @@ class AeroLoads(Protocol):
     downforce_area: float
     drag_area: float
     aero_balance: float
+
+
+@runtime_checkable
+class TorqueTransmission(Protocol):
+    """Provide fixed-ratio speed and torque transmission."""
+
+    driven_wheels: tuple[str, ...]
+
+    def motor_speed(self, wheel_speed: float) -> float:
+        """Convert one wheel speed to motor speed."""
+
+    def wheel_torque(self, motor_torque: float) -> FloatArray:
+        """Convert motor torque to per-wheel torque."""
 
 
 @runtime_checkable

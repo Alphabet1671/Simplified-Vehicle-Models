@@ -12,6 +12,7 @@
     <components>
         <component role="tire" ref="../tires/correlated_comp_2024.xml"/>
         <component role="aero" ref="../aero/murphy_2024.xml"/>
-        <component role="drivetrain" ref="../drivetrains/murphy_4wd.xml"/>
+        <component role="powertrain" ref="../powertrains/murphy_2024.xml"/>
+        <component role="drivetrain" ref="../drivetrains/murphy_2024_drivetrain.xml"/>
     </components>
 </model>

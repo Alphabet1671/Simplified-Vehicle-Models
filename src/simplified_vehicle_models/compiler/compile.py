@@ -14,6 +14,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
+from simplified_vehicle_models.compiler.capabilities import DRIVE_FORCE_LIMIT
 from simplified_vehicle_models.compiler.adapters import (
     CapabilityResolutionError,
     ResolutionResult,
@@ -28,7 +29,9 @@ from simplified_vehicle_models.compiler.manifest import (
     UnconsumedParameter,
 )
 from simplified_vehicle_models.compiler.registry import (
+    COMPONENT_KIND,
     ComponentCandidate,
+    ComponentDescriptor,
     LoadedComponent,
     component_descriptor,
     register_builtin_components,
@@ -103,6 +106,14 @@ def compile_formulation(formulation_path: str | Path) -> CompiledFormulation:
         role = plan.provider.role
         if role not in loaded:
             loaded[role] = compile_component(plan.provider)
+    # A nested assembly is part of the resolved provider. Record both nested
+    # identities as loaded even though the synthetic provider compiles them as
+    # one drive-force contract.
+    if "powertrain_drivetrain" in loaded:
+        for candidate in candidates:
+            if candidate.role in {"powertrain", "drivetrain"}:
+                loaded[candidate.role] = LoadedComponent(candidate=candidate, value=None)
+
     resolutions: dict[str, ResolutionResult] = {}
     for plan in plans:
         component = loaded[plan.provider.role]
@@ -134,8 +145,10 @@ def compile_component(candidate: ComponentCandidate) -> LoadedComponent:
     """
 
     model = load_model(candidate.model.path)
-    descriptor = component_descriptor(model.model_type, model.subtype)
-    if not descriptor.is_component:
+    descriptor = candidate.descriptor
+    if descriptor.compile_function is None:
+        descriptor = component_descriptor(model.model_type, model.subtype)
+    if not descriptor.is_component and descriptor.compile_function is None:
         raise ValueError(
             f"{model.path}: model type {model.model_type}/{model.subtype} "
             "is not a component type"
@@ -171,16 +184,31 @@ def _assembly_candidates(assembly: Model) -> tuple[ComponentCandidate, ...]:
                 f"{assembly.path}: duplicate component role {reference.role!r}"
             )
         roles.add(reference.role)
+        if reference.model.model_type in {"powertrain-assembly", "drivetrain-assembly"}:
+            continue
         descriptor = component_descriptor(
             reference.model.model_type,
             reference.model.subtype,
         )
         if not descriptor.is_component:
-            raise ValueError(
-                f"{assembly.path}: component role {reference.role!r} references "
-                f"{reference.model.model_type}/{reference.model.subtype}, "
-                "which is not a component type"
-            )
+            if reference.model.model_type in {"powertrain-assembly", "drivetrain-assembly"}:
+                from simplified_vehicle_models.powertrain.assembly import (
+                    ASSEMBLY_SOURCE_CAPABILITY,
+                    compile_powertrain_drivetrain,
+                )
+                descriptor = ComponentDescriptor(
+                    model_type=reference.model.model_type,
+                    subtype=reference.model.subtype,
+                    kind=COMPONENT_KIND,
+                    capability=ASSEMBLY_SOURCE_CAPABILITY,
+                    compile_function=compile_powertrain_drivetrain,
+                )
+            else:
+                raise ValueError(
+                    f"{assembly.path}: component role {reference.role!r} references "
+                    f"{reference.model.model_type}/{reference.model.subtype}, "
+                    "which is not a component type"
+                )
         candidates.append(
             ComponentCandidate(
                 role=reference.role,
@@ -188,6 +216,32 @@ def _assembly_candidates(assembly: Model) -> tuple[ComponentCandidate, ...]:
                 descriptor=descriptor,
             )
         )
+    nested = [item for item in assembly.references if item.tag == "component" and item.model.model_type in {"powertrain-assembly", "drivetrain-assembly"}]
+    if nested:
+        if {item.role for item in nested} != {"powertrain", "drivetrain"}:
+            raise ValueError(f"{assembly.path}: vehicle needs powertrain and drivetrain assemblies")
+        # Keep the nested assembly identities in the manifest.  The synthetic
+        # provider below is the only candidate that resolves drive-force-limit.
+        for item in nested:
+            candidates.append(
+                ComponentCandidate(
+                    role=item.role,
+                    model=item.model,
+                    descriptor=component_descriptor(item.model.model_type, item.model.subtype),
+                )
+            )
+        from simplified_vehicle_models.powertrain.assembly import (
+            ASSEMBLY_SOURCE_CAPABILITY,
+            compile_powertrain_drivetrain,
+        )
+        descriptor = ComponentDescriptor(
+            model_type="vehicle-powertrain",
+            subtype="assembled",
+            kind=COMPONENT_KIND,
+            capability=DRIVE_FORCE_LIMIT,
+            compile_function=compile_powertrain_drivetrain,
+        )
+        candidates.append(ComponentCandidate("powertrain_drivetrain", assembly, descriptor))
     return tuple(candidates)
 
 

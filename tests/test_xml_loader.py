@@ -46,7 +46,7 @@ class XmlLoaderTests(unittest.TestCase):
         )
         self.assertEqual(vehicle.drivetrain.power_limit, 80000.0)
         self.assertEqual(vehicle.drivetrain.efficiency, 0.95)
-        self.assertEqual(vehicle.drivetrain.maximum_motor_speed, 20000.0)
+        self.assertEqual(vehicle.drivetrain.maximum_motor_speed, 18600.0)
         self.assertEqual(vehicle.brake_bias, 0.65)
 
     def test_parameters_are_immutable(self) -> None:

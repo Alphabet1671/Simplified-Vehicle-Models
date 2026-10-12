@@ -6,6 +6,6 @@
         <parameter name="peak_motor_torque" value="21.834945614425717" unit="N*m"/>
         <parameter name="power_limit" value="80000" unit="W"/>
         <parameter name="efficiency" value="0.95" unit="1"/>
-        <parameter name="maximum_motor_speed" value="20000" unit="rpm"/>
+        <parameter name="maximum_motor_speed" value="18600" unit="rpm"/>
     </parameters>
 </model>

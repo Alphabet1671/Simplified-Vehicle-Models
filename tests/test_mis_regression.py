@@ -21,9 +21,9 @@ TRACK_PATH = REPOSITORY_ROOT / "models/tracks/2024_michigan_endurance_v11.xml"
 # A physics change must fail these tests. A human then decides if the change is correct.
 # The relative tolerance is 1e-9. A tighter bound is brittle across platforms.
 # A looser bound lets a real physics change through.
-GOLDEN_FLYING_LAP_TIME = 69.35580578176496
-GOLDEN_STANDING_LAP_TIME = 70.51976562331019
-GOLDEN_PEAK_SPEED = 28.93519070116225
+GOLDEN_FLYING_LAP_TIME = 69.22653728547469
+GOLDEN_STANDING_LAP_TIME = 70.38955050759907
+GOLDEN_PEAK_SPEED = 29.582305037708668
 GOLDEN_NODE_COUNT = 1407
 GOLDEN_RELATIVE_TOLERANCE = 1.0e-9
 

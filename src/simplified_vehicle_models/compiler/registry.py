@@ -156,7 +156,7 @@ def register_builtin_components() -> None:
     from simplified_vehicle_models.aero import fixed_aero
     from simplified_vehicle_models.drivetrain import lumped, transmission
     from simplified_vehicle_models.tires import friction_ellipse
-    from simplified_vehicle_models.powertrain import energy_storage, power_plant
+    from simplified_vehicle_models.powertrain import assembly, energy_storage, power_plant
 
     _ = (
         fixed_aero,
@@ -164,6 +164,7 @@ def register_builtin_components() -> None:
         transmission,
         friction_ellipse,
         energy_storage,
+        assembly,
         power_plant,
     )
     register_component(

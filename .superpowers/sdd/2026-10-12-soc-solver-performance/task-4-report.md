@@ -44,3 +44,20 @@ Also verified `git diff --check` successfully.
 
 - Warm and cold paths can differ by normal root-solver floating-point noise; tests use configured numerical tolerances rather than exact bitwise equality.
 - Hints are generated internally only across a fixed vehicle/track/mode/shape context; `solve_lap` continues to validate externally supplied hint shapes and values.
+
+## Round 1/5 Fix
+
+- Added private context metadata to internally produced speed hint arrays: vehicle identity, track identity, lap mode, and node shape.
+- `solve_lap_with_energy` now discards tagged hints when any context component changes; untagged caller-provided arrays retain the existing public behavior and are still shape/value validated by `solve_lap`.
+- Added same-shaped vehicle, track, and mode-change coverage plus a node-shape change case to `tests/test_energy_lap.py`.
+
+### Exact verification commands and output
+
+```text
+$ PYTHONPATH=src python3 -m unittest tests.test_energy_lap tests.test_lap_solver tests.test_mis_regression -v
+Ran 24 tests in 23.494s
+OK
+
+$ git diff --check
+(success; no output)
+```

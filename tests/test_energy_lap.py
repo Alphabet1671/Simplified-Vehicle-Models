@@ -94,6 +94,48 @@ class EnergyLapTests(unittest.TestCase):
         self.assertAlmostEqual(cold.energy.consumed_energy, warm.energy.consumed_energy, delta=1e-4)
         self.assertAlmostEqual(cold.energy.recovered_energy, warm.energy.recovered_energy, delta=1e-4)
 
+    def test_hints_reset_when_same_shape_context_changes(self):
+        other_vehicle = load_point_mass_vehicle(ROOT / 'models/formulations/murphy_point_mass.xml')
+        other_track = TrackProfile(
+            self.track.distance.copy(),
+            self.track.segment_length.copy(),
+            self.track.radius.copy(),
+            self.track.curvature.copy(),
+            self.track.is_closed,
+            'same-shape-copy',
+        )
+        other_track_short = TrackProfile(
+            self.track.distance[:-1].copy(),
+            self.track.segment_length[:-1].copy(),
+            self.track.radius[:-1].copy(),
+            self.track.curvature[:-1].copy(),
+            self.track.is_closed,
+            'different-shape',
+        )
+        cold_speed = solve_lap_with_energy(self.vehicle, self.track, LapMode.FLYING).speed
+        for vehicle, track, mode in (
+            (other_vehicle, self.track, LapMode.FLYING),
+            (self.vehicle, other_track, LapMode.FLYING),
+            (self.vehicle, self.track, LapMode.STANDING_START),
+            (self.vehicle, other_track_short, LapMode.FLYING),
+        ):
+            with self.subTest(vehicle=vehicle is other_vehicle, track=track is other_track, mode=mode):
+                with patch(
+                    "simplified_vehicle_models.solvers.forward_backward.solve_lap",
+                    wraps=solve_lap,
+                ) as solve:
+                    solve_lap_with_energy(
+                        vehicle,
+                        track,
+                        mode,
+                        maximum_iterations=1,
+                        initial_speed=cold_speed,
+                        corner_speed_hint=cold_speed,
+                    )
+                first_call = solve.call_args_list[0]
+                self.assertIsNone(first_call.kwargs["initial_speed"])
+                self.assertIsNone(first_call.kwargs["corner_speed_hint"])
+
     def test_stint_carries_state(self):
         report = solve_stint(self.vehicle, self.track, laps=2, regen_enabled=False)
         self.assertEqual(len(report.laps), 2)

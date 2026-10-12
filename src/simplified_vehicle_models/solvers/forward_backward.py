@@ -22,6 +22,21 @@ from simplified_vehicle_models.powertrain.power_plant import evaluate_shaft_powe
 from simplified_vehicle_models.tracks.types import TrackProfile
 
 
+class _HintArray(np.ndarray):
+    """Private speed array carrying the context that produced it."""
+
+    _hint_context: tuple[int, int, LapMode, tuple[int, ...]]
+
+
+def _hint_context(vehicle, track, mode, shape) -> tuple[int, int, LapMode, tuple[int, ...]]:
+    return (id(vehicle), id(track), mode, tuple(shape))
+
+
+def _hint_is_compatible(hint, context) -> bool:
+    hint_context = getattr(hint, "_hint_context", None)
+    return hint_context is None or hint_context == context
+
+
 def solve_lap(
     vehicle: PointMassVehicleParameters,
     track: TrackProfile,
@@ -119,6 +134,7 @@ def solve_lap(
         maximum_change,
         _storage_trace,
         drive_cache,
+        _hint_context(vehicle, track, mode, speed.shape),
     )
 
 
@@ -237,6 +253,7 @@ def _build_result(
     maximum_change: float,
     storage_trace: FloatArray | None = None,
     drive_cache: DriveCache | None = None,
+    hint_context: tuple[int, int, LapMode, tuple[int, ...]] | None = None,
 ) -> LapResult:
     start_speed = speed[:-1]
     end_speed = speed[1:]
@@ -292,6 +309,9 @@ def _build_result(
     elapsed_time = np.concatenate(
         (np.asarray([0.0], dtype=np.float64), np.cumsum(time_step))
     )
+    if hint_context is not None:
+        speed = speed.view(_HintArray)
+        speed._hint_context = hint_context
     arrays = (
         speed,
         elapsed_time,
@@ -362,8 +382,9 @@ def solve_lap_with_energy(
         raise ValueError("tolerance must be positive and maximum_iterations must be positive")
     if lap_tolerance <= 0.0 or not math.isfinite(lap_tolerance) or lap_maximum_iterations < 1:
         raise ValueError("lap_tolerance must be finite and positive and lap_maximum_iterations must be positive")
-    speed_hint = initial_speed
-    corner_hint = corner_speed_hint
+    context = _hint_context(vehicle, track, mode, (len(track.distance),))
+    speed_hint = initial_speed if _hint_is_compatible(initial_speed, context) else None
+    corner_hint = corner_speed_hint if _hint_is_compatible(corner_speed_hint, context) else None
     storage = getattr(getattr(vehicle.drivetrain, "powertrain", None), "energy_storage", None)
     state0 = (initial_state.state_of_charge if isinstance(initial_state, StorageState)
               else storage.initial_state_of_charge if initial_state is None and storage

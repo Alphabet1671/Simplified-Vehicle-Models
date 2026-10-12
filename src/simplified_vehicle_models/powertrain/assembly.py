@@ -306,7 +306,9 @@ def maximum_drive_force(
             else:
                 # Force integration only needs bounded torque precision here;
                 # avoid multiplying every point-mass evaluation by a deep solve.
-                for _ in range(12):
+                # Eight bisection steps provide sub-percent force resolution while
+                # keeping assembled point-mass sweeps tractable.
+                for _ in range(8):
                     midpoint = 0.5 * (lower + upper)
                     midpoint_result = evaluate(midpoint)
                     if midpoint_result.feasible and 0.0 <= midpoint_result.bus_power <= storage.discharge_power_limit:

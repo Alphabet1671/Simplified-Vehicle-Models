@@ -292,6 +292,8 @@ def solve_lap_with_energy(vehicle, track, mode, initial_state=None, tolerance=1e
     lap = solve_lap(vehicle, track, mode, _storage_trace=trace)
     bus, shaft, voltage, consumed, recovered, final_trace = _energy_trace(vehicle, track, lap, trace, regen_enabled)
     trace = final_trace
+    # Re-run after the integrated final trace so returned constraints and
+    # speed are evaluated at the SOC represented by the report.
     lap = solve_lap(vehicle, track, mode, _storage_trace=trace)
     bus, shaft, voltage, consumed, recovered, final_trace = _energy_trace(vehicle, track, lap, trace, regen_enabled)
     trace = final_trace
@@ -316,9 +318,22 @@ def _energy_trace(vehicle, track, lap, trace, regen_enabled):
             motor = vehicle.drivetrain.powertrain.power_plant
             transmission = vehicle.drivetrain.drivetrain.transmission
             motor_speed = transmission.motor_speed(speed / vehicle.tire.effective_radius) * 60.0 / (2.0 * math.pi)
-            motor_torque = wheel_force * vehicle.tire.effective_radius / (motor.unit_count * transmission.gear_ratio * transmission.gear_efficiency)
-            operating = evaluate_shaft_power(motor, motor_speed, motor_torque, evaluate_storage(storage, state).bus_voltage)
-            # Shaft trace is mechanical motor output, not inverter bus power.
+            if wheel_force >= 0.0:
+                motor_torque = wheel_force * vehicle.tire.effective_radius / (
+                    motor.unit_count * transmission.gear_ratio * transmission.gear_efficiency
+                )
+            else:
+                # The transmission applies reciprocal efficiency in regeneration.
+                motor_torque = wheel_force * vehicle.tire.effective_radius * transmission.gear_efficiency / (
+                    motor.unit_count * transmission.gear_ratio
+                )
+            operating = evaluate_shaft_power(
+                motor,
+                motor_speed,
+                motor_torque,
+                evaluate_storage(storage, state).bus_voltage,
+            )
+            # Shaft power is mechanical motor output, never inverter bus power.
             shaft[i] = motor_torque * motor_speed * 2.0 * math.pi / 60.0 * motor.unit_count
             if motor_torque >= 0.0:
                 bus[i] = operating.bus_power * motor.unit_count
@@ -341,8 +356,6 @@ def solve_stint(vehicle, track, mode=LapMode.FLYING, laps=1, initial_state=None,
     """Repeat laps while carrying the final battery state into the next lap."""
     if laps < 1: raise ValueError("laps must be positive")
     results = []; state = initial_state
-    initial_soc = (initial_state.state_of_charge if isinstance(initial_state, StorageState)
-                   else float(initial_state) if initial_state is not None else None)
     for _ in range(laps):
         result = solve_lap_with_energy(vehicle, track, mode, state, **kwargs); results.append(result); state = result.energy.final_state_of_charge
     times = np.asarray([r.lap_time for r in results]); energies = np.asarray([r.energy.net_energy for r in results])
@@ -351,13 +364,17 @@ def solve_stint(vehicle, track, mode=LapMode.FLYING, laps=1, initial_state=None,
     total_net = sum(r.energy.net_energy for r in results)
     storage = getattr(getattr(vehicle.drivetrain, "powertrain", None), "energy_storage", None)
     if storage:
-        soc = (initial_soc if initial_soc is not None else storage.initial_state_of_charge)
+        # Count only energy still available after the completed stint.  The
+        # curve is cell energy in Wh, and interpolation preserves its SOC
+        # direction even when the stint started below full charge.
         axis = np.asarray(storage.state_of_charge_axis)
         energy = np.asarray(storage.energy_axis)
-        available = max(0.0, float(np.interp(soc, axis, energy) - energy[0]))
-        usable = available * 3600.0 * storage.parallel_count
+        remaining = float(np.interp(float(state), axis, energy) - energy[0])
+        usable = max(0.0, remaining) * 3600.0 * storage.parallel_count
     else:
         usable = math.inf
+    # Net lap energy can be zero/negative for a regen-dominated lap; never
+    # report a negative endurance count in that direction.
     mean_energy = float(np.mean(energies))
     lap_count = usable / mean_energy if usable < math.inf and mean_energy > 0.0 else math.inf
     return StintReport(tuple(results), times, energies, float(state), total_consumed, total_recovered, total_net, lap_count)

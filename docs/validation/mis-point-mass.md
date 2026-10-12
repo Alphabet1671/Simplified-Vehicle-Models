@@ -10,10 +10,10 @@ The source track has 1,407 nodes and 1,406 physical segments. Its represented la
 
 | Boundary condition | Lap time | Average speed | Maximum speed | Iterations |
 |---|---:|---:|---:|---:|
-| Flying lap | 69.3558 s | 14.6250 m/s | 28.9352 m/s | 2 |
-| Standing start | 70.5198 s | 14.3836 m/s | 28.9352 m/s | 2 |
+| Flying lap | 69.2265 s | 14.6523 m/s | 29.5823 m/s | 2 |
+| Standing start | 70.3896 s | 14.4102 m/s | 29.5823 m/s | 2 |
 
-The standing-start penalty is 1.1640 s. Both calculations met the `1e-5 m/s` convergence criterion. The final maximum speed change was `1.0e-9 m/s`.
+The standing-start penalty is 1.1630 s. Both calculations met the `1e-5 m/s` convergence criterion. The final maximum speed change was `1.0e-9 m/s`.
 
 ## Checks
 
@@ -43,7 +43,7 @@ conversion          = divide by 4.4482216 N/lbf
 converted value     = -0.000404656098 per N
 ```
 
-The conversion raises the lateral friction from about 0.78 to about 1.24 at a 700 N corner load. It raises the corner speeds by about 20 percent and shortens the flying lap from 95.2064 s to 69.3558 s.
+The conversion raises the lateral friction from about 0.78 to about 1.24 at a 700 N corner load. It raises the corner speeds by about 20 percent and shortens the flying lap from 95.2064 s to 69.2265 s.
 
 A regression test now requires the lateral friction to stay between 1.0 and 1.4 and the longitudinal friction to stay between 0.5 and 0.8 over corner loads from 700 N to 1200 N. The test prevents a silent unit regression.
 
@@ -51,7 +51,7 @@ A regression test now requires the lateral friction to stay between 1.0 and 1.4 
 
 The measured Lap 8 trace spans approximately 70.30 s. A nearby legacy correlation script cites a 69.98 s fastest-lap reference and a 71.696 s median-lap reference. The legacy event workbook contains average-lap values from approximately 67.667 s to 94.253 s.
 
-The flying-lap result of 69.3558 s is **0.94 s faster than the measured Lap 8 trace** and **0.62 s faster than the cited 69.98 s fastest-lap reference**. It differs from the measured trace by 1.3 percent. The standing-start result of 70.5198 s is 0.22 s above the measured flying trace. The standing-start result is not directly comparable to flying event laps.
+The flying-lap result of 69.2265 s is **1.07 s faster than the measured Lap 8 trace** and **0.75 s faster than the cited 69.98 s fastest-lap reference**. It differs from the measured trace by 1.5 percent. The standing-start result of 70.3896 s is 0.09 s above the measured flying trace. The standing-start result is not directly comparable to flying event laps.
 
 The agreement is close enough that the remaining differences are the quantities worth examining. The model is slightly faster than the measured lap for these reasons:
 

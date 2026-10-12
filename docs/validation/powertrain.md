@@ -18,8 +18,8 @@ results are the reference for the full model's unchanged vehicle/track data:
 
 | boundary | lap time (s) | mean speed (m/s) | peak vehicle speed (m/s) |
 |---|---:|---:|---:|
-| flying | 69.3558 | 14.6250 | 28.9352 |
-| standing start | 70.5198 | 14.3836 | 28.9352 |
+| flying | 69.2265 | 14.6523 | 29.5823 |
+| standing start | 70.3896 | 14.4102 | 29.5823 |
 
 The full assembled vehicle loads the same tire, aero, transmission, motor and storage
 assembly. With cached motor-loss interpolation, assembled MIS flying and standing-start
@@ -28,12 +28,12 @@ single-lap runtime target. Results are:
 
 | boundary | assembled lap time (s) | legacy reference (s) | difference (s) |
 |---|---:|---:|---:|
-| flying | 69.2013 | 69.3558 | -0.1545 |
-| standing start | 70.3642 | 70.5198 | -0.1556 |
+| flying | 69.2013 | 69.2265 | -0.0253 |
+| standing start | 70.3642 | 70.3896 | -0.0253 |
 
 Its motor-speed ceiling is 18,600 rpm, corresponding to 34.60897 m/s at the 0.193675 m
-effective radius and 10.9 ratio. Thus the MIS peak has 5.674 m/s (16.4%) vehicle-speed
-margin, or 3,054 rpm (16.4%) motor-speed margin. MIS therefore does **not** exercise
+effective radius and 10.9 ratio. Thus the MIS peak has 5.027 m/s (14.5%) vehicle-speed
+margin, or 2,701 rpm (14.5%) motor-speed margin. MIS therefore does **not** exercise
 voltage-dependent field weakening; it is not a suitable voltage-regression track.
 
 ## Synthetic high-speed case

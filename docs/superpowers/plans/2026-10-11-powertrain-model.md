@@ -954,14 +954,9 @@ The tire unit correction of decision D17 changed the picture. Before the correct
 | Positive work per lap | 619.0 kJ | 0.172 kWh at the shaft |
 | Braking work per lap | -318.7 kJ | Recoverable when regeneration is enabled |
 
-The consequence is that the voltage model is **not** a no-op on MIS, as an earlier version of this plan assumed. Two effects decide the matter:
+The voltage model is implemented and exercised by the assembled runtime, but the validated MIS peak remains below the 18,600 rpm ceiling by about 14.5 percent. MIS therefore does not exercise voltage-dependent field weakening; voltage sensitivity is validated separately on the synthetic high-speed case and through the SOC-coupled energy interface.
 
-1. **Pack sag at full load.** At 100 percent state of charge the pack open-circuit voltage is 608.7 V with a resistance of 0.5311 ohm. A 69 kW bus load draws about 113 A, which sags the bus to about 549 V. The corner then falls to about 14 900 rpm, below the 15 551 rpm that the tire-limited lap wants.
-2. **State of charge.** The open-circuit voltage falls from 608.7 V to 448.8 V across the usable range, which scales the corner speed by the same factor.
-
-The two effects act together, so an endurance stint becomes progressively voltage-limited. The lap solve is self-consistent, so a voltage-limited car goes slower, draws less current, sags less, and recovers some corner speed. The equilibrium is the quantity that Task P10 must measure.
-
-The plan therefore expects a small lap-time increase over the current 69.3558 s, and it expects the increase to grow as the state of charge falls. It does not expect the large change that the pre-correction model would have produced.
+The plan therefore expects a small lap-time increase over the current 69.2265 s, and it expects the increase to grow as the state of charge falls. It does not expect the large change that the pre-correction model would have produced.
 
 Section 12 records the motor-speed margin and the state-of-charge trend.
 
@@ -1038,7 +1033,7 @@ Task P0A and Task P0B run after Task P1 completes. Task P1 touches `tools/`, `mo
 **Tests**
 
 - The full suite passes with no test edits other than import paths.
-- The MIS regression reproduces 69.3558 s and 70.5198 s exactly.
+- The MIS regression reproduces 69.2265 s and 70.3896 s exactly.
 
 **Depends on:** P1.
 
@@ -1499,13 +1494,13 @@ The correction changed the validated MIS results:
 
 | Quantity | Before | After |
 |---|---:|---:|
-| Flying lap | 95.2064 s | **69.3558 s** |
-| Standing start | 96.2448 s | **70.5198 s** |
-| Peak vehicle speed | 19.2278 m/s | 28.9352 m/s |
+| Flying lap | 95.2064 s | **69.2265 s** |
+| Standing start | 96.2448 s | **70.3896 s** |
+| Peak vehicle speed | 19.2278 m/s | 29.5823 m/s |
 | Peak wheel power | 14.7 kW | 58.4 kW |
 | Peak motor speed | 10 334 rpm | 15 551 rpm |
 
-The corrected flying lap is 0.94 s faster than the measured Lap 8 trace of about 70.30 s and 0.62 s faster than the cited 69.98 s fastest-lap reference. The unit defect was the dominant cause of the earlier 24.9 s gap.
+The corrected flying lap is 1.07 s faster than the measured Lap 8 trace of about 70.30 s and 0.75 s faster than the cited 69.98 s fastest-lap reference. The unit defect was the dominant cause of the earlier 24.9 s gap.
 
 **D6 — Package layout. RECORDED.**
 The master plan package tree applies. The tree is adopted in one move-only commit, Task P0A, so that review of the moves stays separate from review of the new behavior. Only the packages that this plan fills are created. The master plan's remaining packages arrive with the work that needs them.

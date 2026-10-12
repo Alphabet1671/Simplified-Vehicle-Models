@@ -507,3 +507,7 @@ voltage, or an absolute corner speed. The reasons follow.
   acceptance table and the data means the model form is at fault. It
   becomes a new decision, not another adjustment.
 
+
+## P5 voltage basis proof
+
+The map d/q voltages use line-to-line peak voltage. The Section 4.2 equations use per-phase peak voltage, so the module converts the 600 V reference bus to `600 / sqrt(3) = 346.4101615 V`. The fitted parameters are used on this converted basis. At the 16,300 rpm reference point, the required per-phase ceiling is 346.4101615 V; converting it back gives `sqrt(3) * 346.4101615 = 600.0000000 V`, against the measured 600 V. The relative difference is 0.0 percent, below the 5 percent requirement. The loss map is not scaled.

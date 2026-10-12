@@ -18,6 +18,18 @@ class EnergyLapTests(unittest.TestCase):
         r = solve_lap_with_energy(self.vehicle, self.track, LapMode.FLYING, regen_enabled=False)
         self.assertEqual(r.energy.recovered_energy, 0.0)
         self.assertGreaterEqual(r.energy.consumed_energy, 0.0)
+        self.assertEqual(r.energy.bus_power.shape, (len(self.track.segment_length),))
+        self.assertEqual(r.energy.shaft_power.shape, (len(self.track.segment_length),))
+        self.assertEqual(r.energy.state_trace.shape, (len(self.track.distance),))
+        self.assertAlmostEqual(r.energy.state_trace[0], 1.0)
+        self.assertAlmostEqual(r.energy.final_state_of_charge, r.energy.state_trace[-1])
+
+    def test_default_regen_is_disabled_and_shaft_is_mechanical(self):
+        r = solve_lap_with_energy(self.vehicle, self.track, LapMode.FLYING)
+        self.assertEqual(r.energy.recovered_energy, 0.0)
+        powered = r.energy.shaft_power > 1.0
+        self.assertTrue(np.any(powered))
+        self.assertTrue(np.any(np.abs(r.energy.bus_power[powered] - r.energy.shaft_power[powered]) > 1.0e-6))
 
     def test_outer_nonconvergence_is_reported(self):
         r = solve_lap_with_energy(self.vehicle, self.track, LapMode.FLYING, maximum_iterations=1, tolerance=1e-15)
@@ -27,6 +39,8 @@ class EnergyLapTests(unittest.TestCase):
         report = solve_stint(self.vehicle, self.track, laps=2, regen_enabled=False)
         self.assertEqual(len(report.laps), 2)
         self.assertLessEqual(report.final_state_of_charge, 1.0)
+        self.assertGreater(report.usable_energy_lap_count, 0.0)
+        self.assertLess(report.laps[1].energy.state_trace[0], report.laps[0].energy.state_trace[0])
 
 if __name__ == '__main__':
     unittest.main()

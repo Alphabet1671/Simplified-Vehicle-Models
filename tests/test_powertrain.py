@@ -3,18 +3,17 @@ import tempfile
 import unittest
 
 from simplified_vehicle_models.powertrain.assembly import (
-    DrivetrainAssemblyParameters,
     compile_drivetrain_assembly,
     compile_powertrain_assembly,
     compile_powertrain_drivetrain,
     FullDrivetrainRuntime,
     maximum_drive_force,
+    maximum_drive_force_lumped,
     maximum_regen_force,
     resolve_braking,
     solve_shaft_torque_fixed_point,
 )
 from simplified_vehicle_models.drivetrain.lumped import compile_lumped_drivetrain
-from simplified_vehicle_models.drivetrain.transmission import FixedGearParameters
 from simplified_vehicle_models.xml.loader import load_model
 from simplified_vehicle_models.powertrain.power_plant import (
     compile_electric_motor,
@@ -172,21 +171,14 @@ class PowertrainAssemblyTests(unittest.TestCase):
             "maximum_motor_speed",
         ):
             self.assertEqual(getattr(full, name), getattr(lumped, name))
-        legacy_transmission = FixedGearParameters(
-            gear_ratio=lumped.gear_ratio,
-            gear_efficiency=lumped.efficiency,
-            front_torque_fraction=0.5,
-            driven_wheels=("fl", "fr", "rl", "rr"),
-        )
-        legacy = DrivetrainAssemblyParameters(legacy_transmission)
         speed = 10.0
         state = StorageState(0.8)
         radius = 0.193675
         full_limit = maximum_drive_force(
             full.powertrain, full.drivetrain, speed, state, radius
         )
-        legacy_limit = maximum_drive_force(
-            full.powertrain, legacy, speed, state, radius
+        legacy_limit = maximum_drive_force_lumped(
+            full.powertrain, lumped, speed, state, radius
         )
         self.assertAlmostEqual(
             full_limit.maximum_drive_force,

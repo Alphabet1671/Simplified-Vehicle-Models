@@ -346,6 +346,26 @@ def maximum_drive_force(
     )
 
 
+def maximum_drive_force_lumped(
+    powertrain: PowertrainParameters,
+    lumped: DrivetrainParameters,
+    speed: float,
+    state: StorageState,
+    effective_radius: float = 1.0,
+) -> DriveLimit:
+    """Evaluate the legacy lumped drivetrain at one operating point."""
+    transmission = FixedGearParameters(
+        gear_ratio=lumped.gear_ratio,
+        gear_efficiency=lumped.efficiency,
+        front_torque_fraction=0.5,
+        driven_wheels=("fl", "fr", "rl", "rr"),
+    )
+    drivetrain = DrivetrainAssemblyParameters(transmission)
+    return maximum_drive_force(
+        powertrain, drivetrain, speed, state, effective_radius
+    )
+
+
 def maximum_regen_force(
     powertrain: PowertrainParameters,
     drivetrain: DrivetrainAssemblyParameters,

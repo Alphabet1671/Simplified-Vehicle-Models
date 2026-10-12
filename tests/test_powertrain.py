@@ -42,26 +42,36 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class RegenGenerationTests(unittest.TestCase):
-    def test_nonproductive_low_speed_envelope_is_zero(self):
+    def test_regen_uses_complete_feasible_envelope_not_first_productive_sample(self):
+        calls = []
+
         def evaluate(_parameters, _speed, torque, _voltage):
-            return SimpleNamespace(feasible=True, bus_power=abs(torque) + 1.0)
+            calls.append(torque)
+            return SimpleNamespace(feasible=True, bus_power=1.0 - abs(torque))
 
         with mock.patch.object(generate_motor_lut, "evaluate_shaft_power_exact", evaluate):
             result = generate_motor_lut._regen_envelope(
-                object(), 0.0, 448.848, 20.0, np.array([1.0, 0.5, 0.0])
+                object(), 100.0, 448.848, 20.0, np.array([1.0, 0.5, 0.0])
             )
-        self.assertEqual(result, 0.0)
+        self.assertEqual(result, 20.0)
+        # Only the requested directional row is evaluated; no 257-point
+        # productive scan is allowed to define the envelope.
+        self.assertEqual(calls, [-20.0, -20.0, -10.0, -0.0])
 
-    def test_nonmonotonic_productive_branch_fails_instead_of_zeroing(self):
+    def test_nonmonotonic_region_beyond_first_productive_crossing_fails(self):
         def evaluate(_parameters, _speed, torque, _voltage):
             magnitude = abs(torque)
-            bump = 0.5 if 0.06 < magnitude < 0.14 else 0.0
-            return SimpleNamespace(feasible=True, bus_power=0.1 - magnitude + bump)
+            # The first productive point is near zero, but a later region is
+            # nonmonotone and must not be discarded by branch selection.
+            bus_power = 0.1 - magnitude
+            if 8.0 < magnitude < 12.0:
+                bus_power += 20.0
+            return SimpleNamespace(feasible=True, bus_power=bus_power)
 
         with mock.patch.object(generate_motor_lut, "evaluate_shaft_power_exact", evaluate):
             with self.assertRaisesRegex(ValueError, "non-monotone analytical regen bus power"):
                 generate_motor_lut._regen_envelope(
-                    object(), 0.0, 448.848, 20.0, np.array([1.0, 0.5, 0.0])
+                    object(), 100.0, 448.848, 20.0, np.array([1.0, 0.5, 0.0])
                 )
 
 

@@ -65,48 +65,34 @@ def _raw_regen_row(parameters, speed, voltage, envelope, loads):
 
 
 def _regen_envelope(parameters, speed, voltage, envelope, loads):
-    """Find a connected productive regen branch, or prove it is absent.
+    """Return the complete feasible negative-torque envelope.
 
-    The complete negative-torque envelope is scanned before selecting a branch.
-    A bracketed search locates the first productive component; its upper scan
-    bracket is the deterministic branch envelope.  This avoids replacing a
-    productive candidate with zero merely because a later branch is invalid.
+    ``envelope`` is the analytical voltage/torque-limit boundary found by
+    ``_maximum_feasible``.  It is deliberately *not* inferred from a sampled
+    productive-power crossing: doing that can truncate a valid envelope or
+    hide a later nonmonotone branch.  Productive feasibility is determined
+    separately from the persisted row's zero-power crossover.
     """
     if envelope <= 0.0:
         return 0.0
-    scan = np.linspace(0.0, envelope, 257, dtype=np.float64)
-    productive = np.array([
-        (result := evaluate_shaft_power_exact(parameters, speed, -float(torque), voltage)).feasible
-        and result.bus_power < -1.0e-9
-        for torque in scan
-    ], dtype=bool)
-    indices = np.flatnonzero(productive)
-    if indices.size == 0:
+    # At zero mechanical speed shaft power is identically zero, while the
+    # analytical loss map is nonnegative; productive regeneration is therefore
+    # impossible without sampling or guessing a branch.
+    if abs(float(speed)) <= 1.0e-12:
         return 0.0
-    first = int(indices[0])
-    if first == 0:
-        lo, hi = 0.0, float(scan[0])
-    else:
-        lo, hi = float(scan[first - 1]), float(scan[first])
-        for _ in range(80):
-            mid = (lo + hi) * 0.5
-            result = evaluate_shaft_power_exact(parameters, speed, -mid, voltage)
-            if result.feasible and result.bus_power < -1.0e-9:
-                hi = mid
-            else:
-                lo = mid
-    # Keep the first connected productive scan bracket.  Validate its complete
-    # raw row; any violation is an analytical generation error, not a reason to
-    # silently emit a zero-torque row.
-    branch = float(scan[first])
-    row = _raw_regen_row(parameters, speed, voltage, branch, loads)
+    endpoint = evaluate_shaft_power_exact(parameters, speed, -float(envelope), voltage)
+    if not endpoint.feasible:
+        raise ValueError(
+            f"analytical regen envelope is infeasible at voltage={voltage}, speed={speed}"
+        )
+    row = _raw_regen_row(parameters, speed, voltage, float(envelope), loads)
     delta = float(np.max(np.maximum(0.0, -np.diff(row)))) if row.size > 1 else 0.0
     if delta > 1.0e-9:
         raise ValueError(
             f"non-monotone analytical regen bus power at voltage={voltage}, "
             f"speed={speed}: {delta} W"
         )
-    return branch
+    return float(envelope)
 
 
 def _monotone_drive_envelope(parameters, speed, voltage, envelope):

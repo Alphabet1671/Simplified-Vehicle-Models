@@ -76,15 +76,17 @@ Exact commands/results:
 
 ```text
 PYTHONPATH=src python3 tools/generate_motor_lut.py models/power-plants/amk_dd5_100c.xml models/data/amk_dd5_100c_operating_map.npz
-SHA-256: beeca408c8339bbbb372cd379c9b60ad58020377e77a50ae9fcc0609e1fec508
-maximum monotonic repair: 0
-
-PYTHONPATH=src python3 tools/generate_motor_lut.py models/power-plants/amk_dd5_100c.xml /tmp/round3-repeat.npz
-SHA-256: beeca408c8339bbbb372cd379c9b60ad58020377e77a50ae9fcc0609e1fec508
+ValueError: non-monotone analytical regen bus power at voltage=448.848, speed=145.3125: 281.1912329776078 W
 
 PYTHONPATH=src python3 -m unittest tests.test_powertrain tests.test_export_data -v
-Ran 60 tests in 0.588s; OK
+Ran 60 tests in 0.687s; OK
 
 git diff --check
 passed
 ```
+
+## Round 4/5 fix report
+
+Replaced `_regen_envelope`'s 257-point first-productive scan and branch truncation with the complete analytical negative-torque envelope supplied by the voltage/torque feasibility solve. The helper now validates the requested full directional row and returns the full feasible boundary; productive regen is determined later from the persisted row's zero-power crossover. Zero speed is handled analytically (shaft power is identically zero and losses are nonnegative), not by scanning. Added adversarial tests for a productive crossing between the former scan points and a nonmonotone region after the first crossing; the latter fails with voltage/speed diagnostics as required.
+
+The focused suite passes (60 tests). The canonical generator now correctly exposes an existing source-data issue at 145.3125 rpm: the analytical row contains a real narrow productive interval followed by nonproductive high torque, so strict directional monotonicity rejects generation rather than silently discarding that capability. The checked-in artifact and digest were intentionally not rewritten; resolving that source/model inconsistency is required before a reproducible replacement artifact can be declared.

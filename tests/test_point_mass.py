@@ -11,6 +11,9 @@ from simplified_vehicle_models.formulations.point_mass import (
     acceleration_limits,
     aerodynamic_forces,
     evaluate_equilibrium,
+    maximum_acceleration_limit,
+    maximum_deceleration_limit,
+    _equilibrium_limits,
     maximum_corner_speed,
     maximum_vehicle_speed,
     normal_loads,
@@ -206,6 +209,40 @@ class PointMassTests(unittest.TestCase):
             limits.braking_state.longitudinal_acceleration,
             -limits.maximum_deceleration,
         )
+
+    def test_directional_limits_match_full_limits(self) -> None:
+        storage = StorageState(0.8)
+        limits = acceleration_limits(self.vehicle, 15.0, 0.01, storage)
+        self.assertAlmostEqual(
+            maximum_acceleration_limit(self.vehicle, 15.0, 0.01, storage),
+            limits.maximum_acceleration,
+            places=8,
+        )
+        self.assertAlmostEqual(
+            maximum_deceleration_limit(self.vehicle, 15.0, 0.01, storage),
+            limits.maximum_deceleration,
+            places=8,
+        )
+
+    def test_scalar_equilibrium_kernel_matches_diagnostics(self) -> None:
+        for speed, curvature, acceleration, soc in (
+            (15.0, 0.01, 4.0, 0.8),
+            (15.0, 0.01, -4.0, 0.8),
+            (25.0, 1.0 / 30.0, 0.0, 0.2),
+            (10.0, 0.0, 3.0, 1.0),
+        ):
+            storage = StorageState(soc)
+            state = evaluate_equilibrium(
+                self.vehicle, speed, curvature, acceleration, storage
+            )
+            contact, lateral, drag, drive, brake = _equilibrium_limits(
+                self.vehicle, speed, curvature, acceleration, storage
+            )
+            self.assertEqual(contact, state.contact_feasible)
+            self.assertEqual(lateral, state.lateral_feasible)
+            self.assertAlmostEqual(drag, state.drag_force, places=12)
+            self.assertAlmostEqual(drive, state.drive_force_limit, places=12)
+            self.assertAlmostEqual(brake, state.brake_force_limit, places=12)
 
     def test_tighter_corner_has_lower_speed(self) -> None:
         tight = maximum_corner_speed(self.vehicle, 8.0)

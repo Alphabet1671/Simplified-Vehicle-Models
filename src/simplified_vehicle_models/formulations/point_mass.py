@@ -378,6 +378,143 @@ def evaluate_equilibrium(
     )
 
 
+def _equilibrium_limits(
+    vehicle: PointMassVehicleParameters,
+    speed: float,
+    curvature: float,
+    longitudinal_acceleration: float,
+    storage_state: StorageState | None = None,
+) -> tuple[bool, bool, float, float, float]:
+    """Evaluate only scalar feasibility and force limits for root solves."""
+
+    lateral_acceleration = speed * speed * abs(curvature)
+    downforce, drag = aerodynamic_forces(vehicle, speed)
+    mass = vehicle.total_mass
+    front_axle = (
+        mass * GRAVITY * vehicle.front_mass_fraction
+        + downforce * vehicle.aero.aero_balance
+        - mass * longitudinal_acceleration * vehicle.cg_height / vehicle.wheelbase
+    )
+    rear_axle = mass * GRAVITY + downforce - front_axle
+    total_transfer = mass * abs(lateral_acceleration) * vehicle.cg_height / vehicle.track_width
+    front_transfer = total_transfer * vehicle.lateral_load_transfer_distribution
+    rear_transfer = total_transfer - front_transfer
+    loads = (
+        front_axle * 0.5 - front_transfer,
+        front_axle * 0.5 + front_transfer,
+        rear_axle * 0.5 - rear_transfer,
+        rear_axle * 0.5 + rear_transfer,
+    )
+    contact_feasible = all(load >= -1.0e-9 for load in loads)
+    tire = vehicle.tire
+    capacities = tuple(
+        (
+            max(tire.longitudinal_mu_scale * load_factor, 0.0) * contact_load,
+            max(tire.lateral_mu_scale * load_factor, 0.0) * contact_load,
+        )
+        for load in loads
+        for contact_load in (max(load, 0.0),)
+        for load_factor in (
+            tire.load_sensitivity_slope * contact_load
+            + tire.load_sensitivity_intercept,
+        )
+    )
+    longitudinal_capacities = tuple(item[0] for item in capacities)
+    lateral_capacities = tuple(item[1] for item in capacities)
+
+    total_lateral_force = mass * lateral_acceleration
+    front_target = total_lateral_force * vehicle.front_mass_fraction
+    rear_target = total_lateral_force - front_target
+    front_capacity = lateral_capacities[0] + lateral_capacities[1]
+    rear_capacity = lateral_capacities[2] + lateral_capacities[3]
+    front_ok = front_target <= 1.0e-12 or (
+        front_capacity > 0.0 and front_target <= front_capacity + 1.0e-8
+    )
+    rear_ok = rear_target <= 1.0e-12 or (
+        rear_capacity > 0.0 and rear_target <= rear_capacity + 1.0e-8
+    )
+    front_scale = front_target / front_capacity if front_target > 1.0e-12 and front_capacity > 0.0 else 0.0
+    rear_scale = rear_target / rear_capacity if rear_target > 1.0e-12 and rear_capacity > 0.0 else 0.0
+    lateral_forces = (
+        lateral_capacities[0] * front_scale,
+        lateral_capacities[1] * front_scale,
+        lateral_capacities[2] * rear_scale,
+        lateral_capacities[3] * rear_scale,
+    )
+    lateral_feasible = front_ok and rear_ok and contact_feasible
+    remaining = tuple(
+        longitudinal_capacity * math.sqrt(
+            max(
+                1.0
+                - (lateral_force / lateral_capacity if lateral_capacity > 0.0 else 0.0) ** 2,
+                0.0,
+            )
+        )
+        for longitudinal_capacity, lateral_capacity, lateral_force in zip(
+            longitudinal_capacities, lateral_capacities, lateral_forces
+        )
+    )
+    drive_limit, _ = _available_drive_force(vehicle, speed, remaining, storage_state)
+    brake_limit, _ = _available_brake_force(vehicle, remaining)
+    return contact_feasible, lateral_feasible, drag, drive_limit, brake_limit
+
+
+def _validate_limit_inputs(speed: float, curvature: float) -> float:
+    if not math.isfinite(speed) or speed < 0.0:
+        raise ValueError("speed must be finite and nonnegative")
+    if not math.isfinite(curvature):
+        raise ValueError("curvature must be finite")
+    return abs(curvature)
+
+
+def maximum_acceleration_limit(
+    vehicle: PointMassVehicleParameters,
+    speed: float,
+    curvature: float,
+    storage_state: StorageState | None = None,
+) -> float:
+    """Solve only the positive longitudinal acceleration limit."""
+
+    curvature = _validate_limit_inputs(speed, curvature)
+    if not _equilibrium_limits(vehicle, speed, curvature, 0.0, storage_state)[1]:
+        return 0.0
+
+    def residual(acceleration: float) -> float:
+        contact, lateral, drag, drive, _ = _equilibrium_limits(
+            vehicle, speed, curvature, acceleration, storage_state
+        )
+        required = vehicle.total_mass * acceleration + drag
+        if not contact or not lateral:
+            return -required
+        return drive - required
+
+    return _positive_root(residual, 30.0)
+
+
+def maximum_deceleration_limit(
+    vehicle: PointMassVehicleParameters,
+    speed: float,
+    curvature: float,
+    storage_state: StorageState | None = None,
+) -> float:
+    """Solve only the positive longitudinal deceleration limit."""
+
+    curvature = _validate_limit_inputs(speed, curvature)
+    if not _equilibrium_limits(vehicle, speed, curvature, 0.0, storage_state)[1]:
+        return 0.0
+
+    def residual(deceleration: float) -> float:
+        contact, lateral, drag, _, brake = _equilibrium_limits(
+            vehicle, speed, curvature, -deceleration, storage_state
+        )
+        required = vehicle.total_mass * deceleration - drag
+        if not contact or not lateral:
+            return -max(required, 0.0)
+        return brake - max(required, 0.0)
+
+    return _positive_root(residual, 30.0)
+
+
 def maximum_corner_speed(
     vehicle: PointMassVehicleParameters,
     radius: float,
@@ -410,32 +547,13 @@ def acceleration_limits(
 ) -> AccelerationLimits:
     """Solve live acceleration limits and their equilibrium states."""
 
-    if not math.isfinite(speed) or speed < 0.0:
-        raise ValueError("speed must be finite and nonnegative")
-    if not math.isfinite(curvature):
-        raise ValueError("curvature must be finite")
-    curvature = abs(curvature)
+    curvature = _validate_limit_inputs(speed, curvature)
     coasting = evaluate_equilibrium(vehicle, speed, curvature, 0.0, storage_state)
-
-    def drive_residual(acceleration: float) -> float:
-        state = evaluate_equilibrium(vehicle, speed, curvature, acceleration, storage_state)
-        required = vehicle.total_mass * acceleration + state.drag_force
-        if not state.contact_feasible or not state.lateral_feasible:
-            return -required
-        return state.drive_force_limit - required
-
-    def brake_residual(deceleration: float) -> float:
-        state = evaluate_equilibrium(vehicle, speed, curvature, -deceleration, storage_state)
-        required = vehicle.total_mass * deceleration - state.drag_force
-        if not state.contact_feasible or not state.lateral_feasible:
-            return -max(required, 0.0)
-        return state.brake_force_limit - max(required, 0.0)
-
-    maximum_acceleration = (
-        _positive_root(drive_residual, 30.0) if coasting.lateral_feasible else 0.0
+    maximum_acceleration = maximum_acceleration_limit(
+        vehicle, speed, curvature, storage_state
     )
-    maximum_deceleration = (
-        _positive_root(brake_residual, 30.0) if coasting.lateral_feasible else 0.0
+    maximum_deceleration = maximum_deceleration_limit(
+        vehicle, speed, curvature, storage_state
     )
     acceleration_state = evaluate_equilibrium(
         vehicle,

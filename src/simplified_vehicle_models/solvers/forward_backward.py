@@ -6,9 +6,10 @@ import numpy as np
 
 from simplified_vehicle_models.core.types import FloatArray
 from simplified_vehicle_models.formulations.point_mass import (
-    acceleration_limits,
     evaluate_equilibrium,
+    maximum_acceleration_limit,
     maximum_corner_speed,
+    maximum_deceleration_limit,
 )
 from simplified_vehicle_models.parameters.vehicle import PointMassVehicleParameters
 from simplified_vehicle_models.results.traces import LapMode, LapResult, EnergyLapResult, EnergyReport, StintReport
@@ -107,7 +108,7 @@ def _forward_sweep(
 
         candidate = upper_speed
         for _ in range(20):
-            limits = acceleration_limits(
+            acceleration_limit = maximum_acceleration_limit(
                 vehicle,
                 0.5 * (start_speed + candidate),
                 segment_curvature,
@@ -115,7 +116,7 @@ def _forward_sweep(
             )
             reachable = math.sqrt(
                 start_speed * start_speed
-                + 2.0 * limits.maximum_acceleration * segment_length
+                + 2.0 * acceleration_limit * segment_length
             )
             updated = min(candidate, reachable)
             if abs(updated - candidate) <= 1.0e-8:
@@ -145,7 +146,7 @@ def _backward_sweep(
 
         candidate = upper_speed
         for _ in range(20):
-            limits = acceleration_limits(
+            deceleration_limit = maximum_deceleration_limit(
                 vehicle,
                 0.5 * (candidate + next_speed),
                 segment_curvature,
@@ -153,7 +154,7 @@ def _backward_sweep(
             )
             reachable = math.sqrt(
                 next_speed * next_speed
-                + 2.0 * limits.maximum_deceleration * segment_length
+                + 2.0 * deceleration_limit * segment_length
             )
             updated = min(candidate, reachable)
             if abs(updated - candidate) <= 1.0e-8:

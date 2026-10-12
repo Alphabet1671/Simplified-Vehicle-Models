@@ -156,8 +156,9 @@ def register_builtin_components() -> None:
     from simplified_vehicle_models.aero import fixed_aero
     from simplified_vehicle_models.drivetrain import lumped
     from simplified_vehicle_models.tires import friction_ellipse
+    from simplified_vehicle_models.powertrain import energy_storage, power_plant
 
-    _ = (fixed_aero, lumped, friction_ellipse)
+    _ = (fixed_aero, lumped, friction_ellipse, energy_storage, power_plant)
     register_component(
         "vehicle-assembly",
         "four-wheel",

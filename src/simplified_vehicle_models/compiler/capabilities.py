@@ -23,6 +23,8 @@ DRIVE_FORCE_LIMIT = "drive-force-limit"
 BRAKE_LIMITS = "brake-limits"
 TRANSIENT_COMBINED_SLIP = "transient-combined-slip"
 SUSPENSION_LOAD_TRANSFER = "suspension-load-transfer"
+ENERGY_BUFFER = "energy-buffer"
+TORQUE_SOURCE = "torque-source"
 
 
 @runtime_checkable

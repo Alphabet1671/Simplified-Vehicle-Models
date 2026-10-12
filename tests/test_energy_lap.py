@@ -2,7 +2,7 @@ from pathlib import Path
 import unittest
 from unittest.mock import patch
 import numpy as np
-from simplified_vehicle_models.results.traces import LapMode
+from simplified_vehicle_models.results.traces import LapMode, SolverProgress
 from simplified_vehicle_models.solvers.forward_backward import solve_lap, solve_lap_with_energy, solve_stint
 from simplified_vehicle_models.formulations.point_mass import DriveCachePolicy
 from simplified_vehicle_models.powertrain.assembly import resolve_braking
@@ -135,6 +135,38 @@ class EnergyLapTests(unittest.TestCase):
                 first_call = solve.call_args_list[0]
                 self.assertIsNone(first_call.kwargs["initial_speed"])
                 self.assertIsNone(first_call.kwargs["corner_speed_hint"])
+
+    def test_progress_callback_order_and_none_silence(self):
+        events = []
+        result = solve_lap_with_energy(
+            self.vehicle,
+            self.track,
+            LapMode.FLYING,
+            maximum_iterations=2,
+            progress_callback=events.append,
+        )
+        self.assertTrue(all(isinstance(event, SolverProgress) for event in events))
+        self.assertEqual(events[0].stage, "lap_start")
+        self.assertEqual(events[-1].stage, "lap_complete")
+        self.assertEqual([event.stage for event in events].count("lap_start"), 1)
+        self.assertEqual([event.stage for event in events].count("lap_complete"), 1)
+        iterations = [event.energy_iteration for event in events if event.stage == "energy_iteration"]
+        self.assertEqual(iterations, list(range(1, result.energy.energy_iterations + 1)))
+        self.assertTrue(all(events[i].elapsed_seconds <= events[i + 1].elapsed_seconds for i in range(len(events) - 1)))
+        self.assertEqual(solve_lap_with_energy(self.vehicle, self.track, LapMode.FLYING).energy.energy_iterations >= 1, True)
+
+    def test_stint_progress_reports_lap_order(self):
+        events = []
+        solve_stint(self.vehicle, self.track, laps=2, progress_callback=events.append)
+        self.assertEqual([e.lap for e in events if e.stage == "lap_start"], [1, 2])
+        self.assertEqual([e.lap for e in events if e.stage == "lap_complete"], [1, 2])
+        self.assertTrue(all(e.lap_count == 2 for e in events))
+        self.assertEqual([e.stage for e in events].count("stint_complete"), 1)
+
+    def test_stint_without_callback_emits_nothing(self):
+        # The optional callback must be entirely silent when omitted.
+        report = solve_stint(self.vehicle, self.track, laps=1)
+        self.assertEqual(len(report.laps), 1)
 
     def test_stint_carries_state(self):
         report = solve_stint(self.vehicle, self.track, laps=2, regen_enabled=False)

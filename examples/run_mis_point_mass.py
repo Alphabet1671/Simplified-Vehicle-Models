@@ -6,7 +6,7 @@ from pathlib import Path
 
 import numpy as np
 
-from simplified_vehicle_models.results.traces import LapMode
+from simplified_vehicle_models.results.traces import LapMode, SolverProgress
 from simplified_vehicle_models.solvers.forward_backward import solve_lap, solve_lap_with_energy
 from simplified_vehicle_models.tracks.profile import load_track
 from simplified_vehicle_models.xml.loader import load_point_mass_vehicle
@@ -17,6 +17,9 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--energy", action="store_true", help="include SOC, bus-power, and voltage traces"
+    )
+    parser.add_argument(
+        "--progress", action="store_true", help="print energy-solver progress updates"
     )
     options = parser.parse_args()
 
@@ -35,6 +38,13 @@ def main() -> None:
     }
     results = output["results"]
     assert isinstance(results, dict)
+
+    def show_progress(event: SolverProgress) -> None:
+        if event.stage in {"energy_iteration", "lap_complete"}:
+            print(
+                f"progress lap={event.lap}/{event.lap_count} stage={event.stage} "
+                f"energy_iteration={event.energy_iteration} elapsed={event.elapsed_seconds:.3f}s"
+            )
     for mode in LapMode:
         result = solve_lap(vehicle, track, mode, tolerance=1.0e-5)
         entry = {
@@ -47,7 +57,10 @@ def main() -> None:
             "maximum_speed_change_mps": result.maximum_speed_change,
         }
         if options.energy:
-            energy = solve_lap_with_energy(vehicle, track, mode)
+            energy = solve_lap_with_energy(
+                vehicle, track, mode,
+                progress_callback=show_progress if options.progress else None,
+            )
             entry["energy"] = {
                 "consumed_j": energy.energy.consumed_energy,
                 "recovered_j": energy.energy.recovered_energy,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import time
 from collections.abc import Callable
 
 import numpy as np
@@ -15,7 +16,7 @@ from simplified_vehicle_models.formulations.point_mass import (
     DriveCachePolicy,
 )
 from simplified_vehicle_models.parameters.vehicle import PointMassVehicleParameters
-from simplified_vehicle_models.results.traces import LapMode, LapResult, EnergyLapResult, EnergyReport, StintReport
+from simplified_vehicle_models.results.traces import LapMode, LapResult, EnergyLapResult, EnergyReport, SolverProgress, StintReport
 from simplified_vehicle_models.powertrain.energy_storage import StorageState, evaluate_storage, integrate_storage
 from simplified_vehicle_models.powertrain.assembly import FullDrivetrainRuntime, resolve_braking
 from simplified_vehicle_models.powertrain.power_plant import evaluate_shaft_power
@@ -371,6 +372,10 @@ def solve_lap_with_energy(
     drive_cache_policy=DriveCachePolicy(),
     initial_speed=None,
     corner_speed_hint=None,
+    progress_callback: Callable[[SolverProgress], None] | None = None,
+    *,
+    _progress_lap: int = 1,
+    _progress_lap_count: int = 1,
 ):
     """Solve a lap with an explicit, state-coupled outer SOC iteration.
 
@@ -382,6 +387,17 @@ def solve_lap_with_energy(
         raise ValueError("tolerance must be positive and maximum_iterations must be positive")
     if lap_tolerance <= 0.0 or not math.isfinite(lap_tolerance) or lap_maximum_iterations < 1:
         raise ValueError("lap_tolerance must be finite and positive and lap_maximum_iterations must be positive")
+    started = time.perf_counter()
+
+    def report(stage, energy_iteration=0, profile_iteration=0):
+        if progress_callback is not None:
+            progress_callback(SolverProgress(
+                stage, _progress_lap, _progress_lap_count,
+                energy_iteration, profile_iteration,
+                time.perf_counter() - started,
+            ))
+
+    report("lap_start")
     context = _hint_context(vehicle, track, mode, (len(track.distance),))
     speed_hint = initial_speed if _hint_is_compatible(initial_speed, context) else None
     corner_hint = corner_speed_hint if _hint_is_compatible(corner_speed_hint, context) else None
@@ -409,6 +425,7 @@ def solve_lap_with_energy(
         speed_hint = lap.speed
         corner_hint = lap.speed
         change = float(np.max(np.abs(nxt - trace)))
+        report("energy_iteration", iteration, lap.iterations)
         trace = 0.5 * (trace + nxt)
         trace[0] = state0
         if change <= tolerance:
@@ -448,6 +465,12 @@ def solve_lap_with_energy(
         iteration += 1
     energy_converged = converged and profile_residual <= tolerance
     report = EnergyReport(trace, bus, shaft, voltage, tuple(lap.active_longitudinal_constraint), consumed, recovered, consumed-recovered, float(trace[-1]), float(np.nanmin(voltage)) if len(voltage) else math.inf, energy_converged, iteration, max(change, profile_residual), profile_residual)
+    report_progress = SolverProgress(
+        "lap_complete", _progress_lap, _progress_lap_count, iteration,
+        lap.iterations, time.perf_counter() - started,
+    )
+    if progress_callback is not None:
+        progress_callback(report_progress)
     return EnergyLapResult(lap, report)
 
 
@@ -569,6 +592,7 @@ def solve_stint(
     lap_maximum_iterations=200,
     root_tolerance=1e-8,
     drive_cache_policy=DriveCachePolicy(),
+    progress_callback: Callable[[SolverProgress], None] | None = None,
     **kwargs,
 ):
     """Repeat laps while carrying the final battery state into the next lap.
@@ -582,6 +606,13 @@ def solve_stint(
     results = []
     state = initial_state
     regen_enabled = kwargs.get("regen_enabled", False)
+    started = time.perf_counter()
+    def forward_progress(event):
+        if progress_callback is not None:
+            progress_callback(SolverProgress(
+                event.stage, event.lap, laps, event.energy_iteration,
+                event.profile_iteration, time.perf_counter() - started,
+            ))
     speed_hint = kwargs.pop("initial_speed", None)
     corner_hint = kwargs.pop("corner_speed_hint", None)
     for lap_index in range(laps):
@@ -597,14 +628,26 @@ def solve_stint(
                 drive_cache_policy=drive_cache_policy,
                 initial_speed=speed_hint,
                 corner_speed_hint=corner_hint,
+                progress_callback=forward_progress,
+                _progress_lap=lap_index + 1,
+                _progress_lap_count=laps,
                 **kwargs,
             )
             speed_hint = result.lap.speed
             corner_hint = result.lap.speed
         else:
+            forward_progress(SolverProgress(
+                "lap_start", lap_index + 1, laps, 0, 0,
+                time.perf_counter() - started,
+            ))
             result = _fixed_profile_energy_result(
                 vehicle, track, results[0], state, regen_enabled
             )
+            forward_progress(SolverProgress(
+                "lap_complete", lap_index + 1, laps,
+                result.energy.energy_iterations, result.lap.iterations,
+                time.perf_counter() - started,
+            ))
         results.append(result)
         state = result.energy.final_state_of_charge
     times = np.asarray([r.lap_time for r in results])
@@ -627,4 +670,9 @@ def solve_stint(
     # report a negative endurance count in that direction.
     mean_energy = float(np.mean(energies))
     lap_count = usable / mean_energy if usable < math.inf and mean_energy > 0.0 else math.inf
+    if progress_callback is not None:
+        progress_callback(SolverProgress(
+            "stint_complete", laps, laps, results[-1].energy.energy_iterations,
+            results[-1].lap.iterations, time.perf_counter() - started,
+        ))
     return StintReport(tuple(results), times, energies, float(state), total_consumed, total_recovered, total_net, lap_count)

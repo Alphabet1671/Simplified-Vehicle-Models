@@ -6,6 +6,18 @@ from enum import Enum
 from simplified_vehicle_models.core.types import FloatArray
 
 
+@dataclass(frozen=True, slots=True)
+class SolverProgress:
+    """Immutable observational progress update from a solver."""
+
+    stage: str
+    lap: int
+    lap_count: int
+    energy_iteration: int
+    profile_iteration: int
+    elapsed_seconds: float
+
+
 class LapMode(Enum):
     """Identify the boundary condition for a lap."""
 

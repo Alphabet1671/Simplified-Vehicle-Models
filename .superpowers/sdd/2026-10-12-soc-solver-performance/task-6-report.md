@@ -3,9 +3,10 @@
 ## Status
 
 Implemented and documented Task 6. Exact assembled mode remains the default;
-quantized drive caching remains explicit opt-in because the full SOC/regen
-numerical gates could not be completed within practical limits. No merge or
-push was performed.
+quantized drive caching remains explicit opt-in because it has not been compared
+against the completed full SOC/regen numerical gates. The exact full-track
+cold/warm regen benchmark now completes within 900 s per run. No merge or push
+was performed.
 
 ## Step 1: exact assembled MIS flying lap
 
@@ -42,33 +43,66 @@ call-tree times; they are not additive wall-clock components.
 
 ## Step 2: regen one-lap cold/warm benchmark
 
-Command:
+Command (same explicit controls for both runs):
 
 ```text
-PYTHONPATH=src /Users/alphabet1671/.dsh/dsh-runtimes/dsh-primary-runtime/dependencies/python/bin/python3 /tmp/task6_energy.py
+PYTHONPATH=src /usr/bin/time -p \
+  /Users/alphabet1671/.dsh/dsh-runtimes/dsh-primary-runtime/dependencies/python/bin/python3 \
+  /tmp/task6_energy_round1.py > /tmp/task6_energy_round1_fixed.log 2>&1
 ```
 
-The script enabled regen and progress callbacks, then attempted cold and warm
-(`initial_speed` and `corner_speed_hint` from cold) full-track one-lap runs.
-The cold run was stopped at the practical 300 s limit before a lap completed.
-Progress evidence was:
+The controls were `tolerance=1e-5`, `maximum_iterations=50`,
+`lap_tolerance=1e-6`, `lap_maximum_iterations=200`, `root_tolerance=1e-8`,
+`regen_enabled=True`, and `drive_cache_policy=DriveCachePolicy()` (exact
+cache). The script enabled progress callbacks and ran cold first, then warm
+with cold's `initial_speed` and `corner_speed_hint`. Transition `initial_speed`
+is currently ignored; only the corner hint is expected to affect work.
+
+Exact command output:
 
 ```text
-lap_start: 0.000 s
-energy_iteration 1: 14.0406 s
-energy_iteration 2: 42.7343 s
-energy_iteration 3: 85.4262 s
-energy_iteration 4: 132.0146 s
-energy_iteration 5: 172.5833 s
-energy_iteration 6: 208.6798 s
-energy_iteration 7: 245.5776 s
-energy_iteration 8: 283.0033 s
+cold PROGRESS SolverProgress(stage='lap_start', lap=1, lap_count=1, energy_iteration=0, profile_iteration=0, elapsed_seconds=1.6669509932398796e-06)
+cold PROGRESS SolverProgress(stage='energy_iteration', lap=1, lap_count=1, energy_iteration=1, profile_iteration=2, elapsed_seconds=27.310426124953665)
+cold PROGRESS SolverProgress(stage='energy_iteration', lap=1, lap_count=1, energy_iteration=2, profile_iteration=2, elapsed_seconds=74.05481541692279)
+cold PROGRESS SolverProgress(stage='energy_iteration', lap=1, lap_count=1, energy_iteration=3, profile_iteration=2, elapsed_seconds=120.24454762495589)
+cold PROGRESS SolverProgress(stage='energy_iteration', lap=1, lap_count=1, energy_iteration=4, profile_iteration=2, elapsed_seconds=166.91425274999347)
+cold PROGRESS SolverProgress(stage='energy_iteration', lap=1, lap_count=1, energy_iteration=5, profile_iteration=2, elapsed_seconds=209.47308087488636)
+cold PROGRESS SolverProgress(stage='energy_iteration', lap=1, lap_count=1, energy_iteration=6, profile_iteration=2, elapsed_seconds=251.9354197079083)
+cold PROGRESS SolverProgress(stage='energy_iteration', lap=1, lap_count=1, energy_iteration=7, profile_iteration=2, elapsed_seconds=298.1986129999859)
+cold PROGRESS SolverProgress(stage='energy_iteration', lap=1, lap_count=1, energy_iteration=8, profile_iteration=2, elapsed_seconds=345.0519679579884)
+cold PROGRESS SolverProgress(stage='energy_iteration', lap=1, lap_count=1, energy_iteration=9, profile_iteration=2, elapsed_seconds=388.7729828329757)
+cold PROGRESS SolverProgress(stage='energy_iteration', lap=1, lap_count=1, energy_iteration=10, profile_iteration=2, elapsed_seconds=431.52968474989757)
+cold PROGRESS SolverProgress(stage='energy_iteration', lap=1, lap_count=1, energy_iteration=11, profile_iteration=2, elapsed_seconds=473.82718708296306)
+cold PROGRESS SolverProgress(stage='energy_iteration', lap=1, lap_count=1, energy_iteration=12, profile_iteration=2, elapsed_seconds=517.7851929169847)
+cold PROGRESS SolverProgress(stage='energy_iteration', lap=1, lap_count=1, energy_iteration=13, profile_iteration=2, elapsed_seconds=563.120865332894)
+cold PROGRESS SolverProgress(stage='lap_complete', lap=1, lap_count=1, energy_iteration=13, profile_iteration=2, elapsed_seconds=611.132667082944)
+cold RESULT wall_s= 611.1328564169817 lap_time_s= 69.1982147152843 lap_converged= True energy_converged= True energy_iterations= 13 profile_residual= 2.5795463698408128e-06 final_soc= 0.9790593110040156 consumed_j= 837888.6096674838 recovered_j= 403.4186193658725 net_j= 837485.1910481179 minimum_voltage_v= 603.907809990235 lap_iterations= 2 cache_hits= 165954 cache_entries= 51104 max_speed_displacement= 0.0 max_soc_displacement= 0.0
+warm PROGRESS SolverProgress(stage='lap_start', lap=1, lap_count=1, energy_iteration=0, profile_iteration=0, elapsed_seconds=1.500011421740055e-06)
+warm PROGRESS SolverProgress(stage='energy_iteration', lap=1, lap_count=1, energy_iteration=1, profile_iteration=2, elapsed_seconds=46.085524082998745)
+warm PROGRESS SolverProgress(stage='energy_iteration', lap=1, lap_count=1, energy_iteration=2, profile_iteration=2, elapsed_seconds=93.13673479098361)
+warm PROGRESS SolverProgress(stage='energy_iteration', lap=1, lap_count=1, energy_iteration=3, profile_iteration=2, elapsed_seconds=140.9260882079834)
+warm PROGRESS SolverProgress(stage='energy_iteration', lap=1, lap_count=1, energy_iteration=4, profile_iteration=2, elapsed_seconds=183.38888391596265)
+warm PROGRESS SolverProgress(stage='energy_iteration', lap=1, lap_count=1, energy_iteration=5, profile_iteration=2, elapsed_seconds=217.02430420799647)
+warm PROGRESS SolverProgress(stage='energy_iteration', lap=1, lap_count=1, energy_iteration=6, profile_iteration=2, elapsed_seconds=244.57882520800922)
+warm PROGRESS SolverProgress(stage='energy_iteration', lap=1, lap_count=1, energy_iteration=7, profile_iteration=2, elapsed_seconds=271.3651812499159)
+warm PROGRESS SolverProgress(stage='energy_iteration', lap=1, lap_count=1, energy_iteration=8, profile_iteration=2, elapsed_seconds=297.85469762491994)
+warm PROGRESS SolverProgress(stage='energy_iteration', lap=1, lap_count=1, energy_iteration=9, profile_iteration=2, elapsed_seconds=324.80754308297765)
+warm PROGRESS SolverProgress(stage='energy_iteration', lap=1, lap_count=1, energy_iteration=10, profile_iteration=2, elapsed_seconds=352.9058809999842)
+warm PROGRESS SolverProgress(stage='energy_iteration', lap=1, lap_count=1, energy_iteration=11, profile_iteration=2, elapsed_seconds=380.24149916600436)
+warm PROGRESS SolverProgress(stage='energy_iteration', lap=1, lap_count=1, energy_iteration=12, profile_iteration=2, elapsed_seconds=407.43720658298116)
+warm PROGRESS SolverProgress(stage='energy_iteration', lap=1, lap_count=1, energy_iteration=13, profile_iteration=2, elapsed_seconds=434.072840290959)
+warm PROGRESS SolverProgress(stage='lap_complete', lap=1, lap_count=1, energy_iteration=13, profile_iteration=2, elapsed_seconds=460.80955200002063)
+warm RESULT wall_s= 460.80963879206683 lap_time_s= 69.1982147152843 lap_converged= True energy_converged= True energy_iterations= 13 profile_residual= 2.579546369951835e-06 final_soc= 0.9790593110040156 consumed_j= 837888.6096674838 recovered_j= 403.4186193658725 net_j= 837485.1910481179 minimum_voltage_v= 603.907809990235 lap_iterations= 2 cache_hits= 165954 cache_entries= 51104 max_speed_displacement= 0.0 max_soc_displacement= 0.0
+DELTA cold_warm_wall_s= -150.32321762491483 cold_warm_lap_time_s= 0.0 cold_warm_final_soc= 0.0 cold_warm_consumed_j= 0.0 cold_warm_recovered_j= 0.0 cold_warm_profile_residual= 1.1102230246251565e-16
+real 1072.91
+user 995.89
+sys 28.11
 ```
 
-There was no `lap_complete`, so no converged energy iteration count, profile
-residual, final SOC, consumed/recovered energy, or lap time is reported. The
-warm run did not start after cancellation. This is an observed lower bound,
-not an opaque timeout and not evidence of numerical failure.
+Summary: both runs converged in 13 energy iterations and two inner profile
+iterations. Warm was 150.323218 s (24.6%) faster; lap time, final SOC,
+consumed energy, recovered energy, and profile residual were numerically
+unchanged to displayed precision. Each run was below the allowed 900 s.
 
 ## Step 3: candidate selection
 
@@ -153,9 +187,10 @@ OK
 * `git diff --check` passed before commit.
 * Exact and quantized lap results converged and preserved the force residual;
   only the quantized candidate's lap-time gate is validated.
-* One-lap regen and 22-lap fully coupled regen did not complete under managed
-  limits, so no accelerated default was promoted. This is the principal open
-  performance concern.
+* Exact one-lap cold/warm regen completed, but the quantized candidate was not
+  rerun through the full SOC/regen gates; therefore no accelerated default was
+  promoted. The 22-lap fully coupled regen attempt remains incomplete and is
+  the principal open performance concern.
 * Profile component numbers are cumulative cProfile values and intentionally
   are not added together.
 * No generated benchmark files were added to the repository; temporary

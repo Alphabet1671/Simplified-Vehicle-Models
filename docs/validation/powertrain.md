@@ -11,11 +11,12 @@ promoted to a default without the numerical gates below.
 
 ## Assembled MIS flying-lap benchmark
 
-Command (Python 3.12 runtime, `/usr/bin/time`, and `cProfile`):
+Command (bundled Python 3.12 runtime, `/usr/bin/time`, and `cProfile`):
 
 ```text
 PYTHONPATH=src /usr/bin/time -p \
-  .../python3 -m cProfile -o /tmp/task6_exact.prof /tmp/task6_exact.py
+  /Users/alphabet1671/.dsh/dsh-runtimes/dsh-primary-runtime/dependencies/python/bin/python3 \
+  -m cProfile -o /tmp/task6_exact.prof /tmp/task6_exact.py
 ```
 
 The exact run converged in 2 iterations. Wall time was 23.77 s (`real`),
@@ -55,20 +56,39 @@ The promotion gates are assembled lap-time delta < 0.01 s, final-SOC delta
 The lap-time gate passes; the full coupled energy evidence was not completed,
 so the default is unchanged.
 
-## Regen one-lap evidence
+## Regen one-lap cold/warm evidence
 
-A full-track cold/warm regen run was started with progress callbacks. Command:
+The full-track benchmark used the exact default cache for both runs and the
+same explicit controls: `tolerance=1e-5`, `maximum_iterations=50`,
+`lap_tolerance=1e-6`, `lap_maximum_iterations=200`, `root_tolerance=1e-8`,
+`regen_enabled=True`, and `drive_cache_policy=DriveCachePolicy()`. Command:
 
 ```text
-PYTHONPATH=src python3 /tmp/task6_energy.py
+PYTHONPATH=src /usr/bin/time -p \
+  /Users/alphabet1671/.dsh/dsh-runtimes/dsh-primary-runtime/dependencies/python/bin/python3 \
+  /tmp/task6_energy_round1.py > /tmp/task6_energy_round1_fixed.log 2>&1
 ```
 
-At the practical 300 s limit it had not completed a single converged lap.
-The cold run emitted `lap_start` at 0 s and energy iterations 1–8 at
-14.04, 42.73, 85.43, 132.01, 172.58, 208.68, 245.58, and 283.00 s;
-no `lap_complete` event or final SOC/energy report was produced. Consequently
-there is no defensible cold/warm numerical delta or accelerated-default claim.
-The benchmark was terminated rather than reporting an opaque timeout.
+Both cold and warm runs completed within the allowed 900 s per run. Warm passed
+both `initial_speed` and `corner_speed_hint` from cold; `initial_speed` is
+currently ignored by the transition solver, so only the corner hint can affect
+work. Results:
+
+| metric | cold | warm | warm-cold |
+|---|---:|---:|---:|
+| wall time (s) | 611.132856 | 460.809639 | -150.323218 |
+| lap time (s) | 69.1982147152843 | 69.1982147152843 | 0 |
+| energy iterations | 13 | 13 | 0 |
+| profile residual | 2.5795463698408128e-06 | 2.579546369951835e-06 | 1.11e-16 |
+| final SOC | 0.9790593110040156 | 0.9790593110040156 | 0 |
+| consumed energy (J) | 837888.6096674838 | 837888.6096674838 | 0 |
+| recovered energy (J) | 403.4186193658725 | 403.4186193658725 | 0 |
+
+Both runs converged (`lap_converged=True`, `energy_converged=True`), used two
+inner lap iterations, and reported zero cache approximation displacement. The
+warm run was 24.6% faster; all numerical deltas were zero to displayed
+precision. This completes the exact default cold/warm evidence; no accelerated
+mode is used for this benchmark.
 
 ## Fully coupled 22-lap regen stint
 
@@ -76,7 +96,7 @@ The requested fully coupled (`reuse_profile=False`) attempt used a managed
 background job and explicit progress callback:
 
 ```text
-PYTHONPATH=src python3 /tmp/task6_stint.py
+PYTHONPATH=src /Users/alphabet1671/.dsh/dsh-runtimes/dsh-primary-runtime/dependencies/python/bin/python3 /tmp/task6_stint.py
 ```
 
 It was stopped at the practical 120 s limit. Progress evidence: lap 1

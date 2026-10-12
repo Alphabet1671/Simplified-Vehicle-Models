@@ -63,7 +63,7 @@ self.assertAlmostEqual(
 
 - [ ] **Step 2: Run the focused tests and verify the new imports/functions fail**
 
-Run: `PYTHONPATH=src python3 -m unittest tests.test_point_mass tests.test_lap_solver -v`
+Run: `PYTHONPATH=src /Users/alphabet1671/.dsh/dsh-runtimes/dsh-primary-runtime/dependencies/python/bin/python3 -m unittest tests.test_point_mass tests.test_lap_solver -v`
 
 - [ ] **Step 3: Extract a private scalar feasibility kernel**
 
@@ -79,7 +79,7 @@ Do not change transition equations or SOC node selection.
 
 - [ ] **Step 6: Run focused and MIS regression tests**
 
-Run: `PYTHONPATH=src python3 -m unittest tests.test_point_mass tests.test_lap_solver tests.test_mis_regression -v`
+Run: `PYTHONPATH=src /Users/alphabet1671/.dsh/dsh-runtimes/dsh-primary-runtime/dependencies/python/bin/python3 -m unittest tests.test_point_mass tests.test_lap_solver tests.test_mis_regression -v`
 Expected: all pass with existing exact-mode lap-time tolerances.
 
 - [ ] **Step 7: Commit**
@@ -126,7 +126,7 @@ Solve a synthetic lap cold, then solve with its speed and corner limits as hints
 
 - [ ] **Step 6: Run focused and MIS tests**
 
-Run: `PYTHONPATH=src python3 -m unittest tests.test_point_mass tests.test_lap_solver tests.test_mis_regression -v`
+Run: `PYTHONPATH=src /Users/alphabet1671/.dsh/dsh-runtimes/dsh-primary-runtime/dependencies/python/bin/python3 -m unittest tests.test_point_mass tests.test_lap_solver tests.test_mis_regression -v`
 
 - [ ] **Step 7: Commit**
 
@@ -169,7 +169,7 @@ Benchmark candidate policies beginning with `speed_resolution=1e-3 m/s` and `soc
 - [ ] **Step 5: Run focused tests and commit**
 
 ```bash
-PYTHONPATH=src python3 -m unittest tests.test_point_mass tests.test_mis_regression -v
+PYTHONPATH=src /Users/alphabet1671/.dsh/dsh-runtimes/dsh-primary-runtime/dependencies/python/bin/python3 -m unittest tests.test_point_mass tests.test_mis_regression -v
 git add src/simplified_vehicle_models/formulations/point_mass.py src/simplified_vehicle_models/solvers/forward_backward.py tests/test_point_mass.py tests/test_mis_regression.py
 git commit -m "perf: scope and bound drive-force caching"
 ```
@@ -205,7 +205,7 @@ Use the synthetic energy track with `regen_enabled=True`. Require equal converge
 - [ ] **Step 5: Run energy and MIS tests and commit**
 
 ```bash
-PYTHONPATH=src python3 -m unittest tests.test_energy_lap tests.test_lap_solver tests.test_mis_regression -v
+PYTHONPATH=src /Users/alphabet1671/.dsh/dsh-runtimes/dsh-primary-runtime/dependencies/python/bin/python3 -m unittest tests.test_energy_lap tests.test_lap_solver tests.test_mis_regression -v
 git add src/simplified_vehicle_models/solvers/forward_backward.py tests/test_energy_lap.py
 git commit -m "perf: reuse coupled lap solve hints"
 ```
@@ -240,7 +240,7 @@ Add `--progress` to print one concise line per energy iteration and lap completi
 - [ ] **Step 4: Run tests and commit**
 
 ```bash
-PYTHONPATH=src python3 -m unittest tests.test_energy_lap -v
+PYTHONPATH=src /Users/alphabet1671/.dsh/dsh-runtimes/dsh-primary-runtime/dependencies/python/bin/python3 -m unittest tests.test_energy_lap -v
 git add src/simplified_vehicle_models/results/traces.py src/simplified_vehicle_models/solvers/forward_backward.py tests/test_energy_lap.py examples/run_mis_point_mass.py
 git commit -m "feat: report coupled solver progress"
 ```

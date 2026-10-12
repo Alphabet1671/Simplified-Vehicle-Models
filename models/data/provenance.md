@@ -76,9 +76,11 @@ Every ratio equals 5 to within 9e-16.
 The relation is `electrical_frequency = pole_pairs * speed / 60`.
 Therefore the map has 5 pole pairs.
 
-**Reference bus voltage.** The maximum `Voltage_Line_RMS` is 424.2641 V.
-That value is `600 / sqrt(2)`, the space-vector linear limit for a 600 V bus.
-The tool records 600 V as the reference bus voltage.
+**Reference bus voltage.** The source column `Voltage_Line_RMS` reaches 424.2641 V.
+In the source export this is the RMS-equivalent voltage corresponding to the 600 V
+space-vector linear limit (`600 / sqrt(2)`); it is not a separate line-voltage basis.
+The tool records 600 V as the reference bus voltage and the solver uses its stated
+per-phase conversion consistently.
 
 ### Cell curves
 

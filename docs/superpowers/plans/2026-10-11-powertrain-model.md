@@ -1084,7 +1084,7 @@ Task P0A and Task P0B run after Task P1 completes. Task P1 touches `tools/`, `mo
 - Also export the d/q currents, d/q voltages, and the loss components, because Task P3 needs them. Keep them in a separate `amk_dd5_100c_identification.csv`.
 - Copy the cell curve CSV. Convert the internal resistance to ohms and the state of charge to a fraction.
 - Resolve the `motorlossScalar = 1.60` question. The source map already contains `Total_Loss`. Decide whether the scale belongs to this map or only to the older 2025 model, and record the decision in `provenance.md`.
-- Record the reference bus voltage. The maximum required line voltage is 424.2641 V, which is `600 / sqrt(2)`. That value is the space-vector linear limit for a 600 V bus.
+- Record the reference bus voltage. The source `Voltage_Line_RMS` field reaches 424.2641 V, the RMS-equivalent value corresponding to `600 / sqrt(2)` for the 600 V space-vector linear limit; do not treat it as an independent line-voltage basis.
 - Record the speed range and the pole pairs. The frequency axis spans 1 to 20 000 rpm with 5 pole pairs.
 
 **Tests**
@@ -1093,7 +1093,7 @@ Task P0A and Task P0B run after Task P1 completes. Task P1 touches `tools/`, `mo
 - Peak torque at zero speed equals `21.834945614425717 N*m`.
 - Internal resistance and state of charge are monotone.
 - Source digests match the values in Section 2.
-- The maximum required line voltage equals `600 / sqrt(2)` within 0.01 V.
+- The source `Voltage_Line_RMS` field equals `600 / sqrt(2)` within 0.01 V, with its RMS-equivalent basis explicitly recorded.
 
 **Depends on:** nothing.
 
@@ -1320,7 +1320,7 @@ These values come from `AMK_Characteristic_100C.mat`. They are the reference for
 | Maximum quadrature current | 83.813 A | At the torque peak |
 | Maximum direct current | -43.306 A | Field weakening |
 | Maximum current magnitude | 85.7 A | Implied current limit |
-| Reference bus voltage | 600 V | From maximum line voltage `600 / sqrt(2)` |
+| Reference bus voltage | 600 V | From source RMS-equivalent field `600 / sqrt(2)` |
 | Zero-speed required voltage | 20.7 V at 83.8 A | Equals `resistance * current = 20.9 V` for the fitted resistance |
 | Corner speed | about 16 300 rpm | First point at the voltage limit with full current |
 | Torque at the corner | 19.87 N*m | Above the corner the current must fall |

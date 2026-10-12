@@ -85,9 +85,14 @@ def solve_direct_current(parameters,motor_speed,quadrature_current,available_vol
     roots=((-b-math.sqrt(disc))/(2*a),(-b+math.sqrt(disc))/(2*a)); root=min(roots,key=abs)
     return direct_current_result(root,True)
 def evaluate_shaft_power(parameters,motor_speed,motor_torque,bus_voltage):
-    avail=calculate_available_voltage(parameters,bus_voltage,0.0); current=solve_direct_current(parameters,motor_speed,0.0,avail)
+    avail=calculate_available_voltage(parameters,bus_voltage,0.0)
+    # Use the requested torque to estimate q-axis current for both solves.
+    quadrature_current=motor_torque/(1.5*parameters.pole_pairs*parameters.flux_linkage)
+    current=solve_direct_current(parameters,motor_speed,quadrature_current,avail)
+    reference_voltage=calculate_available_voltage(parameters,parameters.reference_bus_voltage,0.0)
+    reference=solve_direct_current(parameters,motor_speed,quadrature_current,reference_voltage)
     _,map_loss=_map_values(motor_speed,motor_torque,parameters)
-    correction=0.0 if abs(bus_voltage-parameters.reference_bus_voltage)<1e-12 else 1.5*parameters.resistance*(current.direct_current**2)
+    correction=0.0 if abs(bus_voltage-parameters.reference_bus_voltage)<1e-12 else 1.5*parameters.resistance*(current.direct_current**2-reference.direct_current**2)
     loss=map_loss+correction; shaft=motor_speed*2*math.pi/60*motor_torque
     raw=shaft+loss
     if raw>=0: bus=raw/parameters.inverter_efficiency; efficiency=shaft/bus if bus else 1.0

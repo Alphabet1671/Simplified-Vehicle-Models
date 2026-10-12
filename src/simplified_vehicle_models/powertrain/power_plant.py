@@ -492,15 +492,34 @@ def evaluate_motor(parameters, motor_speed_rpm, shaft_torque, bus_voltage):
 _EXACT_LIMIT_CACHE = {}
 _EXACT_LIMIT_CACHE_MAX = 65536
 _LIMIT_CACHE_QUANTUM = 1.0e-3
+_MAP_IDENTITY_CACHE = {}
 
 
-def _exact_limit_cache_key(parameters, speed, voltage, regen):
-    return (
-        id(parameters),
-        regen,
-        round(float(speed) / _LIMIT_CACHE_QUANTUM),
-        round(float(voltage) / _LIMIT_CACHE_QUANTUM),
-    )
+def _operating_map_identity(mapping):
+    """Return a content identity for one compiled operating map.
+
+    Caching the exact limit needs a key that cannot collide when a discarded
+    motor's Python address is reused by a freshly compiled one.  A content
+    digest of the map arrays is such a key.  The digest is computed once per
+    distinct map object and kept in a bounded table so repeated calls during a
+    lap stay cheap.
+    """
+
+    identity = _MAP_IDENTITY_CACHE.get(id(mapping))
+    if identity is not None:
+        return identity
+    digest = hashlib.sha256()
+    for name in ("voltage", "speed", "load", "drive_torque", "regen_torque",
+                 "bus_power", "loss_power", "regen_feasible"):
+        array = np.ascontiguousarray(getattr(mapping, name))
+        digest.update(name.encode("ascii"))
+        digest.update(str(array.shape).encode("ascii"))
+        digest.update(array.tobytes())
+    identity = digest.hexdigest()
+    if len(_MAP_IDENTITY_CACHE) >= 64:
+        _MAP_IDENTITY_CACHE.clear()
+    _MAP_IDENTITY_CACHE[id(mapping)] = identity
+    return identity
 
 
 def _exact_limit(parameters, speed, voltage, regen=False):
@@ -510,17 +529,30 @@ def _exact_limit(parameters, speed, voltage, regen=False):
     revisits the same voltage-coupling operating point thousands of times, so
     results are memoized on a 1.0e-3 V/rpm-quantized key.  That quantum is far
     below the maps' own accuracy while keeping the cache bounded and observable.
+    Entries are keyed by the map's content identity, so a cache entry can never
+    be served to a differently compiled motor.
     """
 
-    key = _exact_limit_cache_key(parameters, speed, voltage, regen)
-    cached = _EXACT_LIMIT_CACHE.get(key)
-    if cached is not None:
-        return cached
-    value = _exact_limit_uncached(parameters, speed, voltage, regen)
-    if len(_EXACT_LIMIT_CACHE) >= _EXACT_LIMIT_CACHE_MAX:
-        _EXACT_LIMIT_CACHE.clear()
-    _EXACT_LIMIT_CACHE[key] = value
-    return value
+    mapping = parameters.operating_map
+    if mapping is None:
+        return _exact_limit_uncached(parameters, speed, voltage, regen)
+    map_identity = _operating_map_identity(mapping)
+    values = _EXACT_LIMIT_CACHE.get(map_identity)
+    if values is None:
+        if len(_EXACT_LIMIT_CACHE) >= _EXACT_LIMIT_CACHE_MAX:
+            _EXACT_LIMIT_CACHE.clear()
+        values = {}
+        _EXACT_LIMIT_CACHE[map_identity] = values
+    key = (
+        regen,
+        round(float(speed) / _LIMIT_CACHE_QUANTUM),
+        round(float(voltage) / _LIMIT_CACHE_QUANTUM),
+    )
+    cached = values.get(key)
+    if cached is None:
+        cached = _exact_limit_uncached(parameters, speed, voltage, regen)
+        values[key] = cached
+    return cached
 
 
 def _exact_limit_uncached(parameters, speed, voltage, regen=False):
@@ -573,10 +605,16 @@ def lut_bus_power_range(parameters, motor_speed_rpm, bus_voltage):
 
 def motor_torque_limits(parameters, motor_speed_rpm, bus_voltage):
     mapping = parameters.operating_map
+    # The boundary tolerance accepts a query a few ulps outside the axis.  The
+    # assembled motor speed lands exactly on 18,600 rpm, which is simultaneously
+    # the map's last speed node and ``maximum_motor_speed``; without the
+    # tolerance that single operating point would run a full analytical
+    # bisection on every voltage-coupling pass.
+    boundary = 1.0e-6 * max(1.0, abs(mapping.speed[-1]) if mapping is not None else 1.0)
     in_map = (
         mapping is not None
-        and mapping.voltage[0] <= bus_voltage <= mapping.voltage[-1]
-        and mapping.speed[0] <= motor_speed_rpm <= mapping.speed[-1]
+        and mapping.voltage[0] - 1.0e-9 <= bus_voltage <= mapping.voltage[-1] + 1.0e-9
+        and mapping.speed[0] - boundary <= motor_speed_rpm <= mapping.speed[-1] + boundary
     )
     if not in_map:
         return TorqueLimits(
@@ -584,7 +622,9 @@ def motor_torque_limits(parameters, motor_speed_rpm, bus_voltage):
             _exact_limit(parameters, motor_speed_rpm, bus_voltage, True),
             True,
         )
-    drive, regen, *_ = _interpolated_envelopes(mapping, bus_voltage, motor_speed_rpm)
+    clamped_speed = min(max(motor_speed_rpm, mapping.speed[0]), mapping.speed[-1])
+    clamped_voltage = min(max(bus_voltage, mapping.voltage[0]), mapping.voltage[-1])
+    drive, regen, *_ = _interpolated_envelopes(mapping, clamped_voltage, clamped_speed)
     return TorqueLimits(drive, regen, False)
 
 
@@ -733,12 +773,28 @@ def torque_for_bus_power(parameters, motor_speed_rpm, bus_voltage, target_bus_po
     if direction == "drive":
         loads, vals = mapping.load[li0:], row[li0:]
         tolerance = _row_power_tolerance(target_bus_power)
-        if (
-            target_bus_power < vals[0] - tolerance
-            or target_bus_power > vals[-1] + tolerance
-        ):
-            # The target is outside the mapped load axis, so the exact oracle
-            # must answer it.
+        if target_bus_power > vals[-1] + tolerance:
+            # The requested storage power is above the motor's achievable row
+            # maximum, so the motor's own envelope is the limit.  This is a
+            # bounded row answer rather than an out-of-domain request: the exact
+            # analytical fallback costs dozens of oracle evaluations and can even
+            # report an infeasible operating point at the map's voltage ceiling.
+            # The returned operating point is still observable and, when the row
+            # maximum already charges at least the target, feasible.
+            _LOOKUP_COUNTERS["inverse"] += 1
+            load = float(loads[-1])
+            torque = float(drive * load)
+            op = evaluate_motor(parameters, motor_speed_rpm, torque, bus_voltage)
+            if not op.feasible or op.bus_power > target_bus_power + tolerance:
+                return _inverse_fallback(
+                    parameters, motor_speed_rpm, bus_voltage, target_bus_power, direction
+                )
+            return TorqueSolveResult(
+                torque, op, op.bus_power - target_bus_power, True, op.active_limit, False
+            )
+        if target_bus_power < vals[0] - tolerance:
+            # The request is weaker than the mapped zero-load power, so the
+            # exact oracle must answer it.
             _LOOKUP_COUNTERS["inverse"] += 1
             return _inverse_fallback(parameters, motor_speed_rpm, bus_voltage, target_bus_power, direction)
         j = min(len(vals) - 2, max(0, int(np.searchsorted(vals, target_bus_power, side="right") - 1)))

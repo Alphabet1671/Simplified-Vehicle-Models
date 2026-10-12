@@ -323,34 +323,17 @@ def maximum_drive_force(
             envelope = limits.maximum_drive_torque
             envelope_result = evaluate_motor(motor, motor_speed, envelope, voltage)
             target = storage.discharge_power_limit / motor.unit_count
-            # The motor envelope may only be used when it genuinely respects the
-            # storage discharge limit.  ``row_range is None`` means the
-            # requested voltage is outside the compiled map, so the interpolated
-            # envelope is not an authority at that point; the bounded exact
-            # inverse below answers it instead.  The row tolerance keeps a
-            # near-boundary target on the row without relaxing the surrounding
-            # voltage-coupling tolerance, which keeps ``converged`` and
-            # ``active_constraint`` comparable across motor modes.
-            row_range = lut_bus_power_range(motor, motor_speed, voltage)
-            row_tolerance = 1.0e-3
-            if row_range is not None and row_range[0] <= target <= row_range[1] + row_tolerance:
-                # The storage limit crosses the mapped row, so the storage
-                # constraint is binding and the inverse solves for it directly.
-                solved = torque_for_bus_power(motor, motor_speed, voltage, target, "drive")
-                torque, operating = solved.torque, solved.operating_point
-            elif (
-                envelope_result.feasible
-                and envelope_result.bus_power <= target
-                and row_range is not None
-                and target >= row_range[1]
-            ):
-                # The motor cannot reach the requested storage power, so the
-                # envelope torque is the limit at this voltage.  Asking the
-                # inverse for that unreachable target would run a full exact
-                # analytical fallback for no gain.
+            if envelope_result.feasible and envelope_result.bus_power <= target:
+                # The motor's own forward operating point is a usable limit that
+                # already respects the storage discharge limit.  Using it keeps
+                # the assembled result inside the storage constraint (NEW-1);
+                # the inverse is used only when the storage limit actually
+                # crosses the motor capability.
                 torque, operating = envelope, envelope_result
             else:
-                solved = torque_for_bus_power(motor, motor_speed, voltage, target, "drive")
+                solved = torque_for_bus_power(
+                    motor, motor_speed, voltage, target, "drive"
+                )
                 torque, operating = solved.torque, solved.operating_point
         # ``operating`` is the selected torque's canonical operating point:
         # LUT mode stays on evaluate_motor (or its explicit inverse result).

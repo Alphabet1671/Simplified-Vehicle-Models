@@ -88,8 +88,11 @@ consumed/recovered/net energy, final SOC and minimum bus voltage. Regeneration i
 disabled for this baseline, so recovered energy must be zero. This is a fixed-profile
 approximation: later-lap speed and force profiles are not re-solved as voltage/SOC changes,
 so it is not equivalent to the default fully state-coupled stint (`reuse_profile=False`).
-The approximation enables the complete 22-lap study under practical runtime, but results
-should not be interpreted as a converged voltage-limited lap trajectory.
+The approximation enables the complete 22-lap study without repeating the expensive profile
+solve, but results should not be interpreted as a converged voltage-limited lap trajectory.
+On the assembled MIS run, the 22-lap result was 613.34 s wall time, final SOC 0.333721,
+and 17.934 MJ consumed/net energy; lap time stayed fixed at 69.1973 s by construction.
+The remaining runtime is the per-node storage and energy integration cost.
 
 ## Assumptions and limits
 

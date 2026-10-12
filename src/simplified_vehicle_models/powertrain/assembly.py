@@ -535,17 +535,22 @@ def resolve_braking(
     active = regen_limit.active_constraint
     motor = powertrain.power_plant
     transmission = drivetrain.transmission
-    motor_speed = transmission.motor_speed(speed / effective_radius)
-    motor_torque = (
-        regen_force * effective_radius
-        / (motor.unit_count * transmission.gear_ratio)
-        * transmission.gear_efficiency
-    )
-    evaluated = evaluate_shaft_power(
-        motor, motor_speed, -abs(motor_torque),
-        evaluate_storage(powertrain.energy_storage, state).bus_voltage,
-    )
-    recovered_bus_power = abs(evaluated.bus_power) * motor.unit_count
+    if speed == 0.0 or regen_limit.active_constraint == "motor_speed":
+        recovered_bus_power = 0.0
+    else:
+        motor_speed = transmission.motor_speed(speed / effective_radius)
+        motor_torque = (
+            regen_force * effective_radius
+            / (motor.unit_count * transmission.gear_ratio)
+            * transmission.gear_efficiency
+        )
+        evaluated = evaluate_shaft_power(
+            motor,
+            motor_speed,
+            -abs(motor_torque),
+            evaluate_storage(powertrain.energy_storage, state).bus_voltage,
+        )
+        recovered_bus_power = abs(evaluated.bus_power) * motor.unit_count
     return BrakingResult(
         regen_force_used=regen_force,
         friction_force_used=friction_force,

@@ -263,6 +263,34 @@ class PowertrainAssemblyTests(unittest.TestCase):
         self.assertEqual(result.total_force, result.total_force_limit)
         self.assertEqual(result.recovered_power, result.recovered_bus_power)
 
+    def test_braking_overspeed_and_standstill_have_no_recovery(self):
+        powertrain = compile_powertrain_assembly(
+            load_model(ROOT / "models/powertrains/murphy_2024.xml")
+        )
+        drivetrain = compile_drivetrain_assembly(
+            load_model(ROOT / "models/drivetrains/murphy_2024_drivetrain.xml")
+        )
+        standstill = resolve_braking(
+            powertrain,
+            drivetrain,
+            0.0,
+            StorageState(0.8),
+            braking_demand=1000.0,
+            effective_radius=0.193675,
+        )
+        self.assertEqual(standstill.recovered_bus_power, 0.0)
+        overspeed = resolve_braking(
+            powertrain,
+            drivetrain,
+            400.0,
+            StorageState(0.8),
+            braking_demand=1000.0,
+            effective_radius=0.193675,
+        )
+        self.assertEqual(overspeed.regen_force_used, 0.0)
+        self.assertEqual(overspeed.recovered_bus_power, 0.0)
+        self.assertEqual(overspeed.active_constraint, "motor_speed")
+
     def test_regen_rejects_motor_overspeed(self):
         powertrain = compile_powertrain_assembly(
             load_model(ROOT / "models/powertrains/murphy_2024.xml")

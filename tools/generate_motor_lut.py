@@ -178,14 +178,14 @@ def validate_grid(voltage_points: int, speed_points: int, load_points: int) -> N
 
 def generate(path, voltage_points=DEFAULT_VOLTAGE_POINTS,
              speed_points=DEFAULT_SPEED_POINTS, load_points=DEFAULT_LOAD_POINTS,
-             xml_path=None) -> str:
+             xml_path=None, voltage_min=448.848, voltage_max=608.688) -> str:
     """Generate the canonical map and return its SHA-256 digest."""
     validate_grid(voltage_points, speed_points, load_points)
     path = Path(path)
     xml_path = Path(xml_path) if xml_path is not None else _ROOT / "models" / "power-plants" / "amk_dd5_100c.xml"
     parameters = compile_analytical_motor_source(load_model(xml_path))
     source_digests = {str(source): _sha256(source) for source in _source_paths(xml_path)}
-    voltage = np.linspace(448.848, 608.688, voltage_points, dtype=np.float64)
+    voltage = np.linspace(voltage_min, voltage_max, voltage_points, dtype=np.float64)
     speed = np.linspace(0.0, 18600.0, speed_points, dtype=np.float64)
     load = np.linspace(-1.0, 1.0, load_points, dtype=np.float64)
     zero = load_points // 2
@@ -290,6 +290,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--load-points", type=int, default=DEFAULT_LOAD_POINTS,
         help=f"signed normalized-load samples, must be odd (default: {DEFAULT_LOAD_POINTS})",
     )
+    parser.add_argument(
+        "--voltage-min", type=float, default=448.848,
+        help="minimum bus-voltage axis value (default: 448.848)",
+    )
+    parser.add_argument(
+        "--voltage-max", type=float, default=608.688,
+        help="maximum bus-voltage axis value (default: 608.688)",
+    )
     return parser
 
 
@@ -301,4 +309,6 @@ if __name__ == "__main__":
         speed_points=options.speed_points,
         load_points=options.load_points,
         xml_path=options.xml_path,
+        voltage_min=options.voltage_min,
+        voltage_max=options.voltage_max,
     )

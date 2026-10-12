@@ -109,6 +109,23 @@ class LapSolverTests(unittest.TestCase):
         # a non-monotone assembled capability bracket is proven safe.
         self.assertEqual(warm_evaluations, cold_evaluations)
 
+    def test_root_tolerance_reaches_directional_sweep_roots(self) -> None:
+        track = make_track([30.0, 15.0, 8.0, 15.0, 30.0], 10.0)
+        configured = 2.5e-5
+        with patch(
+            "simplified_vehicle_models.solvers.forward_backward.maximum_acceleration_limit",
+            wraps=point_mass.maximum_acceleration_limit,
+        ) as accel, patch(
+            "simplified_vehicle_models.solvers.forward_backward.maximum_deceleration_limit",
+            wraps=point_mass.maximum_deceleration_limit,
+        ) as brake:
+            solve_lap(self.vehicle, track, LapMode.FLYING, root_tolerance=configured)
+
+        self.assertTrue(accel.call_args_list)
+        self.assertTrue(brake.call_args_list)
+        self.assertTrue(all(call.kwargs["tolerance"] == configured for call in accel.call_args_list))
+        self.assertTrue(all(call.kwargs["tolerance"] == configured for call in brake.call_args_list))
+
     def test_reports_nonconvergence_for_one_iteration(self) -> None:
         track = make_track(
             [100000.0, 100000.0, 100000.0, 6.0, 6.0, 100000.0, 100000.0],

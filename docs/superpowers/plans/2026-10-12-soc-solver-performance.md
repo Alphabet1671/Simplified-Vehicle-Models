@@ -10,6 +10,8 @@
 
 **Spec:** `docs/validation/powertrain.md` and the eight optimization items recorded in the preceding solver analysis.
 
+> **Historical checklist status (final review):** Tasks 1–6 were implemented in the commits recorded by the SDD ledger. The checklist below is retained as implementation history; the transition/profile `initial_speed` acceleration item is explicitly ruled out/unsupported, while bracket-preserving corner hints are complete. Final-review fixes are recorded in the ledger and Task 6 report.
+
 ## Global Constraints
 
 - Preserve the existing public defaults and legacy lumped drivetrain results unless a benchmark-backed default change is separately justified.
@@ -112,11 +114,11 @@ Test hints on both sides of the root. Require hinted and unhinted results to dif
 
 Evaluate `hint` once. If feasible/positive, move only the lower bracket to the hint; otherwise move only the upper bracket. Stop when `upper - lower <= tolerance`, retaining the existing conservative lower-bound return value.
 
-- [ ] **Step 3: Use previous node corner speeds as hints**
+- [x] **Step 3: Use previous node corner speeds as hints**
 
 `solve_lap` accepts `corner_speed_hint` and uses each finite hint as a bracket-preserving root candidate for the current SOC. It may reduce root work but cannot change the exact corner-root result; validate shape and finiteness.
 
-- [ ] **Step 4: Keep transition/profile initial-speed warm starts unsupported**
+- [x] **Step 4: Keep transition/profile initial-speed warm starts ruled out/unsupported**
 
 Validate `initial_speed` for shape, finiteness, and nonnegative values for API compatibility, then ignore it and initialize the profile from conservative corner caps. Do not add approximate profile reuse or imply a default change. Only `corner_speed_hint` uses bracket-preserving exact root acceleration.
 

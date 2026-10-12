@@ -14,8 +14,7 @@ Command:
 
 ```text
 PYTHONPATH=src /usr/bin/time -p \
-  /Users/alphabet1671/.dsh/dsh-runtimes/dsh-primary-runtime/dependencies/python/bin/python3 \
-  -m cProfile -o /tmp/task6_exact.prof /tmp/task6_exact.py
+  python examples/benchmark_soc_solver.py --mode exact
 ```
 
 The script loaded `murphy_point_mass.xml` and the Michigan track, then called
@@ -47,8 +46,7 @@ Command (same explicit controls for both runs):
 
 ```text
 PYTHONPATH=src /usr/bin/time -p \
-  /Users/alphabet1671/.dsh/dsh-runtimes/dsh-primary-runtime/dependencies/python/bin/python3 \
-  /tmp/task6_energy_round1.py > /tmp/task6_energy_round1_fixed.log 2>&1
+  python examples/benchmark_soc_solver.py --mode regen-one --progress
 ```
 
 The controls were `tolerance=1e-5`, `maximum_iterations=50`,
@@ -141,7 +139,7 @@ Promotion gates used: assembled lap-time delta <0.01 s, final-SOC delta
 Managed background command:
 
 ```text
-PYTHONPATH=src /Users/alphabet1671/.dsh/dsh-runtimes/dsh-primary-runtime/dependencies/python/bin/python3 /tmp/task6_stint.py
+PYTHONPATH=src python examples/benchmark_soc_solver.py --mode regen-22 --progress
 ```
 
 The call used `solve_stint(..., laps=22, regen_enabled=True,
@@ -197,5 +195,18 @@ OK
   the principal open performance concern.
 * Profile component numbers are cumulative cProfile values and intentionally
   are not added together.
-* No generated benchmark files were added to the repository; temporary
-  scripts/profile output were under `/tmp`.
+* The maintained reproducer is `examples/benchmark_soc_solver.py`; its default
+  exact mode is safe, `--mode all` runs exact/quantized/one-lap regen, and the
+  incomplete 22-lap attempt requires explicit `--mode regen-22`. Quantized
+  caching remains opt-in because SOC/regen promotion gates are still incomplete.
+
+## Final-review fix evidence
+
+* `root_tolerance=2.5e-5` was observed in every directional acceleration and
+  deceleration sweep call by `tests.test_lap_solver`; public directional APIs
+  retain the exact `1e-8` default.
+* The plan now labels its checklist as historical, marks corner hints complete,
+  and records transition/profile initial-speed acceleration as ruled out/
+  unsupported rather than complete.
+* Documentation commands use the maintained benchmark script. The 22-lap mode
+  remains an explicit opt-in and its prior evidence remains incomplete.

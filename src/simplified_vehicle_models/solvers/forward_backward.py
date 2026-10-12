@@ -191,7 +191,8 @@ def _forward_sweep(
                 0.5 * (start_speed + candidate),
                 segment_curvature,
                 StorageState(float(storage_trace[index])) if storage_trace is not None else None,
-                drive_cache,
+                drive_cache=drive_cache,
+                tolerance=root_tolerance,
             )
             return math.sqrt(
                 start_speed * start_speed
@@ -232,7 +233,8 @@ def _backward_sweep(
                 0.5 * (candidate + next_speed),
                 segment_curvature,
                 StorageState(float(storage_trace[index + 1])) if storage_trace is not None else None,
-                drive_cache,
+                drive_cache=drive_cache,
+                tolerance=root_tolerance,
             )
             return math.sqrt(
                 next_speed * next_speed

@@ -13,12 +13,11 @@ promoted to a default without the numerical gates below.
 
 ## Assembled MIS flying-lap benchmark
 
-Command (bundled Python 3.12 runtime, `/usr/bin/time`, and `cProfile`):
+Maintained reproducer command (Python and `/usr/bin/time`; historical cProfile figures are reported below):
 
 ```text
 PYTHONPATH=src /usr/bin/time -p \
-  /Users/alphabet1671/.dsh/dsh-runtimes/dsh-primary-runtime/dependencies/python/bin/python3 \
-  -m cProfile -o /tmp/task6_exact.prof /tmp/task6_exact.py
+  python examples/benchmark_soc_solver.py --mode exact
 ```
 
 The exact run converged in 2 iterations. Wall time was 23.77 s (`real`),
@@ -67,8 +66,7 @@ same explicit controls: `tolerance=1e-5`, `maximum_iterations=50`,
 
 ```text
 PYTHONPATH=src /usr/bin/time -p \
-  /Users/alphabet1671/.dsh/dsh-runtimes/dsh-primary-runtime/dependencies/python/bin/python3 \
-  /tmp/task6_energy_round1.py > /tmp/task6_energy_round1_fixed.log 2>&1
+  python examples/benchmark_soc_solver.py --mode regen-one --progress
 ```
 
 Both cold and warm runs completed within the allowed 900 s per run. The warm
@@ -99,7 +97,7 @@ The requested fully coupled (`reuse_profile=False`) attempt used a managed
 background job and explicit progress callback:
 
 ```text
-PYTHONPATH=src /Users/alphabet1671/.dsh/dsh-runtimes/dsh-primary-runtime/dependencies/python/bin/python3 /tmp/task6_stint.py
+PYTHONPATH=src python examples/benchmark_soc_solver.py --mode regen-22 --progress
 ```
 
 It was stopped at the practical 120 s limit. Progress evidence: lap 1

@@ -523,10 +523,13 @@ def maximum_acceleration_limit(
     curvature: float,
     storage_state: StorageState | None = None,
     drive_cache: DriveCache | None = None,
+    tolerance: float = 1.0e-8,
 ) -> float:
     """Solve only the positive longitudinal acceleration limit."""
 
     curvature = _validate_limit_inputs(speed, curvature)
+    if not math.isfinite(tolerance) or tolerance <= 0.0:
+        raise ValueError("tolerance must be finite and positive")
     if not _equilibrium_limits(vehicle, speed, curvature, 0.0, storage_state, drive_cache)[1]:
         return 0.0
 
@@ -539,7 +542,7 @@ def maximum_acceleration_limit(
             return -required
         return drive - required
 
-    return _positive_root(residual, 30.0)
+    return _positive_root(residual, 30.0, tolerance=tolerance)
 
 
 def maximum_deceleration_limit(
@@ -548,10 +551,13 @@ def maximum_deceleration_limit(
     curvature: float,
     storage_state: StorageState | None = None,
     drive_cache: DriveCache | None = None,
+    tolerance: float = 1.0e-8,
 ) -> float:
     """Solve only the positive longitudinal deceleration limit."""
 
     curvature = _validate_limit_inputs(speed, curvature)
+    if not math.isfinite(tolerance) or tolerance <= 0.0:
+        raise ValueError("tolerance must be finite and positive")
     if not _equilibrium_limits(vehicle, speed, curvature, 0.0, storage_state, drive_cache)[1]:
         return 0.0
 
@@ -564,7 +570,7 @@ def maximum_deceleration_limit(
             return -max(required, 0.0)
         return brake - max(required, 0.0)
 
-    return _positive_root(residual, 30.0)
+    return _positive_root(residual, 30.0, tolerance=tolerance)
 
 
 def maximum_corner_speed(

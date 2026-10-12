@@ -248,6 +248,7 @@ def evaluate_equilibrium(
     speed: float,
     curvature: float,
     longitudinal_acceleration: float,
+    storage_state: StorageState | None = None,
 ) -> EquilibriumState:
     """Evaluate wheel forces for one prescribed vehicle acceleration."""
 
@@ -292,6 +293,7 @@ def evaluate_equilibrium(
         vehicle,
         speed,
         remaining,
+        storage_state,
     )
     brake_limit, brake_constraint = _available_brake_force(vehicle, remaining)
     _, drag = aerodynamic_forces(vehicle, speed)
@@ -380,6 +382,7 @@ def maximum_corner_speed(
     vehicle: PointMassVehicleParameters,
     radius: float,
     maximum_speed: float = 60.0,
+    storage_state: StorageState | None = None,
 ) -> float:
     """Solve the maximum steady speed for one unsigned radius."""
 
@@ -387,11 +390,11 @@ def maximum_corner_speed(
         raise ValueError("radius must be finite and positive")
     upper = min(maximum_speed, maximum_vehicle_speed(vehicle))
     lower = 0.0
-    if evaluate_equilibrium(vehicle, upper, 1.0 / radius, 0.0).is_feasible:
+    if evaluate_equilibrium(vehicle, upper, 1.0 / radius, 0.0, storage_state).is_feasible:
         return upper
     for _ in range(32):
         trial = 0.5 * (lower + upper)
-        state = evaluate_equilibrium(vehicle, trial, 1.0 / radius, 0.0)
+        state = evaluate_equilibrium(vehicle, trial, 1.0 / radius, 0.0, storage_state)
         if state.is_feasible:
             lower = trial
         else:
@@ -403,6 +406,7 @@ def acceleration_limits(
     vehicle: PointMassVehicleParameters,
     speed: float,
     curvature: float,
+    storage_state: StorageState | None = None,
 ) -> AccelerationLimits:
     """Solve live acceleration limits and their equilibrium states."""
 
@@ -411,17 +415,17 @@ def acceleration_limits(
     if not math.isfinite(curvature):
         raise ValueError("curvature must be finite")
     curvature = abs(curvature)
-    coasting = evaluate_equilibrium(vehicle, speed, curvature, 0.0)
+    coasting = evaluate_equilibrium(vehicle, speed, curvature, 0.0, storage_state)
 
     def drive_residual(acceleration: float) -> float:
-        state = evaluate_equilibrium(vehicle, speed, curvature, acceleration)
+        state = evaluate_equilibrium(vehicle, speed, curvature, acceleration, storage_state)
         required = vehicle.total_mass * acceleration + state.drag_force
         if not state.contact_feasible or not state.lateral_feasible:
             return -required
         return state.drive_force_limit - required
 
     def brake_residual(deceleration: float) -> float:
-        state = evaluate_equilibrium(vehicle, speed, curvature, -deceleration)
+        state = evaluate_equilibrium(vehicle, speed, curvature, -deceleration, storage_state)
         required = vehicle.total_mass * deceleration - state.drag_force
         if not state.contact_feasible or not state.lateral_feasible:
             return -max(required, 0.0)
@@ -438,12 +442,14 @@ def acceleration_limits(
         speed,
         curvature,
         maximum_acceleration,
+        storage_state,
     )
     braking_state = evaluate_equilibrium(
         vehicle,
         speed,
         curvature,
         -maximum_deceleration,
+        storage_state,
     )
     return AccelerationLimits(
         maximum_acceleration=maximum_acceleration,
@@ -507,6 +513,7 @@ def _available_drive_force(
     vehicle: PointMassVehicleParameters,
     speed: float,
     tire_limits: FloatArray,
+    storage_state: StorageState | None = None,
 ) -> tuple[float, str]:
     if speed > maximum_vehicle_speed(vehicle) + 1.0e-9:
         return 0.0, "motor_speed"
@@ -518,7 +525,7 @@ def _available_drive_force(
         # The assembled capability owns the motor, storage, and transmission
         # coupling.  Point mass supplies only the operating speed and tire cap;
         # it does not reproduce the powertrain equations here.
-        state = StorageState(drivetrain.powertrain.energy_storage.initial_state_of_charge)
+        state = storage_state or StorageState(drivetrain.powertrain.energy_storage.initial_state_of_charge)
         key = (
             id(drivetrain),
             # Each speed is a distinct operating point for the coupled limit.

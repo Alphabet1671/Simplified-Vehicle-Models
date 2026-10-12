@@ -36,3 +36,43 @@ class LapResult:
     converged: bool
     iterations: int
     maximum_speed_change: float
+
+
+@dataclass(frozen=True, slots=True)
+class EnergyReport:
+    """Energy and outer-loop diagnostics for one lap."""
+    state_trace: FloatArray
+    bus_power: FloatArray
+    shaft_power: FloatArray
+    bus_voltage: FloatArray
+    active_constraint: tuple[str, ...]
+    consumed_energy: float
+    recovered_energy: float
+    net_energy: float
+    final_state_of_charge: float
+    minimum_voltage: float
+    energy_converged: bool
+    energy_iterations: int
+    maximum_state_change: float
+
+
+@dataclass(frozen=True, slots=True)
+class EnergyLapResult:
+    """Pair the legacy lap result with energy diagnostics."""
+    lap: LapResult
+    energy: EnergyReport
+
+    def __getattr__(self, name: str):
+        return getattr(self.lap, name)
+
+
+@dataclass(frozen=True, slots=True)
+class StintReport:
+    """Per-lap endurance results with carried-over battery state."""
+    laps: tuple[EnergyLapResult, ...]
+    lap_times: FloatArray
+    lap_energy: FloatArray
+    final_state_of_charge: float
+    total_consumed_energy: float
+    total_recovered_energy: float
+    total_net_energy: float

@@ -11,7 +11,9 @@ from simplified_vehicle_models.formulations.point_mass import (
     maximum_corner_speed,
 )
 from simplified_vehicle_models.parameters.vehicle import PointMassVehicleParameters
-from simplified_vehicle_models.results.traces import LapMode, LapResult
+from simplified_vehicle_models.results.traces import LapMode, LapResult, EnergyLapResult, EnergyReport, StintReport
+from simplified_vehicle_models.powertrain.energy_storage import StorageState, evaluate_storage, integrate_storage
+from simplified_vehicle_models.powertrain.assembly import FullDrivetrainRuntime, resolve_braking
 from simplified_vehicle_models.tracks.types import TrackProfile
 
 
@@ -252,3 +254,52 @@ def _build_result(
         iterations=iterations,
         maximum_speed_change=maximum_change,
     )
+
+
+def solve_lap_with_energy(vehicle, track, mode, initial_state=None, tolerance=1e-5, maximum_iterations=50, regen_enabled=True):
+    """Solve a lap and integrate a self-consistent battery state trace."""
+    storage = getattr(getattr(vehicle.drivetrain, "powertrain", None), "energy_storage", None)
+    state0 = (initial_state.state_of_charge if isinstance(initial_state, StorageState)
+              else storage.initial_state_of_charge if initial_state is None and storage else 1.0 if initial_state is None else float(initial_state))
+    trace = np.full(len(track.distance), state0, dtype=np.float64)
+    converged = False
+    change = math.inf
+    for iteration in range(1, maximum_iterations + 1):
+        lap = solve_lap(vehicle, track, mode)
+        bus, shaft, voltage, consumed, recovered, nxt = _energy_trace(vehicle, track, lap, trace, regen_enabled)
+        change = float(np.max(np.abs(nxt - trace)))
+        trace = 0.5 * (trace + nxt); trace[0] = state0
+        if change <= tolerance:
+            converged = True; break
+    lap = solve_lap(vehicle, track, mode)
+    bus, shaft, voltage, consumed, recovered, nxt = _energy_trace(vehicle, track, lap, trace, regen_enabled)
+    report = EnergyReport(trace, bus, shaft, voltage, tuple(lap.active_longitudinal_constraint), consumed, recovered, consumed-recovered, float(trace[-1]), float(np.nanmin(voltage)) if len(voltage) else math.inf, converged, iteration, change)
+    return EnergyLapResult(lap, report)
+
+
+def _energy_trace(vehicle, track, lap, trace, regen_enabled):
+    n = len(track.segment_length); bus = np.zeros(n); shaft = np.zeros(n); voltage = np.full(n, np.nan)
+    nxt = trace.copy(); state = StorageState(float(trace[0])); consumed = recovered = 0.0
+    storage = getattr(getattr(vehicle.drivetrain, "powertrain", None), "energy_storage", None)
+    for i in range(n):
+        speed = 0.5 * (float(lap.speed[i]) + float(lap.speed[i+1])); dt = float(lap.elapsed_time[i+1]-lap.elapsed_time[i])
+        shaft[i] = float(np.sum(lap.longitudinal_forces[i])) * speed
+        if shaft[i] >= 0: bus[i] = shaft[i] / 0.9
+        elif regen_enabled and isinstance(vehicle.drivetrain, FullDrivetrainRuntime):
+            br = resolve_braking(vehicle.drivetrain.powertrain, vehicle.drivetrain.drivetrain, speed, state, -shaft[i]/max(speed, 1e-9), -shaft[i]/max(speed, 1e-9), vehicle.tire.effective_radius)
+            bus[i] = -br.recovered_bus_power; recovered += br.recovered_bus_power * dt
+        if storage:
+            voltage[i] = evaluate_storage(storage, state).bus_voltage
+            consumed += max(bus[i], 0.0) * dt
+            state = integrate_storage(storage, state, float(bus[i]), dt); nxt[i+1] = state.state_of_charge
+    return bus, shaft, voltage, consumed, recovered, nxt
+
+
+def solve_stint(vehicle, track, mode=LapMode.FLYING, laps=1, initial_state=None, **kwargs):
+    """Repeat laps while carrying the final battery state into the next lap."""
+    if laps < 1: raise ValueError("laps must be positive")
+    results = []; state = initial_state
+    for _ in range(laps):
+        result = solve_lap_with_energy(vehicle, track, mode, state, **kwargs); results.append(result); state = result.energy.final_state_of_charge
+    times = np.asarray([r.lap_time for r in results]); energies = np.asarray([r.energy.net_energy for r in results])
+    return StintReport(tuple(results), times, energies, float(state), sum(r.energy.consumed_energy for r in results), sum(r.energy.recovered_energy for r in results), sum(r.energy.net_energy for r in results))

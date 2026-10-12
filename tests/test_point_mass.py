@@ -1,9 +1,12 @@
 from pathlib import Path
+from dataclasses import replace
 import unittest
 
 import numpy as np
 
 from simplified_vehicle_models.core.conventions import GRAVITY
+from simplified_vehicle_models.powertrain.assembly import FullDrivetrainRuntime, maximum_drive_force
+from simplified_vehicle_models.powertrain.energy_storage import StorageState
 from simplified_vehicle_models.formulations.point_mass import (
     acceleration_limits,
     aerodynamic_forces,
@@ -12,8 +15,10 @@ from simplified_vehicle_models.formulations.point_mass import (
     maximum_vehicle_speed,
     normal_loads,
     tire_force_capacities,
+    _available_drive_force,
 )
-from simplified_vehicle_models.xml.loader import load_point_mass_vehicle
+from simplified_vehicle_models.drivetrain.lumped import compile_lumped_drivetrain
+from simplified_vehicle_models.xml.loader import load_model, load_point_mass_vehicle
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -92,19 +97,60 @@ class PointMassTests(unittest.TestCase):
         self.assertGreater(moving.maximum_deceleration, 0.0)
         self.assertTrue(np.isfinite(moving.maximum_acceleration))
 
+    def test_assembled_dispatch_matches_compiled_drive_capability(self) -> None:
+        self.assertIsInstance(self.vehicle.drivetrain, FullDrivetrainRuntime)
+        tire_limits = np.full(4, 10_000.0)
+        force, constraint = _available_drive_force(self.vehicle, 10.0, tire_limits)
+        expected = maximum_drive_force(
+            self.vehicle.drivetrain.powertrain,
+            self.vehicle.drivetrain.drivetrain,
+            10.0,
+            StorageState(
+                self.vehicle.drivetrain.powertrain.energy_storage.initial_state_of_charge
+            ),
+            effective_radius=self.vehicle.tire.effective_radius,
+        )
+        self.assertEqual(constraint, expected.active_constraint)
+        self.assertAlmostEqual(force, expected.maximum_drive_force, places=9)
+
+    def test_legacy_dispatch_keeps_scalar_force_reduction(self) -> None:
+        legacy = compile_lumped_drivetrain(
+            load_model(REPOSITORY_ROOT / "models/drivetrains/murphy_4wd.xml")
+        )
+        vehicle = replace(self.vehicle, drivetrain=legacy)
+        force, constraint = _available_drive_force(vehicle, 10.0, np.full(4, 10_000.0))
+        expected = min(
+            legacy.motor_count
+            * legacy.peak_motor_torque
+            * legacy.gear_ratio
+            * legacy.efficiency
+            / vehicle.tire.effective_radius,
+            legacy.power_limit * legacy.efficiency / 10.0,
+        )
+        self.assertAlmostEqual(force, expected, places=9)
+        self.assertIn(constraint, {"motor_torque", "power"})
+
     def test_drive_force_does_not_exceed_power_limit(self) -> None:
         speed = 30.0
         limits = acceleration_limits(self.vehicle, speed, 0.0)
-        power_force = (
-            self.vehicle.drivetrain.power_limit
-            * self.vehicle.drivetrain.efficiency
-            / speed
-        )
-
-        self.assertLessEqual(
-            limits.acceleration_state.drive_force_limit,
-            power_force,
-        )
+        if isinstance(self.vehicle.drivetrain, FullDrivetrainRuntime):
+            assembled = maximum_drive_force(
+                self.vehicle.drivetrain.powertrain,
+                self.vehicle.drivetrain.drivetrain,
+                speed,
+                StorageState(
+                    self.vehicle.drivetrain.powertrain.energy_storage.initial_state_of_charge
+                ),
+                effective_radius=self.vehicle.tire.effective_radius,
+            ).maximum_drive_force
+            self.assertLessEqual(limits.acceleration_state.drive_force_limit, assembled)
+        else:
+            power_force = (
+                self.vehicle.drivetrain.power_limit
+                * self.vehicle.drivetrain.efficiency
+                / speed
+            )
+            self.assertLessEqual(limits.acceleration_state.drive_force_limit, power_force)
 
     def test_lateral_forces_close_yaw_moment(self) -> None:
         state = evaluate_equilibrium(self.vehicle, 10.0, 1.0 / 20.0, -2.0)

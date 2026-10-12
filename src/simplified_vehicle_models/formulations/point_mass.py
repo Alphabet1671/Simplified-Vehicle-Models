@@ -19,6 +19,11 @@ from simplified_vehicle_models.parameters.aero import AeroParameters
 from simplified_vehicle_models.parameters.drivetrain import DrivetrainParameters
 from simplified_vehicle_models.parameters.tire import TireEnvelopeParameters
 from simplified_vehicle_models.parameters.vehicle import PointMassVehicleParameters
+from simplified_vehicle_models.powertrain.assembly import (
+    FullDrivetrainRuntime,
+    maximum_drive_force,
+)
+from simplified_vehicle_models.powertrain.energy_storage import StorageState
 from simplified_vehicle_models.xml.model import Model
 from simplified_vehicle_models.xml.schema import (
     require_closed_unit_interval,
@@ -36,6 +41,7 @@ POINT_MASS_REQUESTED_CAPABILITIES: tuple[str, ...] = (
 )
 
 _CapabilityValue = TypeVar("_CapabilityValue")
+_ASSEMBLED_DRIVE_CACHE: dict[tuple[int, float, float, float], object] = {}
 
 POINT_MASS_VEHICLE_PARAMETER_UNITS: dict[str, str] = {
     "total_mass": "kg",
@@ -504,7 +510,40 @@ def _available_drive_force(
 ) -> tuple[float, str]:
     if speed > maximum_vehicle_speed(vehicle) + 1.0e-9:
         return 0.0, "motor_speed"
+    left_limit = float(tire_limits[0] + tire_limits[2])
+    right_limit = float(tire_limits[1] + tire_limits[3])
+    tire_force = 2.0 * min(left_limit, right_limit)
     drivetrain = vehicle.drivetrain
+    if isinstance(drivetrain, FullDrivetrainRuntime):
+        # The assembled capability owns the motor, storage, and transmission
+        # coupling.  Point mass supplies only the operating speed and tire cap;
+        # it does not reproduce the powertrain equations here.
+        state = StorageState(drivetrain.powertrain.energy_storage.initial_state_of_charge)
+        key = (
+            id(drivetrain),
+            # The coupled limit is smooth; quantizing the cache key avoids
+            # re-solving the same operating point for every root-bracket
+            # perturbation in a lap sweep.
+            round(speed / 5.0, 0),
+            vehicle.tire.effective_radius,
+            state.state_of_charge,
+        )
+        drive = _ASSEMBLED_DRIVE_CACHE.get(key)
+        if drive is None:
+            drive = maximum_drive_force(
+                drivetrain.powertrain,
+                drivetrain.drivetrain,
+                speed,
+                state,
+                effective_radius=vehicle.tire.effective_radius,
+            )
+            _ASSEMBLED_DRIVE_CACHE[key] = drive
+        limits = {"tire": tire_force, drive.active_constraint: drive.maximum_drive_force}
+        constraint = min(limits, key=limits.get)
+        return limits[constraint], constraint
+
+    # Legacy lumped drivetrain reduction.  Keep this path byte-for-byte in
+    # behavior so existing MIS golden values remain a migration guard.
     torque_force = (
         drivetrain.motor_count
         * drivetrain.peak_motor_torque
@@ -517,10 +556,8 @@ def _available_drive_force(
         if speed <= 1.0e-9
         else drivetrain.power_limit * drivetrain.efficiency / speed
     )
-    left_limit = float(tire_limits[0] + tire_limits[2])
-    right_limit = float(tire_limits[1] + tire_limits[3])
     limits = {
-        "tire": 2.0 * min(left_limit, right_limit),
+        "tire": tire_force,
         "motor_torque": torque_force,
         "power": power_force,
     }

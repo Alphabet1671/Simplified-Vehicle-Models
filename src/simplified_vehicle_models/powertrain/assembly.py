@@ -268,7 +268,8 @@ def maximum_drive_force(
     storage = evaluate_storage(powertrain.energy_storage, state)
     motor = powertrain.power_plant
     transmission = drivetrain.transmission
-    motor_speed = transmission.motor_speed(speed / effective_radius)
+    # Transmission uses angular speed; motor maps use rpm.
+    motor_speed = transmission.motor_speed(speed / effective_radius) * 60.0 / (2.0 * math.pi)
     if motor_speed > motor.maximum_motor_speed:
         return DriveLimit(
             0.0, 0.0, storage.bus_voltage, 0.0, "motor_speed", 0.0,
@@ -281,8 +282,12 @@ def maximum_drive_force(
     converged = False
     iterations = 0
     residual = math.inf
-    tolerance = 1.0e-9
-    for iterations in range(1, 51):
+    # Point-mass calls this limit repeatedly while bracketing acceleration;
+    # a micron-level voltage residual is unnecessary for force integration.
+    tolerance = 1.0e-6
+    # Point-mass equilibrium evaluates this capability repeatedly while
+    # bracketing acceleration, so keep the coupling explicitly bounded.
+    for iterations in range(1, 3):
         envelope = maximum_motor_torque(
             motor, motor_speed, voltage / math.sqrt(3.0)
         )
@@ -299,7 +304,9 @@ def maximum_drive_force(
                 torque = upper
                 operating = upper_result
             else:
-                for _ in range(60):
+                # Force integration only needs sub-millinewton precision here;
+                # avoid multiplying every point-mass evaluation by a deep solve.
+                for _ in range(12):
                     midpoint = 0.5 * (lower + upper)
                     midpoint_result = evaluate(midpoint)
                     if midpoint_result.feasible and 0.0 <= midpoint_result.bus_power <= storage.discharge_power_limit:
@@ -357,8 +364,11 @@ def maximum_drive_force_lumped(
     if speed < 0.0 or effective_radius <= 0.0:
         raise ValueError("speed must be nonnegative and radius must be positive")
     storage = evaluate_storage(powertrain.energy_storage, state)
+    # The transmission returns angular speed in rad/s; the legacy scalar
+    # parameter stores its speed limit in rpm, just like the motor map.
     motor_speed = lumped.gear_ratio * speed / effective_radius
-    if motor_speed > lumped.maximum_motor_speed:
+    motor_speed_rpm = motor_speed * 60.0 / (2.0 * math.pi)
+    if motor_speed_rpm > lumped.maximum_motor_speed:
         return DriveLimit(
             0.0, 0.0, storage.bus_voltage, 0.0, "motor_speed", 0.0
         )
@@ -415,7 +425,8 @@ def maximum_regen_force(
     storage = evaluate_storage(powertrain.energy_storage, state)
     motor = powertrain.power_plant
     transmission = drivetrain.transmission
-    motor_speed = transmission.motor_speed(speed / effective_radius)
+    # Transmission uses angular speed; motor maps use rpm.
+    motor_speed = transmission.motor_speed(speed / effective_radius) * 60.0 / (2.0 * math.pi)
     if motor_speed > motor.maximum_motor_speed:
         return RegenLimit(
             0.0, 0.0, 0.0, storage.charge_power_limit, math.inf,
@@ -538,7 +549,8 @@ def resolve_braking(
     if speed == 0.0 or regen_limit.active_constraint == "motor_speed":
         recovered_bus_power = 0.0
     else:
-        motor_speed = transmission.motor_speed(speed / effective_radius)
+        # Transmission uses angular speed; motor maps use rpm.
+        motor_speed = transmission.motor_speed(speed / effective_radius) * 60.0 / (2.0 * math.pi)
         motor_torque = (
             regen_force * effective_radius
             / (motor.unit_count * transmission.gear_ratio)

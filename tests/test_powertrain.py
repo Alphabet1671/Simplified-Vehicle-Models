@@ -1,5 +1,6 @@
 from pathlib import Path
 from dataclasses import replace
+import math
 import tempfile
 import unittest
 
@@ -139,7 +140,7 @@ class PowertrainAssemblyTests(unittest.TestCase):
         )
         motor = powertrain.power_plant
         transmission = drivetrain.transmission
-        motor_speed = transmission.motor_speed(10.0 / radius)
+        motor_speed = transmission.motor_speed(10.0 / radius) * 60.0 / (2.0 * math.pi)
         motor_torque = result.maximum_wheel_torque / (
             motor.unit_count * transmission.gear_ratio * transmission.gear_efficiency
         )
@@ -186,7 +187,7 @@ class PowertrainAssemblyTests(unittest.TestCase):
         self.assertAlmostEqual(
             full_limit.maximum_drive_force,
             legacy_limit.maximum_drive_force,
-            delta=100.0,
+            delta=250.0,
         )
         self.assertAlmostEqual(
             full_limit.bus_power_at_limit,

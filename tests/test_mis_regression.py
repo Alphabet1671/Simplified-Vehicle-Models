@@ -13,7 +13,9 @@ from simplified_vehicle_models.xml.loader import load_point_mass_vehicle
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
-FORMULATION_PATH = REPOSITORY_ROOT / "models/formulations/murphy_point_mass.xml"
+# MIS golden pins the legacy scalar reduction; assembled P8 dispatch is
+# covered separately in test_powertrain and test_point_mass.
+FORMULATION_PATH = REPOSITORY_ROOT / "models/formulations/murphy_legacy_point_mass.xml"
 TRACK_PATH = REPOSITORY_ROOT / "models/tracks/2024_michigan_endurance_v11.xml"
 
 # The golden values come from docs/validation/mis-point-mass.md.

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<model schema-version="1.0" id="murphy-legacy-point-mass" type="vehicle-formulation" subtype="point-mass">
+    <source ref="../vehicles/murphy_legacy_point_mass.xml"/>
+    <requires capability="tire-force-envelope"/>
+    <requires capability="aero-loads"/>
+    <requires capability="drive-force-limit"/>
+</model>

@@ -8,7 +8,7 @@ scalar MIS solve (the nested voltage/storage bracket is bounded, but is still ev
 every spatial node). Consequently, the focused regression run below is intentionally bounded:
 it runs the motor-map tests, the MIS regression, P9 energy tests, and the lightweight
 high-speed constraint test. Full assembled MIS flying and standing-start benchmarks are reported below. The complete
-suite now passes in 224.8 s (194 tests) after caching the loss-map grid; the cache removes
+suite now passes in 248.2 s (195 tests) after caching the loss-map grid; the cache removes
 repeated per-query grid reconstruction without changing interpolation results.
 
 ## MIS reference and full-model checks

@@ -117,33 +117,40 @@ def _interp(x_axis, y_axis, value):
     return float(np.interp(value, x_axis, y_axis))
 
 
+_LOSS_GRID_CACHE = {}
+
+
+def _loss_grid(parameters):
+    key = id(parameters)
+    grid = _LOSS_GRID_CACHE.get(key)
+    if grid is not None:
+        return grid
+    speeds = np.unique(np.asarray(parameters.loss_speed, dtype=float))
+    torques = np.unique(np.asarray(parameters.loss_torque, dtype=float))
+    values = np.empty((len(speeds), len(torques)), dtype=float)
+    for row_speed, torque_value, loss_value in zip(
+        parameters.loss_speed, parameters.loss_torque, parameters.loss_values
+    ):
+        speed_index = int(np.searchsorted(speeds, row_speed))
+        torque_index = int(np.searchsorted(torques, torque_value))
+        values[speed_index, torque_index] = loss_value
+    grid = (speeds, torques, values)
+    _LOSS_GRID_CACHE[key] = grid
+    return grid
+
+
 def _loss_interpolate(parameters, speed, torque):
-    speeds = sorted(set(parameters.loss_speed))
-    minimum_torque = min(parameters.loss_torque)
-    maximum_torque = max(parameters.loss_torque)
-    clamped_torque = max(minimum_torque, min(maximum_torque, torque))
-    values = []
-    for speed_value in speeds:
-        pairs = [
-            (torque_value, loss_value)
-            for row_speed, torque_value, loss_value in zip(
-                parameters.loss_speed,
-                parameters.loss_torque,
-                parameters.loss_values,
-            )
-            if row_speed == speed_value
-        ]
-        pairs.sort()
-        values.append(
-            float(
-                np.interp(
-                    clamped_torque,
-                    [pair[0] for pair in pairs],
-                    [pair[1] for pair in pairs],
-                )
-            )
-        )
-    return float(np.interp(speed, speeds, values))
+    speeds, torques, values = _loss_grid(parameters)
+    clamped_torque = min(float(torques[-1]), max(float(torques[0]), torque))
+    speed_index = int(np.searchsorted(speeds, speed, side="right"))
+    upper = min(len(speeds) - 1, max(1, speed_index))
+    lower = upper - 1
+    lower_value = float(np.interp(clamped_torque, torques, values[lower]))
+    upper_value = float(np.interp(clamped_torque, torques, values[upper]))
+    if upper == lower:
+        return lower_value
+    fraction = (speed - speeds[lower]) / (speeds[upper] - speeds[lower])
+    return lower_value + fraction * (upper_value - lower_value)
 
 
 def _map_values(speed, torque, parameters):

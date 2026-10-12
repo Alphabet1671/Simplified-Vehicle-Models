@@ -6,7 +6,9 @@ from simplified_vehicle_models.powertrain.assembly import (
     compile_drivetrain_assembly,
     compile_powertrain_assembly,
     compile_powertrain_drivetrain,
+    FullDrivetrainRuntime,
     maximum_regen_force,
+    resolve_braking,
     solve_shaft_torque_fixed_point,
 )
 from simplified_vehicle_models.xml.loader import load_model
@@ -21,6 +23,8 @@ ROOT = Path(__file__).resolve().parents[1]
 class PowertrainAssemblyTests(unittest.TestCase):
     def test_canonical_nested_assemblies_compile(self):
         vehicle = load_point_mass_vehicle(ROOT / "models/formulations/murphy_point_mass.xml")
+        self.assertIsInstance(vehicle.drivetrain, FullDrivetrainRuntime)
+        self.assertEqual(vehicle.drivetrain.powertrain.power_plant.unit_count, 4)
         self.assertEqual(vehicle.drivetrain.motor_count, 4)
         self.assertEqual(vehicle.drivetrain.gear_ratio, 10.9)
         self.assertEqual(vehicle.drivetrain.maximum_motor_speed, 18600.0)
@@ -101,6 +105,19 @@ class PowertrainAssemblyTests(unittest.TestCase):
             load_model(ROOT / "models/drivetrains/murphy_2024_drivetrain.xml")
         )
         result = maximum_regen_force(
+            powertrain, drivetrain, 30.0, StorageState(0.8), effective_radius=0.193675
+        )
+        self.assertEqual(result.active_constraint, "storage_power")
+        self.assertLessEqual(result.force_limit, result.force_from_charge_power)
+
+    def test_resolve_braking_obeys_charge_power(self):
+        powertrain = compile_powertrain_assembly(
+            load_model(ROOT / "models/powertrains/murphy_2024.xml")
+        )
+        drivetrain = compile_drivetrain_assembly(
+            load_model(ROOT / "models/drivetrains/murphy_2024_drivetrain.xml")
+        )
+        result = resolve_braking(
             powertrain, drivetrain, 30.0, StorageState(0.8), effective_radius=0.193675
         )
         self.assertEqual(result.active_constraint, "storage_power")

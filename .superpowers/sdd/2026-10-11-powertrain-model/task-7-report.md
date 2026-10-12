@@ -10,8 +10,8 @@ Completed the powertrain/drivetrain assembly draft. The nested electric powertra
 
 ## Verification
 
-- Focused: `PYTHONPATH=src python3 -m unittest tests.test_powertrain -v` — 8 tests passed.
-- Full: `PYTHONPATH=src python3 -m unittest discover -s tests -q` — 178 tests passed.
+- Focused: `PYTHONPATH=src python3 -m unittest tests.test_powertrain tests.test_point_mass -q` — 22 tests passed.
+- Full: `PYTHONPATH=src python3 -m unittest discover -s tests -q` — 179 tests passed.
 
 ## Notes
 
@@ -23,9 +23,9 @@ The P7 review corrections are complete. Regenerative transmission and inverter l
 
 Vehicle assembly reduction now provides `powertrain-and-drivetrain` and reaches `drive-force-limit` through the registered `reduce_powertrain_and_drivetrain` adapter. The manifest records the provider and adapter chain. The redundant unreachable nested-assembly branch was removed.
 
-Fixed-point nonconvergence now recomputes the residual at the under-relaxed torque that is returned. Tests cover adapter usage, directional charge-power behavior, fixed-point diagnostics, and existing compatibility and overspeed paths.
+Fixed-point nonconvergence now recomputes the residual at the under-relaxed torque that is returned. The assembled provider now retains nested motor, storage, and transmission runtime objects while remaining equal to the legacy contract. Motoring uses the coupled fixed-point/storage solve and reports bus current and SOC rate; regenerative braking is exposed through `resolve_braking` with motor and pack charge limits. Tests cover adapter usage, directional charge-power behavior, fixed-point diagnostics, compatibility, overspeed, braking, and legacy/full behavioral compatibility.
 
 Correction verification:
 
-- Focused: `PYTHONPATH=src python3 -m unittest tests.test_powertrain -v` — 8 tests passed.
-- Full: `PYTHONPATH=src python3 -m unittest discover -s tests -q` — 178 tests passed.
+- Focused: `PYTHONPATH=src python3 -m unittest tests.test_powertrain tests.test_point_mass -q` — 22 tests passed.
+- Full: `PYTHONPATH=src python3 -m unittest discover -s tests -q` — 179 tests passed.

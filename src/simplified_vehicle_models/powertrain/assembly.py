@@ -22,6 +22,7 @@ from simplified_vehicle_models.powertrain.energy_storage import (
     StorageLimits,
     StorageState,
     evaluate_storage,
+    solve_current,
 )
 from simplified_vehicle_models.powertrain.power_plant import (
     PowerPlantParameters,
@@ -48,6 +49,15 @@ class DrivetrainAssemblyParameters:
     differential_declared: bool = False
 
 
+@dataclass(frozen=True, slots=True, eq=False)
+class FullDrivetrainRuntime(DrivetrainParameters):
+    """Keep nested powertrain components available at runtime."""
+
+    powertrain: PowertrainParameters
+    drivetrain: DrivetrainAssemblyParameters
+
+
+
 @dataclass(frozen=True, slots=True)
 class RegenLimit:
     force_limit: float
@@ -69,6 +79,7 @@ class DriveLimit:
     bus_power_at_limit: float
     active_constraint: str
     storage_state_rate: float
+    storage_current: float = 0.0
     shaft_torque_residual: float = 0.0
     converged: bool = True
     iterations: int = 0
@@ -145,13 +156,15 @@ def compile_powertrain_drivetrain(model: Model) -> DrivetrainParameters:
     state = StorageState(powertrain.energy_storage.initial_state_of_charge)
     limits = evaluate_storage(powertrain.energy_storage, state)
     torque = maximum_motor_torque(motor, 1.0, limits.bus_voltage / math.sqrt(3.0))
-    return DrivetrainParameters(
+    return FullDrivetrainRuntime(
         motor_count=motor.unit_count,
         gear_ratio=transmission.gear_ratio,
         peak_motor_torque=torque,
         power_limit=motor.unit_count * motor.unit_power_limit,
         efficiency=transmission.gear_efficiency,
         maximum_motor_speed=motor.maximum_motor_speed,
+        powertrain=powertrain,
+        drivetrain=drivetrain,
     )
 
 
@@ -209,8 +222,14 @@ def solve_shaft_torque_fixed_point(
     return FixedPointResult(torque, residual, False, max_iterations)
 
 
-def maximum_drive_force(powertrain: PowertrainParameters, drivetrain: DrivetrainAssemblyParameters, speed: float, state: StorageState, effective_radius: float = 1.0) -> DriveLimit:
-    """Return the motoring force and its active constraint."""
+def maximum_drive_force(
+    powertrain: PowertrainParameters,
+    drivetrain: DrivetrainAssemblyParameters,
+    speed: float,
+    state: StorageState,
+    effective_radius: float = 1.0,
+) -> DriveLimit:
+    """Solve the coupled motor, inverter, and storage drive limit."""
     if speed < 0.0 or effective_radius <= 0.0:
         raise ValueError("speed must be nonnegative and radius must be positive")
     storage = evaluate_storage(powertrain.energy_storage, state)
@@ -218,28 +237,44 @@ def maximum_drive_force(powertrain: PowertrainParameters, drivetrain: Drivetrain
     transmission = drivetrain.transmission
     motor_speed = transmission.motor_speed(speed / effective_radius)
     if motor_speed > motor.maximum_motor_speed:
-        return DriveLimit(0.0, 0.0, storage.bus_voltage, 0.0, "motor_speed", 0.0)
-    envelope = maximum_motor_torque(motor, motor_speed, storage.bus_voltage / math.sqrt(3.0))
-    torque = envelope * motor.unit_count
-    wheel_torque = torque * transmission.gear_ratio * transmission.gear_efficiency
-    force = wheel_torque / effective_radius
-    power_force = math.inf if speed == 0.0 else storage.discharge_power_limit * transmission.gear_efficiency * motor.inverter_efficiency / speed
-    if power_force < force:
-        force = power_force
-        active = "storage_power"
-    else:
-        active = "motor_torque"
-    shaft = force * effective_radius / (transmission.gear_ratio * transmission.gear_efficiency)
+        return DriveLimit(
+            0.0, 0.0, storage.bus_voltage, 0.0, "motor_speed", 0.0,
+            0.0, True, 0, 0.0,
+        )
+    envelope = maximum_motor_torque(
+        motor, motor_speed, storage.bus_voltage / math.sqrt(3.0)
+    )
     fixed_point = solve_shaft_torque_fixed_point(
-        motor, motor_speed, storage.discharge_power_limit, storage.bus_voltage,
+        motor,
+        motor_speed,
+        storage.discharge_power_limit,
+        storage.bus_voltage,
         unit_count=motor.unit_count,
     )
-    bus = evaluate_shaft_power(
-        motor, motor_speed, shaft / motor.unit_count, storage.bus_voltage
-    ).bus_power * motor.unit_count
+    torque = min(abs(fixed_point.torque), envelope)
+    shaft = torque * motor.unit_count
+    result = evaluate_shaft_power(
+        motor, motor_speed, torque, storage.bus_voltage
+    )
+    bus = min(storage.discharge_power_limit, result.bus_power * motor.unit_count)
+    current, feasible = solve_current(powertrain.energy_storage, state, bus)
+    wheel_torque = shaft * transmission.gear_ratio * transmission.gear_efficiency
+    force = wheel_torque / effective_radius
+    active = "motor_torque" if abs(fixed_point.torque) > envelope else "storage_power"
+    if not feasible:
+        active = "storage_power"
+    state_rate = -current / powertrain.energy_storage.pack_capacity_joules
     return DriveLimit(
-        force, force * effective_radius, storage.bus_voltage, bus, active, 0.0,
-        fixed_point.residual, fixed_point.converged, fixed_point.iterations,
+        force,
+        force * effective_radius,
+        storage.bus_voltage,
+        bus,
+        active,
+        state_rate,
+        current,
+        fixed_point.residual,
+        fixed_point.converged and feasible,
+        fixed_point.iterations,
     )
 
 
@@ -268,7 +303,9 @@ def maximum_regen_force(
             0.0, 0.0, 0.0, storage.charge_power_limit, math.inf,
             "motor_speed", 0.0, True, 0,
         )
-    envelope = maximum_motor_torque(motor, motor_speed, storage.bus_voltage / math.sqrt(3.0))
+    envelope = maximum_motor_torque(
+        motor, motor_speed, storage.bus_voltage / math.sqrt(3.0)
+    )
     # Regeneration is directional: wheel power is reduced by the gear and
     # inverter losses before it reaches the battery.  The wheel force allowed
     # by a battery charge-power limit therefore uses reciprocal efficiencies.
@@ -289,10 +326,22 @@ def maximum_regen_force(
         * regen_gear_factor * regen_inverter_factor / torque_force
     )
     if speed == 0.0:
-        return RegenLimit(limit, torque_force, power_force, storage.charge_power_limit, crossover, active, 0.0, True, 0)
+        return RegenLimit(
+            limit,
+            torque_force,
+            power_force,
+            storage.charge_power_limit,
+            crossover,
+            active,
+            0.0,
+            True,
+            0,
+        )
     fixed_point = solve_shaft_torque_fixed_point(
         motor, motor_speed, -abs(storage.charge_power_limit), storage.bus_voltage,
-        unit_count=motor.unit_count, tolerance=tolerance, max_iterations=max_iterations,
+        unit_count=motor.unit_count,
+        tolerance=tolerance,
+        max_iterations=max_iterations,
     )
     loss_limited_force = (
         abs(fixed_point.torque) * motor.unit_count * transmission.gear_ratio
@@ -306,6 +355,19 @@ def maximum_regen_force(
     )
 
 
+def resolve_braking(
+    powertrain: PowertrainParameters,
+    drivetrain: DrivetrainAssemblyParameters,
+    speed: float,
+    state: StorageState,
+    effective_radius: float = 1.0,
+) -> RegenLimit:
+    """Resolve available regenerative braking at one operating point."""
+    return maximum_regen_force(
+        powertrain, drivetrain, speed, state, effective_radius=effective_radius
+    )
+
+
 register_component(POWERTRAIN_ASSEMBLY_TYPE, POWERTRAIN_SUBTYPE, kind="assembly")
 register_component(DRIVETRAIN_ASSEMBLY_TYPE, DRIVETRAIN_SUBTYPE, kind="assembly")
 
@@ -315,4 +377,8 @@ def reduce_powertrain_and_drivetrain(value: object) -> object:
     return value
 
 
-register_adapter(ASSEMBLY_SOURCE_CAPABILITY, DRIVE_FORCE_LIMIT, reduce_powertrain_and_drivetrain)
+register_adapter(
+    ASSEMBLY_SOURCE_CAPABILITY,
+    DRIVE_FORCE_LIMIT,
+    reduce_powertrain_and_drivetrain,
+)

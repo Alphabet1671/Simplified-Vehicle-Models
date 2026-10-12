@@ -182,6 +182,33 @@ def _replace_suspension(value: object) -> object:
     return ("suspension", value)
 
 
+def assert_shared_vehicle_contract(test_case, actual, expected):
+    """Compare the shared point-mass contract across drivetrain runtimes."""
+    for name in (
+        "total_mass",
+        "wheelbase",
+        "track_width",
+        "cg_height",
+        "front_mass_fraction",
+        "lateral_load_transfer_distribution",
+        "brake_bias",
+        "tire",
+        "aero",
+    ):
+        test_case.assertEqual(getattr(actual, name), getattr(expected, name))
+    for name in (
+        "motor_count",
+        "gear_ratio",
+        "peak_motor_torque",
+        "power_limit",
+        "efficiency",
+        "maximum_motor_speed",
+    ):
+        test_case.assertEqual(
+            getattr(actual.drivetrain, name), getattr(expected.drivetrain, name)
+        )
+
+
 class CrossFidelityTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -216,7 +243,7 @@ class CrossFidelityTests(unittest.TestCase):
         )
 
     def test_promise_one_reproduces_the_minimal_lap(self) -> None:
-        self.assertEqual(self.fixture, self.minimal)
+        assert_shared_vehicle_contract(self, self.fixture, self.minimal)
         self.assertAlmostEqual(
             self.fixture_lap.lap_time,
             self.minimal_lap.lap_time,
@@ -327,7 +354,7 @@ class CrossFidelityTests(unittest.TestCase):
                 effective_radius=0.193675,
             ),
         )
-        self.assertEqual(self.reduced, self.minimal)
+        assert_shared_vehicle_contract(self, self.reduced, self.minimal)
 
     def test_assembly_with_an_unused_component_compiles(self) -> None:
         self.assertIsInstance(self.fixture, PointMassVehicleParameters)
@@ -373,7 +400,7 @@ class CrossFidelityTests(unittest.TestCase):
             )
             self.assertEqual(record.model_id, "fixture-unused-transient")
             self.assertEqual(record.capability, TRANSIENT_COMBINED_SLIP)
-            self.assertEqual(vehicle, self.minimal)
+            assert_shared_vehicle_contract(self, vehicle, self.minimal)
 
     def test_unknown_type_in_an_unused_component_is_an_error(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

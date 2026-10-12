@@ -125,6 +125,83 @@ class RegenGenerationTests(unittest.TestCase):
                 )
 
 
+class DriveEnvelopeGenerationTests(unittest.TestCase):
+    def test_keeps_exact_boundary_when_sampled_row_is_monotone(self):
+        boundary = 17.847778726
+
+        def evaluate(_parameters, _speed, torque, _voltage):
+            return SimpleNamespace(bus_power=float(torque))
+
+        with mock.patch.object(generate_motor_lut, "evaluate_shaft_power_exact", evaluate):
+            magnitude, reduced, steps = generate_motor_lut._monotone_drive_envelope(
+                object(), 11814.0, 595.9, boundary, 65
+            )
+        # The coarse 257-candidate scan used to snap this down by up to
+        # boundary / 256 (here about 0.070 Nm) even though the exact boundary
+        # was feasible and monotone.
+        self.assertEqual(magnitude, boundary)
+        self.assertFalse(reduced)
+        self.assertEqual(steps, 0)
+
+    def test_reduction_lands_on_the_tight_monotonicity_boundary(self):
+        # Bus power rises to ``limit`` then falls once the magnitude crosses it,
+        # so the sampled row is monotone only up to a grid-dependent boundary
+        # just above ``limit``.  The reduction must bisect onto that boundary
+        # rather than snapping down by up to envelope / 256 = 0.078 Nm.
+        limit = 8.0
+        envelope = 20.0
+        fractions = np.linspace(0.0, 1.0, 65)
+
+        def evaluate(_parameters, _speed, torque, _voltage):
+            magnitude = abs(float(torque))
+            return SimpleNamespace(bus_power=magnitude - 2.0 * max(0.0, magnitude - limit))
+
+        with mock.patch.object(generate_motor_lut, "evaluate_shaft_power_exact", evaluate):
+            magnitude, reduced, steps = generate_motor_lut._monotone_drive_envelope(
+                object(), 11814.0, 595.9, envelope, 65
+            )
+            self.assertTrue(reduced)
+            self.assertGreater(steps, 0)
+            self.assertTrue(
+                generate_motor_lut._drive_row_is_monotone(
+                    object(), 11814.0, 595.9, magnitude, fractions
+                )
+            )
+            self.assertFalse(
+                generate_motor_lut._drive_row_is_monotone(
+                    object(), 11814.0, 595.9, magnitude + 1.0e-6, fractions
+                )
+            )
+        self.assertLess(magnitude, envelope)
+        self.assertGreater(magnitude, limit)
+
+    def test_cli_exposes_reproducible_grid_options(self):
+        parser = generate_motor_lut.build_parser()
+        options = parser.parse_args([
+            "models/power-plants/amk_dd5_100c.xml", "out.npz",
+            "--voltage-points", "17", "--speed-points", "257", "--load-points", "65",
+        ])
+        self.assertEqual(
+            (options.voltage_points, options.speed_points, options.load_points),
+            (17, 257, 65),
+        )
+        defaults = parser.parse_args(["x.xml", "out.npz"])
+        self.assertEqual(
+            (defaults.voltage_points, defaults.speed_points, defaults.load_points),
+            (
+                generate_motor_lut.DEFAULT_VOLTAGE_POINTS,
+                generate_motor_lut.DEFAULT_SPEED_POINTS,
+                generate_motor_lut.DEFAULT_LOAD_POINTS,
+            ),
+        )
+
+    def test_grid_validation_rejects_unrepresentable_resolutions(self):
+        for resolution in ((1, 129, 65), (9, 1, 65), (9, 129, 2), (9, 129, 64)):
+            with self.assertRaises(ValueError):
+                generate_motor_lut.validate_grid(*resolution)
+        generate_motor_lut.validate_grid(9, 129, 65)
+
+
 class OperatingMapValidationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

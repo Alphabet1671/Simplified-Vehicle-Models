@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import math
 import os
 import sys
 from pathlib import Path
@@ -19,7 +18,40 @@ from simplified_vehicle_models.powertrain.power_plant import (  # noqa: E402
 )
 from simplified_vehicle_models.xml.loader import load_model  # noqa: E402
 
-GENERATOR_VERSION = "motor-lut-v1"
+GENERATOR_VERSION = "motor-lut-v2"
+
+# Default grid resolution.  These values are also the documented canonical
+# command in ``models/data/provenance.md``; changing them changes the artifact
+# digest and therefore the XML declaration.
+DEFAULT_VOLTAGE_POINTS = 9
+DEFAULT_SPEED_POINTS = 129
+DEFAULT_LOAD_POINTS = 65
+
+# The persisted drive row must be monotone to within the load-time validator's
+# tolerance (``_validate_operating_map`` rejects a decrease below -1.0e-9 W).
+_MONOTONE_TOLERANCE = 1.0e-9
+
+# Relative width at which the envelope-reduction bisection stops.  A relative
+# width of 1.0e-12 resolves the boundary to ~40 bisections, far below the
+# 1.0e-3 Nm scale at which map error moves lap time by a millisecond.
+_REDUCTION_RELATIVE_TOLERANCE = 1.0e-12
+_REDUCTION_MAX_STEPS = 64
+
+
+class EnvelopeReduction:
+    """Accumulated statistics for the minimal drive-envelope reductions."""
+
+    def __init__(self) -> None:
+        self.reduced_nodes = 0
+        self.max_reduction = 0.0
+        self.max_steps = 0
+        self.bisection_evaluations = 0
+
+    def record(self, absolute: float, reduced: float, steps: int, row: int) -> None:
+        self.reduced_nodes += 1
+        self.max_reduction = max(self.max_reduction, absolute - reduced)
+        self.max_steps = max(self.max_steps, steps)
+        self.bisection_evaluations += steps * row
 
 
 def _sha256(path: Path) -> str:
@@ -78,18 +110,74 @@ def _regen_envelope(parameters, speed, voltage, envelope):
     return float(envelope)
 
 
-def _monotone_drive_envelope(parameters, speed, voltage, envelope):
-    """Select the largest analytical envelope with monotone drive power."""
-    candidates = np.linspace(0.0, envelope, 257)
-    for candidate in candidates[::-1]:
-        values = [evaluate_shaft_power_exact(parameters, speed, x * candidate, voltage).bus_power for x in np.linspace(0.0, 1.0, 65)]
-        if np.all(np.diff(values) >= -1.0e-9):
-            return float(candidate)
-    raise ValueError(f"no monotone analytical drive envelope at voltage={voltage}, speed={speed}")
+def _drive_row_is_monotone(parameters, speed, voltage, magnitude, fractions):
+    """Return whether the sampled drive bus-power row is non-decreasing.
+
+    The sampled row is exactly the row ``generate`` persists and exactly the
+    row ``_validate_operating_map`` re-checks, so one predicate keeps generation
+    and load-time validation in agreement.  The scan short-circuits on the first
+    decrease, which keeps a rejected magnitude cheap.
+    """
+    previous = None
+    for fraction in fractions:
+        value = evaluate_shaft_power_exact(
+            parameters, speed, fraction * magnitude, voltage
+        ).bus_power
+        if previous is not None and value - previous < -_MONOTONE_TOLERANCE:
+            return False
+        previous = value
+    return True
 
 
-def generate(path, voltage_points=9, speed_points=129, load_points=65, xml_path=None) -> str:
+def _monotone_drive_envelope(parameters, speed, voltage, envelope, load_points):
+    """Return the largest feasible drive envelope with a monotone sampled row.
+
+    The exact analytical feasibility boundary found by ``_maximum_feasible`` is
+    kept whenever its sampled row is already monotone; only a genuine
+    monotonicity violation reduces it.  A reduction bisects the torque magnitude
+    to the largest monotone value, so it is minimal rather than one of a coarse
+    set of discrete candidate steps: a 257-candidate scan snapped the boundary
+    down by up to ``envelope / 256`` (about 0.05 Nm, sometimes twice that) even
+    when the exact boundary was itself feasible and monotone.
+    """
+    magnitude = float(envelope)
+    if magnitude <= 0.0:
+        return 0.0, False, 0
+    fractions = np.linspace(0.0, 1.0, load_points)
+    if _drive_row_is_monotone(parameters, speed, voltage, magnitude, fractions):
+        return magnitude, False, 0
+    lo, hi = 0.0, magnitude
+    steps = 0
+    tolerance = magnitude * _REDUCTION_RELATIVE_TOLERANCE
+    while hi - lo > tolerance and steps < _REDUCTION_MAX_STEPS:
+        midpoint = 0.5 * (lo + hi)
+        steps += 1
+        if _drive_row_is_monotone(parameters, speed, voltage, midpoint, fractions):
+            lo = midpoint
+        else:
+            hi = midpoint
+    return float(lo), True, steps
+
+
+def validate_grid(voltage_points: int, speed_points: int, load_points: int) -> None:
+    """Reject grid resolutions the map format cannot represent faithfully."""
+    if voltage_points < 2:
+        raise ValueError("voltage_points must be at least 2")
+    if speed_points < 2:
+        raise ValueError("speed_points must be at least 2")
+    if load_points < 3:
+        raise ValueError("load_points must be at least 3")
+    if load_points % 2 == 0:
+        # An odd load axis places exactly one sample on the zero-torque anchor,
+        # which ``_validate_operating_map`` requires.
+        raise ValueError("load_points must be odd so the load axis has one zero anchor")
+
+
+def generate(path, voltage_points=DEFAULT_VOLTAGE_POINTS,
+             speed_points=DEFAULT_SPEED_POINTS, load_points=DEFAULT_LOAD_POINTS,
+             xml_path=None) -> str:
     """Generate the canonical map and return its SHA-256 digest."""
+    validate_grid(voltage_points, speed_points, load_points)
     path = Path(path)
     xml_path = Path(xml_path) if xml_path is not None else _ROOT / "models" / "power-plants" / "amk_dd5_100c.xml"
     parameters = compile_analytical_motor_source(load_model(xml_path))
@@ -103,16 +191,22 @@ def generate(path, voltage_points=9, speed_points=129, load_points=65, xml_path=
     loss_power = np.empty_like(bus_power)
     regen_feasible = np.zeros_like(bus_power, dtype=np.bool_)
     max_drive_violation = 0.0
+    reductions = EnvelopeReduction()
     for iv, bus_voltage in enumerate(voltage):
         for ix, motor_speed in enumerate(speed):
             envelope = float(np.interp(
                 min(motor_speed, parameters.torque_speed[-1]),
                 parameters.torque_speed, parameters.torque_values,
             ))
-            drive_torque[iv, ix] = _monotone_drive_envelope(
-                parameters, motor_speed, bus_voltage,
-                _maximum_feasible(parameters, motor_speed, bus_voltage, 1.0, envelope),
+            exact_drive = _maximum_feasible(
+                parameters, motor_speed, bus_voltage, 1.0, envelope,
             )
+            drive_limit, reduced, steps = _monotone_drive_envelope(
+                parameters, motor_speed, bus_voltage, exact_drive, load_points,
+            )
+            if reduced:
+                reductions.record(exact_drive, drive_limit, steps, load_points)
+            drive_torque[iv, ix] = drive_limit
             regen_torque[iv, ix] = _regen_envelope(
                 parameters, motor_speed, bus_voltage,
                 _maximum_feasible(parameters, motor_speed, bus_voltage, -1.0, envelope),
@@ -156,9 +250,17 @@ def generate(path, voltage_points=9, speed_points=129, load_points=65, xml_path=
     os.replace(produced, path)
     digest = _sha256(path)
     print(f"SHA-256: {digest}")
+    print(f"grid: voltage_points={voltage_points} speed_points={speed_points} load_points={load_points}")
     print(f"axes: voltage={voltage.shape}, speed={speed.shape}, load={load.shape}")
     print(f"array shapes: drive_torque={drive_torque.shape}, regen_torque={regen_torque.shape}, bus_power={bus_power.shape}, loss_power={loss_power.shape}")
+    print(f"artifact bytes: {path.stat().st_size}")
     print(f"maximum drive monotonic violation: {max_drive_violation:.17g}")
+    print(
+        f"drive envelope reductions: nodes={reductions.reduced_nodes} "
+        f"max_reduction={reductions.max_reduction:.17g} Nm "
+        f"max_bisection_steps={reductions.max_steps} "
+        f"extra_evaluations={reductions.bisection_evaluations}"
+    )
     print(f"generator version: {GENERATOR_VERSION}")
     for source, source_digest in source_digests.items():
         print(f"source SHA-256: {source} {source_digest}")
@@ -166,9 +268,31 @@ def generate(path, voltage_points=9, speed_points=129, load_points=65, xml_path=
     return digest
 
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("xml_path")
     parser.add_argument("output")
-    args = parser.parse_args()
-    generate(args.output, xml_path=args.xml_path)
+    parser.add_argument(
+        "--voltage-points", type=int, default=DEFAULT_VOLTAGE_POINTS,
+        help=f"bus-voltage grid samples (default: {DEFAULT_VOLTAGE_POINTS})",
+    )
+    parser.add_argument(
+        "--speed-points", type=int, default=DEFAULT_SPEED_POINTS,
+        help=f"motor-speed grid samples (default: {DEFAULT_SPEED_POINTS})",
+    )
+    parser.add_argument(
+        "--load-points", type=int, default=DEFAULT_LOAD_POINTS,
+        help=f"signed normalized-load samples, must be odd (default: {DEFAULT_LOAD_POINTS})",
+    )
+    return parser
+
+
+if __name__ == "__main__":
+    options = build_parser().parse_args()
+    generate(
+        options.output,
+        voltage_points=options.voltage_points,
+        speed_points=options.speed_points,
+        load_points=options.load_points,
+        xml_path=options.xml_path,
+    )

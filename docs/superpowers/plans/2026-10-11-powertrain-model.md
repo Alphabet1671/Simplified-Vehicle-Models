@@ -945,11 +945,11 @@ The result object must expose enough data for an independent check without calli
 
 ### 8.5 Expected effect on the MIS lap
 
-The tire unit correction of decision D17 changed the picture. Before the correction the validated lap peaked at 10 334 motor rpm and the powertrain limits were far away. After the correction the same lap peaks at **15 551 motor rpm**, and the wheel power reaches **58.4 kW**.
+The tire unit correction of decision D17 changed the picture. Before the correction the validated lap peaked at 10 334 motor rpm and the powertrain limits were far away. After the correction the same lap peaks at **15 899 motor rpm**, and the wheel power reaches **58.4 kW**.
 
 | Quantity | Value | Comparison |
 |---|---:|---|
-| Peak motor speed | 15 551 rpm | 95 percent of the 16 300 rpm corner at 600 V |
+| Peak motor speed | 15 899 rpm | 97.5 percent of the 16 300 rpm corner at 600 V |
 | Peak wheel power | 58.4 kW | About 69 kW at the bus, within 15 percent of the 80 kW limit |
 | Positive work per lap | 619.0 kJ | 0.172 kWh at the shaft |
 | Braking work per lap | -318.7 kJ | Recoverable when regeneration is enabled |
@@ -1501,7 +1501,7 @@ The correction changed the validated MIS results:
 | Standing start | 96.2448 s | **70.3896 s** |
 | Peak vehicle speed | 19.2278 m/s | 29.5823 m/s |
 | Peak wheel power | 14.7 kW | 58.4 kW |
-| Peak motor speed | 10 334 rpm | 15 551 rpm |
+| Peak motor speed | 10 334 rpm | 15 899 rpm |
 
 The corrected flying lap is 1.07 s faster than the measured Lap 8 trace of about 70.30 s and 0.75 s faster than the cited 69.98 s fastest-lap reference. The unit defect was the dominant cause of the earlier 24.9 s gap.
 
@@ -1526,7 +1526,7 @@ The motor map declares `MaxRPM = 18600`, and its speed table spans 0 to 20 000 r
 
 The controller verified both values from the source map. The map also declares `type = 4` and `maxPower = 80`, which confirms four motors and the 80 kW system limit that decision D14 retains.
 
-The MIS lap peaks at 15 551 rpm, so this correction does not change the MIS results. It changes the maximum vehicle speed from 37.2 m/s to 34.6 m/s, and it matters for the synthetic high-speed case in Task P10.
+The MIS lap peaks at 15 899 rpm, so this correction does not change the MIS results. It changes the maximum vehicle speed from 37.2 m/s to 34.6 m/s, and it matters for the synthetic high-speed case in Task P10.
 
 **D22 — The constant-parameter machine model has known limitations. RECORDED.**
 Task P3 fitted the machine parameters jointly and measured the deviations between the map and a constant-parameter model. The deviations are physical, and the best achievable error for the model form is larger than the plan first assumed:

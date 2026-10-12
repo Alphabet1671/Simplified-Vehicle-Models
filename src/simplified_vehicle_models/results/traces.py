@@ -56,6 +56,9 @@ class EnergyReport:
     maximum_state_change: float
     # Maximum SOC mismatch between the profile input and its integrated trace.
     state_profile_residual: float = 0.0
+    # True when the speed/force profile was intentionally reused rather than
+    # re-solved at the carried SOC.
+    profile_reused: bool = False
 
 
 @dataclass(frozen=True, slots=True)

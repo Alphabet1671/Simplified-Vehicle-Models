@@ -413,6 +413,7 @@ def _fixed_profile_energy_result(vehicle, track, result, initial_state, regen_en
         1,
         maximum_change,
         0.0,
+        True,
     )
     return EnergyLapResult(result.lap, report)
 

@@ -56,6 +56,8 @@ class EnergyLapTests(unittest.TestCase):
                 reuse_profile=True,
             )
         self.assertEqual(solve.call_count, 1)
+        self.assertFalse(report.laps[0].energy.profile_reused)
+        self.assertTrue(report.laps[1].energy.profile_reused)
         self.assertTrue(np.array_equal(report.laps[1].speed, report.laps[0].speed))
         self.assertTrue(np.array_equal(report.laps[2].speed, report.laps[0].speed))
         self.assertAlmostEqual(

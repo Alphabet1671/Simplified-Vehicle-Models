@@ -126,6 +126,10 @@ class RegenGenerationTests(unittest.TestCase):
 
 
 class DriveEnvelopeGenerationTests(unittest.TestCase):
+    @staticmethod
+    def _drive_fractions(load_points=65):
+        return np.linspace(-1.0, 1.0, load_points)[load_points // 2:]
+
     def test_keeps_exact_boundary_when_sampled_row_is_monotone(self):
         boundary = 17.847778726
 
@@ -134,7 +138,7 @@ class DriveEnvelopeGenerationTests(unittest.TestCase):
 
         with mock.patch.object(generate_motor_lut, "evaluate_shaft_power_exact", evaluate):
             magnitude, reduced, steps = generate_motor_lut._monotone_drive_envelope(
-                object(), 11814.0, 595.9, boundary, 65
+                object(), 11814.0, 595.9, boundary, self._drive_fractions()
             )
         # The coarse 257-candidate scan used to snap this down by up to
         # boundary / 256 (here about 0.070 Nm) even though the exact boundary
@@ -150,7 +154,7 @@ class DriveEnvelopeGenerationTests(unittest.TestCase):
         # rather than snapping down by up to envelope / 256 = 0.078 Nm.
         limit = 8.0
         envelope = 20.0
-        fractions = np.linspace(0.0, 1.0, 65)
+        fractions = self._drive_fractions()
 
         def evaluate(_parameters, _speed, torque, _voltage):
             magnitude = abs(float(torque))
@@ -158,7 +162,7 @@ class DriveEnvelopeGenerationTests(unittest.TestCase):
 
         with mock.patch.object(generate_motor_lut, "evaluate_shaft_power_exact", evaluate):
             magnitude, reduced, steps = generate_motor_lut._monotone_drive_envelope(
-                object(), 11814.0, 595.9, envelope, 65
+                object(), 11814.0, 595.9, envelope, fractions
             )
             self.assertTrue(reduced)
             self.assertGreater(steps, 0)
@@ -174,6 +178,20 @@ class DriveEnvelopeGenerationTests(unittest.TestCase):
             )
         self.assertLess(magnitude, envelope)
         self.assertGreater(magnitude, limit)
+
+    def test_predicate_ignores_the_non_monotone_regen_half(self):
+        # A curve that grows on the drive half but falls on the regen half must
+        # not trigger a drive-envelope reduction: regen is deliberately exempt.
+        def evaluate(_parameters, _speed, torque, _voltage):
+            return SimpleNamespace(bus_power=float(torque))
+
+        fractions = self._drive_fractions()
+        with mock.patch.object(generate_motor_lut, "evaluate_shaft_power_exact", evaluate):
+            self.assertTrue(
+                generate_motor_lut._drive_row_is_monotone(
+                    object(), 100.0, 500.0, 17.847778726, fractions
+                )
+            )
 
     def test_cli_exposes_reproducible_grid_options(self):
         parser = generate_motor_lut.build_parser()
@@ -252,23 +270,19 @@ class OperatingMapValidationTests(unittest.TestCase):
             _load_operating_map(bad_model)
 
     def test_canonical_full_regen_envelope_preserves_nonmonotonic_region(self):
-        voltage_index, speed_index = 8, 17
-        self.assertEqual(self.data["voltage"][voltage_index], 608.688)
-        self.assertEqual(self.data["speed"][speed_index], 2470.3125)
-        self.assertAlmostEqual(
-            self.data["regen_torque"][voltage_index, speed_index],
-            21.242431532485426,
-        )
-        row = self.data["bus_power"][voltage_index, speed_index, :33]
-        self.assertAlmostEqual(row[0], -826.234638, places=5)
-        self.assertLess(np.min(row), row[0] - 200.0)
+        # The regenerated canonical map keeps the genuinely non-monotone regen
+        # row: it dips well below its own first node before recovering.
+        row = self.data["bus_power"][0, 9, :]
+        negative = int(np.searchsorted(self.data["load"], 0.0))
+        self.assertLess(float(np.min(row[:negative])), float(row[0]) - 200.0)
         self.assertGreater(int(np.argmin(row)), 0)
+        self.assertTrue(np.any(self.data["regen_feasible"][0, 9, :negative]))
 
     def test_canonical_shape_and_digest(self):
         loaded = _validate_operating_map(self.data)
-        self.assertEqual(loaded.bus_power.shape, (9, 129, 65))
+        self.assertEqual(loaded.bus_power.shape, (25, 129, 65))
         digest = hashlib.sha256((ROOT / "models/data/amk_dd5_100c_operating_map.npz").read_bytes()).hexdigest()
-        self.assertEqual(digest, "1057b82c49953957e305407e48bf1cb5f9ab58b81ead3e08ab785d5ad0f4a852")
+        self.assertEqual(digest, "0166bd0b42972e2d356d03ac462786ef5d0f79d6e131e78ef850f83471728608")
 
 
 class MotorLutQueryTests(unittest.TestCase):

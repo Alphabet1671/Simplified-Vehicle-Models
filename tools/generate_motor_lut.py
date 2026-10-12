@@ -113,10 +113,13 @@ def _regen_envelope(parameters, speed, voltage, envelope):
 def _drive_row_is_monotone(parameters, speed, voltage, magnitude, fractions):
     """Return whether the sampled drive bus-power row is non-decreasing.
 
-    The sampled row is exactly the row ``generate`` persists and exactly the
-    row ``_validate_operating_map`` re-checks, so one predicate keeps generation
-    and load-time validation in agreement.  The scan short-circuits on the first
-    decrease, which keeps a rejected magnitude cheap.
+    ``fractions`` are the positive normalized loads of the persisted drive row,
+    so the predicate evaluates exactly the row ``generate`` stores and exactly
+    the row ``_validate_operating_map`` re-checks.  One predicate therefore
+    keeps generation and load-time validation in agreement.  The scan
+    short-circuits on the first decrease, which keeps a rejected magnitude
+    cheap.  Only the positive-load half is checked: the negative-load half is
+    the regen row, which is deliberately not monotone.
     """
     previous = None
     for fraction in fractions:
@@ -129,7 +132,7 @@ def _drive_row_is_monotone(parameters, speed, voltage, magnitude, fractions):
     return True
 
 
-def _monotone_drive_envelope(parameters, speed, voltage, envelope, load_points):
+def _monotone_drive_envelope(parameters, speed, voltage, envelope, drive_fractions):
     """Return the largest feasible drive envelope with a monotone sampled row.
 
     The exact analytical feasibility boundary found by ``_maximum_feasible`` is
@@ -143,7 +146,7 @@ def _monotone_drive_envelope(parameters, speed, voltage, envelope, load_points):
     magnitude = float(envelope)
     if magnitude <= 0.0:
         return 0.0, False, 0
-    fractions = np.linspace(0.0, 1.0, load_points)
+    fractions = np.asarray(drive_fractions, dtype=np.float64)
     if _drive_row_is_monotone(parameters, speed, voltage, magnitude, fractions):
         return magnitude, False, 0
     lo, hi = 0.0, magnitude
@@ -185,6 +188,10 @@ def generate(path, voltage_points=DEFAULT_VOLTAGE_POINTS,
     voltage = np.linspace(448.848, 608.688, voltage_points, dtype=np.float64)
     speed = np.linspace(0.0, 18600.0, speed_points, dtype=np.float64)
     load = np.linspace(-1.0, 1.0, load_points, dtype=np.float64)
+    zero = load_points // 2
+    # The persisted drive row is exactly ``load[zero:]``; the monotonicity
+    # predicate therefore samples the same normalized loads the validator sees.
+    drive_fractions = load[zero:]
     drive_torque = np.empty((voltage_points, speed_points), dtype=np.float64)
     regen_torque = np.empty_like(drive_torque)
     bus_power = np.empty((voltage_points, speed_points, load_points), dtype=np.float64)
@@ -202,7 +209,7 @@ def generate(path, voltage_points=DEFAULT_VOLTAGE_POINTS,
                 parameters, motor_speed, bus_voltage, 1.0, envelope,
             )
             drive_limit, reduced, steps = _monotone_drive_envelope(
-                parameters, motor_speed, bus_voltage, exact_drive, load_points,
+                parameters, motor_speed, bus_voltage, exact_drive, drive_fractions,
             )
             if reduced:
                 reductions.record(exact_drive, drive_limit, steps, load_points)
@@ -227,7 +234,6 @@ def generate(path, voltage_points=DEFAULT_VOLTAGE_POINTS,
                 regen_feasible[iv, ix, il] = (
                     normalized_load < 0.0 and result.bus_power < -1.0e-9
                 )
-            zero = load_points // 2
             row = bus_power[iv, ix]
             # Drive power remains monotone.  Regen is intentionally not subject
             # to this check: Task 3 scans every piecewise-linear regen segment.

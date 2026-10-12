@@ -111,3 +111,25 @@ OK
 ```
 
 `git diff --check` passed before commit. The correction commit contains the two P4/P5 implementation modules, their focused unittest modules, and this report.
+
+## Correction pass 2
+
+The reference proof was corrected to avoid cancellation through the stored magnitude. The compiled motor parameters now retain the measured 16,300 rpm row's `vd_peak` and `vq_peak` components. The unittest independently computes `hypot(vd_peak, vq_peak)` as the line-to-line peak voltage, converts it to per-phase peak by dividing by `sqrt(3)`, and reconstructs the 600 V bus by multiplying by `sqrt(3)`. It also asserts the source row speed and measured d/q currents.
+
+Commands and results:
+
+```text
+PYTHONPATH=src /Users/alphabet1671/.dsh/dsh-runtimes/dsh-primary-runtime/dependencies/python/bin/python3 -m unittest tests.test_energy_storage tests.test_power_plant
+Ran 17 tests in 0.481s
+OK
+
+PYTHONPATH=src /Users/alphabet1671/.dsh/dsh-runtimes/dsh-primary-runtime/dependencies/python/bin/python3 -m unittest tests.test_mis_regression
+Ran 7 tests in 20.847s
+OK
+
+PYTHONPATH=src /Users/alphabet1671/.dsh/dsh-runtimes/dsh-primary-runtime/dependencies/python/bin/python3 -m unittest discover -s tests -v
+Ran 161 tests in 67.738s
+OK
+```
+
+`git diff --check` passed before the correction-pass-2 commit.

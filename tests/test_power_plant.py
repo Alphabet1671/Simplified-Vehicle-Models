@@ -49,13 +49,31 @@ class PowerPlantTests(unittest.TestCase):
 
     def test_reference_basis_uses_measured_maximum_current_row(self):
         parameters = self.parameters
-        measured_line_peak = parameters.measured_reference_voltage
-        reconstructed_bus = math.sqrt(3.0) * measured_line_peak / math.sqrt(3.0)
+        line_line_peak = math.hypot(
+            parameters.measured_reference_direct_voltage,
+            parameters.measured_reference_quadrature_voltage,
+        )
+        phase_peak = line_line_peak / math.sqrt(3.0)
+        reconstructed_bus = math.sqrt(3.0) * phase_peak
         self.assertAlmostEqual(reconstructed_bus, 600.0, delta=600.0 * 0.05)
         self.assertAlmostEqual(parameters.measured_reference_speed, 16300.0)
-        self.assertAlmostEqual(parameters.measured_reference_direct_current, -18.0643575140)
-        self.assertAlmostEqual(parameters.measured_reference_quadrature_current, 83.8073922015)
-        self.assertAlmostEqual(measured_line_peak, 600.0, delta=600.0 * 0.05)
+        self.assertAlmostEqual(
+            parameters.measured_reference_direct_current,
+            -18.0643575140,
+        )
+        self.assertAlmostEqual(
+            parameters.measured_reference_quadrature_current,
+            83.8073922015,
+        )
+        self.assertAlmostEqual(
+            parameters.measured_reference_direct_voltage,
+            -566.8960754228,
+        )
+        self.assertAlmostEqual(
+            parameters.measured_reference_quadrature_voltage,
+            196.5422083675,
+        )
+        self.assertAlmostEqual(line_line_peak, 600.0, delta=600.0 * 0.05)
 
     def test_available_voltage_uses_current_drop(self):
         parameters = self.parameters

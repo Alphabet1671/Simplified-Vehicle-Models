@@ -68,6 +68,8 @@ class PowerPlantParameters:
     measured_reference_speed: float
     measured_reference_direct_current: float
     measured_reference_quadrature_current: float
+    measured_reference_direct_voltage: float
+    measured_reference_quadrature_voltage: float
     measured_reference_voltage: float
 
     @property
@@ -348,6 +350,8 @@ def compile_electric_motor(model: Model) -> PowerPlantParameters:
         float(reference[0]),
         float(reference[2]),
         float(reference[3]),
+        float(reference[4]),
+        float(reference[5]),
         math.hypot(float(reference[4]), float(reference[5])),
     )
 

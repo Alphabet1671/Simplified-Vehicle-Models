@@ -3,7 +3,7 @@
 ## Scope and execution limits
 
 This report validates the P8 assembled powertrain dispatch and the P9 energy interfaces at
-HEAD `17ec9c0` (P8/P9/P10 validation artifacts plus bounded torque-solve optimization). The full assembled point-mass solve is substantially slower than the legacy
+HEAD `b84dc9b` (P8/P9/P10 validation artifacts plus cached motor-loss interpolation and bounded torque-solve optimization). The full assembled point-mass solve is slower than the legacy
 scalar MIS solve (the nested voltage/storage bracket is bounded, but is still evaluated at
 every spatial node). Consequently, the focused regression run below is intentionally bounded:
 it runs the motor-map tests, the MIS regression, P9 energy tests, and the lightweight

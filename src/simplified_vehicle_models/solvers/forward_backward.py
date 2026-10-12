@@ -19,7 +19,7 @@ from simplified_vehicle_models.parameters.vehicle import PointMassVehicleParamet
 from simplified_vehicle_models.results.traces import LapMode, LapResult, EnergyLapResult, EnergyReport, SolverProgress, StintReport
 from simplified_vehicle_models.powertrain.energy_storage import StorageState, evaluate_storage, integrate_storage
 from simplified_vehicle_models.powertrain.assembly import FullDrivetrainRuntime, resolve_braking
-from simplified_vehicle_models.powertrain.power_plant import evaluate_shaft_power
+from simplified_vehicle_models.powertrain.power_plant import evaluate_shaft_power, motor_lut_counters
 from simplified_vehicle_models.tracks.types import TrackProfile
 
 
@@ -357,6 +357,9 @@ def _build_result(
         drive_cache_entries=len(drive_cache.values) if drive_cache is not None else 0,
         drive_cache_max_speed_displacement=(drive_cache.max_speed_displacement if drive_cache is not None else 0.0),
         drive_cache_max_soc_displacement=(drive_cache.max_soc_displacement if drive_cache is not None else 0.0),
+        motor_forward_queries=motor_lut_counters()["forward"],
+        motor_inverse_queries=motor_lut_counters()["inverse"],
+        motor_fallback_queries=motor_lut_counters()["fallback"],
     )
 
 

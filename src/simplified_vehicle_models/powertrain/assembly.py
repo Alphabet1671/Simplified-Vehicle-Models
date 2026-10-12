@@ -25,8 +25,11 @@ from simplified_vehicle_models.powertrain.energy_storage import (
 )
 from simplified_vehicle_models.powertrain.power_plant import (
     PowerPlantParameters,
+    evaluate_motor,
     evaluate_shaft_power,
     maximum_motor_torque,
+    motor_torque_limits,
+    torque_for_bus_power,
 )
 
 POWERTRAIN_ASSEMBLY_TYPE = "powertrain-assembly"
@@ -40,6 +43,7 @@ ASSEMBLY_SOURCE_CAPABILITY = "powertrain-and-drivetrain"
 class PowertrainParameters:
     power_plant: PowerPlantParameters
     energy_storage: EnergyStorageParameters
+    motor_mode: str = "lut"
 
 
 @dataclass(frozen=True, slots=True)
@@ -199,6 +203,15 @@ def compile_powertrain_drivetrain(model: Model) -> DrivetrainParameters:
     )
 
 
+def _motor_operating_point(motor, mode, speed, torque, voltage):
+    """Select the explicit analytical baseline or canonical LUT evaluator."""
+    if mode == "analytical":
+        return evaluate_shaft_power(motor, speed, torque, voltage)
+    if mode != "lut":
+        raise ValueError("motor_mode must be 'lut' or 'analytical'")
+    return evaluate_motor(motor, speed, torque, voltage)
+
+
 def solve_shaft_torque_fixed_point(
     motor: PowerPlantParameters,
     motor_speed: float,
@@ -277,51 +290,43 @@ def maximum_drive_force(
         )
     voltage = storage.bus_voltage
     torque = 0.0
-    operating = evaluate_shaft_power(motor, motor_speed, 0.0, voltage)
+    operating = _motor_operating_point(motor, powertrain.motor_mode, motor_speed, 0.0, voltage)
     current = 0.0
     converged = False
     iterations = 0
     residual = math.inf
-    # Point-mass calls this limit repeatedly while bracketing acceleration;
-    # a micron-level voltage residual is unnecessary for force integration.
     tolerance = 1.0e-6
-    # Point-mass equilibrium evaluates this capability repeatedly while
-    # bracketing acceleration, so keep the coupling explicitly bounded.
     for iterations in range(1, 3):
-        envelope = maximum_motor_torque(
-            motor, motor_speed, voltage / math.sqrt(3.0)
-        )
-
-        def evaluate(candidate: float):
-            return evaluate_shaft_power(motor, motor_speed, candidate, voltage)
-
-        lower = 0.0
-        upper = envelope
-        lower_result = evaluate(lower)
-        upper_result = evaluate(upper)
-        if lower_result.feasible and lower_result.bus_power >= 0.0:
+        if powertrain.motor_mode == "analytical":
+            envelope = maximum_motor_torque(motor, motor_speed, voltage / math.sqrt(3.0))
+            upper_result = _motor_operating_point(motor, powertrain.motor_mode, motor_speed, envelope, voltage)
             if upper_result.feasible and upper_result.bus_power <= storage.discharge_power_limit:
-                torque = upper
-                operating = upper_result
+                torque, operating = envelope, upper_result
             else:
-                # Force integration only needs bounded torque precision here;
-                # avoid multiplying every point-mass evaluation by a deep solve.
-                # Eight bisection steps provide sub-percent force resolution while
-                # keeping assembled point-mass sweeps tractable.
+                # Keep the analytical baseline's bounded bisection unchanged.
+                lower, upper = 0.0, envelope
+                operating = _motor_operating_point(motor, powertrain.motor_mode, motor_speed, lower, voltage)
                 for _ in range(8):
                     midpoint = 0.5 * (lower + upper)
-                    midpoint_result = evaluate(midpoint)
-                    if midpoint_result.feasible and 0.0 <= midpoint_result.bus_power <= storage.discharge_power_limit:
-                        lower = midpoint
-                        lower_result = midpoint_result
+                    candidate = _motor_operating_point(motor, powertrain.motor_mode, motor_speed, midpoint, voltage)
+                    if candidate.feasible and 0.0 <= candidate.bus_power <= storage.discharge_power_limit:
+                        lower, operating = midpoint, candidate
                     else:
                         upper = midpoint
                 torque = lower
-                operating = lower_result
         else:
-            torque = 0.0
-            operating = lower_result
-        bus = max(0.0, operating.bus_power * motor.unit_count)
+            limits = motor_torque_limits(motor, motor_speed, voltage)
+            envelope = limits.maximum_drive_torque
+            envelope_result = _motor_operating_point(motor, powertrain.motor_mode, motor_speed, envelope, voltage)
+            target = storage.discharge_power_limit / motor.unit_count
+            if envelope_result.feasible and envelope_result.bus_power <= target:
+                torque, operating = envelope, envelope_result
+            else:
+                solved = torque_for_bus_power(motor, motor_speed, voltage, target, "drive")
+                torque, operating = solved.torque, solved.operating_point
+        bus_operating = (evaluate_shaft_power(motor, motor_speed, torque, voltage)
+                         if powertrain.motor_mode == "lut" else operating)
+        bus = max(0.0, bus_operating.bus_power * motor.unit_count)
         current, feasible = solve_current(powertrain.energy_storage, state, bus)
         new_voltage = terminal_voltage(powertrain.energy_storage, state, current)
         residual = abs(new_voltage - voltage)
@@ -329,7 +334,10 @@ def maximum_drive_force(
         if residual <= tolerance:
             converged = feasible and operating.feasible
             break
-    bus = max(0.0, operating.bus_power * motor.unit_count)
+    bus_operating = (evaluate_shaft_power(motor, motor_speed, torque, voltage)
+                     if powertrain.motor_mode == "lut" else operating)
+    bus = max(0.0, bus_operating.bus_power * motor.unit_count)
+    current, feasible = solve_current(powertrain.energy_storage, state, bus)
     wheel_torque = (
         torque
         * motor.unit_count
@@ -434,55 +442,40 @@ def maximum_regen_force(
             0.0, 0.0, 0.0, storage.charge_power_limit, math.inf,
             "motor_speed", 0.0, True, 0,
         )
-    envelope = maximum_motor_torque(
-        motor, motor_speed, storage.bus_voltage / math.sqrt(3.0)
-    )
-    # Regeneration is directional: wheel power is reduced by the gear and
-    # inverter losses before it reaches the battery.  The wheel force allowed
-    # by a battery charge-power limit therefore uses reciprocal efficiencies.
+    if powertrain.motor_mode == "analytical":
+        envelope = maximum_motor_torque(motor, motor_speed, storage.bus_voltage / math.sqrt(3.0))
+    else:
+        envelope = motor_torque_limits(motor, motor_speed, storage.bus_voltage).maximum_regen_torque
     regen_gear_factor = 1.0 / transmission.gear_efficiency
-    regen_inverter_factor = 1.0 / motor.inverter_efficiency
-    torque_force = (
-        envelope * motor.unit_count * transmission.gear_ratio
-        * regen_gear_factor / effective_radius
-    )
-    power_force = (
-        math.inf if speed == 0.0 else abs(storage.charge_power_limit)
-        * regen_gear_factor * regen_inverter_factor / speed
-    )
-    limit = min(torque_force, power_force)
-    active = "motor_torque" if torque_force <= power_force else "storage_power"
-    crossover = (
-        math.inf if torque_force == 0.0 else abs(storage.charge_power_limit)
-        * regen_gear_factor * regen_inverter_factor / torque_force
-    )
+    torque_force = envelope * motor.unit_count * transmission.gear_ratio * regen_gear_factor / effective_radius
+    power_force = math.inf if speed == 0.0 else abs(storage.charge_power_limit) * regen_gear_factor / speed
+    crossover = math.inf if torque_force == 0.0 else abs(storage.charge_power_limit) * regen_gear_factor / torque_force
     if speed == 0.0:
-        return RegenLimit(
-            limit,
-            torque_force,
-            power_force,
-            storage.charge_power_limit,
-            crossover,
-            active,
-            0.0,
-            True,
-            0,
+        return RegenLimit(torque_force, torque_force, power_force, storage.charge_power_limit, crossover, "motor_torque", 0.0, True, 0)
+    target = -abs(storage.charge_power_limit) / motor.unit_count
+    envelope_result = _motor_operating_point(motor, powertrain.motor_mode, motor_speed, -envelope, storage.bus_voltage)
+    if envelope_result.feasible and envelope_result.bus_power >= target:
+        torque, operating = -envelope, envelope_result
+        active = "motor_torque"
+    elif powertrain.motor_mode == "analytical":
+        fixed_point = solve_shaft_torque_fixed_point(
+            motor, motor_speed, -abs(storage.charge_power_limit), storage.bus_voltage,
+            unit_count=motor.unit_count, tolerance=tolerance, max_iterations=max_iterations,
         )
-    fixed_point = solve_shaft_torque_fixed_point(
-        motor, motor_speed, -abs(storage.charge_power_limit), storage.bus_voltage,
-        unit_count=motor.unit_count,
-        tolerance=tolerance,
-        max_iterations=max_iterations,
-    )
-    loss_limited_force = (
-        abs(fixed_point.torque) * motor.unit_count * transmission.gear_ratio
-        * regen_gear_factor / effective_radius
-    )
-    if active == "storage_power":
-        limit = min(limit, loss_limited_force)
+        torque = fixed_point.torque
+        operating = _motor_operating_point(motor, powertrain.motor_mode, motor_speed, torque, storage.bus_voltage)
+        active = "storage_power"
+    else:
+        solved = torque_for_bus_power(motor, motor_speed, storage.bus_voltage, target, "regen")
+        torque, operating = solved.torque, solved.operating_point
+        active = "storage_power"
+    torque_limited_force = abs(torque) * motor.unit_count * transmission.gear_ratio * regen_gear_factor / effective_radius
+    limit = min(torque_limited_force, power_force)
+    if limit < torque_limited_force:
+        active = "storage_power"
     return RegenLimit(
-        limit, torque_force, power_force, storage.charge_power_limit, crossover, active,
-        fixed_point.residual, fixed_point.converged, fixed_point.iterations,
+        limit, torque_force, power_force, storage.charge_power_limit, crossover,
+        active, (operating.bus_power - target if active == "storage_power" else 0.0), operating.feasible, 1,
     )
 
 
@@ -558,8 +551,9 @@ def resolve_braking(
             / (motor.unit_count * transmission.gear_ratio)
             * transmission.gear_efficiency
         )
-        evaluated = evaluate_shaft_power(
+        evaluated = _motor_operating_point(
             motor,
+            powertrain.motor_mode,
             motor_speed,
             -abs(motor_torque),
             evaluate_storage(powertrain.energy_storage, state).bus_voltage,

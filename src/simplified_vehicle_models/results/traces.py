@@ -52,6 +52,9 @@ class LapResult:
     drive_cache_entries: int = 0
     drive_cache_max_speed_displacement: float = 0.0
     drive_cache_max_soc_displacement: float = 0.0
+    motor_forward_queries: int = 0
+    motor_inverse_queries: int = 0
+    motor_fallback_queries: int = 0
 
 
 @dataclass(frozen=True, slots=True)

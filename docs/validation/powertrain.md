@@ -151,6 +151,31 @@ The inverse microbenchmark compares the prior repeated analytical evaluator plus
 The LUT inverse was 9.22x faster in this run. This is a motor-query baseline;
 assembled comparison remains Task 4.
 
+## Task 4 LUT assembly integration
+
+The assembled path now uses the XML-declared motor LUT by default. Drive limits call
+`motor_torque_limits` and `torque_for_bus_power` for each voltage-coupling pass;
+regeneration scans the complete inverse envelope and applies the signed storage
+charge-power target without a second inverter-efficiency loss. Analytical assembly
+is retained as an explicit `motor_mode="analytical"` benchmark baseline, and all
+out-of-domain voltage/speed/load queries use the exact fallback.
+
+The maintained comparison command is:
+
+```text
+PYTHONPATH=src python examples/benchmark_soc_solver.py --mode compare --runs 3
+```
+
+It performs one untimed warm-up and three same-process timed flying laps per mode,
+using the default exact drive-cache policy. JSON reports median/min wall time, lap
+and maximum-speed deltas, force residual, LUT forward/inverse/fallback counters,
+and map-load cost. The canonical map remains the Task 3 generated NPZ (digest and
+provenance validated by the operating-map tests); no generated map contents were
+changed in Task 4. Regen energy comparison is conditional on each mode completing
+within 900 seconds; accepted energy must be recomputed in joules from physical bus
+power and elapsed time rather than using the known dimensionally defective legacy
+field.
+
 ## Reference checks and assumptions
 
 Legacy MIS flying and standing-start golden results remain 69.22653728547469 s

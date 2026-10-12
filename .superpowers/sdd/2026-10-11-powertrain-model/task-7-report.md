@@ -10,8 +10,10 @@ Completed the powertrain/drivetrain assembly draft. The nested electric powertra
 
 ## Verification
 
-- Focused: `PYTHONPATH=src python3 -m unittest tests.test_powertrain tests.test_point_mass -q` — 22 tests passed.
-- Full: `PYTHONPATH=src python3 -m unittest discover -s tests -q` — 179 tests passed.
+- Focused: `PYTHONPATH=src python3 -m unittest tests.test_powertrain tests.test_cross_fidelity -q` — 27 tests passed.
+- Full: `PYTHONPATH=src python3 -m unittest discover -s tests -q` — 181 tests passed.
+
+The final correction preserves the underlying motor/storage active constraint in `BrakingResult` while reporting friction allocation separately. Standstill and forward motoring tests verify positive force, bus power, and charging-current direction.
 
 ## Notes
 
@@ -27,5 +29,7 @@ Fixed-point nonconvergence now recomputes the residual at the under-relaxed torq
 
 Correction verification:
 
-- Focused: `PYTHONPATH=src python3 -m unittest tests.test_powertrain tests.test_point_mass -q` — 22 tests passed.
-- Full: `PYTHONPATH=src python3 -m unittest discover -s tests -q` — 179 tests passed.
+- Focused: `PYTHONPATH=src python3 -m unittest tests.test_powertrain tests.test_cross_fidelity -q` — 27 tests passed.
+- Full: `PYTHONPATH=src python3 -m unittest discover -s tests -q` — 181 tests passed.
+
+The final correction preserves the underlying motor/storage active constraint in `BrakingResult` while reporting friction allocation separately. Standstill and forward motoring tests verify positive force, bus power, and charging-current direction.

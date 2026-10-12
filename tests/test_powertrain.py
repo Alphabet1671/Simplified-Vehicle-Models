@@ -7,6 +7,7 @@ from simplified_vehicle_models.powertrain.assembly import (
     compile_powertrain_assembly,
     compile_powertrain_drivetrain,
     FullDrivetrainRuntime,
+    maximum_drive_force,
     maximum_regen_force,
     resolve_braking,
     solve_shaft_torque_fixed_point,
@@ -97,6 +98,25 @@ class PowertrainAssemblyTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "does not match driven wheels"):
                 compile_powertrain_drivetrain(load_model(vehicle))
 
+    def test_drive_force_has_positive_bus_power(self):
+        powertrain = compile_powertrain_assembly(
+            load_model(ROOT / "models/powertrains/murphy_2024.xml")
+        )
+        drivetrain = compile_drivetrain_assembly(
+            load_model(ROOT / "models/drivetrains/murphy_2024_drivetrain.xml")
+        )
+        for speed in (0.0, 30.0):
+            result = maximum_drive_force(
+                powertrain,
+                drivetrain,
+                speed,
+                StorageState(0.8),
+                effective_radius=0.193675,
+            )
+            self.assertGreater(result.maximum_drive_force, 0.0)
+            self.assertGreater(result.bus_power_at_limit, 0.0)
+            self.assertLess(result.storage_state_rate, 0.0)
+
     def test_regen_charge_power_constraint_is_active(self):
         powertrain = compile_powertrain_assembly(
             load_model(ROOT / "models/powertrains/murphy_2024.xml")
@@ -122,6 +142,31 @@ class PowertrainAssemblyTests(unittest.TestCase):
         )
         self.assertEqual(result.active_constraint, "storage_power")
         self.assertLessEqual(result.force_limit, result.force_from_charge_power)
+
+    def test_resolve_braking_allocates_friction_after_regen(self):
+        powertrain = compile_powertrain_assembly(
+            load_model(ROOT / "models/powertrains/murphy_2024.xml")
+        )
+        drivetrain = compile_drivetrain_assembly(
+            load_model(ROOT / "models/drivetrains/murphy_2024_drivetrain.xml")
+        )
+        result = resolve_braking(
+            powertrain,
+            drivetrain,
+            30.0,
+            StorageState(0.8),
+            braking_demand=3000.0,
+            tire_force_capacity=2500.0,
+            effective_radius=0.193675,
+        )
+        self.assertEqual(result.total_force, 2500.0)
+        self.assertGreater(result.regen_force, 0.0)
+        self.assertGreater(result.friction_force, 0.0)
+        self.assertAlmostEqual(
+            result.regen_force + result.friction_force,
+            result.total_force,
+        )
+        self.assertGreater(result.recovered_power, 0.0)
 
     def test_regen_rejects_motor_overspeed(self):
         powertrain = compile_powertrain_assembly(

@@ -244,19 +244,25 @@ def maximum_drive_force(
     envelope = maximum_motor_torque(
         motor, motor_speed, storage.bus_voltage / math.sqrt(3.0)
     )
-    fixed_point = solve_shaft_torque_fixed_point(
-        motor,
-        motor_speed,
-        storage.discharge_power_limit,
-        storage.bus_voltage,
-        unit_count=motor.unit_count,
-    )
-    torque = min(abs(fixed_point.torque), envelope)
+    if speed == 0.0:
+        fixed_point = FixedPointResult(envelope, 0.0, True, 0)
+    else:
+        fixed_point = solve_shaft_torque_fixed_point(
+            motor,
+            motor_speed,
+            storage.discharge_power_limit,
+            storage.bus_voltage,
+            unit_count=motor.unit_count,
+        )
+    torque = envelope if speed == 0.0 else min(abs(fixed_point.torque), envelope)
     shaft = torque * motor.unit_count
     result = evaluate_shaft_power(
         motor, motor_speed, torque, storage.bus_voltage
     )
-    bus = min(storage.discharge_power_limit, result.bus_power * motor.unit_count)
+    bus = min(
+        storage.discharge_power_limit,
+        max(1.0e-9, result.bus_power * motor.unit_count),
+    )
     current, feasible = solve_current(powertrain.energy_storage, state, bus)
     wheel_torque = shaft * transmission.gear_ratio * transmission.gear_efficiency
     force = wheel_torque / effective_radius
@@ -355,16 +361,56 @@ def maximum_regen_force(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class BrakingResult:
+    """Report regenerative and friction braking allocation."""
+
+    regen_force: float
+    friction_force: float
+    total_force: float
+    recovered_power: float
+    active_constraint: str
+    regen_limit: RegenLimit
+
+    @property
+    def force_limit(self) -> float:
+        """Return the available regenerative force."""
+        return self.regen_limit.force_limit
+
+    @property
+    def force_from_charge_power(self) -> float:
+        """Return the charge-power-limited regenerative force."""
+        return self.regen_limit.force_from_charge_power
+
+
 def resolve_braking(
     powertrain: PowertrainParameters,
     drivetrain: DrivetrainAssemblyParameters,
     speed: float,
     state: StorageState,
+    braking_demand: float = math.inf,
+    tire_force_capacity: float = math.inf,
     effective_radius: float = 1.0,
-) -> RegenLimit:
-    """Resolve available regenerative braking at one operating point."""
-    return maximum_regen_force(
+) -> BrakingResult:
+    """Allocate a braking demand between regen and friction brakes."""
+    if braking_demand < 0.0 or tire_force_capacity < 0.0:
+        raise ValueError("braking demand and tire capacity must be nonnegative")
+    regen_limit = maximum_regen_force(
         powertrain, drivetrain, speed, state, effective_radius=effective_radius
+    )
+    demand = min(braking_demand, tire_force_capacity)
+    if not math.isfinite(demand):
+        demand = regen_limit.force_limit
+    regen_force = min(demand, regen_limit.force_limit)
+    friction_force = demand - regen_force
+    active = regen_limit.active_constraint
+    return BrakingResult(
+        regen_force=regen_force,
+        friction_force=friction_force,
+        total_force=demand,
+        recovered_power=regen_force * speed,
+        active_constraint=active,
+        regen_limit=regen_limit,
     )
 
 

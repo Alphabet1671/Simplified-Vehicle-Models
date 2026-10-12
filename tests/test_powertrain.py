@@ -282,7 +282,7 @@ class OperatingMapValidationTests(unittest.TestCase):
         loaded = _validate_operating_map(self.data)
         self.assertEqual(loaded.bus_power.shape, (25, 129, 65))
         digest = hashlib.sha256((ROOT / "models/data/amk_dd5_100c_operating_map.npz").read_bytes()).hexdigest()
-        self.assertEqual(digest, "0166bd0b42972e2d356d03ac462786ef5d0f79d6e131e78ef850f83471728608")
+        self.assertEqual(digest, "31cfadc88b66d1425d210ad71cbc85ba0dea75564903014a1075efb7669d5fe9")
 
 
 class MotorLutQueryTests(unittest.TestCase):

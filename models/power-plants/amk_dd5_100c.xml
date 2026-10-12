@@ -6,5 +6,5 @@
     <parameter name="inverter_efficiency" value="0.95" unit="1"/>
     <parameter name="device_drop" value="0" unit="V"/>
   </parameters>
-  <data role="operating-map" path="../data/amk_dd5_100c_operating_map.npz" format="npz" sha256="0166bd0b42972e2d356d03ac462786ef5d0f79d6e131e78ef850f83471728608"/>
+  <data role="operating-map" path="../data/amk_dd5_100c_operating_map.npz" format="npz" sha256="31cfadc88b66d1425d210ad71cbc85ba0dea75564903014a1075efb7669d5fe9"/>
 </model>

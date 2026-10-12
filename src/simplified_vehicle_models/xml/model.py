@@ -21,3 +21,4 @@ class Model:
     units: dict[str, str]
     references: tuple[ModelReference, ...]
     requires: tuple[str, ...] = ()
+    driven_wheels: tuple[str, ...] = ()

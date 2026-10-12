@@ -121,6 +121,8 @@ def _load_model(
         parameters, units = _parse_parameters(root, path)
         requires = _parse_requires(root, path)
 
+    driven_wheels = _parse_driven_wheels(root, path)
+
     reference_mode = (
         _LoadMode.FULL if mode is _LoadMode.FULL else _LoadMode.IDENTITY
     )
@@ -151,6 +153,7 @@ def _load_model(
         units=units,
         references=tuple(reference_models),
         requires=requires,
+        driven_wheels=driven_wheels,
     )
     cache[key] = model
     return model
@@ -189,6 +192,19 @@ def _parse_parameters(
         parameters[name] = value
         units[name] = _required_attribute(element, "unit", path)
     return parameters, units
+
+
+def _parse_driven_wheels(
+    root: ElementTree.Element,
+    path: Path,
+) -> tuple[str, ...]:
+    """Read wheel positions from an optional transmission configuration."""
+
+    positions: list[str] = []
+    for element in root.findall("./configuration/driven-wheel"):
+        position = _required_attribute(element, "position", path)
+        positions.append(position)
+    return tuple(positions)
 
 
 def _parse_requires(

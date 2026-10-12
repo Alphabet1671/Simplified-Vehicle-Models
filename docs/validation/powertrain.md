@@ -104,5 +104,6 @@ The remaining runtime is the per-node storage and energy integration cost.
   is directional/linear guidance, not an absolute measured-speed predictor.
 * Unsigned-radius, planar track; no banking, elevation, transient tire or suspension model.
 * Perfect-limit driver and point-mass force equilibrium.
-* The synthetic sensitivity numbers are bounded analytic/kinematic evidence. A complete
-  high-speed assembled lap and 22-lap MIS energy run remain expensive follow-up validations.
+* The synthetic sensitivity numbers are bounded analytic/kinematic evidence. The completed
+  22-lap result uses the documented fixed-profile approximation; a fully state-coupled 22-lap
+  MIS energy run remains an expensive follow-up validation.

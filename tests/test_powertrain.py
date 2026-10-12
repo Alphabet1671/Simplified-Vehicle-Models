@@ -4,6 +4,10 @@ import math
 import tempfile
 import unittest
 import hashlib
+from types import SimpleNamespace
+from unittest import mock
+
+from tools import generate_motor_lut
 
 import numpy as np
 
@@ -35,6 +39,30 @@ from simplified_vehicle_models.xml.loader import load_point_mass_vehicle
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+class RegenGenerationTests(unittest.TestCase):
+    def test_nonproductive_low_speed_envelope_is_zero(self):
+        def evaluate(_parameters, _speed, torque, _voltage):
+            return SimpleNamespace(feasible=True, bus_power=abs(torque) + 1.0)
+
+        with mock.patch.object(generate_motor_lut, "evaluate_shaft_power_exact", evaluate):
+            result = generate_motor_lut._regen_envelope(
+                object(), 0.0, 448.848, 20.0, np.array([1.0, 0.5, 0.0])
+            )
+        self.assertEqual(result, 0.0)
+
+    def test_nonmonotonic_productive_branch_fails_instead_of_zeroing(self):
+        def evaluate(_parameters, _speed, torque, _voltage):
+            magnitude = abs(torque)
+            bump = 0.5 if 0.06 < magnitude < 0.14 else 0.0
+            return SimpleNamespace(feasible=True, bus_power=0.1 - magnitude + bump)
+
+        with mock.patch.object(generate_motor_lut, "evaluate_shaft_power_exact", evaluate):
+            with self.assertRaisesRegex(ValueError, "non-monotone analytical regen bus power"):
+                generate_motor_lut._regen_envelope(
+                    object(), 0.0, 448.848, 20.0, np.array([1.0, 0.5, 0.0])
+                )
 
 
 class OperatingMapValidationTests(unittest.TestCase):
@@ -89,7 +117,7 @@ class OperatingMapValidationTests(unittest.TestCase):
         loaded = _validate_operating_map(self.data)
         self.assertEqual(loaded.bus_power.shape, (9, 129, 65))
         digest = hashlib.sha256((ROOT / "models/data/amk_dd5_100c_operating_map.npz").read_bytes()).hexdigest()
-        self.assertEqual(digest, "fa670ac4abd4bb81a8be923c493a54cc9ea424021301a750718de05cb057fbee")
+        self.assertEqual(digest, "beeca408c8339bbbb372cd379c9b60ad58020377e77a50ae9fcc0609e1fec508")
 
 
 class PowertrainAssemblyTests(unittest.TestCase):

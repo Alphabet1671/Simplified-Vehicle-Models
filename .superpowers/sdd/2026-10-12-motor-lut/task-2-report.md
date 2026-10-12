@@ -67,3 +67,24 @@ passed
 ## Round 2/5 fix report
 
 Added explicit loader tests for digest mismatch, raw directional-row non-monotonicity even when every regen point is infeasible, and regen-feasibility holes/re-entry. Loader validation now checks the complete raw negative-load bus-power row before consulting `regen_feasible`, requires regen feasibility to be a contiguous prefix from maximum negative load to the zero crossover, and rejects feasibility flags at nonnegative loads. Generation applies the same raw-row and contiguous-segment checks. Low-speed analytical regen candidates whose raw negative row is non-monotone are emitted as the validated zero-torque row instead of hiding the violation behind an infeasible mask. The regenerated artifact digest is `fa670ac4abd4bb81a8be923c493a54cc9ea424021301a750718de05cb057fbee`; XML/provenance and deterministic repeat output agree.
+
+## Round 3/5 fix report
+
+The generator now scans the complete analytical negative-torque envelope on a deterministic 257-point grid, brackets the first connected productive branch, and validates its complete raw negative-load bus-power row. A low-speed envelope is emitted as zero only when the scan proves no feasible point has `bus_power < -1e-9`; a productive nonmonotone branch raises with voltage, speed, and violation magnitude rather than being zeroed. Added tests cover both behaviors.
+
+Exact commands/results:
+
+```text
+PYTHONPATH=src python3 tools/generate_motor_lut.py models/power-plants/amk_dd5_100c.xml models/data/amk_dd5_100c_operating_map.npz
+SHA-256: beeca408c8339bbbb372cd379c9b60ad58020377e77a50ae9fcc0609e1fec508
+maximum monotonic repair: 0
+
+PYTHONPATH=src python3 tools/generate_motor_lut.py models/power-plants/amk_dd5_100c.xml /tmp/round3-repeat.npz
+SHA-256: beeca408c8339bbbb372cd379c9b60ad58020377e77a50ae9fcc0609e1fec508
+
+PYTHONPATH=src python3 -m unittest tests.test_powertrain tests.test_export_data -v
+Ran 60 tests in 0.588s; OK
+
+git diff --check
+passed
+```

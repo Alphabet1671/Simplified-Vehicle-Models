@@ -57,6 +57,58 @@ def _source_paths(xml_path: Path) -> tuple[Path, ...]:
             data / "amk_dd5_100c_identification.csv")
 
 
+def _raw_regen_row(parameters, speed, voltage, envelope, loads):
+    return np.array([
+        evaluate_shaft_power_exact(parameters, speed, -float(x) * envelope, voltage).bus_power
+        for x in loads
+    ], dtype=np.float64)
+
+
+def _regen_envelope(parameters, speed, voltage, envelope, loads):
+    """Find a connected productive regen branch, or prove it is absent.
+
+    The complete negative-torque envelope is scanned before selecting a branch.
+    A bracketed search locates the first productive component; its upper scan
+    bracket is the deterministic branch envelope.  This avoids replacing a
+    productive candidate with zero merely because a later branch is invalid.
+    """
+    if envelope <= 0.0:
+        return 0.0
+    scan = np.linspace(0.0, envelope, 257, dtype=np.float64)
+    productive = np.array([
+        (result := evaluate_shaft_power_exact(parameters, speed, -float(torque), voltage)).feasible
+        and result.bus_power < -1.0e-9
+        for torque in scan
+    ], dtype=bool)
+    indices = np.flatnonzero(productive)
+    if indices.size == 0:
+        return 0.0
+    first = int(indices[0])
+    if first == 0:
+        lo, hi = 0.0, float(scan[0])
+    else:
+        lo, hi = float(scan[first - 1]), float(scan[first])
+        for _ in range(80):
+            mid = (lo + hi) * 0.5
+            result = evaluate_shaft_power_exact(parameters, speed, -mid, voltage)
+            if result.feasible and result.bus_power < -1.0e-9:
+                hi = mid
+            else:
+                lo = mid
+    # Keep the first connected productive scan bracket.  Validate its complete
+    # raw row; any violation is an analytical generation error, not a reason to
+    # silently emit a zero-torque row.
+    branch = float(scan[first])
+    row = _raw_regen_row(parameters, speed, voltage, branch, loads)
+    delta = float(np.max(np.maximum(0.0, -np.diff(row)))) if row.size > 1 else 0.0
+    if delta > 1.0e-9:
+        raise ValueError(
+            f"non-monotone analytical regen bus power at voltage={voltage}, "
+            f"speed={speed}: {delta} W"
+        )
+    return branch
+
+
 def _monotone_drive_envelope(parameters, speed, voltage, envelope):
     """Select the largest analytical envelope with monotone drive power."""
     candidates = np.linspace(0.0, envelope, 257)
@@ -92,18 +144,11 @@ def generate(path, voltage_points=9, speed_points=129, load_points=65, xml_path=
                 parameters, motor_speed, bus_voltage,
                 _maximum_feasible(parameters, motor_speed, bus_voltage, 1.0, envelope),
             )
-            regen_torque[iv, ix] = _maximum_feasible(parameters, motor_speed, bus_voltage, -1.0, envelope)
-            # A low-speed analytical regen candidate can draw positive parasitic
-            # bus power at every negative load.  It is not a valid directional
-            # row; use the zero-torque row rather than masking that violation.
-            negative_candidate = np.array([
-                evaluate_shaft_power_exact(
-                    parameters, motor_speed, normalized_load * regen_torque[iv, ix], bus_voltage
-                ).bus_power
-                for normalized_load in load[: load_points // 2]
-            ])
-            if negative_candidate.size > 1 and np.any(np.diff(negative_candidate) < -1.0e-9):
-                regen_torque[iv, ix] = 0.0
+            regen_torque[iv, ix] = _regen_envelope(
+                parameters, motor_speed, bus_voltage,
+                _maximum_feasible(parameters, motor_speed, bus_voltage, -1.0, envelope),
+                -load[: load_points // 2 + 1],
+            )
             for il, normalized_load in enumerate(load):
                 torque_limit = drive_torque[iv, ix] if normalized_load >= 0 else regen_torque[iv, ix]
                 result = evaluate_shaft_power_exact(parameters, motor_speed, normalized_load * torque_limit, bus_voltage)

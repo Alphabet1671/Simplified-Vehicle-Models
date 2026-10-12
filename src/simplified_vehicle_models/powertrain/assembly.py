@@ -353,16 +353,46 @@ def maximum_drive_force_lumped(
     state: StorageState,
     effective_radius: float = 1.0,
 ) -> DriveLimit:
-    """Evaluate the legacy lumped drivetrain at one operating point."""
-    transmission = FixedGearParameters(
-        gear_ratio=lumped.gear_ratio,
-        gear_efficiency=lumped.efficiency,
-        front_torque_fraction=0.5,
-        driven_wheels=("fl", "fr", "rl", "rr"),
+    """Evaluate the independent legacy scalar drivetrain reduction."""
+    if speed < 0.0 or effective_radius <= 0.0:
+        raise ValueError("speed must be nonnegative and radius must be positive")
+    storage = evaluate_storage(powertrain.energy_storage, state)
+    motor_speed = lumped.gear_ratio * speed / effective_radius
+    if motor_speed > lumped.maximum_motor_speed:
+        return DriveLimit(
+            0.0, 0.0, storage.bus_voltage, 0.0, "motor_speed", 0.0
+        )
+    torque_force = (
+        lumped.motor_count
+        * lumped.peak_motor_torque
+        * lumped.gear_ratio
+        * lumped.efficiency
+        / effective_radius
     )
-    drivetrain = DrivetrainAssemblyParameters(transmission)
-    return maximum_drive_force(
-        powertrain, drivetrain, speed, state, effective_radius
+    power_force = (
+        math.inf
+        if speed == 0.0
+        else lumped.power_limit * powertrain.power_plant.inverter_efficiency
+        * lumped.efficiency / speed
+    )
+    force = min(torque_force, power_force)
+    active = "motor_torque" if torque_force <= power_force else "storage_power"
+    bus = 0.0 if speed == 0.0 else force * speed / (
+        lumped.efficiency * powertrain.power_plant.inverter_efficiency
+    )
+    bus = min(bus, storage.discharge_power_limit)
+    current, feasible = solve_current(powertrain.energy_storage, state, bus)
+    return DriveLimit(
+        force,
+        force * effective_radius,
+        terminal_voltage(powertrain.energy_storage, state, current),
+        bus,
+        active,
+        -current / powertrain.energy_storage.pack_capacity_joules,
+        current,
+        0.0,
+        feasible,
+        0,
     )
 
 
@@ -503,16 +533,24 @@ def resolve_braking(
     regen_force = min(demand, regen_limit.force_limit)
     friction_force = demand - regen_force
     active = regen_limit.active_constraint
+    motor = powertrain.power_plant
+    transmission = drivetrain.transmission
+    motor_speed = transmission.motor_speed(speed / effective_radius)
+    motor_torque = (
+        regen_force * effective_radius
+        / (motor.unit_count * transmission.gear_ratio)
+        * transmission.gear_efficiency
+    )
+    evaluated = evaluate_shaft_power(
+        motor, motor_speed, -abs(motor_torque),
+        evaluate_storage(powertrain.energy_storage, state).bus_voltage,
+    )
+    recovered_bus_power = abs(evaluated.bus_power) * motor.unit_count
     return BrakingResult(
         regen_force_used=regen_force,
         friction_force_used=friction_force,
         total_force_limit=demand,
-        recovered_bus_power=(
-            regen_force
-            * speed
-            * drivetrain.transmission.gear_efficiency
-            * powertrain.power_plant.inverter_efficiency
-        ),
+        recovered_bus_power=recovered_bus_power,
         active_constraint=active,
         regen_limit=regen_limit,
     )

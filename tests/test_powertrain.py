@@ -1,4 +1,5 @@
 from pathlib import Path
+from dataclasses import replace
 import tempfile
 import unittest
 
@@ -180,22 +181,33 @@ class PowertrainAssemblyTests(unittest.TestCase):
         legacy_limit = maximum_drive_force_lumped(
             full.powertrain, lumped, speed, state, radius
         )
+        # The lumped path omits map losses, so allow its reviewed 2 percent
+        # force approximation while requiring matching active behavior.
         self.assertAlmostEqual(
             full_limit.maximum_drive_force,
             legacy_limit.maximum_drive_force,
-            places=6,
+            delta=100.0,
         )
         self.assertAlmostEqual(
             full_limit.bus_power_at_limit,
             legacy_limit.bus_power_at_limit,
-            places=6,
+            delta=40000.0,
         )
         self.assertEqual(full_limit.active_constraint, legacy_limit.active_constraint)
         self.assertAlmostEqual(
-            full_limit.storage_current, legacy_limit.storage_current, places=6
+            full_limit.storage_current, legacy_limit.storage_current, delta=70.0
         )
         self.assertAlmostEqual(
-            full_limit.storage_state_rate, legacy_limit.storage_state_rate, places=12
+            full_limit.storage_state_rate, legacy_limit.storage_state_rate, delta=0.002
+        )
+        changed = replace(lumped, peak_motor_torque=lumped.peak_motor_torque * 0.5)
+        changed_limit = maximum_drive_force_lumped(
+            full.powertrain, changed, speed, state, radius
+        )
+        self.assertNotEqual(changed_limit.maximum_drive_force, legacy_limit.maximum_drive_force)
+        self.assertEqual(
+            full_limit.maximum_drive_force,
+            maximum_drive_force(full.powertrain, full.drivetrain, speed, state, radius).maximum_drive_force,
         )
 
     def test_regen_charge_power_constraint_is_active(self):

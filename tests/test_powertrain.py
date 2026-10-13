@@ -47,6 +47,7 @@ from simplified_vehicle_models.powertrain.power_plant import (
 from simplified_vehicle_models.powertrain.energy_storage import (
     StorageState,
     evaluate_storage,
+    terminal_voltage,
 )
 from simplified_vehicle_models.xml.loader import load_point_mass_vehicle
 
@@ -889,6 +890,7 @@ class PowertrainAssemblyTests(unittest.TestCase):
     def test_canonical_nested_assemblies_compile(self):
         vehicle = load_point_mass_vehicle(ROOT / "models/formulations/murphy_point_mass.xml")
         self.assertIsInstance(vehicle.drivetrain, FullDrivetrainRuntime)
+        self.assertEqual(vehicle.drivetrain.powertrain.motor_mode, "lut")
         self.assertEqual(vehicle.drivetrain.powertrain.power_plant.unit_count, 4)
         self.assertEqual(vehicle.drivetrain.motor_count, 4)
         self.assertEqual(vehicle.drivetrain.gear_ratio, 10.9)
@@ -981,13 +983,14 @@ class PowertrainAssemblyTests(unittest.TestCase):
         drivetrain = compile_drivetrain_assembly(
             load_model(ROOT / "models/drivetrains/murphy_2024_drivetrain.xml")
         )
+        analytical = replace(powertrain, motor_mode="analytical")
         lut = replace(powertrain, motor_mode="lut")
         radius = 0.193675
         for state_of_charge in (0.05, 0.3, 0.8):
             for speed in (5.0, 20.0, 30.0, 60.0):
                 state = StorageState(state_of_charge)
                 baseline = maximum_drive_force(
-                    powertrain, drivetrain, speed, state, radius
+                    analytical, drivetrain, speed, state, radius
                 )
                 result = maximum_drive_force(lut, drivetrain, speed, state, radius)
                 # The two loops run the same coupling iteration, so a widened
@@ -1125,8 +1128,15 @@ class PowertrainAssemblyTests(unittest.TestCase):
         )
         open_limits = evaluate_storage(powertrain.energy_storage, StorageState(0.8))
         self.assertLess(result.bus_voltage, open_limits.bus_voltage)
-        evaluated = evaluate_shaft_power(
-            motor, motor_speed, motor_torque, result.bus_voltage
+        # The reported voltage is post-update, while power was evaluated before
+        # the final damped update. Recover that iteration's voltage exactly;
+        # evaluating at the reported voltage would compare different points.
+        final_terminal = terminal_voltage(
+            powertrain.energy_storage, StorageState(0.8), result.storage_current
+        )
+        evaluation_voltage = 2.0 * result.bus_voltage - final_terminal
+        evaluated = evaluate_motor(
+            motor, motor_speed, motor_torque, evaluation_voltage
         )
         self.assertTrue(evaluated.feasible)
         self.assertGreaterEqual(evaluated.bus_power, 0.0)

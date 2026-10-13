@@ -1,4 +1,5 @@
 from pathlib import Path
+from dataclasses import replace
 import math
 import unittest
 
@@ -185,10 +186,29 @@ class AssembledMisRegressionTests(unittest.TestCase):
 
     def test_assembled_flying_lap_matches_reported_reference(self) -> None:
         self.assertTrue(self.result.converged)
-        self.assertAlmostEqual(self.result.lap_time, 69.20459210208878, places=6)
+        self.assertEqual(self.vehicle.drivetrain.powertrain.motor_mode, "lut")
+        self.assertAlmostEqual(self.result.lap_time, 69.20391204362008, places=6)
+        self.assertGreater(self.result.motor_forward_queries, 0)
+        self.assertGreater(self.result.motor_inverse_queries, 0)
         self.assertEqual(len(self.result.speed), GOLDEN_NODE_COUNT)
 
-    def test_exact_default_keeps_cache_approximation_disabled(self) -> None:
+    def test_explicit_analytical_reference_remains_available(self) -> None:
+        analytical = replace(
+            self.vehicle,
+            drivetrain=replace(
+                self.vehicle.drivetrain,
+                powertrain=replace(
+                    self.vehicle.drivetrain.powertrain, motor_mode="analytical"
+                ),
+            ),
+        )
+        result = solve_lap(analytical, self.track, LapMode.FLYING, tolerance=1.0e-6)
+        self.assertTrue(result.converged)
+        self.assertAlmostEqual(result.lap_time, 69.20459210208878, places=6)
+        self.assertLess(abs(result.lap_time - self.result.lap_time), 0.001)
+        self.assertLess(float(np.max(np.abs(result.speed - self.result.speed))), 0.05)
+
+    def test_exact_cache_default_keeps_cache_approximation_disabled(self) -> None:
         self.assertEqual(self.result.drive_cache_max_speed_displacement, 0.0)
         self.assertEqual(self.result.drive_cache_max_soc_displacement, 0.0)
 

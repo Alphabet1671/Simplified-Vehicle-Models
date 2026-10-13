@@ -4,8 +4,11 @@
 
 This validation covers the assembled point-mass solver and the P9 SOC/energy
 interface on the 1,014.32575 m, 1,407-node Michigan endurance track. The
-normal assembled default is **exact** drive evaluation (`DriveCachePolicy()`);
-the quantized cache is an explicit opt-in only. Transition/profile
+normal assembled default uses **LUT motor evaluation** (`motor_mode="lut"`)
+with **exact cache keys** (`DriveCachePolicy()`); LUT interpolation is not
+cache quantization. The analytical motor remains explicitly selectable and
+out-of-domain LUT queries retain the exact analytical fallback. The quantized
+cache is an explicit opt-in only. Transition/profile
 initial-speed acceleration is unsupported and ignored. Bracket-preserving
 corner-root hints are supported and exact (not approximate); no approximate
 profile reuse or default change is implied. No approximate setting is
@@ -153,7 +156,8 @@ assembled comparison remains Task 4.
 
 ## Task 4 LUT assembly integration
 
-The assembled path keeps analytical motor evaluation as the default and the
+Historical Task 4 state (superseded by the default promotion below): the
+assembled path kept analytical motor evaluation as the default and the
 `motor_mode="lut"` path as an explicit opt-in. In LUT mode the drive limit solves
 the monotone mapped bus-power row directly through `torque_for_bus_power`, the
 regen inverse scans every productive segment of the non-monotone row
@@ -270,7 +274,7 @@ attribution section. Key findings:
 ## Reference checks and assumptions
 
 Legacy MIS flying and standing-start golden results remain 69.22653728547469 s
-and 70.38955050759907 s. The assembled flying reference is 69.20459210208878 s (Task 9; was 69.20462625809404 s after the Task 8 fix and 69.20128624364081 s before it)
+and 70.38955050759907 s. The assembled flying reference is 69.20391204362008 s (promoted LUT default); explicit analytical mode remains 69.20459210208878 s (Task 9; was 69.20462625809404 s after the Task 8 fix and 69.20128624364081 s before it)
 s. The motor-speed ceiling is 34.60897 m/s, while the MIS peak is below that
 ceiling; MIS is therefore not a voltage-field-weakening regression track.
 
@@ -390,3 +394,29 @@ fallback 104,716 / 24,619 / 1,725. Correctness sweep (SOC 1.0-0.02, 0-38 m/s,
 693 points per mode): 0 pack-limit violations in both modes, 0 LUT limits above
 the clamped voltage-scaled cap (1,890 limit queries), max |dF| 16.55 N, mean
 2.82 N, 0 zero-versus-nonzero force mismatches.
+
+## LUT default promotion (user approved)
+
+`PowertrainParameters.motor_mode` now defaults to `"lut"`; explicit
+`"analytical"` mode and exact out-of-domain fallback remain available. The
+regulatory voltage limit stays at 600 V and the artifact is unchanged. The
+assembled default flying-lap pin is now 69.20391204362008 s; the explicit
+analytical regression remains 69.20459210208878 s. Their difference is
+-0.680 ms, with maximum pointwise speed displacement 0.003946 m/s, both
+converged, and the Task 9 measured runtime win of 1.735x. Exact drive-cache
+keys remain the default independently of LUT interpolation.
+
+The promotion was verified with the full unittest discovery suite: 267 tests
+pass. A default-mode assertion initially failed on the analytical default,
+and the analytical-reference test checks both numerical displacement gates.
+The operating-point consistency test reconstructs the pre-update evaluation
+voltage instead of comparing power against the post-update reported voltage;
+its six-decimal power tolerance is unchanged. No source-model equation,
+battery data, voltage limit or LUT artifact was changed by promotion.
+
+The 800 V source-model redesign is proposed, not implemented, in
+[Architecture-compatible 800 V options](../superpowers/specs/2026-10-12-motor-800v-options.md).
+The underlying issue is forcing a voltage-boundary equality when zero d-axis
+current already satisfies the voltage inequality, not merely picking the wrong
+quadratic root. A software voltage clamp does not establish regulatory
+compliance of an over-voltage battery or represent a physical DC/DC converter.

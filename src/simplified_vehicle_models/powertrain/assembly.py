@@ -44,9 +44,9 @@ ASSEMBLY_SOURCE_CAPABILITY = "powertrain-and-drivetrain"
 class PowertrainParameters:
     power_plant: PowerPlantParameters
     energy_storage: EnergyStorageParameters
-    # Analytical is the safe default until LUT numerical/performance gates pass.
-    # ``lut`` remains an explicit opt-in comparison mode.
-    motor_mode: str = "analytical"
+    # LUT passed the numerical/performance gates; out-of-domain queries remain
+    # analytical. Select ``analytical`` explicitly for reference comparisons.
+    motor_mode: str = "lut"
 
 
 @dataclass(frozen=True, slots=True)

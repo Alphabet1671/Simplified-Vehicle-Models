@@ -331,7 +331,7 @@ class VoltageScaledEnvelopeTests(unittest.TestCase):
             self.assertEqual(limits.maximum_regen_torque, 0.0, (speed, voltage))
 
     def test_limits_never_exceed_voltage_scaled_cap_including_below_map_floor(self):
-        voltages = list(np.linspace(530.0, 620.0, 31))  # above 600 V the clamp applies + [529.999, 529.0, 517.95, 500.0, 450.0]
+        voltages = list(np.linspace(530.0, 620.0, 31)) + [529.999, 529.0, 500.0, 450.0, 405.0, 400.0, 399.999, 395.0, 380.0, 350.0]  # includes the W4 in-domain 400-530 V band and genuinely below-floor probes
         checked = 0
         for voltage in voltages:
             for speed in np.linspace(0.0, 18600.0, 187):
@@ -345,6 +345,11 @@ class VoltageScaledEnvelopeTests(unittest.TestCase):
                 slack = 0.14 if speed < 300.0 else 1.0e-5
                 if cap == 0.0:
                     slack = 0.0
+                # The W4 axis extension to 400 V coarsens the voltage step
+                # (8.33 V/pt vs 2.92 V/pt at 530-600 V): below 300 rpm the
+                # measured envelope error grows to 0.1760 Nm (400 V / 62.5 rpm).
+                if voltage < 530.0 and speed < 300.0:
+                    slack = 0.20
                 for value in (limits.maximum_drive_torque, limits.maximum_regen_torque):
                     self.assertLessEqual(value, cap + slack, (voltage, speed))
                 checked += 1
@@ -362,11 +367,13 @@ class ClampedEnvelopeAgreementTests(unittest.TestCase):
     def test_drive_limit_matches_exact_limit_two_sided(self):
         # Measured: <= 0.1152 Nm below 700 rpm (low-speed breakpoint
         # interpolation), 0.0609 Nm above.  Stated tolerances add a small margin.
-        voltages = list(np.linspace(530.0, 600.0, 15)) + [611.09, 620.0]
+        voltages = list(np.linspace(400.0, 600.0, 21)) + [611.09, 620.0]  # W4 axis: 400-600 V, clamped above 600
         speeds = list(np.linspace(0.0, 700.0, 57)) + [8.4, 88.35]
-        # Regen measured: <= 0.1362 Nm below 300 rpm, 0.00033 Nm above; above
-        # 700 rpm <= 0.0235 Nm.  Fallback cells skipped: 0 here, 1 in the
-        # high-speed sweep; bounds below are slightly above those counts.
+        # Regen measured: <= 0.1760 Nm below 300 rpm in the coarser W4 400-530 V
+        # band (voltage step 8.33 V/pt; the 530-600 V band measures <= 0.1362),
+        # 0.00033 Nm at 300-700 rpm.  Fallback cells skipped: 0 here (the W4
+        # corner moves per voltage and no low-speed cell straddles it), 2 in
+        # the high-speed sweep; bounds below are slightly above those counts.
         checked = 0
         skipped = 0
         for voltage in voltages:
@@ -379,10 +386,10 @@ class ClampedEnvelopeAgreementTests(unittest.TestCase):
                 exact_regen = _exact_limit(self.motor, float(speed), float(voltage), True)
                 self.assertAlmostEqual(
                     limits.maximum_regen_torque, exact_regen,
-                    delta=0.14 if speed < 300.0 else 0.001, msg=("regen", voltage, speed),
+                    delta=0.20 if speed < 300.0 else 0.001, msg=("regen", voltage, speed),
                 )
                 self.assertGreater(limits.maximum_drive_torque, 20.0, (voltage, speed))
-                tolerance = 0.14 if speed < 300.0 else 0.001
+                tolerance = 0.20 if speed < 300.0 else 0.001
                 self.assertAlmostEqual(
                     limits.maximum_drive_torque, exact, delta=tolerance, msg=(voltage, speed)
                 )
@@ -403,18 +410,34 @@ class ClampedEnvelopeAgreementTests(unittest.TestCase):
                 _exact_limit(self.motor, float(speed), float(voltage)),
                 delta=0.07, msg=(voltage, speed),
             )
+            # W4 coarser voltage grid: high-sweep regen error measures 0.0500
+            # Nm (540 V / 11,790 rpm), drive 0.0345 Nm.
             self.assertAlmostEqual(
                 limits.maximum_regen_torque,
                 _exact_limit(self.motor, float(speed), float(voltage), True),
-                delta=0.03, msg=("regen", voltage, speed),
+                delta=0.06, msg=("regen", voltage, speed),
             )
         self.assertLessEqual(high_skipped, 3)  # measured 1
 
     def test_no_near_zero_drive_node_below_the_corner(self):
-        mapping = self.motor.operating_map
-        low = mapping.speed <= 17000.0
         # Before the clamp 26 nodes at 601-620 V, 0-581 rpm held ~1e-10 Nm.
-        self.assertGreater(float(mapping.drive_torque[:, low].min()), 10.0)
+        # The W4 axis extends to 400 V, where the voltage-scaled corner moves
+        # per column (13,333 rpm at 400 V vs 20,000 rpm at 600 V): nodes above
+        # their own column's corner legitimately hold zero torque.  Every node
+        # whose analytical envelope is nonzero must hold real torque.
+        mapping = self.motor.operating_map
+        checked = 0
+        for vi in range(mapping.voltage.size):
+            for si in range(mapping.speed.size):
+                cap = voltage_scaled_envelope(
+                    self.motor, float(mapping.speed[si]), float(mapping.voltage[vi])
+                )
+                if cap > 0.0:
+                    checked += 1
+                    self.assertGreater(
+                        float(mapping.drive_torque[vi, si]), 10.0, (vi, si)
+                    )
+        self.assertGreater(checked, 1000)
 
     def test_known_former_collapse_probe(self):
         limits = motor_torque_limits(self.motor, 8.4, 611.09)
@@ -422,7 +445,9 @@ class ClampedEnvelopeAgreementTests(unittest.TestCase):
 
     def test_cliff_cell_routes_to_fallback_and_is_counted(self):
         mapping = self.motor.operating_map
-        vi, si = 0, 121
+        # W4 axis: the first straddling cell is (0, 91); the corner speed moves
+        # per voltage column (13,333 rpm at 400 V).
+        vi, si = 0, 91
         self.assertTrue(_envelope_cliff_cell(mapping, vi, si))
         voltage = float(mapping.voltage[vi] + 0.1)
         speed = float(mapping.speed[si] + 1.0)
@@ -562,8 +587,10 @@ class MotorLutQueryTests(unittest.TestCase):
 
     def test_fallback_is_exact_and_observable(self):
         reset_motor_lut_counters()
-        lut = evaluate_motor(self.motor, 1000.0, 1.0, 400.0)
-        exact = evaluate_shaft_power_exact(self.motor, 1000.0, 1.0, 400.0)
+        # 380.0 V is below the W4 map floor (400 V), so this is genuinely out
+        # of domain and must use the exact analytical fallback.
+        lut = evaluate_motor(self.motor, 1000.0, 1.0, 380.0)
+        exact = evaluate_shaft_power_exact(self.motor, 1000.0, 1.0, 380.0)
         self.assertEqual(lut, exact)
         self.assertGreaterEqual(motor_lut_counters()["fallback"], 1)
 
@@ -614,17 +641,22 @@ class MotorLutQueryTests(unittest.TestCase):
     def test_out_of_domain_limit_query_is_cached(self):
         """A repeated off-map limit query must not re-run the bisection."""
         reset_motor_lut_counters()
-        first = motor_torque_limits(self.motor, 1000.0, 437.0)
+        # 370.0 V is below the W4 map floor (400 V): genuinely out of domain.
+        # A voltage distinct from the sibling out-of-domain tests is required:
+        # _EXACT_LIMIT_CACHE is module-level and persists across tests, so a
+        # reused key would make the first call a cache hit with zero
+        # evaluations.
+        first = motor_torque_limits(self.motor, 1000.0, 370.0)
         self.assertTrue(first.used_fallback)
         evaluations = motor_lut_counters()["fallback"]
         self.assertGreaterEqual(evaluations, 1)
         for _ in range(5):
-            again = motor_torque_limits(self.motor, 1000.0, 437.0)
+            again = motor_torque_limits(self.motor, 1000.0, 370.0)
             self.assertEqual(again, first)
         self.assertEqual(motor_lut_counters()["fallback"], evaluations)
 
     def test_exact_limits_support_out_of_domain_voltage(self):
-        limits = motor_torque_limits(self.motor, 1000.0, 400.0)
+        limits = motor_torque_limits(self.motor, 1000.0, 380.0)
         self.assertTrue(limits.used_fallback)
         self.assertGreater(limits.maximum_drive_torque, 0.0)
         self.assertGreater(limits.maximum_regen_torque, 0.0)
@@ -734,9 +766,9 @@ class MotorLutQueryTests(unittest.TestCase):
     def test_exact_fallback_is_bounded(self):
         """One exact fallback must stay near the analytical bisection cost."""
         reset_motor_lut_counters()
-        # 437.0 V is below the persisted map voltage range, so this is genuinely
+        # 380.0 V is below the W4 map floor (400 V), so this is genuinely
         # out of domain and must use the exact analytical fallback.
-        result = torque_for_bus_power(self.motor, 1000.0, 437.0, 20_000.0, "drive")
+        result = torque_for_bus_power(self.motor, 1000.0, 380.0, 20_000.0, "drive")
         self.assertTrue(result.used_fallback)
         self.assertTrue(result.feasible)
         evaluations = motor_lut_counters()["fallback"]

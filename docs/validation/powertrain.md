@@ -202,7 +202,7 @@ query/fallback counters, and map-load cost.
 | Force residual max | 6.821e-13 | 6.821e-13 | existing tolerances | pass |
 | LUT forward / inverse / fallback queries | - | 105,166 / 24,856 / 0 | observable | pass (zero fallback) |
 
-**The LUT is a genuine 1.878x wall-time win with zero fallback queries**, but
+**(Superseded by Tasks 8-9.) The LUT was a genuine 1.878x wall-time win with zero fallback queries**, but
 the 1 ms lap-time and 0.05 m/s speed-displacement gates do not pass. The
 lap-time displacement is +9.797 ms and the maximum pointwise speed displacement
 is 0.134642 m/s. Two numerical gates are still failing.
@@ -261,7 +261,7 @@ attribution section. Key findings:
   (30 m/s) and SOC 0.02 (25, 30 and 34 m/s).
 - The +9.797 ms lap displacement is therefore dominated by LUT error, not by
   the analytical default's 8-step bisection being replaced by an exact inverse.
-  The LUT must not be promoted, and its 1.878x wall-time result holds only for
+  (Superseded.) The LUT must not be promoted, and its 1.878x wall-time result holds only for
   the in-domain part of the operating envelope that the assembled MIS flying lap
   visits (roughly 555-609 V). Making the LUT usable for the SOC-coupled
   endurance case requires covering the loaded terminal voltage range and

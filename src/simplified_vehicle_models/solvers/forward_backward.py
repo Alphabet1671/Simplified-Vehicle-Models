@@ -304,6 +304,8 @@ def _forward_sweep(
         if upper_speed <= start_speed:
             speed[index + 1] = min(upper_speed, cap)
             continue
+        # The conservative magnitude bounds the segment.
+        # The scalar acceleration limit is the same for either turn sign.
         segment_curvature = max(
             abs(float(track.curvature[index])),
             abs(float(track.curvature[index + 1])),
@@ -346,6 +348,8 @@ def _backward_sweep(
             speed[index] = min(upper_speed, cap)
             continue
         segment_length = float(track.segment_length[index])
+        # The conservative magnitude bounds the segment.
+        # The scalar deceleration limit is the same for either turn sign.
         segment_curvature = max(
             abs(float(track.curvature[index])),
             abs(float(track.curvature[index + 1])),
@@ -387,9 +391,14 @@ def _build_result(
     acceleration = (
         end_speed * end_speed - start_speed * start_speed
     ) / (2.0 * track.segment_length)
-    segment_curvature = np.maximum(
-        np.abs(track.curvature[:-1]),
-        np.abs(track.curvature[1:]),
+    # Take the signed curvature of the adjacent segment with the larger
+    # magnitude.  That magnitude is the conservative segment bound.  The sign
+    # keeps the reported lateral acceleration in SAE axes, where positive
+    # curvature is a right turn.
+    segment_curvature = np.where(
+        np.abs(track.curvature[:-1]) >= np.abs(track.curvature[1:]),
+        track.curvature[:-1],
+        track.curvature[1:],
     )
     evaluation_speed = 0.5 * (start_speed + end_speed)
     lateral_acceleration = evaluation_speed * evaluation_speed * segment_curvature

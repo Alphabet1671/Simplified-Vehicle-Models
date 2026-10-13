@@ -22,9 +22,11 @@ Executable equations, solvers, adapters, and component factories are implemented
 These conventions should be finalized before equations are implemented:
 
 - SI units everywhere.
-- Body axes: `+x` forward, `+y` left, `+z` upward.
-- Positive yaw is counterclockwise viewed from above.
-- Track curvature `kappa > 0` denotes a left turn.
+- Body axes: `+x` forward, `+y` right, `+z` down. This is the SAE J670 frame.
+- Positive yaw is clockwise viewed from above.
+- Track curvature `kappa > 0` denotes a right turn.
+- A positive lateral acceleration points to the right.
+- A right turn moves vertical load to the left wheels.
 - Tire forces are forces acting on the vehicle.
 - Vertical tire load `Fz > 0` is the compressive load magnitude.
 - Wheel order is always `(FL, FR, RL, RR)`.
@@ -33,7 +35,9 @@ These conventions should be finalized before equations are implemented:
 - Mechanical DOF count and first-order state-vector length are documented separately.
 - The initial road is flat. Bank, grade, and general 3D roads are deferred.
 
-The reference MATLAB tire functions use SAE tire axes with `+y` right and `+z` down. The Python tire boundary must explicitly convert between vehicle and tire conventions so signs never depend on implicit MATLAB assumptions.
+The vehicle frame and the reference MATLAB tire functions use the same SAE axes with `+y` right and `+z` down. The tire boundary therefore needs no lateral sign conversion. Verify the longitudinal sense at the boundary, so signs never depend on implicit MATLAB assumptions.
+
+`core/conventions.py` declares this frame in code. The signed conventions are load-bearing in two places: the lateral load transfer must move load to the left wheels in a right turn, and the yaw moment from longitudinal force must use the SAE sign. A legacy `distance-radius-profile` track stores a radius magnitude only. It carries no turn direction, so its per-wheel left/right split is not a turn direction and must not be read as one. A signed track must supply a signed curvature instead.
 
 ### 2.1 Declarative XML and model compilation
 

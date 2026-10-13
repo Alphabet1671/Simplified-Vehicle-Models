@@ -229,13 +229,47 @@ def aerodynamic_forces(
     )
 
 
+def lateral_transfer_loads(
+    vehicle: PointMassVehicleParameters,
+    front_axle: float,
+    rear_axle: float,
+    lateral_acceleration: float,
+) -> tuple[float, float, float, float]:
+    """Split the two axle loads over the four wheels.
+
+    The lateral acceleration uses the SAE vehicle frame.
+    A positive value points to the right.
+    A right turn moves vertical load to the left wheels.
+    Return the loads in the order FL, FR, RL, RR.
+    """
+
+    total_transfer = (
+        vehicle.total_mass
+        * lateral_acceleration
+        * vehicle.cg_height
+        / vehicle.track_width
+    )
+    front_transfer = total_transfer * vehicle.lateral_load_transfer_distribution
+    rear_transfer = total_transfer - front_transfer
+    return (
+        front_axle * 0.5 + front_transfer,
+        front_axle * 0.5 - front_transfer,
+        rear_axle * 0.5 + rear_transfer,
+        rear_axle * 0.5 - rear_transfer,
+    )
+
+
 def normal_loads(
     vehicle: PointMassVehicleParameters,
     speed: float,
     longitudinal_acceleration: float,
     lateral_acceleration: float,
 ) -> FloatArray:
-    """Calculate the rigid vertical load solution for each tire."""
+    """Calculate the rigid vertical load solution for each tire.
+
+    The lateral acceleration uses the SAE vehicle frame.
+    A positive value points to the right.
+    """
 
     mass = vehicle.total_mass
     downforce, _ = aerodynamic_forces(vehicle, speed)
@@ -248,20 +282,13 @@ def normal_loads(
         / vehicle.wheelbase
     )
     rear_axle = mass * GRAVITY + downforce - front_axle
-    total_transfer = (
-        mass * abs(lateral_acceleration) * vehicle.cg_height / vehicle.track_width
-    )
-    front_transfer = (
-        total_transfer * vehicle.lateral_load_transfer_distribution
-    )
-    rear_transfer = total_transfer - front_transfer
     return np.asarray(
-        [
-            front_axle * 0.5 - front_transfer,
-            front_axle * 0.5 + front_transfer,
-            rear_axle * 0.5 - rear_transfer,
-            rear_axle * 0.5 + rear_transfer,
-        ],
+        lateral_transfer_loads(
+            vehicle,
+            front_axle,
+            rear_axle,
+            lateral_acceleration,
+        ),
         dtype=np.float64,
     )
 
@@ -298,9 +325,15 @@ def evaluate_equilibrium(
     storage_state: StorageState | None = None,
     drive_cache: DriveCache | None = None,
 ) -> EquilibriumState:
-    """Evaluate wheel forces for one prescribed vehicle acceleration."""
+    """Evaluate wheel forces for one prescribed vehicle acceleration.
 
-    lateral_acceleration = speed * speed * abs(curvature)
+    Track curvature uses the SAE vehicle frame.
+    Positive curvature is a right turn.
+    The lateral acceleration keeps that sign.
+    Only the force magnitude uses the absolute value.
+    """
+
+    lateral_acceleration = speed * speed * curvature
     loads = normal_loads(
         vehicle,
         speed,
@@ -310,7 +343,7 @@ def evaluate_equilibrium(
     contact_feasible = bool(np.all(loads >= -1.0e-9))
     longitudinal_capacity, lateral_capacity = tire_force_capacities(vehicle, loads)
 
-    total_lateral_force = vehicle.total_mass * lateral_acceleration
+    total_lateral_force = vehicle.total_mass * abs(lateral_acceleration)
     front_target = total_lateral_force * vehicle.front_mass_fraction
     rear_target = total_lateral_force - front_target
     lateral_forces = np.zeros(4, dtype=np.float64)
@@ -382,14 +415,19 @@ def evaluate_equilibrium(
         1.0 - vehicle.front_mass_fraction
     )
     distance_to_rear = vehicle.wheelbase * vehicle.front_mass_fraction
+    # The lateral force allocation gives magnitudes in the turn direction.
+    # A balanced turn holds this moment at zero for either turn sign.
     lateral_moment = (
         float(np.sum(lateral_forces[:2])) * distance_to_front
         - float(np.sum(lateral_forces[2:])) * distance_to_rear
     )
     left_longitudinal_force = longitudinal_forces[0] + longitudinal_forces[2]
     right_longitudinal_force = longitudinal_forces[1] + longitudinal_forces[3]
+    # With SAE axes the right wheels sit at positive y.
+    # A forward force on the right wheels therefore yaws the vehicle left.
+    # The left minus right difference gives the SAE yaw moment.
     longitudinal_moment = (
-        right_longitudinal_force - left_longitudinal_force
+        left_longitudinal_force - right_longitudinal_force
     ) * vehicle.track_width * 0.5
     yaw_residual = lateral_moment + longitudinal_moment
     arrays = (
@@ -435,9 +473,15 @@ def _equilibrium_limits(
     storage_state: StorageState | None = None,
     drive_cache: DriveCache | None = None,
 ) -> tuple[bool, bool, float, float, float]:
-    """Evaluate only scalar feasibility and force limits for root solves."""
+    """Evaluate only scalar feasibility and force limits for root solves.
 
-    lateral_acceleration = speed * speed * abs(curvature)
+    Track curvature uses the SAE vehicle frame.
+    Positive curvature is a right turn.
+    The load transfer uses the signed lateral acceleration.
+    The force magnitudes use the absolute value.
+    """
+
+    lateral_acceleration = speed * speed * curvature
     downforce, drag = aerodynamic_forces(vehicle, speed)
     mass = vehicle.total_mass
     front_axle = (
@@ -446,14 +490,11 @@ def _equilibrium_limits(
         - mass * longitudinal_acceleration * vehicle.cg_height / vehicle.wheelbase
     )
     rear_axle = mass * GRAVITY + downforce - front_axle
-    total_transfer = mass * abs(lateral_acceleration) * vehicle.cg_height / vehicle.track_width
-    front_transfer = total_transfer * vehicle.lateral_load_transfer_distribution
-    rear_transfer = total_transfer - front_transfer
-    loads = (
-        front_axle * 0.5 - front_transfer,
-        front_axle * 0.5 + front_transfer,
-        rear_axle * 0.5 - rear_transfer,
-        rear_axle * 0.5 + rear_transfer,
+    loads = lateral_transfer_loads(
+        vehicle,
+        front_axle,
+        rear_axle,
+        lateral_acceleration,
     )
     contact_feasible = all(load >= -1.0e-9 for load in loads)
     tire = vehicle.tire
@@ -472,7 +513,7 @@ def _equilibrium_limits(
     longitudinal_capacities = tuple(item[0] for item in capacities)
     lateral_capacities = tuple(item[1] for item in capacities)
 
-    total_lateral_force = mass * lateral_acceleration
+    total_lateral_force = mass * abs(lateral_acceleration)
     front_target = total_lateral_force * vehicle.front_mass_fraction
     rear_target = total_lateral_force - front_target
     front_capacity = lateral_capacities[0] + lateral_capacities[1]
@@ -510,11 +551,19 @@ def _equilibrium_limits(
 
 
 def _validate_limit_inputs(speed: float, curvature: float) -> float:
+    """Validate one limit query and keep the curvature sign.
+
+    Track curvature uses the SAE vehicle frame.
+    A positive value is a right turn.
+    Keep the sign so the load transfer direction stays correct.
+    The scalar limit is the same for either turn sign.
+    """
+
     if not math.isfinite(speed) or speed < 0.0:
         raise ValueError("speed must be finite and nonnegative")
     if not math.isfinite(curvature):
         raise ValueError("curvature must be finite")
-    return abs(curvature)
+    return curvature
 
 
 def maximum_acceleration_limit(
@@ -582,7 +631,13 @@ def maximum_corner_speed(
     hint: float | None = None,
     drive_cache: DriveCache | None = None,
 ) -> float:
-    """Solve the maximum steady speed for one unsigned radius."""
+    """Solve the maximum steady speed for one unsigned radius.
+
+    ``radius`` is a magnitude and carries no turn direction.
+    The legacy distance-radius track data stores magnitudes only.
+    The steady speed limit is the same for either turn direction.
+    A signed track must supply a signed curvature instead.
+    """
 
     if not math.isfinite(radius) or radius <= 0.0:
         raise ValueError("radius must be finite and positive")

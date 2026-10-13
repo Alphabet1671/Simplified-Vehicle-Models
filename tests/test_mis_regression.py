@@ -136,8 +136,10 @@ class MisRegressionTests(unittest.TestCase):
             result.longitudinal_forces[:, 1]
             + result.longitudinal_forces[:, 3]
         )
+        # SAE axes: the right wheels sit at positive y, so a forward force on
+        # the right wheels yaws the vehicle left.
         longitudinal_moment = (
-            right_force - left_force
+            left_force - right_force
         ) * vehicle.track_width * 0.5
         yaw_moment = lateral_moment + longitudinal_moment
         np.testing.assert_allclose(yaw_moment, 0.0, atol=1.0e-8)

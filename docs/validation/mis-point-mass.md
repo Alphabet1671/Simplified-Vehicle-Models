@@ -47,6 +47,38 @@ The conversion raises the lateral friction from about 0.78 to about 1.24 at a 70
 
 A regression test now requires the lateral friction to stay between 1.0 and 1.4 and the longitudinal friction to stay between 0.5 and 0.8 over corner loads from 700 N to 1200 N. The test prevents a silent unit regression.
 
+## Vehicle axis convention
+
+The vehicle frame is now SAE J670:
+
+```text
++x forward
++y right
++z down
+```
+
+A positive yaw rate turns the vehicle to the right. Track curvature is positive
+in a right turn and negative in a left turn. `core/conventions.py` declares this
+frame in code, and the point-mass tests pin it.
+
+Two sign choices follow the frame, and both changed:
+
+- The lateral load transfer now moves vertical load to the **left** wheels in a
+  right turn. It moved load to the right wheels before, under the earlier
+  left-positive convention.
+- The yaw moment from longitudinal force now uses the SAE sign. A forward force
+  on the right wheels yaws the vehicle left.
+
+The change does not move any lap time, corner speed, force limit, or
+feasibility result. The tire capacity of an axle is the sum of a function of the
+two wheel loads, so it depends on the size of the split and not on which side
+receives the load. The per-wheel left and right values are mirrored.
+
+The legacy `distance-radius-profile` track stores a radius **magnitude** only.
+It carries no turn direction. Its per-wheel left and right split is therefore
+arbitrary and must not be read as a turn direction. A signed track must supply a
+signed curvature instead.
+
 ## Legacy comparison
 
 The measured Lap 8 trace spans approximately 70.30 s. A nearby legacy correlation script cites a 69.98 s fastest-lap reference and a 71.696 s median-lap reference. The legacy event workbook contains average-lap values from approximately 67.667 s to 94.253 s.

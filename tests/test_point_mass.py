@@ -5,13 +5,23 @@ import unittest
 
 import numpy as np
 
-from simplified_vehicle_models.core.conventions import GRAVITY
+from simplified_vehicle_models.core.conventions import (
+    AXIS_DOWN,
+    AXIS_FORWARD,
+    AXIS_RIGHT,
+    GRAVITY,
+    LEFT_TURN_CURVATURE_SIGN,
+    RIGHT_TURN_CURVATURE_SIGN,
+    VEHICLE_AXIS_CONVENTION,
+    WHEEL_ORDER,
+)
 from simplified_vehicle_models.powertrain.assembly import FullDrivetrainRuntime, maximum_drive_force
 from simplified_vehicle_models.powertrain.energy_storage import StorageState
 from simplified_vehicle_models.formulations.point_mass import (
     acceleration_limits,
     aerodynamic_forces,
     evaluate_equilibrium,
+    lateral_transfer_loads,
     maximum_acceleration_limit,
     maximum_deceleration_limit,
     _equilibrium_limits,
@@ -67,8 +77,93 @@ class PointMassTests(unittest.TestCase):
         turning = normal_loads(self.vehicle, 12.0, 0.0, 6.0)
 
         self.assertAlmostEqual(float(np.sum(straight)), float(np.sum(turning)))
-        self.assertLess(float(turning[0]), float(turning[1]))
-        self.assertLess(float(turning[2]), float(turning[3]))
+        self.assertGreater(float(turning[0]), float(turning[1]))
+        self.assertGreater(float(turning[2]), float(turning[3]))
+
+    def test_axis_convention_is_sae(self) -> None:
+        self.assertEqual(VEHICLE_AXIS_CONVENTION, "sae-j670")
+        self.assertEqual((AXIS_FORWARD, AXIS_RIGHT, AXIS_DOWN), ("x", "y", "z"))
+        self.assertEqual(WHEEL_ORDER, ("fl", "fr", "rl", "rr"))
+        self.assertEqual(RIGHT_TURN_CURVATURE_SIGN, 1.0)
+        self.assertEqual(LEFT_TURN_CURVATURE_SIGN, -1.0)
+
+    def test_positive_lateral_acceleration_is_a_right_turn(self) -> None:
+        right_turn = normal_loads(self.vehicle, 12.0, 0.0, 6.0)
+
+        self.assertGreater(float(right_turn[0]), float(right_turn[1]))
+        self.assertGreater(float(right_turn[2]), float(right_turn[3]))
+
+    def test_negative_lateral_acceleration_is_a_left_turn(self) -> None:
+        left_turn = normal_loads(self.vehicle, 12.0, 0.0, -6.0)
+
+        self.assertLess(float(left_turn[0]), float(left_turn[1]))
+        self.assertLess(float(left_turn[2]), float(left_turn[3]))
+
+    def test_turn_direction_mirrors_the_wheel_loads(self) -> None:
+        right_turn = normal_loads(self.vehicle, 12.0, 0.0, 6.0)
+        left_turn = normal_loads(self.vehicle, 12.0, 0.0, -6.0)
+
+        np.testing.assert_allclose(right_turn, left_turn[[1, 0, 3, 2]])
+
+    def test_right_turn_transfer_matches_the_hand_calculation(self) -> None:
+        lateral_acceleration = 6.0
+        total_transfer = (
+            self.vehicle.total_mass
+            * lateral_acceleration
+            * self.vehicle.cg_height
+            / self.vehicle.track_width
+        )
+        front_transfer = (
+            total_transfer * self.vehicle.lateral_load_transfer_distribution
+        )
+        loads = normal_loads(self.vehicle, 0.0, 0.0, lateral_acceleration)
+
+        # The left wheel gains the front transfer and the right wheel loses it.
+        self.assertAlmostEqual(
+            float(loads[0] - loads[1]),
+            2.0 * front_transfer,
+        )
+        self.assertAlmostEqual(
+            float(loads[2] - loads[3]),
+            2.0 * (total_transfer - front_transfer),
+        )
+
+    def test_lateral_transfer_helper_conserves_each_axle(self) -> None:
+        loads = lateral_transfer_loads(self.vehicle, 1000.0, 1200.0, 6.0)
+
+        self.assertAlmostEqual(loads[0] + loads[1], 1000.0)
+        self.assertAlmostEqual(loads[2] + loads[3], 1200.0)
+        self.assertGreater(loads[0], loads[1])
+        self.assertGreater(loads[2], loads[3])
+
+    def test_positive_curvature_is_a_right_turn(self) -> None:
+        right_turn = evaluate_equilibrium(self.vehicle, 12.0, 1.0 / 20.0, 0.0)
+        left_turn = evaluate_equilibrium(self.vehicle, 12.0, -1.0 / 20.0, 0.0)
+
+        self.assertGreater(right_turn.lateral_acceleration, 0.0)
+        self.assertLess(left_turn.lateral_acceleration, 0.0)
+        self.assertGreater(
+            float(right_turn.normal_loads[0]),
+            float(right_turn.normal_loads[1]),
+        )
+        self.assertLess(
+            float(left_turn.normal_loads[0]),
+            float(left_turn.normal_loads[1]),
+        )
+
+    def test_turn_sign_does_not_change_the_scalar_limits(self) -> None:
+        storage = StorageState(0.8)
+        for speed, magnitude in ((15.0, 0.01), (25.0, 1.0 / 30.0)):
+            self.assertAlmostEqual(
+                maximum_acceleration_limit(self.vehicle, speed, magnitude, storage),
+                maximum_acceleration_limit(self.vehicle, speed, -magnitude, storage),
+                places=10,
+            )
+            self.assertAlmostEqual(
+                maximum_deceleration_limit(self.vehicle, speed, magnitude, storage),
+                maximum_deceleration_limit(self.vehicle, speed, -magnitude, storage),
+                places=10,
+            )
 
     def test_load_sensitivity_reduces_effective_friction(self) -> None:
         loads = np.asarray([300.0, 600.0, 900.0, 1200.0])
@@ -244,10 +339,11 @@ class PointMassTests(unittest.TestCase):
             self.assertLessEqual(limits.acceleration_state.drive_force_limit, power_force)
 
     def test_lateral_forces_close_yaw_moment(self) -> None:
-        state = evaluate_equilibrium(self.vehicle, 10.0, 1.0 / 20.0, -2.0)
+        for curvature in (1.0 / 20.0, -1.0 / 20.0):
+            state = evaluate_equilibrium(self.vehicle, 10.0, curvature, -2.0)
 
-        self.assertTrue(state.is_feasible)
-        self.assertAlmostEqual(state.yaw_moment_residual, 0.0, places=10)
+            self.assertTrue(state.is_feasible)
+            self.assertAlmostEqual(state.yaw_moment_residual, 0.0, places=10)
 
     def test_wheel_lift_is_infeasible_without_added_load(self) -> None:
         state = evaluate_equilibrium(self.vehicle, 25.0, 1.0 / 3.0, 0.0)

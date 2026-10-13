@@ -311,7 +311,7 @@ class OperatingMapValidationTests(unittest.TestCase):
         loaded = _validate_operating_map(self.data)
         self.assertEqual(loaded.bus_power.shape, (25, 129, 65))
         digest = hashlib.sha256((ROOT / "models/data/amk_dd5_100c_operating_map.npz").read_bytes()).hexdigest()
-        self.assertEqual(digest, "78f5992cd7ab11649540e00cef49e6d2e798fc4ea3d465c4f32928fd0487b2f6")
+        self.assertEqual(digest, "79a615bb836054818aecc45cd6c7a7d5bdb02967c9dea8d16a0eb26a93559448")
 
 
 class VoltageScaledEnvelopeTests(unittest.TestCase):

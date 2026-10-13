@@ -299,11 +299,15 @@ def shaft_power(
     regeneration.
     """
 
-    motor_speed = parameters.gear_ratio * np.asarray(wheel_speed, dtype=np.float64)
-    motor_torque = np.asarray(wheel_torque, dtype=np.float64) / (
-        parameters.gear_ratio * parameters.motor_efficiency
+    wheel_power = np.asarray(wheel_torque, dtype=np.float64) * np.asarray(
+        wheel_speed, dtype=np.float64
     )
-    return motor_torque * motor_speed
+    # Motoring loses power through the drive; regeneration reverses its flow.
+    return np.where(
+        wheel_power >= 0.0,
+        wheel_power / parameters.motor_efficiency,
+        wheel_power * parameters.motor_efficiency,
+    )
 
 
 def bus_power(
@@ -317,7 +321,7 @@ def bus_power(
     """
 
     mechanical = shaft_power(parameters, wheel_speed, wheel_torque)
-    efficiency = parameters.drive_efficiency
+    efficiency = parameters.inverter_efficiency
     return np.where(mechanical >= 0.0, mechanical / efficiency, mechanical * efficiency)
 
 

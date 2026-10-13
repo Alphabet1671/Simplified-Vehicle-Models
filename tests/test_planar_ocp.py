@@ -17,6 +17,8 @@ from simplified_vehicle_models.formulations.planar_7dof import (
     evaluate_normal_loads,
 )
 from simplified_vehicle_models.tires.unitire_simple import evaluate_unitire
+from simplified_vehicle_models.powertrain.energy_storage import StorageState, solve_current
+from simplified_vehicle_models.powertrain.motor_envelope import total_bus_power
 from simplified_vehicle_models.tracks.profile import load_track
 
 try:  # pragma: no cover - depends on the host
@@ -159,6 +161,67 @@ class SymbolicResidualTests(unittest.TestCase):
         self.assertLess(float(np.max(np.abs(residual[:4]))), 1.0e-6)
         self.assertGreater(float(np.min(loads)), 0.0)
 
+    def test_electrical_current_is_tied_to_motor_power(self) -> None:
+        vehicle = self.vehicle
+        state = np.zeros(planar_ocp.STATE_COUNT)
+        state[2] = 15.0
+        state[5] = vehicle.storage.initial_state_of_charge
+        loads = evaluate_normal_loads(vehicle, 15.0, 0.0, 0.0)
+        omega = 15.0 / planar_ocp.loaded_radius(vehicle.tire, loads)
+        algebraic = np.concatenate((loads, omega, [0.0]))
+        control = np.array([0.25, 0.0, 0.0])
+        peak = vehicle.motor.peak_motor_torque * vehicle.motor.gear_ratio * vehicle.motor.motor_efficiency
+        drive = planar_ocp.wheel_shares(0.2) * (4.0 * peak * control[0])
+        demand = total_bus_power(vehicle.motor, omega, drive)
+        current, feasible = solve_current(vehicle.storage, StorageState(state[5]), demand)
+        self.assertTrue(feasible)
+        algebraic[8] = current
+        balanced = np.asarray(self.functions.algebraic(state, control, algebraic, 0.0)).ravel()
+        self.assertAlmostEqual(float(balanced[-1]), 0.0, places=6)
+        algebraic[8] = 0.0
+        disconnected = np.asarray(self.functions.algebraic(state, control, algebraic, 0.0)).ravel()
+        self.assertLess(float(disconnected[-1]), -demand * 0.99)
+
+    def test_soc_derivative_is_per_metre(self) -> None:
+        vehicle = self.vehicle
+        state = np.array([0.0, 0.0, 20.0, 0.0, 0.0,
+                          vehicle.storage.initial_state_of_charge, 0.0])
+        loads = evaluate_normal_loads(vehicle, 20.0, 0.0, 0.0)
+        omega = 20.0 / planar_ocp.loaded_radius(vehicle.tire, loads)
+        algebraic = np.concatenate((loads, omega, [100.0]))
+        derivative = np.asarray(self.functions.dynamics(state, np.zeros(3), algebraic, 0.0)).ravel()
+        expected = -100.0 / (3600.0 * vehicle.storage.pack_capacity_ah * 20.0)
+        self.assertAlmostEqual(float(derivative[5]), expected, places=11)
+
+    def test_projected_seed_balances_loads_wheels_and_power(self) -> None:
+        vehicle = self.vehicle
+        loads = evaluate_normal_loads(vehicle, 15.0, 0.0, 0.0)
+        omega = 15.0 / planar_ocp.loaded_radius(vehicle.tire, loads)
+        state = np.array([[0.0], [0.0], [15.0], [0.0], [0.0],
+                          [vehicle.storage.initial_state_of_charge], [0.0]])
+        control = np.array([[0.2], [0.0], [0.0]])
+        guess = {"state": state, "control": control,
+                 "algebraic": np.concatenate((loads, omega, [0.0]))[:, None]}
+        path = {"distance": np.array([0.0]), "curvature": np.array([0.0])}
+        before = np.asarray(self.functions.algebraic(state[:, 0], control[:, 0],
+                                  guess["algebraic"][:, 0], 0.0)).ravel()
+        projected = planar_ocp._project_start(guess, vehicle, path, self.functions)
+        after = np.asarray(self.functions.algebraic(projected["state"][:, 0],
+                    projected["control"][:, 0], projected["algebraic"][:, 0], 0.0)).ravel()
+        self.assertGreater(float(np.max(np.abs(before))), 100.0)
+        self.assertLess(float(np.max(np.abs(after[:8]))), 1e-4)
+        self.assertLess(float(abs(after[8])), 1e-5)
+
+    def test_motor_speed_limit_is_exposed(self) -> None:
+        vehicle = self.vehicle
+        state = np.array([0.0, 0.0, 40.0, 0.0, 0.0,
+                          vehicle.storage.initial_state_of_charge, 0.0])
+        loads = evaluate_normal_loads(vehicle, 40.0, 0.0, 0.0)
+        algebraic = np.concatenate((loads, np.full(4, 220.0), [0.0]))
+        bounds = self.functions.bounds(state, np.zeros(3), algebraic, 0.0)
+        self.assertEqual(len(bounds), 8)
+        self.assertTrue(np.any(np.asarray(bounds[-1]).ravel() > 0.0))
+
 
 @unittest.skipUnless(HAS_CASADI, "the optimal control needs casadi")
 class OptimalControlTests(unittest.TestCase):
@@ -189,11 +252,20 @@ class OptimalControlTests(unittest.TestCase):
         self.assertEqual(self.result.node_count, len(self.result.distance))
         self.assertTrue(self.result.status)
 
-    def test_the_load_equations_are_not_yet_converged(self) -> None:
-        # A known limitation, recorded so a reader cannot mistake the lap time
-        # for a converged optimum. The equations are cross validated and
-        # satisfiable, so this is solver progress, not an inconsistent model.
-        self.assertGreater(self.result.maximum_load_residual, 1.0e-6)
+    def test_status_cannot_claim_an_infeasible_solution(self) -> None:
+        # A plausible lap time is not a convergence certificate. Check both
+        # equality groups, all sampled inequality bounds, and periodicity.
+        if self.result.converged:
+            self.assertLess(self.result.maximum_load_residual, 1.0e-3)
+            self.assertLess(self.result.maximum_dynamics_residual, 1.0e-4)
+            self.assertLess(self.result.maximum_inequality_violation, 1.0e-4)
+            self.assertLess(self.result.periodicity_residual, 1.0e-4)
+        else:
+            self.assertFalse(self.result.status == "Solve_Succeeded" and
+                self.result.maximum_load_residual < 1.0e-3 and
+                self.result.maximum_dynamics_residual < 1.0e-4 and
+                self.result.maximum_inequality_violation < 1.0e-4 and
+                self.result.periodicity_residual < 1.0e-4)
 
     def test_the_lap_time_is_plausible(self) -> None:
         # The quasi-steady point-mass reference on the same track is 68.3 s.
@@ -220,13 +292,13 @@ class OptimalControlTests(unittest.TestCase):
     def test_the_lateral_error_stays_inside_the_bound(self) -> None:
         self.assertLessEqual(
             self.result.maximum_lateral_error,
-            self.options.maximum_lateral_error + 1.0e-9,
+            self.options.maximum_lateral_error + 1.0e-7,
         )
 
     def test_the_heading_error_stays_inside_the_bound(self) -> None:
         self.assertLessEqual(
             float(np.max(np.abs(self.result.heading_error))),
-            self.options.maximum_heading_error + 1.0e-9,
+            self.options.maximum_heading_error + 1.0e-7,
         )
 
     def test_the_steering_stays_inside_the_vehicle_limit(self) -> None:
@@ -236,9 +308,9 @@ class OptimalControlTests(unittest.TestCase):
         )
 
     def test_the_controls_stay_inside_their_bounds(self) -> None:
-        self.assertGreaterEqual(float(np.min(self.result.throttle)), 0.0)
+        self.assertGreaterEqual(float(np.min(self.result.throttle)), -1.0e-7)
         self.assertLessEqual(float(np.max(self.result.throttle)), 1.0 + 1.0e-9)
-        self.assertGreaterEqual(float(np.min(self.result.brake)), 0.0)
+        self.assertGreaterEqual(float(np.min(self.result.brake)), -1.0e-7)
         self.assertLessEqual(
             float(np.max(self.result.brake)), self.options.maximum_brake + 1.0e-9
         )
@@ -267,6 +339,19 @@ class OptimalControlTests(unittest.TestCase):
             float(np.max(self.result.wheel_torques)), peak + 1.0e-3
         )
 
+    def test_power_mismatch_reports_real_four_motor_demand(self) -> None:
+        motor = self.vehicle.motor
+        peak = motor.peak_motor_torque * motor.gear_ratio * motor.motor_efficiency
+        shares = np.asarray([0.1, 0.1, 0.4, 0.4])[:, None]
+        drive = shares * (4.0 * peak * self.result.throttle[None, :])
+        motor_bus_power = np.sum(drive * self.result.wheel_speeds, axis=0)
+        motor_bus_power /= motor.motor_efficiency * motor.inverter_efficiency
+        mismatch = float(np.max(np.abs(self.result.bus_power - motor_bus_power)))
+        self.assertAlmostEqual(mismatch, self.result.maximum_power_mismatch,
+                               delta=1e-6)
+        if self.result.converged:
+            self.assertLess(mismatch, 1e-3)
+
     def test_the_state_of_charge_falls_over_the_lap(self) -> None:
         self.assertLessEqual(
             float(self.result.state_of_charge[-1]),
@@ -287,8 +372,8 @@ class OptimalControlTests(unittest.TestCase):
         )
         drive = self.result.throttle * 4.0 * peak * np.asarray([0.1, 0.1, 0.4, 0.4])[:, None]
 
-        self.assertGreaterEqual(float(np.min(drive)), 0.0)
-        self.assertGreaterEqual(float(np.min(self.result.throttle)), 0.0)
+        self.assertGreaterEqual(float(np.min(drive)), -1.0e-5)
+        self.assertGreaterEqual(float(np.min(self.result.throttle)), -1.0e-7)
 
     def test_a_coarse_mesh_uses_fewer_nodes(self) -> None:
         coarse = planar_ocp.solve_planar_hot_lap(

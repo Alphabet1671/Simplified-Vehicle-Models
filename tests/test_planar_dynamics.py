@@ -270,6 +270,27 @@ class PlanarDynamicsTests(unittest.TestCase):
             float(evaluation.normal_loads[2]), float(evaluation.normal_loads[3])
         )
 
+    def test_yaw_coriolis_does_not_cancel_physical_load_transfer(self) -> None:
+        state = self._state(yaw_rate=0.2)
+        evaluation = evaluate_planar_dynamics(
+            self.vehicle, state, np.zeros(4), math.radians(2.0)
+        )
+        physical_lateral = (
+            float(np.sum(evaluation.body_lateral_forces)) / self.vehicle.total_mass
+        )
+        self.assertAlmostEqual(
+            evaluation.lateral_acceleration + state.yaw_rate * state.v_x,
+            physical_lateral,
+            places=7,
+        )
+        expected = evaluate_normal_loads(
+            self.vehicle,
+            float(np.hypot(state.v_x, state.v_y)),
+            evaluation.longitudinal_acceleration - state.yaw_rate * state.v_y,
+            physical_lateral,
+        )
+        np.testing.assert_allclose(evaluation.normal_loads, expected, atol=1e-6)
+
     def test_torque_changes_the_derivative_not_the_force(self) -> None:
         state = self._state()
         coasting = evaluate_planar_dynamics(self.vehicle, state, np.zeros(4), 0.0)
@@ -307,9 +328,9 @@ class PlanarDynamicsTests(unittest.TestCase):
         self.assertTrue(evaluation.contact_feasible)
 
     def test_an_over_limit_state_is_reported_unconverged(self) -> None:
-        # A 25 degree steer at 20 m/s with a yaw rate is far beyond the tire
-        # limit. The load loop slows down and a wheel lifts.
-        state = self._state(yaw_rate=-1.0)
+        # A sharp right turn at 20 m/s lifts one side. The fixed point can
+        # converge algebraically to a negative load, but contact is infeasible.
+        state = self._state(yaw_rate=1.0)
 
         evaluation = evaluate_planar_dynamics(
             self.vehicle, state, np.zeros(4), math.radians(25.0)
@@ -317,7 +338,7 @@ class PlanarDynamicsTests(unittest.TestCase):
 
         self.assertFalse(evaluation.is_feasible)
         self.assertFalse(evaluation.contact_feasible)
-        self.assertFalse(evaluation.load_converged)
+        self.assertTrue(evaluation.load_converged)
 
     def test_the_force_balance_closes_on_the_reported_acceleration(self) -> None:
         evaluation = evaluate_planar_dynamics(

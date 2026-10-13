@@ -6,20 +6,20 @@ exact.
 
 States at every node: the lateral deviation from the path, the heading error
 against the path tangent, the body longitudinal and lateral velocity, the yaw
-rate, four wheel angular speeds, the battery state of charge, and the elapsed
-time.
+rate, the battery state of charge, and the elapsed time.
 
 Controls at every node: the throttle, which scales a drive torque request, the
 brake, which scales the brake torque, and the road-wheel steering angle.
 
-Algebraic variables at every node: the four vertical tire loads and the pack
-current. A simulation iterates the vertical load and the tire force to
+Algebraic variables at every node: four vertical tire loads, four quasi-steady
+wheel angular speeds, and the pack current. A simulation iterates the vertical load and the tire force to
 consistency. A nonlinear program must not nest that iteration, so this module
 carries the loads as variables and imposes the consistency equations. The
 coupling is then exact and differentiable.
 
-The motor limits enter as constraints on the wheel torque and on the bus power,
-never as a clipped torque. The formulation stays smooth, and the solver sees
+The motor limits enter as constraints on the wheel torque and speed, while
+motor electrical demand equals pack terminal power at every node. Neither
+motor torque nor bus power is clipped. The formulation stays smooth, and the solver sees
 the limit instead of a kink.
 
 CasADi and IPOPT are optional dependencies. Install ``casadi`` to use this
@@ -61,10 +61,9 @@ CONTROL_COUNT = 3
 LOAD_COUNT = 4
 ALGEBRAIC_COUNT = 9
 
-#: Equality equations at one node: four load consistency equations and four
-#: quasi-steady wheel balances. The pack current carries bounds but no
-#: equation, because the driver may draw any current the pack allows.
-ALGEBRAIC_EQUATION_COUNT = 8
+#: Equality equations: four load balances, four quasi-steady wheel balances,
+#: and pack power equal to summed four-motor electrical demand.
+ALGEBRAIC_EQUATION_COUNT = 9
 
 #: The first states repeat after one lap. Time and charge do not.
 PERIODIC_STATE_COUNT = 5
@@ -135,7 +134,13 @@ class PlanarOcpOptions:
     #: slow solution instead of a good one. It is kept for experiments.
     warm_start: bool = False
     #: The spacing of the first, coarsest rung of the refinement ladder.
-    warm_start_spacing: float = 40.0
+    warm_start_spacing: float = 20.0
+    #: Project wheel speeds and loads onto the local algebraic equations.
+    project_initial_guess: bool = False
+    #: Use the exact sparse Hessian rather than IPOPT's limited-memory update.
+    exact_hessian: bool = False
+    #: Balance physical equation units in IPOPT without changing the physics.
+    scale_constraints: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -167,6 +172,9 @@ class PlanarOcpResult:
     bus_power: FloatArray
     periodicity_residual: float
     maximum_load_residual: float
+    maximum_dynamics_residual: float
+    maximum_inequality_violation: float
+    maximum_power_mismatch: float
     maximum_lateral_error: float
     iterations: int
 
@@ -261,9 +269,9 @@ def _build_node_functions(
     """Build the symbolic node functions once.
 
     ``dynamics`` returns the state derivative against distance.
-    ``algebraic`` returns the four vertical load residuals.
-    ``bounds`` returns the terminal voltage, the bus power, the wheel torque
-    bounds, and the wheel power bounds.
+    ``algebraic`` returns four load, four wheel and one battery-power residual.
+    ``bounds`` returns voltage, bus power, per-motor torque/power/speed bounds,
+    progress, path speed and the traction margin.
     """
 
     from simplified_vehicle_models.solvers.planar_symbolic import (
@@ -355,17 +363,19 @@ def _build_node_functions(
     )
     yaw_acceleration = moment / vehicle.yaw_inertia
 
-    # Quasi-static load consistency: the load must follow the acceleration
-    # that the tire forces produce at that same load.
+    # Quasi-static loads use *inertial* acceleration, not body velocity
+    # derivatives: in a steady turn dv_y/dt=0 but a_y=r*v_x is nonzero.
+    physical_longitudinal = (casadi.sum1(body_fx) - drag) / vehicle.total_mass
+    physical_lateral = casadi.sum1(body_fy) / vehicle.total_mass
     front_axle = (
         vehicle.total_mass * GRAVITY * vehicle.front_mass_fraction
         + downforce * vehicle.aero.aero_balance
-        - vehicle.total_mass * longitudinal_acceleration * vehicle.cg_height
+        - vehicle.total_mass * physical_longitudinal * vehicle.cg_height
         / vehicle.wheelbase
     )
     rear_axle = vehicle.total_mass * GRAVITY + downforce - front_axle
     total_transfer = (
-        vehicle.total_mass * lateral_acceleration * vehicle.cg_height
+        vehicle.total_mass * physical_lateral * vehicle.cg_height
         / vehicle.track_width
     )
     front_transfer = (
@@ -399,6 +409,11 @@ def _build_node_functions(
     )
     terminal = open_circuit - pack_current * pack_resistance
     bus_power = terminal * pack_current
+    # Friction braking has no regeneration. Only the positive motor torque
+    # draws electrical power; the gear and inverter losses both cost energy.
+    drive_torque = shares * (throttle * drive_reference)
+    motor_bus_power = casadi.sum1(drive_torque * wheel_speed) / motor.drive_efficiency
+    power_residual = bus_power - motor_bus_power
 
     # The voltage scales the base speed, so a low voltage reaches the power
     # bound sooner. Clamp the voltage at the nominal value.
@@ -440,7 +455,7 @@ def _build_node_functions(
         lateral_acceleration / safe_progress,
         yaw_acceleration / safe_progress,
         -pack_current
-        / (3600.0 * storage.pack_capacity_ah),
+        / (3600.0 * storage.pack_capacity_ah * safe_progress),
         1.0 / safe_progress,
     )
 
@@ -450,7 +465,7 @@ def _build_node_functions(
     algebraic_function = casadi.Function(
         "planar_algebraic",
         [x, u, algebraic, kappa],
-        [casadi.vertcat(load_residual, wheel_balance)],
+        [casadi.vertcat(load_residual, wheel_balance, power_residual)],
     )
     # The traction margin. A quasi-steady wheel can only balance a torque that
     # the tire can transmit. Without this bound the wheel balance has no
@@ -471,6 +486,7 @@ def _build_node_functions(
             progress,
             path_speed,
             traction_margin,
+            scaled_speed - motor.maximum_motor_speed,
         ],
     )
     return _NodeFunctions(
@@ -532,307 +548,16 @@ def _solve_by_refinement(
     for spacing in _ladder(options.mesh_spacing, options.warm_start_spacing):
         stage = replace(options, mesh_spacing=spacing, warm_start=False)
         result = _solve(casadi, vehicle, track, stage, previous)
+        if not result.converged and spacing != options.mesh_spacing:
+            raise RuntimeError(
+                f"the {spacing:g} m rung is infeasible ({result.status}; "
+                f"algebraic {result.maximum_load_residual:g}, "
+                f"dynamics {result.maximum_dynamics_residual:g}); "
+                "cannot use it as a finer-mesh start"
+            )
         previous = _as_start(result)
     assert result is not None
     return result
-
-
-def _as_start(result: PlanarOcpResult) -> dict[str, np.ndarray]:
-    """Return a result as an initial guess for a finer mesh."""
-
-    return {
-        "distance": result.distance,
-        "state": np.vstack(
-            (
-                result.lateral_error,
-                result.heading_error,
-                result.v_x,
-                result.v_y,
-                result.yaw_rate,
-                result.wheel_speeds,
-                result.state_of_charge,
-                result.elapsed_time,
-            )
-        ),
-        "control": np.vstack((result.throttle, result.brake, result.steering)),
-        "loads": result.normal_loads,
-        "current": result.pack_current.reshape(1, -1),
-    }
-
-
-def _interpolate_start(
-    start: dict[str, np.ndarray],
-    distance: FloatArray,
-) -> dict[str, np.ndarray]:
-    """Interpolate an earlier solution onto a new mesh."""
-
-    source = np.asarray(start["distance"], dtype=np.float64)
-    def resample(values: np.ndarray) -> np.ndarray:
-        rows = np.atleast_2d(values)
-        out = np.empty((rows.shape[0], distance.size), dtype=np.float64)
-        for index in range(rows.shape[0]):
-            out[index] = np.interp(distance, source, rows[index])
-        return out
-    return {
-        "state": resample(start["state"]),
-        "control": resample(start["control"]),
-        "loads": resample(start["loads"]),
-        "current": resample(start["current"]),
-    }
-
-
-def _solve(
-    casadi: Any,
-    vehicle: PlanarVehicleParameters,
-    track: TrackProfile,
-    options: PlanarOcpOptions,
-    start: dict[str, np.ndarray] | None,
-) -> PlanarOcpResult:
-    """Build and solve one mesh."""
-
-    path = _build_path_data(track, options.mesh_spacing)
-    nodes = path["distance"].size
-    spacing = float(path["spacing"][0])
-    curvature = path["curvature"]
-
-    maximum_steering = (
-        vehicle.steering_maximum_angle
-        if options.maximum_steering is None
-        else float(options.maximum_steering)
-    )
-    peak_wheel = (
-        vehicle.motor.peak_motor_torque
-        * vehicle.motor.gear_ratio
-        * vehicle.motor.motor_efficiency
-    )
-    drive_reference = 4.0 * peak_wheel
-    brake_magnitude = np.asarray(
-        _brake_torque_magnitudes(vehicle), dtype=np.float64
-    )
-
-    functions = _build_node_functions(
-        casadi, vehicle, drive_reference, brake_magnitude
-    )
-
-    state = casadi.MX.sym("state", STATE_COUNT, nodes)
-    control = casadi.MX.sym("control", CONTROL_COUNT, nodes)
-    loads = casadi.MX.sym("loads", LOAD_COUNT, nodes)
-    current = casadi.MX.sym("current", 1, nodes)
-
-    constraints: list[Any] = []
-    lower: list[float] = []
-    upper: list[float] = []
-
-    def add(expression, low, high) -> None:
-        constraints.append(casadi.reshape(expression, -1, 1))
-        count = int(expression.numel())
-        lower.extend([low] * count)
-        upper.extend([high] * count)
-
-    # Dynamics by the trapezoid rule between two nodes.
-    for index in range(nodes - 1):
-        here = functions.dynamics(
-            state[:, index],
-            control[:, index],
-            loads[:, index],
-            current[0, index],
-            curvature[index],
-        )
-        there = functions.dynamics(
-            state[:, index + 1],
-            control[:, index + 1],
-            loads[:, index + 1],
-            current[0, index + 1],
-            curvature[index + 1],
-        )
-        add(
-            state[:, index + 1]
-            - state[:, index]
-            - 0.5 * spacing * (here + there),
-            0.0,
-            0.0,
-        )
-
-    # Algebraic consistency, the physical bounds, and the motor limits.
-    discharge_limit = vehicle.storage.discharge_current_limit
-    charge_limit = vehicle.storage.charge_current_limit
-    minimum_pack_voltage = (
-        vehicle.storage.series_count * vehicle.storage.minimum_cell_voltage
-    )
-    for index in range(nodes):
-        arguments = (
-            state[:, index],
-            control[:, index],
-            loads[:, index],
-            current[0, index],
-            curvature[index],
-        )
-        add(functions.algebraic(*arguments), 0.0, 0.0)
-        terminal, bus, torque_bound, power_bound, progress, path_speed = (
-            functions.bounds(*arguments)
-        )
-        throttle = control[0, index]
-        brake = control[1, index]
-        drive = wheel_shares(DRIVE_FRONT_FRACTION) * (
-            throttle * drive_reference
-        )
-        # A separate constraint for each motor bound, so neither is a kink.
-        add(drive - torque_bound, -np.inf, 0.0)
-        add(drive - power_bound, -np.inf, 0.0)
-        add(terminal, minimum_pack_voltage, np.inf)
-        add(progress, options.minimum_progress_speed, np.inf)
-        # Keep the path parametrization from folding over.
-        add(1.0 - curvature[index] * state[0, index], 0.5, np.inf)
-        add(brake * brake_magnitude, 0.0, np.inf)
-
-    # The mechanical states repeat after one lap.
-    add(
-        state[:PERIODIC_STATE_COUNT, nodes - 1] - state[:PERIODIC_STATE_COUNT, 0],
-        0.0,
-        0.0,
-    )
-
-    decision = casadi.vertcat(
-        casadi.reshape(state, -1, 1),
-        casadi.reshape(control, -1, 1),
-        casadi.reshape(loads, -1, 1),
-        casadi.reshape(current, -1, 1),
-    )
-    objective = state[10, nodes - 1]
-
-    # Variable bounds.
-    state_lower = np.zeros(STATE_COUNT, dtype=np.float64)
-    state_upper = np.zeros(STATE_COUNT, dtype=np.float64)
-    state_lower[0], state_upper[0] = (
-        -options.maximum_lateral_error,
-        options.maximum_lateral_error,
-    )
-    state_lower[1], state_upper[1] = (
-        -options.maximum_heading_error,
-        options.maximum_heading_error,
-    )
-    state_lower[2], state_upper[2] = (
-        options.minimum_progress_speed,
-        options.maximum_speed,
-    )
-    state_lower[3], state_upper[3] = -options.maximum_speed, options.maximum_speed
-    state_lower[4], state_upper[4] = -options.maximum_yaw_rate, options.maximum_yaw_rate
-    wheel_speed_upper = options.maximum_speed / 0.15
-    state_lower[5:9], state_upper[5:9] = 0.0, wheel_speed_upper
-    state_lower[9], state_upper[9] = 0.02, 1.0
-    state_lower[10], state_upper[10] = 0.0, 1.0e4
-    control_lower = np.asarray([0.0, 0.0, -maximum_steering])
-    control_upper = np.asarray(
-        [1.0, options.maximum_brake, maximum_steering]
-    )
-    load_lower = np.zeros(LOAD_COUNT)
-    load_upper = np.full(LOAD_COUNT, 2.0e4)
-    current_lower = np.asarray([-charge_limit])
-    current_upper = np.asarray([discharge_limit])
-
-    lower_vector = np.concatenate(
-        [
-            np.tile(state_lower, nodes),
-            np.tile(control_lower, nodes),
-            np.tile(load_lower, nodes),
-            np.tile(current_lower, nodes),
-        ]
-    )
-    upper_vector = np.concatenate(
-        [
-            np.tile(state_upper, nodes),
-            np.tile(control_upper, nodes),
-            np.tile(load_upper, nodes),
-            np.tile(current_upper, nodes),
-        ]
-    )
-
-    # Fix only the charge at the start and the clock. Every other state is
-    # free, so the vehicle may enter the lap already turning and moving. The
-    # periodicity constraint closes the mechanical states.
-    initial_state_lower = lower_vector.copy()
-    initial_state_upper = upper_vector.copy()
-    initial_state_lower[9] = vehicle.storage.initial_state_of_charge
-    initial_state_upper[9] = vehicle.storage.initial_state_of_charge
-    initial_state_lower[STATE_COUNT - 1] = 0.0
-    initial_state_upper[STATE_COUNT - 1] = 0.0
-
-    guess = _initial_guess(path, vehicle, options)
-    if start is not None:
-        resampled = _interpolate_start(start, path["distance"])
-        guess["state"] = resampled["state"]
-        guess["control"] = resampled["control"]
-        guess["loads"] = resampled["loads"]
-        guess["current"] = resampled["current"]
-    guess_vector = np.concatenate(
-        [
-            guess["state"].reshape(-1, order="F"),
-            guess["control"].reshape(-1, order="F"),
-            guess["loads"].reshape(-1, order="F"),
-            guess["current"].reshape(-1, order="F"),
-        ]
-    )
-    guess_vector = np.clip(guess_vector, lower_vector, upper_vector)
-
-    nlp = {
-        "x": decision,
-        "f": objective,
-        "g": casadi.vertcat(*constraints),
-    }
-    solver = casadi.nlpsol(
-        "planar_ocp",
-        "ipopt",
-        nlp,
-        {
-            "ipopt.print_level": options.print_level,
-            "print_time": False,
-            "ipopt.max_iter": options.maximum_iterations,
-            "ipopt.tol": options.tolerance,
-            "ipopt.acceptable_tol": max(options.tolerance * 1.0e4, 1.0e-4),
-            "ipopt.acceptable_iter": 15,
-            "ipopt.mu_strategy": "adaptive",
-            "ipopt.hessian_approximation": "limited-memory",
-        },
-    )
-    solution = solver(
-        x0=guess_vector,
-        lbx=initial_state_lower,
-        ubx=initial_state_upper,
-        lbg=np.asarray(lower),
-        ubg=np.asarray(upper),
-    )
-    status = solver.stats()["return_status"]
-    converged = "Solve_Succeeded" in status or (
-        options.accept_acceptable and "Solved_To_Acceptable_Level" in status
-    )
-    values = np.asarray(solution["x"]).ravel()
-    state_values = values[: STATE_COUNT * nodes].reshape(
-        (STATE_COUNT, nodes), order="F"
-    )
-    control_values = values[
-        STATE_COUNT * nodes : STATE_COUNT * nodes + CONTROL_COUNT * nodes
-    ].reshape((CONTROL_COUNT, nodes), order="F")
-    load_values = values[
-        STATE_COUNT * nodes
-        + CONTROL_COUNT * nodes : STATE_COUNT * nodes
-        + CONTROL_COUNT * nodes
-        + LOAD_COUNT * nodes
-    ].reshape((LOAD_COUNT, nodes), order="F")
-    current_values = values[-nodes:].reshape((1, nodes))
-
-    return _build_result(
-        casadi,
-        vehicle,
-        path,
-        state_values,
-        control_values,
-        load_values,
-        current_values,
-        functions,
-        status,
-        converged,
-        int(solver.stats().get("iter_count", 0)),
-    )
 
 
 def _quasi_steady_speed(
@@ -855,7 +580,16 @@ def _quasi_steady_speed(
     curvature = np.abs(path["curvature"])
     tire = vehicle.tire
     mu = min(float(tire.mu_0_x), float(tire.mu_0_y))
-    lateral_limit = mu * GRAVITY
+    # A seed near peak tire friction leaves no reserve for longitudinal
+    # braking/drive or lateral load transfer; begin below that limit.
+    lateral_limit = (0.75 if options.project_initial_guess else 1.0) * mu * GRAVITY
+    static_loads = evaluate_normal_loads(vehicle, 0.0, 0.0, 0.0)
+    speed_ceiling = min(
+        options.maximum_speed,
+        (0.82 if options.project_initial_guess else 0.98)
+        * vehicle.motor.maximum_motor_speed / vehicle.motor.gear_ratio
+        * float(np.min(loaded_radius(tire, static_loads))),
+    )
     # Pull the drive limit from the motor at the wheel.
     peak_wheel = (
         vehicle.motor.peak_motor_torque
@@ -869,8 +603,8 @@ def _quasi_steady_speed(
     )
 
     with np.errstate(divide="ignore"):
-        corner = np.where(curvature > 1.0e-9, np.sqrt(lateral_limit / np.maximum(curvature, 1.0e-12)), options.maximum_speed)
-    speed = np.minimum(corner, options.maximum_speed)
+        corner = np.where(curvature > 1.0e-9, np.sqrt(lateral_limit / np.maximum(curvature, 1.0e-12)), speed_ceiling)
+    speed = np.minimum(corner, speed_ceiling)
     spacing = float(path["spacing"][0])
     for _ in range(8):
         # Forward pass for the drive limit.
@@ -927,6 +661,7 @@ def _initial_guess(
     state[6] = travel - travel[0]
 
     control = np.zeros((CONTROL_COUNT, nodes), dtype=np.float64)
+    control[2] = np.arctan(vehicle.wheelbase * curvature)
     acceleration = np.gradient(speed**2, 2.0 * distance, edge_order=1)
     control[0] = np.clip(acceleration / 6.0, 0.0, 1.0)
     control[1] = np.clip(-acceleration / 12.0, 0.0, options.maximum_brake)
@@ -978,6 +713,134 @@ def _interpolate_start(
         "control": resample(start["control"]),
         "algebraic": resample(start["algebraic"]),
     }
+
+
+def _project_start(
+    guess: dict[str, np.ndarray],
+    vehicle: PlanarVehicleParameters,
+    path: dict[str, FloatArray],
+    functions: _NodeFunctions,
+) -> dict[str, np.ndarray]:
+    """Solve local load/wheel balances and pack current at each guess node.
+
+    This only prepares IPOPT's starting point. It is not a traction controller:
+    the NLP continues to choose all throttle, brake and steering controls.
+    An infeasible node stays a best-effort seed; only the NLP may certify it.
+    """
+
+    from scipy.optimize import least_squares
+    from simplified_vehicle_models.powertrain.energy_storage import (
+        StorageState,
+        solve_current,
+    )
+    from simplified_vehicle_models.powertrain.motor_envelope import total_bus_power
+
+    casadi = _require_casadi()
+    x_symbol = casadi.SX.sym("projection_x", STATE_COUNT)
+    u_symbol = casadi.SX.sym("projection_u", CONTROL_COUNT)
+    a_symbol = casadi.SX.sym("projection_a", ALGEBRAIC_COUNT)
+    k_symbol = casadi.SX.sym("projection_curvature")
+    expression = functions.algebraic(x_symbol, u_symbol, a_symbol, k_symbol)
+    jacobian = casadi.Function(
+        "projection_jacobian", [x_symbol, u_symbol, a_symbol, k_symbol],
+        [casadi.jacobian(expression[:8], a_symbol[:8])],
+    )
+    state = guess["state"].copy()
+    control = guess["control"].copy()
+    algebraic = guess["algebraic"].copy()
+    curvature = path["curvature"]
+    # Load consistency must not be sacrificed to make a saturated wheel's
+    # torque balance appear smaller at a physically impossible trial speed.
+    scale = np.array([100.0] * 4 + [100.0] * 4)
+    cap = vehicle.motor.maximum_motor_speed / vehicle.motor.gear_ratio
+    lower = np.array([1e-6] * 4 + [0.0] * 4)
+    upper = np.array([2e4] * 4 + [cap] * 4)
+    peak = (vehicle.motor.peak_motor_torque * vehicle.motor.gear_ratio
+            * vehicle.motor.motor_efficiency)
+    shares = wheel_shares(DRIVE_FRONT_FRACTION)
+    for index in range(state.shape[1]):
+        x = state[:, index]
+        u = control[:, index]
+        a = algebraic[:, index]
+        k = float(curvature[index])
+
+        def local_residual(values: np.ndarray) -> np.ndarray:
+            a[:8] = values
+            return np.asarray(functions.algebraic(x, u, a, k)).ravel()[:8] / scale
+
+        def local_jacobian(values: np.ndarray) -> np.ndarray:
+            a[:8] = values
+            return np.asarray(jacobian(x, u, a, k)) / scale[:, None]
+
+        for attempt in range(6):
+            solution = least_squares(
+                local_residual, np.clip(a[:8], lower + 1e-8, upper - 1e-8),
+                jac=local_jacobian, bounds=(lower, upper),
+                max_nfev=50, ftol=1e-9, xtol=1e-9, gtol=1e-9,
+            )
+            a[:8] = solution.x
+            drive = shares * (4.0 * peak * u[0])
+            demand = total_bus_power(vehicle.motor, a[4:8], drive)
+            current, feasible = solve_current(
+                vehicle.storage, StorageState(float(x[5])), demand
+            )
+            a[8] = current
+            physical_residual = float(np.max(np.abs(local_residual(a[:8]) * scale)))
+            if feasible and physical_residual < 1e-3:
+                break
+            # This changes *only the guess*. IPOPT freely chooses the controls.
+            # Back away from wheel saturation or the pack's discharge limit.
+            u[0] *= 0.5
+            u[1] *= 0.5
+            if attempt >= 2:
+                u[2] *= 0.9
+        if physical_residual >= 1e-3:
+            # An unseen sharper corner can make the interpolated speed
+            # incapable of balancing the tire at *any* slip. Decrease only
+            # the starting speed and recompute the local wheel equilibrium.
+            for _ in range(8):
+                x[2] *= 0.85
+                x[4] = x[2] * k
+                a[4:8] *= 0.85
+                solution = least_squares(
+                    local_residual, np.clip(a[:8], lower + 1e-8, upper - 1e-8),
+                    jac=local_jacobian, bounds=(lower, upper),
+                    max_nfev=50, ftol=1e-9, xtol=1e-9, gtol=1e-9,
+                )
+                a[:8] = solution.x
+                physical_residual = float(np.max(np.abs(local_residual(a[:8]) * scale)))
+                if physical_residual < 1e-3:
+                    break
+            drive = shares * (4.0 * peak * u[0])
+            demand = total_bus_power(vehicle.motor, a[4:8], drive)
+            a[8], _ = solve_current(
+                vehicle.storage, StorageState(float(x[5])), demand
+            )
+
+    # Reintegrate the clock and charge using the same trapezoidal spatial
+    # derivatives as the NLP. Iterating once accounts for SOC-dependent OCV.
+    distance = path["distance"]
+    for _ in range(2):
+        state[5, 0] = vehicle.storage.initial_state_of_charge
+        state[6, 0] = 0.0
+        derivatives = np.column_stack([
+            np.asarray(functions.dynamics(state[:, j], control[:, j],
+                             algebraic[:, j], float(curvature[j]))).ravel()
+            for j in range(state.shape[1])
+        ])
+        for index, step in enumerate(np.diff(distance)):
+            state[5:7, index + 1] = state[5:7, index] + 0.5 * step * (
+                derivatives[5:7, index] + derivatives[5:7, index + 1]
+            )
+        state[5] = np.clip(state[5], 0.02, 1.0)
+        for index in range(state.shape[1]):
+            drive = shares * (4.0 * peak * control[0, index])
+            demand = total_bus_power(vehicle.motor, algebraic[4:8, index], drive)
+            current, _ = solve_current(
+                vehicle.storage, StorageState(float(state[5, index])), demand
+            )
+            algebraic[8, index] = current
+    return {"state": state, "control": control, "algebraic": algebraic}
 
 
 def _solve(
@@ -1038,13 +901,12 @@ def _solve(
             state[:, index + 1], control[:, index + 1], algebraic[:, index + 1],
             curvature[index + 1],
         )
-        add(
-            state[:, index + 1]
-            - state[:, index]
-            - 0.5 * spacing * (here + there),
-            0.0,
-            0.0,
+        defect = state[:, index + 1] - state[:, index] - 0.5 * spacing * (
+            here + there
         )
+        if options.scale_constraints:
+            defect /= np.array([0.05, 0.05, 20.0, 5.0, 1.0, 0.1, 60.0])
+        add(defect, 0.0, 0.0)
 
     # The algebraic equations and the physical bounds at every node.
     minimum_pack_voltage = (
@@ -1058,17 +920,25 @@ def _solve(
             algebraic[:, index],
             curvature[index],
         )
-        add(functions.algebraic(*arguments), 0.0, 0.0)
-        terminal, _, torque_bound, power_bound, progress, _, traction = (
+        algebraic_residual = functions.algebraic(*arguments)
+        if options.scale_constraints:
+            algebraic_residual /= np.array([1000.0] * 4 + [100.0] * 4 + [1.0e5])
+        add(algebraic_residual, 0.0, 0.0)
+        terminal, _, torque_bound, power_bound, progress, _, traction, speed_margin = (
             functions.bounds(*arguments)
         )
-        add(traction, -np.inf, 0.0)
+        add(traction / (100.0 if options.scale_constraints else 1.0), -np.inf, 0.0)
+        add(speed_margin / (1000.0 if options.scale_constraints else 1.0), -np.inf, 0.0)
         drive = shares * (control[0, index] * drive_reference)
         # One constraint per motor bound, so neither becomes a kink.
-        add(drive - torque_bound, -np.inf, 0.0)
-        add(drive - power_bound, -np.inf, 0.0)
-        add(terminal, minimum_pack_voltage, np.inf)
-        add(progress, options.minimum_progress_speed, np.inf)
+        motor_scale = 100.0 if options.scale_constraints else 1.0
+        add((drive - torque_bound) / motor_scale, -np.inf, 0.0)
+        add((drive - power_bound) / motor_scale, -np.inf, 0.0)
+        voltage_scale = 400.0 if options.scale_constraints else 1.0
+        add((terminal - minimum_pack_voltage) / voltage_scale, 0.0, np.inf)
+        progress_scale = 20.0 if options.scale_constraints else 1.0
+        add((progress - options.minimum_progress_speed) / progress_scale,
+            0.0, np.inf)
         # Keep the path parametrization from folding over.
         add(1.0 - curvature[index] * state[0, index], 0.5, np.inf)
         add(control[1, index] * brake_magnitude, 0.0, np.inf)
@@ -1159,6 +1029,16 @@ def _solve(
         guess["state"] = resampled["state"]
         guess["control"] = resampled["control"]
         guess["algebraic"] = resampled["algebraic"]
+        if not np.array_equal(np.asarray(start["distance"]), path["distance"]):
+            # A narrow corner can be invisible on a *coarser* mesh. Preserve
+            # every state and control on an exact same-mesh restart instead.
+            corner_cap = 0.9 * _quasi_steady_speed(path, vehicle, options)
+            speed = np.minimum(guess["state"][2], corner_cap)
+            guess["state"][2] = speed
+            guess["state"][4] = speed * curvature
+            guess["control"][2] = np.arctan(vehicle.wheelbase * curvature)
+    if options.project_initial_guess:
+        guess = _project_start(guess, vehicle, path, functions)
     guess_vector = np.concatenate(
         [
             guess["state"].reshape(-1, order="F"),
@@ -1182,10 +1062,12 @@ def _solve(
             "print_time": False,
             "ipopt.max_iter": options.maximum_iterations,
             "ipopt.tol": options.tolerance,
-            "ipopt.acceptable_tol": max(options.tolerance * 1.0e4, 1.0e-4),
+            "ipopt.acceptable_tol": max(options.tolerance * 10.0, 1.0e-6),
             "ipopt.acceptable_iter": 15,
             "ipopt.mu_strategy": "adaptive",
-            "ipopt.hessian_approximation": "limited-memory",
+            "ipopt.hessian_approximation": (
+                "exact" if options.exact_hessian else "limited-memory"
+            ),
         },
     )
     solution = solver(
@@ -1222,6 +1104,7 @@ def _solve(
         status,
         converged,
         int(solver.stats().get("iter_count", 0)),
+        options.minimum_progress_speed,
     )
 
 
@@ -1235,6 +1118,7 @@ def _build_result(
     status: str,
     converged: bool,
     iterations: int,
+    minimum_progress_speed: float,
 ) -> PlanarOcpResult:
     """Evaluate the physics at the solution and pack the result."""
 
@@ -1255,6 +1139,8 @@ def _build_result(
     wheel_torque = np.zeros((LOAD_COUNT, nodes))
     bus = np.zeros(nodes)
     residual = np.zeros((ALGEBRAIC_EQUATION_COUNT, nodes))
+    derivative = np.zeros((STATE_COUNT, nodes))
+    worst_inequality = 0.0
     for index in range(nodes):
         arguments = (
             state[:, index],
@@ -1265,9 +1151,23 @@ def _build_result(
         residual[:, index] = np.asarray(
             functions.algebraic(*arguments)
         ).ravel()
-        _, bus[index], _, _, _, _, _ = (
-            float(v) for v in _flat(functions.bounds(*arguments))
+        derivative[:, index] = np.asarray(functions.dynamics(*arguments)).ravel()
+        terminal, power, torque_cap, power_cap, progress, _, traction, speed_cap = (
+            functions.bounds(*arguments)
         )
+        bus[index] = float(power)
+        drive = shares * control[0, index] * drive_reference
+        inequalities = np.concatenate((
+            np.asarray(traction).ravel(),
+            np.asarray(speed_cap).ravel(),
+            drive - np.asarray(torque_cap).ravel(),
+            drive - np.asarray(power_cap).ravel(),
+            [vehicle.storage.series_count * vehicle.storage.minimum_cell_voltage
+             - float(terminal),
+             minimum_progress_speed - float(progress),
+             0.5 - (1.0 - curvature[index] * state[0, index])],
+        ))
+        worst_inequality = max(worst_inequality, float(np.max(inequalities)))
         wheel_torque[:, index] = (
             shares * control[0, index] * drive_reference
             - control[1, index] * brake_magnitude
@@ -1281,9 +1181,24 @@ def _build_result(
             )
         )
     )
+    defect = state[:, 1:] - state[:, :-1] - 0.5 * np.diff(path["distance"])[None, :] * (
+        derivative[:, 1:] + derivative[:, :-1]
+    )
+    worst_algebraic = float(np.max(np.abs(residual)))
+    worst_dynamics = float(np.max(np.abs(defect)))
+    worst_power = float(np.max(np.abs(residual[8])))
+    # IPOPT's status alone does not certify physical feasibility. In particular
+    # Solved_To_Acceptable_Level can tolerate substantial unscaled defects.
+    verified = (
+        converged
+        and worst_algebraic < 1.0e-3
+        and worst_dynamics < 1.0e-4
+        and worst_inequality < 1.0e-4
+        and periodicity < 1.0e-4
+    )
     return PlanarOcpResult(
         status=status,
-        converged=converged,
+        converged=verified,
         lap_time=float(state[6, nodes - 1]),
         distance=path["distance"],
         elapsed_time=state[6],
@@ -1302,15 +1217,10 @@ def _build_result(
         pack_current=current[0],
         bus_power=bus,
         periodicity_residual=periodicity,
-        maximum_load_residual=float(np.max(np.abs(residual))),
+        maximum_load_residual=worst_algebraic,
+        maximum_dynamics_residual=worst_dynamics,
+        maximum_inequality_violation=max(0.0, worst_inequality),
+        maximum_power_mismatch=worst_power,
         maximum_lateral_error=float(np.max(np.abs(state[0]))),
         iterations=iterations,
     )
-
-
-def _flat(values: Any) -> list[float]:
-    """Return the entries of one CasADi result as plain floats."""
-
-    if isinstance(values, (list, tuple)):
-        return [float(np.asarray(value).ravel()[0]) for value in values]
-    return [float(v) for v in np.asarray(values).ravel()]

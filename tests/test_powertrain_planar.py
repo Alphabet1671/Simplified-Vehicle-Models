@@ -138,6 +138,13 @@ class MotorEnvelopeTests(unittest.TestCase):
         electrical = bus_power(self.motor, wheel_speed, wheel_torque)
 
         self.assertGreater(float(electrical[0]), float(mechanical[0]))
+        self.assertAlmostEqual(
+            float(electrical[0]),
+            100.0 * 50.0 / (
+                self.motor.motor_efficiency * self.motor.inverter_efficiency
+            ),
+            places=7,
+        )
 
     def test_regeneration_returns_less_than_it_takes(self) -> None:
         wheel_speed = np.asarray([50.0])

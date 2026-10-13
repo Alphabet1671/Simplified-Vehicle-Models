@@ -682,14 +682,10 @@ def _load_step(
     )
     _, drag = aerodynamic_forces(vehicle, speed)
     mass = vehicle.total_mass
-    implied_longitudinal = (
-        (float(np.sum(body_longitudinal)) - drag) / mass
-        + state.yaw_rate * state.v_y
-    )
-    implied_lateral = (
-        float(np.sum(body_lateral)) / mass
-        - state.yaw_rate * state.v_x
-    )
+    # Load transfer responds to inertial acceleration, not the derivative of
+    # body-frame velocity. In a steady turn dv_y/dt can vanish while a_y=r*v_x.
+    implied_longitudinal = (float(np.sum(body_longitudinal)) - drag) / mass
+    implied_lateral = float(np.sum(body_lateral)) / mass
     return _LoadStep(
         loads=loads,
         radii=radii,
@@ -852,8 +848,12 @@ def evaluate_planar_dynamics(
         effective_radii=evaluation.radii,
         drag_force=evaluation.drag,
         yaw_moment=moment,
-        longitudinal_acceleration=longitudinal_acceleration,
-        lateral_acceleration=lateral_acceleration,
+        longitudinal_acceleration=(
+            longitudinal_acceleration + state.yaw_rate * state.v_y
+        ),
+        lateral_acceleration=(
+            lateral_acceleration - state.yaw_rate * state.v_x
+        ),
         yaw_acceleration=yaw_acceleration,
         wheel_accelerations=wheel_accelerations,
         load_iterations=iteration,

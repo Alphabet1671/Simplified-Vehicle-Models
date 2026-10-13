@@ -17,6 +17,7 @@ from simplified_vehicle_models.core.conventions import (
 )
 from simplified_vehicle_models.powertrain.assembly import FullDrivetrainRuntime, maximum_drive_force
 from simplified_vehicle_models.powertrain.energy_storage import StorageState
+from simplified_vehicle_models.parameters.tire import UniTirePeakEnvelope
 from simplified_vehicle_models.formulations.point_mass import (
     acceleration_limits,
     aerodynamic_forces,
@@ -49,6 +50,22 @@ class PointMassTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.vehicle = load_point_mass_vehicle(FORMULATION_PATH)
+
+    def test_unitire_peak_lookup_drives_point_mass_tire_capacity(self) -> None:
+        tire = UniTirePeakEnvelope(
+            vertical_loads=np.array([0.0, 1000.0, 2000.0]),
+            longitudinal_peak_force=np.array([0.0, 2100.0, 4000.0]),
+            lateral_peak_force=np.array([0.0, 2200.0, 4200.0]),
+            effective_radius=0.2,
+            reference_speed=15.0,
+        )
+        vehicle = replace(self.vehicle, tire=tire)
+        loads = np.array([500.0, 1000.0, 1500.0])
+
+        longitudinal, lateral = tire_force_capacities(vehicle, loads)
+
+        np.testing.assert_allclose(longitudinal, [1050.0, 2100.0, 3050.0])
+        np.testing.assert_allclose(lateral, [1100.0, 2200.0, 3200.0])
 
     def test_static_loads_sum_to_vehicle_weight(self) -> None:
         loads = normal_loads(self.vehicle, 0.0, 0.0, 0.0)

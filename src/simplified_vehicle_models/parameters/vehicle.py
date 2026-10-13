@@ -19,6 +19,7 @@ from simplified_vehicle_models.powertrain.motor_envelope import (
 )
 from simplified_vehicle_models.parameters.tire import (
     TireEnvelopeParameters,
+    UniTirePeakEnvelope,
     UniTireSimpleParameters,
 )
 
@@ -37,7 +38,7 @@ class PointMassVehicleParameters:
     front_mass_fraction: float
     lateral_load_transfer_distribution: float
     brake_bias: float
-    tire: TireEnvelopeParameters
+    tire: TireEnvelopeParameters | UniTirePeakEnvelope
     aero: AeroParameters
     drivetrain: DrivetrainParameters
     manifest: CompileManifest | None = field(

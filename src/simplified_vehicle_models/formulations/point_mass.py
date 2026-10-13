@@ -19,13 +19,23 @@ from simplified_vehicle_models.suspension import quasi_static
 from simplified_vehicle_models.core.types import FloatArray
 from simplified_vehicle_models.parameters.aero import AeroParameters
 from simplified_vehicle_models.parameters.drivetrain import DrivetrainParameters
-from simplified_vehicle_models.parameters.tire import TireEnvelopeParameters
+from simplified_vehicle_models.parameters.tire import (
+    TireEnvelopeParameters,
+    UniTirePeakEnvelope,
+)
 from simplified_vehicle_models.parameters.vehicle import PointMassVehicleParameters
 from simplified_vehicle_models.powertrain.assembly import (
     FullDrivetrainRuntime,
     maximum_drive_force,
 )
-from simplified_vehicle_models.powertrain.energy_storage import StorageState
+from simplified_vehicle_models.powertrain.motor_envelope import (
+    MotorEnvelopeParameters,
+    motor_speed_limit,
+)
+from simplified_vehicle_models.powertrain.energy_storage import (
+    StorageState,
+    evaluate_storage,
+)
 from simplified_vehicle_models.xml.model import Model
 from simplified_vehicle_models.xml.schema import (
     require_closed_unit_interval,
@@ -294,6 +304,11 @@ def tire_force_capacities(
 
     contact_loads = np.maximum(loads, 0.0)
     tire = vehicle.tire
+    if isinstance(tire, UniTirePeakEnvelope):
+        longitudinal_capacity, lateral_capacity = tire.force_capacities(
+            contact_loads
+        )
+        return longitudinal_capacity, lateral_capacity
     load_factor = (
         tire.load_sensitivity_slope * contact_loads
         + tire.load_sensitivity_intercept
@@ -304,7 +319,23 @@ def tire_force_capacities(
 
 
 def maximum_vehicle_speed(vehicle: PointMassVehicleParameters) -> float:
-    """Calculate the speed limit from the maximum motor speed."""
+    """Calculate the speed limit from the compiled motor speed model."""
+
+    if isinstance(vehicle.drivetrain, FullDrivetrainRuntime):
+        motor = vehicle.drivetrain.powertrain.power_plant
+        if isinstance(motor, MotorEnvelopeParameters):
+            state = StorageState(
+                vehicle.drivetrain.powertrain.energy_storage.initial_state_of_charge
+            )
+            voltage = evaluate_storage(
+                vehicle.drivetrain.powertrain.energy_storage, state
+            ).bus_voltage
+            speed_limit = float(motor_speed_limit(motor, voltage))
+            return (
+                speed_limit
+                * vehicle.tire.effective_radius
+                / motor.gear_ratio
+            )
 
     motor_speed = vehicle.drivetrain.maximum_motor_speed * 2.0 * math.pi / 60.0
     return motor_speed * vehicle.tire.effective_radius / vehicle.drivetrain.gear_ratio
@@ -490,21 +521,11 @@ def _equilibrium_limits(
         lateral_acceleration,
     )
     contact_feasible = all(load >= -1.0e-9 for load in loads)
-    tire = vehicle.tire
-    capacities = tuple(
-        (
-            max(tire.longitudinal_mu_scale * load_factor, 0.0) * contact_load,
-            max(tire.lateral_mu_scale * load_factor, 0.0) * contact_load,
-        )
-        for load in loads
-        for contact_load in (max(load, 0.0),)
-        for load_factor in (
-            tire.load_sensitivity_slope * contact_load
-            + tire.load_sensitivity_intercept,
-        )
+    longitudinal_values, lateral_values = tire_force_capacities(
+        vehicle, np.asarray(loads, dtype=np.float64)
     )
-    longitudinal_capacities = tuple(item[0] for item in capacities)
-    lateral_capacities = tuple(item[1] for item in capacities)
+    longitudinal_capacities = tuple(float(value) for value in longitudinal_values)
+    lateral_capacities = tuple(float(value) for value in lateral_values)
 
     total_lateral_force = mass * abs(lateral_acceleration)
     front_target = total_lateral_force * vehicle.front_mass_fraction

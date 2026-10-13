@@ -2,6 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import numpy as np
+
+from simplified_vehicle_models.core.types import FloatArray
+
 
 @dataclass(frozen=True, slots=True)
 class TireEnvelopeParameters:
@@ -12,6 +16,43 @@ class TireEnvelopeParameters:
     load_sensitivity_slope: float
     load_sensitivity_intercept: float
     effective_radius: float
+
+
+@dataclass(frozen=True, slots=True)
+class UniTirePeakEnvelope:
+    """Tabulated pure-slip grip peaks reduced from simplified UniTire.
+
+    The force capacities preserve load dependence and are evaluated by linear
+    interpolation between the sampled normal loads. ``effective_radius`` is
+    the loaded radius at the tire's rated load and is used by point-mass motor
+    speed limits.
+    """
+
+    vertical_loads: FloatArray
+    longitudinal_peak_force: FloatArray
+    lateral_peak_force: FloatArray
+    effective_radius: float
+    reference_speed: float
+
+    def force_capacities(
+        self, loads: FloatArray
+    ) -> tuple[FloatArray, FloatArray]:
+        """Return pure longitudinal and lateral peak capacities at loads."""
+
+        load_values = np.maximum(np.asarray(loads, dtype=np.float64), 0.0)
+        longitudinal = np.interp(
+            load_values,
+            np.asarray(self.vertical_loads, dtype=np.float64),
+            np.asarray(self.longitudinal_peak_force, dtype=np.float64),
+            left=0.0,
+        )
+        lateral = np.interp(
+            load_values,
+            np.asarray(self.vertical_loads, dtype=np.float64),
+            np.asarray(self.lateral_peak_force, dtype=np.float64),
+            left=0.0,
+        )
+        return longitudinal, lateral
 
 
 @dataclass(frozen=True, slots=True)

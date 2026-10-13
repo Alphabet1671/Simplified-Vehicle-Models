@@ -1,11 +1,16 @@
 import math
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 import unittest
 
 import numpy as np
 
 from simplified_vehicle_models.compiler.compile import compile_formulation
+from simplified_vehicle_models.powertrain.assembly import (
+    compile_powertrain_drivetrain,
+    maximum_drive_force,
+)
 from simplified_vehicle_models.powertrain.energy_storage import (
     StorageState,
     evaluate_storage,
@@ -281,6 +286,61 @@ class DriveLimitTests(unittest.TestCase):
         self.assertIsInstance(self.vehicle.motor, MotorEnvelopeParameters)
         self.assertEqual(self.vehicle.storage.series_count, 144)
         self.assertEqual(self.vehicle.storage.parallel_count, 1)
+
+    def test_point_mass_drive_limit_accepts_the_smooth_motor_envelope(self) -> None:
+        vehicle_model = load_model(
+            REPOSITORY_ROOT / "models/vehicles/placeholder_2024_formula.xml"
+        )
+        runtime = compile_powertrain_drivetrain(vehicle_model)
+        state = StorageState(
+            runtime.powertrain.energy_storage.initial_state_of_charge
+        )
+
+        drive = maximum_drive_force(
+            runtime.powertrain,
+            runtime.drivetrain,
+            speed=12.0,
+            state=state,
+            effective_radius=0.204,
+        )
+
+        self.assertGreater(drive.maximum_drive_force, 0.0)
+        self.assertTrue(drive.converged)
+        self.assertLessEqual(
+            drive.bus_power_at_limit,
+            evaluate_storage(
+                runtime.powertrain.energy_storage, state
+            ).discharge_power_limit + 1.0e-6,
+        )
+
+    def test_point_mass_energy_trace_uses_smooth_motor_efficiency(self) -> None:
+        from simplified_vehicle_models.solvers.forward_backward import _energy_trace
+
+        runtime = compile_powertrain_drivetrain(
+            load_model(
+                REPOSITORY_ROOT / "models/vehicles/placeholder_2024_formula.xml"
+            )
+        )
+        soc = runtime.powertrain.energy_storage.initial_state_of_charge
+        vehicle = SimpleNamespace(
+            drivetrain=runtime,
+            tire=SimpleNamespace(effective_radius=0.204),
+        )
+        lap = SimpleNamespace(
+            speed=np.array([10.0, 10.0]),
+            elapsed_time=np.array([0.0, 0.1]),
+            longitudinal_forces=np.full((1, 4), 1000.0),
+        )
+        track = SimpleNamespace(segment_length=np.array([1.0]))
+
+        bus, shaft, voltage, _used, _recovered, next_soc = _energy_trace(
+            vehicle, track, lap, np.array([soc, soc]), regen_enabled=False
+        )
+
+        self.assertGreater(bus[0], 0.0)
+        self.assertGreater(shaft[0], 0.0)
+        self.assertTrue(np.isfinite(voltage[0]))
+        self.assertLess(next_soc[-1], soc)
 
 
 if __name__ == "__main__":

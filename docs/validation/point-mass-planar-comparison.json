@@ -1,0 +1,93 @@
+{
+  "comparison": {
+    "vehicle_formulation": "models/formulations/placeholder_planar_7dof.xml",
+    "vehicle_assembly": "models/vehicles/placeholder_2024_formula.xml",
+    "track": "models/tracks/2024_michigan_endurance_closed.xml",
+    "track_length_m": 1016.70064959,
+    "mesh_spacing_m": 1.0,
+    "nodes": 1018,
+    "point_mass_lap_time_s": 45.739836684642285,
+    "planar_lap_time_s": 43.906623128917936,
+    "point_mass_minus_planar_s": 1.833213555724349,
+    "point_mass_minus_planar_percent": 4.175255178112186
+  },
+  "point_mass": {
+    "converged": true,
+    "profile_sweeps": 2,
+    "energy_converged": true,
+    "energy_iterations": 3,
+    "final_state_of_charge": 0.9107316138411639,
+    "minimum_pack_voltage_v": 589.5319262632818,
+    "minimum_speed_mps": 12.10918461580873,
+    "maximum_speed_mps": 35.269676939891006,
+    "mean_speed_mps": 23.94777364147606,
+    "regen_enabled": false
+  },
+  "planar_equilibrium_seed": {
+    "converged": true,
+    "status": "Solve_Succeeded",
+    "iterations": 296,
+    "minimum_speed_mps": 12.188159546934623,
+    "maximum_speed_mps": 31.515844991340973,
+    "mean_speed_mps": 24.45815858549657,
+    "maximum_algebraic_residual": 2.3781895208685455e-7,
+    "maximum_dynamics_residual": 1.2392056131238505e-10,
+    "maximum_inequality_violation": 9.729533631454984e-9,
+    "maximum_power_mismatch_w": 2.3781895208685455e-7
+  },
+  "timing_single_isolated_sample": {
+    "setup_s": 0.021007583010941744,
+    "point_mass_energy_coupled_solve_s": 30.604198249988258,
+    "planar_equilibrium_seed_solve_s": 197.34428754099645,
+    "planar_to_point_mass_speedup": 6.448275034980607,
+    "note": "One same-process isolated timing sample; not a median or hardware-independent benchmark."
+  },
+  "tire_lookup": {
+    "source": "simplified UniTire pure-slip force peaks; no 2025 Matlab lap-sim tire data",
+    "reference_speed_mps": 15.0,
+    "load_grid_n": [0.0, 3500.0],
+    "load_grid_nodes": 71,
+    "slip_angle_range_rad": [0.0, 0.6],
+    "slip_ratio_range": [0.0, 1.5],
+    "slip_samples_per_axis": 601,
+    "peak_refinement": "local parabolic fit around sampled maximum",
+    "peaks": [
+      {"vertical_load_n": 250.0, "longitudinal_peak_force_n": 576.5036, "longitudinal_peak_mu": 2.30601455, "lateral_peak_force_n": 595.0930, "lateral_peak_mu": 2.38037218},
+      {"vertical_load_n": 660.0, "longitudinal_peak_force_n": 1508.4880, "longitudinal_peak_mu": 2.28558794, "lateral_peak_force_n": 1571.0342, "lateral_peak_mu": 2.38035477},
+      {"vertical_load_n": 1500.0, "longitudinal_peak_force_n": 3448.9054, "longitudinal_peak_mu": 2.29927026, "lateral_peak_force_n": 3570.5127, "lateral_peak_mu": 2.38034180},
+      {"vertical_load_n": 2500.0, "longitudinal_peak_force_n": 5787.6205, "longitudinal_peak_mu": 2.31504818, "lateral_peak_force_n": 5950.8475, "lateral_peak_mu": 2.38033900}
+    ]
+  },
+  "warm_start_attempt": {
+    "strategy": "point-mass speed/time profile with equilibrium-seed sideslip/steering, speed-slope pedal guesses, and local algebraic projection",
+    "iteration_cap": 500,
+    "iterations_used": 500,
+    "converged": false,
+    "status": "Maximum_Iterations_Exceeded",
+    "lap_time_s_unverified": 129.61496391713885,
+    "iterations_saved_vs_equilibrium_seed": -204,
+    "maximum_algebraic_residual": 52218.54362631033,
+    "maximum_dynamics_residual": 28.988570684056775,
+    "maximum_inequality_violation": 4.0644330578735435,
+    "maximum_steering_rate_rad_s": 7.956650756399888,
+    "note": "Failed feasibility checks; lap time is not a valid optimized result and no warm-start runtime speedup is claimed."
+  },
+  "drivetrain_mapping": {
+    "source_assembly_transmission_ratio": 10.9,
+    "motor_envelope_ratio_used_by_planar_formulation": 11.589,
+    "point_mass_ratio_aligned_to_planar": 11.589,
+    "note": "The placeholder has separate inconsistent ratio fields; the reduced point-mass run uses the smooth motor-envelope ratio used in planar equations."
+  },
+  "solver_options": {
+    "planar_mesh_m": 1.0,
+    "planar_exact_hessian": true,
+    "planar_steering_rate_limit_rad_s": 3.141592653589793,
+    "planar_lateral_error_bound_m": 0.05,
+    "planar_heading_error_bound_rad": 0.2,
+    "point_mass_mode": "flying",
+    "point_mass_energy_outer_iterations": 40,
+    "point_mass_lap_iterations": 200,
+    "planar_maximum_iterations": 500
+  },
+  "reproduction_command": "PYTHONPATH=src:/tmp/casadi_pkgs python3 tools/compare_planar_point_mass.py --spacing 1 --iterations 500"
+}

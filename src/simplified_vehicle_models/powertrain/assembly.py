@@ -17,6 +17,7 @@ from simplified_vehicle_models.drivetrain.transmission import FixedGearParameter
 from simplified_vehicle_models.parameters.drivetrain import DrivetrainParameters
 from simplified_vehicle_models.powertrain.motor_envelope import (
     MotorEnvelopeParameters,
+    motor_torque_limit,
     wheel_torque_limit,
 )
 from simplified_vehicle_models.xml.loader import load_model
@@ -320,6 +321,73 @@ def maximum_drive_force(
     storage = evaluate_storage(powertrain.energy_storage, state)
     motor = powertrain.power_plant
     transmission = drivetrain.transmission
+    if isinstance(motor, MotorEnvelopeParameters):
+        # The smooth envelope used by the planar formulation reports motor
+        # speed in rad/s and has an algebraic efficiency model rather than a
+        # persisted operating-map LUT. Keep the point-mass reduction on that
+        # same model and apply the pack discharge limit at the same bus-power
+        # level as the four motors.
+        # Match the ratio embedded in the smooth motor model; the assembly's
+        # independent transmission ratio is a legacy field not used by planar.
+        gear_ratio = motor.gear_ratio
+        motor_speed_rad_s = gear_ratio * speed / effective_radius
+        voltage = storage.bus_voltage
+        torque = 0.0
+        current = 0.0
+        feasible = False
+        converged = False
+        residual = math.inf
+        bus_power = 0.0
+        iterations = 0
+        for iterations in range(1, 33):
+            torque = float(motor_torque_limit(motor, motor_speed_rad_s, voltage))
+            if motor_speed_rad_s > 0.0:
+                pack_torque = (
+                    storage.discharge_power_limit
+                    * motor.drive_efficiency
+                    / (motor_speed_rad_s * motor.unit_count)
+                )
+                torque = min(torque, max(pack_torque, 0.0))
+            bus_power = (
+                motor_speed_rad_s * torque * motor.unit_count / motor.drive_efficiency
+            )
+            current, feasible = solve_current(
+                powertrain.energy_storage, state, bus_power
+            )
+            next_voltage = terminal_voltage(
+                powertrain.energy_storage, state, current
+            )
+            residual = abs(next_voltage - voltage)
+            if residual <= 1.0e-6:
+                voltage = next_voltage
+                converged = feasible
+                break
+            voltage = 0.5 * (voltage + next_voltage)
+        wheel_torque = (
+            torque
+            * motor.unit_count
+            * gear_ratio
+            * transmission.gear_efficiency
+        )
+        force = wheel_torque / effective_radius
+        active = (
+            "storage_power"
+            if motor_speed_rad_s > 0.0
+            and bus_power >= storage.discharge_power_limit - 1.0e-6
+            else "motor_envelope"
+        )
+        return DriveLimit(
+            force,
+            wheel_torque,
+            voltage,
+            bus_power,
+            active,
+            -current / powertrain.energy_storage.pack_capacity_joules,
+            current,
+            residual,
+            converged,
+            iterations,
+        )
     # Transmission uses angular speed; motor maps use rpm.
     motor_speed = transmission.motor_speed(speed / effective_radius) * 60.0 / (2.0 * math.pi)
     if motor_speed > motor.maximum_motor_speed:

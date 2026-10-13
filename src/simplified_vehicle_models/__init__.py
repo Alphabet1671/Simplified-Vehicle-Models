@@ -30,8 +30,9 @@ from simplified_vehicle_models.parameters.vehicle import PointMassVehicleParamet
 from simplified_vehicle_models.results.traces import LapMode, LapResult
 from simplified_vehicle_models.solvers.forward_backward import solve_lap
 from simplified_vehicle_models.tires.unitire_simple import evaluate_unitire
+from simplified_vehicle_models.tracks.path_coordinates import evaluate_path
 from simplified_vehicle_models.tracks.profile import load_track
-from simplified_vehicle_models.tracks.types import TrackProfile
+from simplified_vehicle_models.tracks.types import PathCoordinates, TrackProfile
 from simplified_vehicle_models.xml.loader import load_point_mass_vehicle
 from simplified_vehicle_models.powertrain.power_plant import (
     TorqueLimits,
@@ -57,6 +58,7 @@ __all__ = [
     "PointMassVehicleParameters",
     "RIGHT_TURN_CURVATURE_SIGN",
     "TireEnvelopeParameters",
+    "PathCoordinates",
     "TrackProfile",
     "UniTireSimpleParameters",
     "VEHICLE_AXIS_CONVENTION",
@@ -64,6 +66,7 @@ __all__ = [
     "acceleration_limits",
     "compile_formulation",
     "evaluate_equilibrium",
+    "evaluate_path",
     "evaluate_unitire",
     "lateral_transfer_loads",
     "load_point_mass_vehicle",

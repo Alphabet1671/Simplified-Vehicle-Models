@@ -384,6 +384,23 @@ def _interpolated_envelopes(mapping, voltage, speed):
     )
 
 
+def _envelope_cliff_cell(mapping, vi, si):
+    """Return whether a map cell straddles a zero/non-zero envelope corner.
+
+    The voltage-scaled analytical cap drops to a hard zero along a diagonal
+    (speed ~ 33.3 rpm/V).  Bilinear interpolation across that cliff smears the
+    step over one cell (up to ~10 Nm), and the stored rows of a zero-envelope
+    node carry no information, so such cells are never interpolated: the exact
+    oracle answers instead.
+    """
+
+    for array in (mapping.drive_torque, mapping.regen_torque):
+        block = array[vi:vi + 2, si:si + 2]
+        if block.min() <= 0.0 < block.max():
+            return True
+    return False
+
+
 _ROW_MASK_TOLERANCE = 1.0e-12
 
 
@@ -452,6 +469,8 @@ def _lut_forward(parameters, motor_speed, shaft_torque, bus_voltage):
     drive, regen, vi, si, vf, sf = _interpolated_envelopes(
         mapping, bus_voltage, motor_speed
     )
+    if _envelope_cliff_cell(mapping, vi, si):
+        return _exact_fallback(parameters, motor_speed, shaft_torque, bus_voltage)
     if shaft_torque == 0.0:
         load = 0.0
     else:
@@ -555,8 +574,20 @@ def _exact_limit(parameters, speed, voltage, regen=False):
     return cached
 
 
+def voltage_scaled_envelope(parameters, speed, voltage):
+    """Return the analytical torque cap at one bus voltage.
+
+    This is exactly the bound the analytical drive/regen paths bisect inside:
+    the 600 V map envelope with its speed axis scaled by
+    ``reference_bus_voltage / voltage``, which is a hard zero once the scaled
+    speed passes the end of the map.
+    """
+
+    return maximum_motor_torque(parameters, max(0.0, speed), voltage / _SQRT_THREE)
+
+
 def _exact_limit_uncached(parameters, speed, voltage, regen=False):
-    envelope = _map_values(max(0.0, speed), 0.0, parameters)[0]
+    envelope = voltage_scaled_envelope(parameters, speed, voltage)
     if envelope <= 0.0:
         return 0.0
     lo, hi = (-envelope, 0.0) if regen else (0.0, envelope)
@@ -624,7 +655,15 @@ def motor_torque_limits(parameters, motor_speed_rpm, bus_voltage):
         )
     clamped_speed = min(max(motor_speed_rpm, mapping.speed[0]), mapping.speed[-1])
     clamped_voltage = min(max(bus_voltage, mapping.voltage[0]), mapping.voltage[-1])
-    drive, regen, *_ = _interpolated_envelopes(mapping, clamped_voltage, clamped_speed)
+    drive, regen, vi, si, _vf, _sf = _interpolated_envelopes(
+        mapping, clamped_voltage, clamped_speed
+    )
+    if _envelope_cliff_cell(mapping, vi, si):
+        return TorqueLimits(
+            _exact_limit(parameters, motor_speed_rpm, bus_voltage),
+            _exact_limit(parameters, motor_speed_rpm, bus_voltage, True),
+            True,
+        )
     return TorqueLimits(drive, regen, False)
 
 
@@ -761,7 +800,7 @@ def torque_for_bus_power(parameters, motor_speed_rpm, bus_voltage, target_bus_po
     drive, regen, vi, si, vf, sf = _interpolated_envelopes(
         mapping, bus_voltage, motor_speed_rpm
     )
-    if (direction == "drive" and drive <= 0.0) or (
+    if _envelope_cliff_cell(mapping, vi, si) or (direction == "drive" and drive <= 0.0) or (
         direction == "regen" and regen <= 0.0
     ):
         _LOOKUP_COUNTERS["inverse"] += 1

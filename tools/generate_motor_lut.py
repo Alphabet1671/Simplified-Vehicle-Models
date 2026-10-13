@@ -15,10 +15,11 @@ sys.path.insert(0, str(_ROOT / "src"))
 from simplified_vehicle_models.powertrain.power_plant import (  # noqa: E402
     compile_analytical_motor_source,
     evaluate_shaft_power_exact,
+    voltage_scaled_envelope,
 )
 from simplified_vehicle_models.xml.loader import load_model  # noqa: E402
 
-GENERATOR_VERSION = "motor-lut-v2"
+GENERATOR_VERSION = "motor-lut-v3"
 
 # Default grid resolution.  These values are also the documented canonical
 # command in ``models/data/provenance.md``; changing them changes the artifact
@@ -201,10 +202,10 @@ def generate(path, voltage_points=DEFAULT_VOLTAGE_POINTS,
     reductions = EnvelopeReduction()
     for iv, bus_voltage in enumerate(voltage):
         for ix, motor_speed in enumerate(speed):
-            envelope = float(np.interp(
-                min(motor_speed, parameters.torque_speed[-1]),
-                parameters.torque_speed, parameters.torque_values,
-            ))
+            # The analytical oracle bisects inside the voltage-scaled map
+            # envelope (a hard zero past the scaled map end), so the persisted
+            # envelopes must never exceed it.
+            envelope = float(voltage_scaled_envelope(parameters, motor_speed, bus_voltage))
             exact_drive = _maximum_feasible(
                 parameters, motor_speed, bus_voltage, 1.0, envelope,
             )

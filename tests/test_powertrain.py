@@ -39,6 +39,8 @@ from simplified_vehicle_models.powertrain.power_plant import (
     _interpolated_row,
     _load_operating_map,
     MotorOperatingMap,
+    voltage_scaled_envelope,
+    _envelope_cliff_cell,
 )
 from simplified_vehicle_models.powertrain.energy_storage import (
     StorageState,
@@ -110,8 +112,12 @@ class RegenGenerationTests(unittest.TestCase):
                 mock.patch.object(generate_motor_lut, "compile_analytical_motor_source", return_value=parameters),
                 mock.patch.object(generate_motor_lut, "_source_paths", return_value=()),
                 mock.patch.object(generate_motor_lut, "evaluate_shaft_power_exact", evaluate),
+                mock.patch.object(
+                    generate_motor_lut, "voltage_scaled_envelope",
+                    lambda _parameters, _speed, _voltage: 20.0,
+                ),
             )
-            with patches[0], patches[1], patches[2], patches[3]:
+            with patches[0], patches[1], patches[2], patches[3], patches[4]:
                 generate_motor_lut.generate(
                     output, voltage_points=2, speed_points=2, load_points=5
                 )
@@ -282,7 +288,42 @@ class OperatingMapValidationTests(unittest.TestCase):
         loaded = _validate_operating_map(self.data)
         self.assertEqual(loaded.bus_power.shape, (25, 129, 65))
         digest = hashlib.sha256((ROOT / "models/data/amk_dd5_100c_operating_map.npz").read_bytes()).hexdigest()
-        self.assertEqual(digest, "31cfadc88b66d1425d210ad71cbc85ba0dea75564903014a1075efb7669d5fe9")
+        self.assertEqual(digest, "0fe463ea9f8c74a7b29aa2f7ebdb17aa8b376d9a38dfcd9dd4dee4723ee1eeb9")
+
+
+class VoltageScaledEnvelopeTests(unittest.TestCase):
+    """The LUT must never exceed the analytical voltage-scaled envelope cap."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.motor = compile_electric_motor(
+            load_model(ROOT / "models/power-plants/amk_dd5_100c.xml")
+        )
+
+    def test_known_corner_points_are_zero(self):
+        for speed, voltage in ((18273.0, 540.0), (18273.0, 517.95), (18273.0, 529.999)):
+            self.assertEqual(voltage_scaled_envelope(self.motor, speed, voltage), 0.0)
+            limits = motor_torque_limits(self.motor, speed, voltage)
+            self.assertEqual(limits.maximum_drive_torque, 0.0, (speed, voltage))
+            self.assertEqual(limits.maximum_regen_torque, 0.0, (speed, voltage))
+
+    def test_limits_never_exceed_voltage_scaled_cap_including_below_map_floor(self):
+        voltages = list(np.linspace(530.0, 620.0, 31)) + [529.999, 529.0, 517.95, 500.0, 450.0]
+        checked = 0
+        for voltage in voltages:
+            for speed in np.linspace(0.0, 18600.0, 187):
+                cap = voltage_scaled_envelope(self.motor, float(speed), float(voltage))
+                limits = motor_torque_limits(self.motor, float(speed), float(voltage))
+                # Below ~300 rpm the bilinear interpolation of the source
+                # envelope's own breakpoints may overshoot by <= 0.11 Nm; above
+                # that the LUT matches the cap to interpolation round-off.
+                slack = 0.15 if speed < 300.0 else 1.0e-5
+                if cap == 0.0:
+                    slack = 0.0
+                for value in (limits.maximum_drive_torque, limits.maximum_regen_torque):
+                    self.assertLessEqual(value, cap + slack, (voltage, speed))
+                checked += 1
+        self.assertEqual(checked, len(voltages) * 187)
 
 
 class MotorLutQueryTests(unittest.TestCase):
@@ -432,6 +473,9 @@ class MotorLutQueryTests(unittest.TestCase):
             speed = float(rng.uniform(mapping.speed[0], mapping.speed[-1]))
             vi, vf = _voltage_fraction(mapping, voltage)
             si, sf = _speed_fraction(mapping, speed)
+            if _envelope_cliff_cell(mapping, vi, si):
+                # Cliff cells are answered by the exact oracle by design.
+                continue
             row = _interpolated_row(mapping.bus_power, vi, si, vf, sf)
             zero = int(np.searchsorted(mapping.load, 0.0))
             low, high = float(row[zero]), float(row[-1])

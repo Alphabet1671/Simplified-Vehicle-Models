@@ -310,3 +310,31 @@ this model holds the bias and reports the shortfall in `unmet_total`.
 The allocator cannot see the tire. It does not limit a wheel by slip, and it is
 not a traction controller. A tire limit belongs to the vehicle residual as a
 constraint.
+
+### Integration stiffness
+
+The wheel-speed equation is stiff. Its time constant is
+
+```text
+tau = J * v / (Re^2 * Kx)
+```
+
+At 8 m/s with the placeholder inertia and the fitted longitudinal slip
+stiffness, `tau` is about **1.4 ms**. An explicit integrator therefore needs a
+step below about 2.5 ms. Measured on a 1.2 s run with a 2 degree steer and a
+400 N·m drive request:
+
+| Step | Result |
+|---|---|
+| 10 ms | Diverges within four steps |
+| 2 ms | Stable |
+| 0.5 ms | Stable, identical to 2 ms |
+
+The 2 ms and 0.5 ms runs agree to every printed digit: 12.151 m/s, a yaw rate
+of +0.2664 rad/s, a 45.61 m turn radius, a 0.55 degree sideslip, and a final
+yaw of +16.10 degrees. The result is therefore step-size independent inside the
+stable range, and the 10 ms failure is stiffness rather than a model defect.
+
+A caller must therefore choose between a small explicit step, a stiff
+integrator, or the implicit optimal-control formulation. Do not integrate this
+model explicitly with a step of 10 ms.

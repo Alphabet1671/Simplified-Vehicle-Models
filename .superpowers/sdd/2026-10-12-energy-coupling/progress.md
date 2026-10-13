@@ -57,3 +57,37 @@ with the reason.
   flush incrementally.
 - W0 dispatched to Ling 3.0 Flash Fin (workflow-63). Machine left uncontended
   for its timing runs.
+
+## Gate A — decided 2026-10-12 (W0 report read; rules pre-registered in 3752888)
+
+W0 landed: 2102593 (instrumentation + 5 tests; committed), f2d5089-range report
+f2d5079. Controller independently verified the full suite: **288 tests OK**.
+Controller removed the agent's stray empty staged `tests/__init__.py`
+(discovery does not need it); suite re-verified OK after removal. Ling's
+return value was garbled (truncated thinking + whitespace); the on-disk report
+was used instead.
+
+**D1 — CONFIRMED.** Residual ratio ≈ 0.5002 at all three SOCs, inside the
+pre-registered [0.35, 0.65] band. The hard-coded 0.5 relaxation of a constant
+initial profile sets the 13-iteration count. Implied undamped contraction
+λ ≈ 0.0004: the coupling map is nearly idempotent, so an undamped update
+(`trace = nxt`) should converge in ~2-3 iterations. W1 attacks it directly.
+
+**D2 — CONFIRMED, with a scope correction.** f_solve = 99.6-99.9% > 0.6 →
+iteration count is the primary target; W1 first. DEVIATION RECORDED: the scope
+treated W4's "route the energy path through the LUT" as possibly co-primary
+(f_energy > 0.3); measured f_energy = 0.1-0.4%, so that sub-task is worthless
+and is DROPPED. W4 reduces to the voltage-axis extension only.
+
+**D3 — ALL THREE TRIGGERS FIRE → W4 voltage-axis extension MANDATORY.**
+Fallback count 37.7M vs 2.5M (15x > 10x); min bus voltage 511.87 V < 530 V;
+wall 997.8 s vs 182.5 s (5.5x > 1.5x). Below ~SOC 0.5 the speed solve is
+entirely out-of-domain (forward LUT queries = 0).
+
+**Gate A output per the pre-registered rule:** projected(W1) ≈ 15 passes →
+3-4 passes ≈ 4x; projected(W4) at low SOC ≈ per-pass 60 s → 14 s ≈ 4.3x;
+product ≈ 13-17x ≥ 5x → **W3 (joint fixed point) DEFERRED**; re-decide at
+Gate B with measured numbers.
+
+Sequence from here: W1 (undamped + divergence guard) → Gate B → W4 (axis
+extension) → W5 if needed → W6.

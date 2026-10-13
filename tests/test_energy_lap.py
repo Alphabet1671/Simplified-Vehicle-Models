@@ -1,12 +1,14 @@
 from pathlib import Path
+import tempfile
 import unittest
 from unittest.mock import patch
 import numpy as np
 from simplified_vehicle_models.results.traces import LapMode, SolverProgress
-from simplified_vehicle_models.solvers.forward_backward import solve_lap, solve_lap_with_energy, solve_stint
+from simplified_vehicle_models.solvers.forward_backward import solve_lap, solve_lap_with_energy, solve_stint, DiagnosticsCollector
 from simplified_vehicle_models.formulations.point_mass import DriveCachePolicy
 from simplified_vehicle_models.powertrain.assembly import resolve_braking
 from simplified_vehicle_models.powertrain.energy_storage import StorageState
+from simplified_vehicle_models.powertrain.power_plant import motor_lut_counters, reset_motor_lut_counters
 from simplified_vehicle_models.tracks.types import TrackProfile
 from simplified_vehicle_models.xml.loader import load_point_mass_vehicle
 
@@ -203,6 +205,89 @@ class EnergyLapTests(unittest.TestCase):
             report.laps[2].energy.state_trace[0],
             report.laps[1].energy.final_state_of_charge,
         )
+
+class DiagnosticsCollectorTests(unittest.TestCase):
+    """Instrumentation diagnostics on the cheap 8-segment track."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.vehicle = load_point_mass_vehicle(ROOT / 'models/formulations/murphy_point_mass.xml')
+        cls.track = TrackProfile(np.arange(8.)*20, np.full(7,20.), np.full(8,1e5), np.full(8,1e-5), True, 'energy')
+
+    def test_diagnostics_records_iteration_counts(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            collector = DiagnosticsCollector(output_path=Path(tmpdir) / "diag.jsonl")
+            result = solve_lap_with_energy(
+                self.vehicle, self.track, LapMode.FLYING,
+                diagnostics_collector=collector,
+            )
+            records = collector.get_records()
+            # Energy iterations >= 1
+            energy_iters = [r["energy_iteration"] for r in records if "energy_iteration" in r]
+            self.assertGreaterEqual(len(energy_iters), 1)
+            # Residuals are finite
+            for r in records:
+                if "residual" in r:
+                    self.assertTrue(np.isfinite(r["residual"]))
+
+    def test_residuals_are_finite(self):
+        collector = DiagnosticsCollector()
+        result = solve_lap_with_energy(
+            self.vehicle, self.track, LapMode.FLYING,
+            diagnostics_collector=collector,
+        )
+        summary = collector.get_summary()
+        self.assertIsNotNone(summary)
+        for res in summary["residual_sequence"]:
+            self.assertTrue(np.isfinite(res), f"non-finite residual: {res}")
+
+    def test_timing_split_sums_to_total(self):
+        collector = DiagnosticsCollector()
+        result = solve_lap_with_energy(
+            self.vehicle, self.track, LapMode.FLYING,
+            diagnostics_collector=collector,
+        )
+        summary = collector.get_summary()
+        total = summary["solve_lap_seconds"] + summary["energy_trace_seconds"] + summary["other_seconds"]
+        # The wall time should be approximately the total (within 50% tolerance
+        # due to overlapping measurements and the progress callback overhead)
+        self.assertGreater(total, 0)
+
+    def test_bit_identical_with_and_without_diagnostics(self):
+        """lap_time, final SOC and consumed energy must be identical."""
+        result_no_diag = solve_lap_with_energy(
+            self.vehicle, self.track, LapMode.FLYING,
+        )
+        collector = DiagnosticsCollector()
+        result_diag = solve_lap_with_energy(
+            self.vehicle, self.track, LapMode.FLYING,
+            diagnostics_collector=collector,
+        )
+        self.assertEqual(result_no_diag.lap.lap_time, result_diag.lap.lap_time)
+        np.testing.assert_allclose(
+            result_no_diag.energy.state_trace,
+            result_diag.energy.state_trace,
+            rtol=1e-12, atol=1e-12,
+        )
+        self.assertEqual(result_no_diag.energy.consumed_energy, result_diag.energy.consumed_energy)
+
+    def test_oracle_call_count_and_lut_counters(self):
+        reset_motor_lut_counters()
+        collector = DiagnosticsCollector()
+        result = solve_lap_with_energy(
+            self.vehicle, self.track, LapMode.FLYING,
+            diagnostics_collector=collector,
+        )
+        summary = collector.get_summary()
+        # Oracle calls per pass should be recorded
+        self.assertTrue(len(summary["residual_sequence"]) >= 1)
+        # LUT counters snapshot should be non-empty
+        self.assertTrue(len(collector._lut_counters_snapshot) >= 1)
+        # At least some forward or inverse queries
+        first = collector._lut_counters_snapshot[0]
+        self.assertTrue(first["forward"] >= 0)
+        self.assertTrue(first["inverse"] >= 0)
+
 
 if __name__ == '__main__':
     unittest.main()

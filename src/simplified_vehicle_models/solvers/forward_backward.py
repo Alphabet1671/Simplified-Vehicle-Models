@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import json
 import math
 import time
 from collections.abc import Callable
+from dataclasses import dataclass, field
+from pathlib import Path
 
 import numpy as np
 
@@ -19,7 +22,7 @@ from simplified_vehicle_models.parameters.vehicle import PointMassVehicleParamet
 from simplified_vehicle_models.results.traces import LapMode, LapResult, EnergyLapResult, EnergyReport, SolverProgress, StintReport
 from simplified_vehicle_models.powertrain.energy_storage import StorageState, evaluate_storage, integrate_storage
 from simplified_vehicle_models.powertrain.assembly import FullDrivetrainRuntime, resolve_braking
-from simplified_vehicle_models.powertrain.power_plant import evaluate_shaft_power, motor_lut_counters
+from simplified_vehicle_models.powertrain.power_plant import evaluate_shaft_power, motor_lut_counters, reset_motor_lut_counters
 from simplified_vehicle_models.tracks.types import TrackProfile
 
 
@@ -27,6 +30,127 @@ class _HintArray(np.ndarray):
     """Private speed array carrying the context that produced it."""
 
     _hint_context: tuple[int, int, LapMode, tuple[int, ...]]
+
+
+@dataclass
+class DiagnosticsCollector:
+    """Opt-in collector for per-iteration and per-lap diagnostics.
+
+    When ``diagnostics_collector`` is supplied to ``solve_lap_with_energy``,
+    records are flushed incrementally to the file at ``output_path`` as
+    JSON-lines.  When it is ``None`` (the default) the solver behaves
+    exactly as before: no extra allocations, no extra I/O, identical
+    numerical results.
+    """
+
+    output_path: Path | None = None
+    lap_number: int = 0
+    _records: list[dict] = field(default_factory=list, repr=False)
+    _lap_start: float = 0.0
+    _solve_lap_time: float = 0.0
+    _energy_trace_time: float = 0.0
+    _other_time: float = 0.0
+    _oracle_call_count: int = 0
+    _pass_oracle_calls: list[int] = field(default_factory=list, repr=False)
+    _pass_oracle_times: list[float] = field(default_factory=list, repr=False)
+    _residual_sequence: list[float] = field(default_factory=list, repr=False)
+    _iteration_wall_times: list[float] = field(default_factory=list, repr=False)
+    _reconciliation_residuals: list[float] = field(default_factory=list, repr=False)
+    _lut_counters_snapshot: list[dict] = field(default_factory=list, repr=False)
+    _file_handle: object | None = field(default=None, repr=False)
+
+    def _ensure_file(self) -> None:
+        if self.output_path is not None and self._file_handle is None:
+            self._file_handle = open(self.output_path, "w")
+
+    def start_lap(self) -> None:
+        self._lap_start = time.perf_counter()
+        self._solve_lap_time = 0.0
+        self._energy_trace_time = 0.0
+        self._other_time = 0.0
+        self._oracle_call_count = 0
+        self._pass_oracle_calls = []
+        self._pass_oracle_times = []
+        self._residual_sequence = []
+        self._iteration_wall_times = []
+        self._reconciliation_residuals = []
+        self._lut_counters_snapshot = []
+        self._ensure_file()
+
+    def record_solve_lap(self, elapsed: float) -> None:
+        self._solve_lap_time += elapsed
+
+    def record_energy_trace(self, elapsed: float, call_count: int) -> None:
+        self._energy_trace_time += elapsed
+        self._oracle_call_count += call_count
+        self._pass_oracle_calls.append(call_count)
+        self._pass_oracle_times.append(elapsed)
+
+    def record_other(self, elapsed: float) -> None:
+        self._other_time += elapsed
+
+    def record_iteration(
+        self,
+        iteration: int,
+        residual: float,
+        wall_time: float,
+        lut_counters: dict,
+    ) -> None:
+        self._residual_sequence.append(float(residual))
+        self._iteration_wall_times.append(wall_time)
+        self._lut_counters_snapshot.append(dict(lut_counters))
+        record = {
+            "lap": self.lap_number,
+            "energy_iteration": iteration,
+            "residual": residual,
+            "wall_seconds": wall_time,
+            "lut_counters": dict(lut_counters),
+        }
+        self._records.append(record)
+        self._flush(record)
+
+    def record_reconciliation(self, residual: float) -> None:
+        self._reconciliation_residuals.append(float(residual))
+
+    def finish_lap(self, total_energy_iterations: int) -> dict:
+        total = time.perf_counter() - self._lap_start
+        summary = {
+            "lap": self.lap_number,
+            "total_wall_seconds": total,
+            "energy_iterations": total_energy_iterations,
+            "solve_lap_seconds": self._solve_lap_time,
+            "energy_trace_seconds": self._energy_trace_time,
+            "other_seconds": self._other_time,
+            "total_oracle_calls": self._oracle_call_count,
+            "pass_oracle_calls": self._pass_oracle_calls,
+            "pass_oracle_times": self._pass_oracle_times,
+            "residual_sequence": self._residual_sequence,
+            "iteration_wall_times": self._iteration_wall_times,
+            "reconciliation_residuals": self._reconciliation_residuals,
+            "lut_counters_snapshots": self._lut_counters_snapshot,
+        }
+        self._flush(summary)
+        return summary
+
+    def _flush(self, record: dict) -> None:
+        if self._file_handle is not None:
+            self._file_handle.write(json.dumps(record) + "\n")
+            self._file_handle.flush()
+
+    def get_records(self) -> list[dict]:
+        return list(self._records)
+
+    def get_summary(self) -> dict | None:
+        if not self._records:
+            return None
+        return {
+            "solve_lap_seconds": self._solve_lap_time,
+            "energy_trace_seconds": self._energy_trace_time,
+            "other_seconds": self._other_time,
+            "total_oracle_calls": self._oracle_call_count,
+            "reconciliation_residuals": self._reconciliation_residuals,
+            "residual_sequence": self._residual_sequence,
+        }
 
 
 def _hint_context(vehicle, track, mode, shape) -> tuple[int, int, LapMode, tuple[int, ...]]:
@@ -381,6 +505,7 @@ def solve_lap_with_energy(
     *,
     _progress_lap: int = 1,
     _progress_lap_count: int = 1,
+    diagnostics_collector: DiagnosticsCollector | None = None,
 ):
     """Solve a lap with an explicit, state-coupled outer SOC iteration.
 
@@ -393,6 +518,8 @@ def solve_lap_with_energy(
     if lap_tolerance <= 0.0 or not math.isfinite(lap_tolerance) or lap_maximum_iterations < 1:
         raise ValueError("lap_tolerance must be finite and positive and lap_maximum_iterations must be positive")
     started = time.perf_counter()
+    if diagnostics_collector is not None:
+        diagnostics_collector.start_lap()
 
     def report(stage, energy_iteration=0, profile_iteration=0):
         if progress_callback is not None:
@@ -414,6 +541,7 @@ def solve_lap_with_energy(
     converged = False
     change = math.inf
     for iteration in range(1, maximum_iterations + 1):
+        t0 = time.perf_counter()
         lap = solve_lap(
             vehicle,
             track,
@@ -426,7 +554,26 @@ def solve_lap_with_energy(
             drive_cache_policy=drive_cache_policy,
             _storage_trace=trace,
         )
+        t1 = time.perf_counter()
+        if diagnostics_collector is not None:
+            diagnostics_collector.record_solve_lap(t1 - t0)
+        t2 = time.perf_counter()
+        # Snapshot LUT counters before _energy_trace to count oracle calls
+        counters_before = motor_lut_counters()
         bus, shaft, voltage, consumed, recovered, nxt = _energy_trace(vehicle, track, lap, trace, regen_enabled)
+        t3 = time.perf_counter()
+        counters_after = motor_lut_counters()
+        oracle_calls_this_pass = (
+            (counters_after["forward"] - counters_before["forward"])
+            + (counters_after["inverse"] - counters_before["inverse"])
+            + (counters_after["fallback"] - counters_before["fallback"])
+            + (counters_after["limit_fallback"] - counters_before["limit_fallback"])
+        )
+        if diagnostics_collector is not None:
+            diagnostics_collector.record_energy_trace(t3 - t2, oracle_calls_this_pass)
+            # Residual BEFORE the damped update
+            residual_before = float(np.max(np.abs(nxt - trace)))
+            diagnostics_collector.record_iteration(iteration, residual_before, t3 - t0, counters_after)
         speed_hint = lap.speed
         corner_hint = lap.speed
         change = float(np.max(np.abs(nxt - trace)))
@@ -441,6 +588,7 @@ def solve_lap_with_energy(
     # callers must not be told that the energy loop converged otherwise.
     profile_residual = math.inf
     for _ in range(max(1, maximum_iterations - iteration + 1)):
+        t0 = time.perf_counter()
         lap = solve_lap(
             vehicle,
             track,
@@ -453,9 +601,26 @@ def solve_lap_with_energy(
             drive_cache_policy=drive_cache_policy,
             _storage_trace=trace,
         )
+        t1 = time.perf_counter()
+        if diagnostics_collector is not None:
+            diagnostics_collector.record_solve_lap(t1 - t0)
+        counters_before = motor_lut_counters()
         bus, shaft, voltage, consumed, recovered, final_trace = _energy_trace(
             vehicle, track, lap, trace, regen_enabled
         )
+        t2 = time.perf_counter()
+        counters_after = motor_lut_counters()
+        oracle_calls_this_pass = (
+            (counters_after["forward"] - counters_before["forward"])
+            + (counters_after["inverse"] - counters_before["inverse"])
+            + (counters_after["fallback"] - counters_before["fallback"])
+            + (counters_after["limit_fallback"] - counters_before["limit_fallback"])
+        )
+        if diagnostics_collector is not None:
+            diagnostics_collector.record_energy_trace(t2 - t1, oracle_calls_this_pass)
+            diagnostics_collector.record_reconciliation(
+                float(np.max(np.abs(final_trace - trace)))
+            )
         profile_residual = float(np.max(np.abs(final_trace - trace)))
         speed_hint = lap.speed
         corner_hint = lap.speed
@@ -476,6 +641,8 @@ def solve_lap_with_energy(
     )
     if progress_callback is not None:
         progress_callback(report_progress)
+    if diagnostics_collector is not None:
+        diagnostics_collector.finish_lap(iteration)
     return EnergyLapResult(lap, report)
 
 

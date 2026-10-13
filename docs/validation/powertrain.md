@@ -21,7 +21,7 @@ PYTHONPATH=src /usr/bin/time -p \
 ```
 
 The exact run converged in 2 iterations. Wall time was 23.77 s (`real`),
-with 22.91 s measured around `solve_lap`; lap time was 69.20128624364081 s.
+with 22.91 s measured around `solve_lap`; lap time was 69.20128624364081 s (pre-Task-8 value; see the Task 8 section).
 The solve made 189,763 exact-cache hits and 26,723 entries, with zero cache
 speed/SOC displacement. The largest force-balance residual was
 6.82e-13 N.
@@ -272,7 +272,7 @@ attribution section. Key findings:
 ## Reference checks and assumptions
 
 Legacy MIS flying and standing-start golden results remain 69.22653728547469 s
-and 70.38955050759907 s. The assembled flying reference remains 69.20128624364081
+and 70.38955050759907 s. The assembled flying reference is 69.20462625809404 s (was 69.20128624364081 s before the Task 8 per-motor discharge-limit fix)
 s. The motor-speed ceiling is 34.60897 m/s, while the MIS peak is below that
 ceiling; MIS is therefore not a voltage-field-weakening regression track.
 

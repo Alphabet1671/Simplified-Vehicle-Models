@@ -304,7 +304,7 @@ def maximum_drive_force(
         if powertrain.motor_mode == "analytical":
             envelope = maximum_motor_torque(motor, motor_speed, voltage / math.sqrt(3.0))
             upper_result = _motor_operating_point(motor, powertrain.motor_mode, motor_speed, envelope, voltage)
-            if upper_result.feasible and upper_result.bus_power <= storage.discharge_power_limit:
+            if upper_result.feasible and upper_result.bus_power <= storage.discharge_power_limit / motor.unit_count:
                 torque, operating = envelope, upper_result
             else:
                 # Keep the analytical baseline's bounded bisection unchanged.
@@ -313,7 +313,7 @@ def maximum_drive_force(
                 for _ in range(8):
                     midpoint = 0.5 * (lower + upper)
                     candidate = _motor_operating_point(motor, powertrain.motor_mode, motor_speed, midpoint, voltage)
-                    if candidate.feasible and 0.0 <= candidate.bus_power <= storage.discharge_power_limit:
+                    if candidate.feasible and 0.0 <= candidate.bus_power <= storage.discharge_power_limit / motor.unit_count:
                         lower, operating = midpoint, candidate
                     else:
                         upper = midpoint

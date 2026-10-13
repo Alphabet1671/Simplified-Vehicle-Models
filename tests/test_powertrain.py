@@ -696,6 +696,38 @@ class PowertrainAssemblyTests(unittest.TestCase):
                 )
         self.assertGreater(checked, 0)
 
+    def test_drive_limit_never_exceeds_pack_discharge_limit_in_both_modes(self):
+        """Per-motor bus power must be compared with the per-motor share.
+
+        Regression for the analytical branch comparing a per-motor power with
+        the pack limit (worst case before the fix: SOC 1.0, 17.5 m/s,
+        102,775 W against a 100,495 W pack limit).
+        """
+        powertrain = compile_powertrain_assembly(
+            load_model(ROOT / "models/powertrains/murphy_2024.xml")
+        )
+        drivetrain = compile_drivetrain_assembly(
+            load_model(ROOT / "models/drivetrains/murphy_2024_drivetrain.xml")
+        )
+        radius = 0.193675
+        checked = 0
+        for mode in ("analytical", "lut"):
+            configured = replace(powertrain, motor_mode=mode)
+            for state_of_charge in (1.0, 0.75, 0.5, 0.25):
+                state = StorageState(state_of_charge)
+                storage = evaluate_storage(configured.energy_storage, state)
+                for speed in (0.0, 5.0, 10.0, 15.0, 17.5, 20.0, 25.0, 31.0):
+                    result = maximum_drive_force(
+                        configured, drivetrain, speed, state, radius
+                    )
+                    checked += 1
+                    self.assertLessEqual(
+                        result.bus_power_at_limit,
+                        storage.discharge_power_limit + 1.0e-6,
+                        (mode, state_of_charge, speed),
+                    )
+        self.assertEqual(checked, 64)
+
     def test_lut_drive_coupling_tolerance_is_not_widened(self):
         """LUT mode must keep the analytical voltage-coupling acceptance.
 

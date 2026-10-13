@@ -187,7 +187,11 @@ class AssembledMisRegressionTests(unittest.TestCase):
     def test_assembled_flying_lap_matches_reported_reference(self) -> None:
         self.assertTrue(self.result.converged)
         self.assertEqual(self.vehicle.drivetrain.powertrain.motor_mode, "lut")
-        self.assertAlmostEqual(self.result.lap_time, 69.1917773155225, places=6)
+        # W4 (400-600 V axis): 69.19177483621608 s.  The 2.5 us shift from the
+        # pre-W4 pin 69.1917773155225 s comes from speed-solve coupled voltages
+        # below the old 530 V floor moving from exact fallback to in-domain
+        # interpolation; the analytical reference is unchanged.
+        self.assertAlmostEqual(self.result.lap_time, 69.19177483621608, places=6)
         self.assertGreater(self.result.motor_forward_queries, 0)
         self.assertGreater(self.result.motor_inverse_queries, 0)
         self.assertEqual(len(self.result.speed), GOLDEN_NODE_COUNT)

@@ -1,14 +1,20 @@
 # Planar optimal control
 
-> **Correction (fine-mesh investigation):** The earlier 36.294 s result and
-> coarse-to-fine table below are **historical, not validated lap times**. The
+> **Validated result:** the placeholder vehicle reaches a converged,
+> independently verified minimum-time lap of **43.9 s** on the closed
+> Michigan endurance path. The 1 m and 2 m meshes agree to 0.24 %, and the
+> route is re-checked outside the solver with the NumPy dynamics. See
+> *A converged 1 m lap* below for the full evidence and
+> *Known limitations* for what the number does not cover.
+
+> **Correction (fine-mesh investigation):** the earlier 36.294 s result and
+> coarse-to-fine table are **historical, not validated lap times**. The
 > previous formulation omitted the motor-to-pack power equality and divided
 > battery charge by time rather than distance; its load transfer used body
 > velocity derivatives instead of inertial acceleration. Result construction
 > also attempted to unpack vector outputs into scalars, so a returned lap
 > from that source revision could not have passed the current result path.
-> All numerical results below must be rerun with the corrected physics. See
-> the final section for the new, independently checked experiments.
+> Every number above was produced after those corrections.
 
 ## What this solves
 
@@ -208,22 +214,25 @@ of Model 3 and Model 4, and only if a library supplies it.
 
 ## Known limitations
 
-- The lap time is not yet trustworthy, for the mesh-resolution reason above.
-- The transcription is a trapezoid rule, which is second order. A finer mesh
-  would benefit from a higher-order collocation.
-- The lateral error bound is a few centimetres, which is a driving-line
-  tolerance, not a track-width limit.
-- Pack current is now constrained by the four motors' electrical power and
-  the terminal-voltage/current relation at every node. The prior omission
-  made SOC free and invalidated all pre-correction lap times.
-- Steering remains parallel at the front because the placeholder Ackermann
-  table is zero. The OCP uses one common front angle; a nonzero Ackermann
-  table still needs separate front wheel angles in this symbolic formulation.
+- The lap time is for the **placeholder obfuscated vehicle**, not the real car,
+  and it is a minimum-time optimum rather than a lap a driver would repeat.
+- The 20 m and 10 m meshes are not usable for lap time: they miss 4.3 and
+  0.17 rad of the lap's 6.28 rad of turning.
+- Both path-following bounds are active. The measured sensitivity to the
+  heading bound is 0.12 % across a factor of two, so the optimum is
+  physically set, but the lateral bound has not been swept to the same depth.
+- The transcription is a trapezoid rule, which is second order.
+- The steering uses parallel steering, because the Ackermann table is a zero
+  array. The OCP applies one common front angle; a non-zero Ackermann table
+  would need separate front wheel angles in this symbolic formulation.
 - The symbolic brake command scales the full-pedal brake torque linearly.
-  This matches the current constant pedal-ratio placeholder, but a nonconstant
+  That matches the current constant pedal-ratio placeholder, but a non-constant
   pedal-ratio table would need symbolic interpolation and pressure limiting.
 - The motor torque and power bounds are imposed at the peak rating, so the
-  thermal duty cycle is not modelled.
+  thermal duty cycle is not modelled. Regeneration is not modelled either:
+  friction braking has no energy recovery.
+- Pitch and roll are not states, so the model has no suspension degree of
+  freedom and no roll-induced camber change.
 
 ## Running it
 
@@ -375,13 +384,134 @@ infeasible intermediate result to a **finer** mesh. It can continue the *same*
 mesh from an iteration-limited checkpoint with `--resume-same-mesh`, and new
 checkpoints store IPOPT primal/dual multipliers for an exact-mesh restart.
 
+## A converged 1 m lap
+
+Three changes together turn the fine mesh from unconverged to solved: the
+balanced equilibrium seed, the **exact sparse Hessian**, and a **steering rate
+bound**.
+
+| Configuration at 1 m | Iterations | Lap | Status |
+|---|---:|---:|---|
+| equilibrium seed, limited-memory Hessian | 3000 | 87.065 s | iteration limit |
+| equilibrium seed, scaled rows, limited-memory | 1500 | 64.176 s | iteration limit |
+| equilibrium seed, exact Hessian, no rate bound | 340 | 43.884 s | `Solve_Succeeded` |
+| **equilibrium seed, exact Hessian, rate bound** | **296** | **43.907 s** | **`Solve_Succeeded`** |
+
+The exact Hessian costs about three times more per iteration (0.86 s against
+0.28 s) and needs about nine times fewer, so it also wins on total time. The
+tire and the vertical-load coupling are strongly nonlinear, and a secant
+Hessian of that coupling is poor. It is now the default.
+
+### The steering had to be rate limited
+
+The 1 m optimum with no rate bound **chatters between the steering stops**:
+
+| 1 m solution | Steering range | Max step between nodes | Max rate |
+|---|---:|---:|---:|
+| no rate bound | -30.00 to +30.00 deg | 35.08 deg | **15.62 rad/s** |
+| rate limited | -18.77 to +21.04 deg | 13.18 deg | 3.14 rad/s |
+
+15.62 rad/s is 895 deg/s at the road wheel. The vehicle limit is 3.14 rad/s
+(180 deg/s), so the unconstrained optimum was demanding **five times the rate
+the rack can deliver**, and it did so by pinning the angle at both mechanical
+stops. That is a discretisation artefact, not a driving technique.
+
+The road-wheel rate is what the vehicle already declares as
+`steering_maximum_rate`. The optimal control now imposes
+
+```text
+|steer[k+1] - steer[k]| <= steering_maximum_rate * travel_time(k)
+```
+
+with `travel_time` the trapezoidal time across the interval. Imposing it costs
+only **0.023 s**. The bound binds (the reported rate is exactly 3.14 rad/s), so
+the fastest corners are now rate limited rather than grip limited.
+
+`maximum_steering_rate=inf` removes the rows entirely. That matters: leaving a
+literal infinity in the constraint makes CASAdi emit an infinite Jacobian
+entry and IPOPT returns `Invalid_Number_Detected`.
+
+### The answer does not change with the mesh
+
+| Mesh | Nodes | Iterations | Lap time | Curvature error | Geometric check |
+|---|---:|---:|---:|---:|---|
+| 5 m | 204 | - | 43.600 s | 0.03659 1/m | fails |
+| 2 m | 509 | 224 | 43.802 s | 0.00821 1/m | fails |
+| 1 m | 1018 | 296 | 43.907 s | 0.00264 1/m | **passes** |
+
+The 2 m and 1 m meshes agree to **0.105 s, or 0.24 %**, and both reach
+`Solve_Succeeded` from the same seed. That is the mesh-convergence evidence the
+earlier coarse meshes could not provide, and it is why the minimum-time lap is
+quoted as **43.9 s**.
+
+Only the 1 m mesh also resolves the path: its maximum piecewise-linear
+curvature reconstruction error is 0.00264 1/m against the 0.003 threshold. The
+5 m and 2 m meshes fail that geometric check even where their lap times agree,
+which is why the 1 m result is the one reported.
+
+The two solutions describe the same lap, not just the same number: their speed
+profiles differ by 0.176 m/s RMS with a 0.836 m/s worst case, and their minimum
+and maximum speeds agree to 0.06 m/s and 0.01 m/s.
+
+### Independent verification of the lap
+
+The route below is re-evaluated **outside** the solver, with the NumPy
+seven-DOF dynamics running its own vertical-load iteration, and against the
+stored 0.5 m path data.
+
+| Check | Measured | Threshold |
+|---|---:|---:|
+| Load equations | 1.2e-07 N | 1e-03 |
+| Quasi-steady wheel balances | 2.1e-08 N*m | 1e-03 |
+| Pack power equality | 2.4e-07 W | 1e-03 |
+| Spatial dynamics defect | 1.2e-10 | 1e-04 |
+| Periodicity of the mechanical states | 0.0 | 1e-04 |
+| Sampled inequality violation | 9.7e-09 | 1e-04 |
+| Simultaneous throttle and brake | 0.0010000 | 1e-03 |
+| Steering rate against the rack limit | 3.14 rad/s | 3.14 |
+| NumPy load replay against the solution | 5.8e-06 N | 1e-02 |
+| NumPy wheel-torque balance | 8.2e-06 N*m | 1e-03 |
+| Nodes the NumPy loop could not re-solve | 0 of 1018 | 0 |
+| Wheels lifted off the ground | 0 of 1018 | 0 |
+| Curvature reconstruction error | 0.00264 1/m | 0.003 |
+| Curvature integral against heading change | 0.00331 rad | 0.01 |
+
+Lap time **43.907 s** over 1016.70065 m, an average of 23.2 m/s (83.4 km/h).
+The fastest wheel reaches 178.92 rad/s against a voltage-scaled motor limit of
+179.73 rad/s, so the car is **field-weakening limited at the end of the
+straight**, not grip limited there. The battery ends the lap at 0.910 state of
+charge, so the pack is not a limiting factor at this length.
+
+### The result is not an artefact of the path bounds
+
+Both path-following bounds are active in the solution: the lateral error is
+pinned at 0.05 m and the heading error at 0.20 rad. A minimum-time problem
+with a bounded racing line will always use its bounds, so the honest question
+is how much the answer depends on them.
+
+| Maximum heading error | Lap time | Iterations | Status |
+|---:|---:|---:|---|
+| 0.10 rad | 43.936 s | 299 | `Solve_Succeeded` |
+| 0.15 rad | 43.899 s | 1228 | `Solve_Succeeded` |
+| 0.20 rad | 43.884 s | 340 | `Solve_Succeeded` |
+
+Doubling the heading allowance changes the lap by **0.052 s, or 0.12 %**. The
+optimum is set by the tires, the motors and the track, not by the bound. The
+0.10 rad case is still above the 0.095 rad that the tightest balanced turn
+needs, so it remains a physically admissible bound rather than an artificial
+restriction.
+
 ## What to do next
 
-1. Run the balanced low-speed seed (`--equilibrium-seed`) at 1 m and 2 m for
-   enough iterations to converge, then confirm the optimum against a 2 m
-   reference before quoting any lap time.
+1. Sweep the **lateral** error bound, which is active at 0.05 m. The heading
+   bound was swept and changes the lap by 0.12 % across a factor of two, so a
+   comparable sweep of the lateral bound is the remaining sensitivity question.
 2. Replace the trapezoid rule with a higher-order collocation once the mesh is
    fine enough for it to matter; at 1 m the trapezoid error is already smaller
    than the physical modelling uncertainty.
 3. Add the thermal, regen and pedal-ratio-curve models listed under known
    limitations before treating the result as a setup tool.
+4. Re-run the 1 m solve against the real vehicle once the obfuscated
+   placeholder parameters are replaced. The solver configuration should carry
+   over unchanged; only `--equilibrium-speed` may need retuning, because the
+   seed exists only where a balanced turn does.

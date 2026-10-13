@@ -296,6 +296,128 @@ class EquilibriumSeedTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "balanced equilibrium"):
             equilibrium_start(self.vehicle, self.path, self.functions, 14.0)
 
+    def test_the_seed_is_a_steady_turn_in_the_numpy_model(self) -> None:
+        # The seed is built from the symbolic equations. Replay it through the
+        # independent NumPy seven-DOF dynamics: a balanced turn has no body or
+        # yaw acceleration, and the loads must reproduce.
+        peak = (
+            self.vehicle.motor.peak_motor_torque
+            * self.vehicle.motor.gear_ratio
+            * self.vehicle.motor.motor_efficiency
+        )
+        shares = np.asarray([0.1, 0.1, 0.4, 0.4])
+        worst_acceleration = 0.0
+        worst_yaw = 0.0
+        worst_load = 0.0
+        for index in range(self.seed["state"].shape[1]):
+            state = self.seed["state"][:, index]
+            control = self.seed["control"][:, index]
+            algebraic = self.seed["algebraic"][:, index]
+            torque = shares * (4.0 * peak * control[0])
+            evaluation = evaluate_planar_dynamics(
+                self.vehicle,
+                PlanarState(state[2], state[3], state[4], algebraic[4:8]),
+                torque,
+                float(control[2]),
+            )
+            worst_acceleration = max(
+                worst_acceleration,
+                abs(evaluation.longitudinal_acceleration),
+                abs(evaluation.lateral_acceleration),
+            )
+            worst_yaw = max(worst_yaw, abs(evaluation.yaw_acceleration))
+            worst_load = max(
+                worst_load,
+                float(np.max(np.abs(evaluation.normal_loads - algebraic[:4]))),
+            )
+
+        self.assertLess(worst_acceleration, 1.0e-6)
+        self.assertLess(worst_yaw, 1.0e-6)
+        self.assertLess(worst_load, 1.0e-4)
+
+
+@unittest.skipUnless(HAS_CASADI, "the optimal control needs casadi")
+class SteeringRateTests(unittest.TestCase):
+    """Check that the optimum cannot steer faster than the rack allows.
+
+    Measured elsewhere: without the rate bound the 1 m optimum demanded
+    15.62 rad/s against the 3.14 rad/s vehicle limit and pinned the angle at
+    both 30 degree stops. That solve takes minutes, so this test uses a 5 m
+    mesh and checks the reported rate against the trajectory.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.vehicle = compile_formulation(FORMULATION_PATH).model
+        cls.track = load_track(TRACK_PATH)
+        cls.options = planar_ocp.PlanarOcpOptions(
+            mesh_spacing=5.0,
+            maximum_iterations=1500,
+            equilibrium_seed=True,
+        )
+        cls.result = planar_ocp.solve_planar_hot_lap(
+            cls.vehicle, cls.track, cls.options
+        )
+
+    def test_the_reported_rate_matches_the_trajectory(self) -> None:
+        path = planar_ocp._build_path_data(self.track, 5.0)
+        expected = planar_ocp._steering_rate(
+            self.result.steering,
+            np.vstack(
+                (
+                    self.result.lateral_error,
+                    self.result.heading_error,
+                    self.result.v_x,
+                    self.result.v_y,
+                    self.result.yaw_rate,
+                )
+            ),
+            path,
+        )
+
+        self.assertAlmostEqual(
+            self.result.maximum_steering_rate, expected, places=9
+        )
+
+    def test_the_optimum_respects_the_rack_rate(self) -> None:
+        self.assertGreater(self.result.maximum_steering_rate, 0.0)
+        self.assertLessEqual(
+            self.result.maximum_steering_rate,
+            self.vehicle.steering_maximum_rate * 1.001,
+        )
+
+    def test_an_infinite_rate_removes_the_bound(self) -> None:
+        # An infinite bound must omit the rows rather than put an infinity
+        # into the Jacobian, which would make IPOPT report an invalid number.
+        unbounded = planar_ocp.solve_planar_hot_lap(
+            self.vehicle,
+            self.track,
+            planar_ocp.PlanarOcpOptions(
+                mesh_spacing=5.0,
+                maximum_iterations=1500,
+                equilibrium_seed=True,
+                maximum_steering_rate=float("inf"),
+            ),
+        )
+
+        self.assertIn("Solve_Succeeded", unbounded.status)
+        self.assertGreaterEqual(
+            unbounded.maximum_steering_rate, self.result.maximum_steering_rate
+        )
+
+    def test_a_negative_rate_is_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, "nonnegative"):
+            planar_ocp.solve_planar_hot_lap(
+                self.vehicle,
+                self.track,
+                planar_ocp.PlanarOcpOptions(
+                    mesh_spacing=40.0,
+                    maximum_iterations=1,
+                    equilibrium_seed=True,
+                    maximum_steering_rate=-1.0,
+                ),
+            )
+
 
 @unittest.skipUnless(HAS_CASADI, "the optimal control needs casadi")
 class OptimalControlTests(unittest.TestCase):

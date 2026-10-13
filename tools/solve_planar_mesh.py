@@ -40,13 +40,22 @@ def main() -> None:
     parser.add_argument("--spacings", nargs="+", type=float, default=[20, 10, 5, 2, 1])
     parser.add_argument("--iterations", type=int, default=12000)
     parser.add_argument("--output", type=Path, default=Path("/tmp/planar-mesh"))
-    parser.add_argument("--exact-hessian", action="store_true")
-    parser.add_argument("--equilibrium-seed", action="store_true",
+    parser.add_argument("--exact-hessian", action=argparse.BooleanOptionalAction,
+                        default=None,
+                        help="use the exact sparse Hessian (library default)")
+    parser.add_argument("--equilibrium-seed", action=argparse.BooleanOptionalAction,
+                        default=None,
                         help="start from a balanced low-speed turning trajectory")
-    parser.add_argument("--equilibrium-speed", type=float, default=8.0)
-    parser.add_argument("--projection", action="store_true",
+    parser.add_argument("--equilibrium-speed", type=float, default=None)
+    parser.add_argument("--heading-bound", type=float, default=None,
+                        help="override the maximum heading error in radians")
+    parser.add_argument("--lateral-bound", type=float, default=None,
+                        help="override the maximum lateral error in metres")
+    parser.add_argument("--projection", action=argparse.BooleanOptionalAction,
+                        default=None,
                         help="experimentally project node algebraics before IPOPT")
-    parser.add_argument("--scaling", action="store_true",
+    parser.add_argument("--scaling", action=argparse.BooleanOptionalAction,
+                        default=None,
                         help="experimentally scale constraint rows")
     parser.add_argument("--restart", type=Path, default=None,
                         help="Start from a saved NPZ solution")
@@ -77,15 +86,22 @@ def main() -> None:
                 if key in saved.files:
                     previous[key] = saved[key]
     for spacing in args.spacings:
+        overrides = {
+            key: value for key, value in (
+                ("exact_hessian", args.exact_hessian),
+                ("equilibrium_seed", args.equilibrium_seed),
+                ("equilibrium_speed", args.equilibrium_speed),
+                ("project_initial_guess", args.projection),
+                ("scale_constraints", args.scaling),
+                ("maximum_heading_error", args.heading_bound),
+                ("maximum_lateral_error", args.lateral_bound),
+            ) if value is not None
+        }
         options = PlanarOcpOptions(
             mesh_spacing=spacing,
             maximum_iterations=args.iterations,
-            exact_hessian=args.exact_hessian,
-            equilibrium_seed=args.equilibrium_seed,
-            equilibrium_speed=args.equilibrium_speed,
-            project_initial_guess=args.projection,
-            scale_constraints=args.scaling,
             warm_start=False,
+            **overrides,
         )
         start = time.monotonic()
         result = _solve(_require_casadi(), vehicle, track, options, previous)
@@ -115,7 +131,10 @@ def main() -> None:
                     vehicle, state, result.wheel_torques[:, index],
                     float(result.steering[index]),
                 )
-                replay_failures += not evaluation.load_converged
+                # The NumPy loop reports "not converged" when it exhausts its
+                # iteration cap, which happens at residuals far below any
+                # physical significance. Gate on the residual, not the flag.
+                replay_failures += evaluation.load_residual > 1.0e-4
                 replay_load_error = max(replay_load_error, float(np.max(np.abs(
                     evaluation.normal_loads - result.normal_loads[:, index]
                 ))))
@@ -132,6 +151,8 @@ def main() -> None:
             "exact_hessian": options.exact_hessian,
             "maximum_allowed_pedal_overlap": options.maximum_throttle_brake_overlap,
             "equilibrium_seed": options.equilibrium_seed,
+            "allowed_heading_error_rad": options.maximum_heading_error,
+            "allowed_lateral_error_m": options.maximum_lateral_error,
             "lap_time_s": result.lap_time,
             "status": result.status,
             "verified": bool(result.converged and replay_valid),
@@ -142,6 +163,7 @@ def main() -> None:
             "maximum_inequality_violation": result.maximum_inequality_violation,
             "maximum_power_mismatch_w": result.maximum_power_mismatch,
             "maximum_simultaneous_pedals": result.maximum_control_overlap,
+            "maximum_steering_rate_rad_per_s": result.maximum_steering_rate,
             "periodicity_residual": result.periodicity_residual,
             "seam_control_jump": float(max(
                 abs(result.throttle[-1] - result.throttle[0]),
@@ -162,6 +184,8 @@ def main() -> None:
                 result.converged and replay_valid and mismatch < 0.003
                 and heading_closure_error < 0.01
                 and result.maximum_control_overlap <= options.maximum_throttle_brake_overlap + 1e-6
+                and result.maximum_steering_rate
+                <= vehicle.steering_maximum_rate * 1.001
             ),
         }
         print(json.dumps(report, indent=2), flush=True)

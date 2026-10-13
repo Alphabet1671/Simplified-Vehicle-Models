@@ -108,6 +108,11 @@ class PlanarOcpOptions:
     minimum_progress_speed: float = 2.0
     #: Greatest steering angle in radians. ``None`` uses the vehicle limit.
     maximum_steering: float | None = None
+    #: Greatest road-wheel steering rate in radians per second. ``None`` uses
+    #: the vehicle limit. An infinite value removes the bound entirely. The
+    #: rate bound is what stops the optimum from chattering between the
+    #: steering stops.
+    maximum_steering_rate: float | None = None
     #: Greatest brake pedal fraction.
     maximum_brake: float = 1.0
     #: Bound simultaneous throttle/brake to forbid artificial torque vectoring.
@@ -143,7 +148,13 @@ class PlanarOcpOptions:
     #: Project wheel speeds and loads onto the local algebraic equations.
     project_initial_guess: bool = False
     #: Use the exact sparse Hessian rather than IPOPT's limited-memory update.
-    exact_hessian: bool = False
+    #: **On by default**, because it is decisive here: at a 1 m mesh it reaches
+    #: ``Solve_Succeeded`` in 340 iterations where the limited-memory update
+    #: still had not converged after 3000. The exact Hessian costs about three
+    #: times more per iteration and needs about nine times fewer, so it also
+    #: wins on total time. The tire and the load coupling are strongly
+    #: nonlinear, and a secant Hessian of that coupling is poor.
+    exact_hessian: bool = True
     #: Balance physical equation units in IPOPT without changing the physics.
     scale_constraints: bool = False
 
@@ -181,6 +192,7 @@ class PlanarOcpResult:
     maximum_inequality_violation: float
     maximum_power_mismatch: float
     maximum_control_overlap: float
+    maximum_steering_rate: float
     maximum_lateral_error: float
     iterations: int
     #: IPOPT multipliers for an exact same-mesh primal/dual restart.
@@ -913,6 +925,26 @@ def _solve(
         lower.extend([low] * count)
         upper.extend([high] * count)
 
+    def add_interval(expression, low, high) -> None:
+        """Add one scalar constraint with constant bounds."""
+
+        constraints.append(casadi.reshape(expression, -1, 1))
+        lower.append(low)
+        upper.append(high)
+
+
+    rate_limit = (
+        vehicle.steering_maximum_rate
+        if options.maximum_steering_rate is None
+        else float(options.maximum_steering_rate)
+    )
+    if not np.isnan(rate_limit) and rate_limit < 0.0:
+        raise ValueError("maximum_steering_rate must be nonnegative")
+    # An infinite rate means "no steering rate bound", so omit the rows. A
+    # finite infinity in the constraint itself would poison the Jacobian.
+    if not np.isfinite(rate_limit):
+        rate_limit = None
+
     # Dynamics by the trapezoid rule between two nodes.
     for index in range(nodes - 1):
         here = functions.dynamics(
@@ -929,6 +961,30 @@ def _solve(
         if options.scale_constraints:
             defect /= np.array([0.05, 0.05, 20.0, 5.0, 1.0, 0.1, 60.0])
         add(defect, 0.0, 0.0)
+
+        # The rack and the driver cannot steer faster than a finite rate.
+        # Without this bound the optimum chatters between the steering stops
+        # from one node to the next, which no mechanism can follow.
+        if rate_limit is not None:
+            here_speed = casadi.fmax(
+                casadi.sqrt(state[2, index] ** 2 + state[3, index] ** 2),
+                _PROGRESS_FLOOR,
+            )
+            there_speed = casadi.fmax(
+                casadi.sqrt(
+                    state[2, index + 1] ** 2 + state[3, index + 1] ** 2
+                ),
+                _PROGRESS_FLOOR,
+            )
+            travel_time = 0.5 * spacing * (
+                1.0 / here_speed + 1.0 / there_speed
+            )
+            allowed = rate_limit * travel_time
+            change = control[2, index + 1] - control[2, index]
+            # Two rows with constant bounds, so the interval length stays a
+            # symbolic expression inside the constraint rather than a bound.
+            add(change - allowed, -np.inf, 0.0)
+            add(-change - allowed, -np.inf, 0.0)
 
     # The algebraic equations and the physical bounds at every node.
     minimum_pack_voltage = (
@@ -1168,6 +1224,21 @@ def _solve(
     )
 
 
+def _steering_rate(
+    steering: FloatArray,
+    state: np.ndarray,
+    path: dict[str, FloatArray],
+) -> float:
+    """Return the greatest road-wheel steering rate in radians per second."""
+
+    distance = np.asarray(path["distance"], dtype=np.float64)
+    if distance.size < 2 or steering.size < 2:
+        return 0.0
+    speed = np.maximum(np.hypot(state[2], state[3]), _PROGRESS_FLOOR)
+    travel_time = 0.5 * np.diff(distance) * (1.0 / speed[:-1] + 1.0 / speed[1:])
+    return float(np.max(np.abs(np.diff(steering)) / np.maximum(travel_time, 1e-12)))
+
+
 def _build_result(
     vehicle: PlanarVehicleParameters,
     path: dict[str, FloatArray],
@@ -1286,6 +1357,7 @@ def _build_result(
         maximum_inequality_violation=max(0.0, worst_inequality),
         maximum_power_mismatch=worst_power,
         maximum_control_overlap=float(np.max(control[0] * control[1])),
+        maximum_steering_rate=_steering_rate(control[2], state, path),
         maximum_lateral_error=float(np.max(np.abs(state[0]))),
         iterations=iterations,
         lam_x=lam_x,

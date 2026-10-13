@@ -215,3 +215,36 @@ tests skip when CasADi is absent.
 python3 -m pip install --target /tmp/casadi_pkgs casadi
 PYTHONPATH=src:/tmp/casadi_pkgs python3 -m unittest tests.test_planar_ocp
 ```
+
+## Refinement from a coarse solution did not work
+
+The obvious next step is to solve a coarse mesh, interpolate the solution onto
+a finer mesh, and solve again. It was implemented as a refinement ladder, and
+it measured **worse than a cold start**:
+
+| Target | Start | Iterations | Lap time | Algebraic residual | Status |
+|---|---|---|---|---|---|
+| 20 m | cold | 5972 | 36.294 s | 1.4e-07 | `Solve_Succeeded` |
+| 10 m | converged 20 m | 9000 | 78.054 s | 1.4e+01 | `Maximum_Iterations_Exceeded` |
+| 5 m | converged 20 m | 9000 | 67.092 s | 1.0e+02 | `Maximum_Iterations_Exceeded` |
+
+The 10 m rung did not merely fail to improve; it drove the progress speed down
+to 2.3 m/s and produced a **slower** lap than the coarse mesh it started from.
+The interpolated loads and wheel speeds are consistent for the coarse mesh but
+not for the finer one, and the solver follows that bad start downhill instead
+of recovering.
+
+`warm_start` therefore defaults to **off**. A cold start at 20 m is the only
+configuration that reaches `Solve_Succeeded` here.
+
+## What to do next
+
+1. Solve a 1 to 2 m mesh cold, or repair the refinement ladder so that the
+   interpolated start is projected back onto the algebraic equations before it
+   is used. The projection is the missing piece: the loads and the wheel speeds
+   are algebraic, so they must be re-solved at the new mesh rather than
+   interpolated.
+2. Raise the iteration limit with the mesh. The 20 m solve needed 5972
+   iterations, so 9000 is not a safe limit at 10 m.
+3. Replace the trapezoid rule with a higher-order collocation once the mesh is
+   fine enough for it to matter.

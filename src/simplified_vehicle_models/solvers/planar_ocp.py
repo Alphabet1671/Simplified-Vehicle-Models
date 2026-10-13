@@ -130,8 +130,10 @@ class PlanarOcpOptions:
     #: Accept a solution that IPOPT reports as solved to an acceptable level.
     accept_acceptable: bool = True
     #: Solve a coarse mesh first and refine, using each solution to start the
-    #: next rung. A fine mesh alone rarely converges from a simple guess.
-    warm_start: bool = True
+    #: next rung. **Off by default**, because it measured worse than a cold
+    #: start: the converged 20 m solution drove the 10 m rung to a degenerate
+    #: slow solution instead of a good one. It is kept for experiments.
+    warm_start: bool = False
     #: The spacing of the first, coarsest rung of the refinement ladder.
     warm_start_spacing: float = 40.0
 

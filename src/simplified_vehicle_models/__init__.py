@@ -65,6 +65,11 @@ from simplified_vehicle_models.parameters.vehicle import (
 )
 from simplified_vehicle_models.results.traces import LapMode, LapResult
 from simplified_vehicle_models.solvers.forward_backward import solve_lap
+from simplified_vehicle_models.solvers.planar_ocp import (
+    PlanarOcpOptions,
+    PlanarOcpResult,
+    solve_planar_hot_lap,
+)
 from simplified_vehicle_models.tires.unitire_simple import evaluate_unitire
 from simplified_vehicle_models.tracks.path_coordinates import evaluate_path
 from simplified_vehicle_models.tracks.profile import load_track

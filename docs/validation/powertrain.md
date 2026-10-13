@@ -518,3 +518,30 @@ cmp models/data/amk_dd5_100c_operating_map.npz /tmp/fix1-repro.npz
 
 Use the same configured Python runtime for tests, generation and benchmarks;
 all reported runs used the bundled Python 3.12 runtime.
+
+## W4 — LUT voltage-axis extension (energy-coupling redesign)
+
+The canonical operating-map voltage axis is now **400-600 V** (was 530-600),
+generator `motor-lut-v5`, grid unchanged at 25x129x65, SHA-256
+`79a615bb836054818aecc45cd6c7a7d5bdb02967c9dea8d16a0eb26a93559448`, 2.6 MB,
+byte-reproducible. The 400 V floor was measured, not guessed: a 22-lap stint
+ends near SOC 0.28 where the coupled minimum is ~470 V, leaving ~15% margin;
+SOC < 0.1 is out of stint reach and stays on the exact analytical fallback by
+design.
+
+Validation at the new axis: drive monotonicity 0 violations, 0 envelope
+reductions, 0 near-zero drive nodes with nonzero cap (the envelope corner now
+moves per voltage column: 13,333 rpm at 400 V), 55 cliff cells routed to the
+exact oracle. LUT-vs-exact in the new 400-530 V band: p95 3.0 W, max 135 W.
+Flying-lap compare gates: lap delta +0.785 ms, speed displacement 0.0222 m/s,
+both converged, LUT 3.00x. The LUT flying-lap pin moved 2.5 us
+(69.1917773155225 -> 69.19177483621608 s) as speed-solve coupled voltages
+below the old floor moved from exact fallback to in-domain interpolation;
+the analytical pin is unchanged. Full suite 293 OK.
+
+Combined with the W1 undamped coupling update, one-lap energy solves measure:
+SOC 0.96: 182.5 s -> 39.7 s (4.6x, 3 iterations); SOC 0.5: 894.8 s -> 25.4 s
+(35x, 2 iterations), with converged answers matching the pre-redesign
+references to 0.011 ms / 2.1e-7 SOC / 0.0006 % energy. The 5x endurance
+stint target is measured separately in the energy-coupling ledger; this
+section does not claim it.

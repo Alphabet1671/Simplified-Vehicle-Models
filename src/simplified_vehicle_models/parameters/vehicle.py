@@ -11,6 +11,12 @@ from simplified_vehicle_models.controls.steering import AckermannTable
 from simplified_vehicle_models.parameters.aero import AeroParameters
 from simplified_vehicle_models.parameters.drivetrain import DrivetrainParameters
 from simplified_vehicle_models.core.types import FloatArray
+from simplified_vehicle_models.powertrain.energy_storage import (
+    EnergyStorageParameters,
+)
+from simplified_vehicle_models.powertrain.motor_envelope import (
+    MotorEnvelopeParameters,
+)
 from simplified_vehicle_models.parameters.tire import (
     TireEnvelopeParameters,
     UniTireSimpleParameters,
@@ -86,6 +92,8 @@ class PlanarVehicleParameters:
     brake_effective_radius_rear: float
     pedal_curve: PedalRatioCurve
     tire: UniTireSimpleParameters
+    motor: MotorEnvelopeParameters
+    storage: EnergyStorageParameters
     aero: AeroParameters
     drivetrain: DrivetrainParameters
     manifest: CompileManifest | None = field(

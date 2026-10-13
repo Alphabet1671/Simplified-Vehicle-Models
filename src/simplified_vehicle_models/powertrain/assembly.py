@@ -8,11 +8,17 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+
+import numpy as np
 from simplified_vehicle_models.compiler.adapters import register_adapter
 from simplified_vehicle_models.compiler.capabilities import DRIVE_FORCE_LIMIT
 from simplified_vehicle_models.compiler.registry import register_component
 from simplified_vehicle_models.drivetrain.transmission import FixedGearParameters
 from simplified_vehicle_models.parameters.drivetrain import DrivetrainParameters
+from simplified_vehicle_models.powertrain.motor_envelope import (
+    MotorEnvelopeParameters,
+    wheel_torque_limit,
+)
 from simplified_vehicle_models.xml.loader import load_model
 from simplified_vehicle_models.xml.model import Model
 from simplified_vehicle_models.powertrain.energy_storage import (
@@ -42,7 +48,7 @@ ASSEMBLY_SOURCE_CAPABILITY = "powertrain-and-drivetrain"
 
 @dataclass(frozen=True, slots=True)
 class PowertrainParameters:
-    power_plant: PowerPlantParameters
+    power_plant: PowerPlantParameters | MotorEnvelopeParameters
     energy_storage: EnergyStorageParameters
     # LUT passed the numerical/performance gates; out-of-domain queries remain
     # analytical. Select ``analytical`` explicitly for reference comparisons.
@@ -139,8 +145,16 @@ def compile_powertrain_assembly(model: Model) -> PowertrainParameters:
             f"{model.path}: powertrain needs power-plant and energy-storage"
         )
     from simplified_vehicle_models.powertrain.energy_storage import compile_battery_pack
+    from simplified_vehicle_models.powertrain.motor_envelope import (
+        TORQUE_ENVELOPE_SUBTYPE,
+        compile_motor_envelope,
+    )
     from simplified_vehicle_models.powertrain.power_plant import compile_electric_motor
-    motor = compile_electric_motor(load_model(references["power-plant"].path))
+    plant = load_model(references["power-plant"].path)
+    if plant.subtype == TORQUE_ENVELOPE_SUBTYPE:
+        motor = compile_motor_envelope(plant)
+    else:
+        motor = compile_electric_motor(plant)
     storage = compile_battery_pack(load_model(references["energy-storage"].path))
     initial_voltage = evaluate_storage(
         storage, StorageState(storage.initial_state_of_charge)
@@ -207,12 +221,20 @@ def compile_powertrain_drivetrain(model: Model) -> DrivetrainParameters:
         )
     state = StorageState(powertrain.energy_storage.initial_state_of_charge)
     limits = evaluate_storage(powertrain.energy_storage, state)
-    torque = voltage_scaled_envelope(motor, 1.0, limits.bus_voltage)
+    if isinstance(motor, MotorEnvelopeParameters):
+        # A smooth envelope carries its own limits and its own gearing.
+        torque = float(
+            wheel_torque_limit(motor, np.zeros(1), limits.bus_voltage)[0]
+        )
+        power_limit = motor.unit_count * motor.peak_power
+    else:
+        torque = voltage_scaled_envelope(motor, 1.0, limits.bus_voltage)
+        power_limit = motor.unit_count * motor.unit_power_limit
     return FullDrivetrainRuntime(
         motor_count=motor.unit_count,
         gear_ratio=transmission.gear_ratio,
         peak_motor_torque=torque,
-        power_limit=motor.unit_count * motor.unit_power_limit,
+        power_limit=power_limit,
         efficiency=transmission.gear_efficiency,
         maximum_motor_speed=motor.maximum_motor_speed,
         powertrain=powertrain,

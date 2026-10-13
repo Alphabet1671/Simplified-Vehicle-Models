@@ -43,6 +43,11 @@ from simplified_vehicle_models.parameters.aero import AeroParameters
 from simplified_vehicle_models.parameters.drivetrain import DrivetrainParameters
 from simplified_vehicle_models.parameters.tire import UniTireSimpleParameters
 from simplified_vehicle_models.parameters.vehicle import PlanarVehicleParameters
+from simplified_vehicle_models.powertrain.energy_storage import EnergyStorageParameters
+from simplified_vehicle_models.powertrain.motor_envelope import (
+    TORQUE_ENVELOPE_SUBTYPE,
+    MotorEnvelopeParameters,
+)
 from simplified_vehicle_models.suspension import quasi_static
 from simplified_vehicle_models.tires.unitire_simple import (
     evaluate_unitire,
@@ -156,6 +161,28 @@ def compile_planar_7dof_vehicle(
         raise ValueError(
             f"{assembly.path}: total_mass must cover the driver and the car"
         )
+    drivetrain = _capability_value(
+        assembly,
+        resolutions,
+        DRIVE_FORCE_LIMIT,
+        DrivetrainParameters,
+    )
+    # The assembled runtime carries the nested motor and battery. The planar
+    # model needs the smooth envelope and the storage curves, not the compact
+    # legacy drive-force contract.
+    nested = getattr(drivetrain, "powertrain", None)
+    if nested is None:
+        raise ValueError(
+            f"{assembly.path}: the drivetrain must be an assembled powertrain"
+        )
+    motor = nested.power_plant
+    storage = nested.energy_storage
+    if not isinstance(motor, MotorEnvelopeParameters):
+        raise ValueError(
+            f"{assembly.path}: the planar model needs a "
+            f"{TORQUE_ENVELOPE_SUBTYPE!r} power plant, received "
+            f"{type(motor).__name__}"
+        )
     return PlanarVehicleParameters(
         total_mass=values["total_mass"],
         mass_without_driver=values["mass_without_driver"],
@@ -199,12 +226,9 @@ def compile_planar_7dof_vehicle(
             AERO_LOADS,
             AeroParameters,
         ),
-        drivetrain=_capability_value(
-            assembly,
-            resolutions,
-            DRIVE_FORCE_LIMIT,
-            DrivetrainParameters,
-        ),
+        drivetrain=drivetrain,
+        motor=motor,
+        storage=storage,
     )
 
 

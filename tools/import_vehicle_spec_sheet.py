@@ -62,6 +62,18 @@ CELLS = {
     "brake_pressure_rear_bar": "F43",
     "brake_pedal_force_1g_kn": "H43",
     "brake_pressure_front_1g_bar": "D43",
+    "motor_max_rpm": "C84",
+    "motor_base_rpm": "C85",
+    "motor_peak_torque": "C86",
+    "motor_continuous_torque": "C87",
+    "motor_peak_power_kw": "C88",
+    "motor_continuous_power_kw": "C89",
+    "motor_count": "C81",
+    "gear_ratio": "C111",
+    "pack_configuration": "C99",
+    "pack_peak_power_kw": "C100",
+    "pack_continuous_power_kw": "C101",
+    "pack_charge_power_kw": "C104",
     "rotor_front": "C39",
     "rotor_rear": "F39",
     "downforce_n": "D119",
@@ -108,6 +120,25 @@ def obfuscate(value: float, name: str, *, digits: int = 4) -> float:
 #: Cells that hold text rather than a number.
 TEXT_CELLS = ("rotor_front", "rotor_rear")
 
+#: Cells that hold a number followed by text, such as ``21 Nm for 1.24 s``.
+NUMBER_PREFIX_CELLS = (
+    "motor_peak_torque",
+    "motor_continuous_torque",
+    "motor_peak_power_kw",
+    "motor_continuous_power_kw",
+    "gear_ratio",
+    "motor_count",
+    "pack_peak_power_kw",
+    "pack_continuous_power_kw",
+    "pack_charge_power_kw",
+)
+
+#: Matches the first number of a cell.
+_LEADING_NUMBER = re.compile(r"(-?\d+(?:\.\d+)?)")
+
+#: Matches a pack configuration such as ``144S1P``.
+_PACK_CONFIGURATION = re.compile(r"(\d+)\s*S\s*(\d+)\s*P")
+
 #: Matches the rotor diameter before the diameter symbol, so that a thickness
 #: such as ``3/16"`` is not mistaken for the diameter.
 _ROTOR_DIAMETER = re.compile(r"([\d.]+)\s*\"\s*\u00d8")
@@ -130,6 +161,23 @@ def read_cells(path: Path) -> dict[str, float]:
         raw = sheet[reference].value
         if raw is None:
             raise ValueError(f"{path}: cell {reference} for {name!r} is empty")
+        if name == "pack_configuration":
+            found = _PACK_CONFIGURATION.search(str(raw).replace(" ", ""))
+            if found is None:
+                raise ValueError(
+                    f"{path}: cell {reference} is not a series-parallel configuration"
+                )
+            values["pack_series_count"] = float(found.group(1))
+            values["pack_parallel_count"] = float(found.group(2))
+            continue
+        if name in NUMBER_PREFIX_CELLS:
+            found = _LEADING_NUMBER.search(str(raw))
+            if found is None:
+                raise ValueError(
+                    f"{path}: cell {reference} for {name!r} holds no number: {raw!r}"
+                )
+            values[name] = float(found.group(1))
+            continue
         if name in TEXT_CELLS:
             text = str(raw)
             found = _ROTOR_DIAMETER.search(text)
@@ -359,7 +407,7 @@ def write_vehicle(
     for role, reference in (
         ("tire", "../tires/hoosier-43075-r20-simple.xml"),
         ("aero", "../aero/placeholder_2024_aero.xml"),
-        ("powertrain", "../powertrains/murphy_2024.xml"),
+        ("powertrain", "../powertrains/placeholder_2024_powertrain.xml"),
         ("drivetrain", "../drivetrains/murphy_2024_drivetrain.xml"),
     ):
         ElementTree.SubElement(components, "component", {"role": role, "ref": reference})
@@ -394,6 +442,101 @@ def write_tables(
         for index in range(inner_angles):
             force = maximum_pedal_force * (index + 1) / inner_angles
             writer.writerow([f"{force:.12g}", f"{pedal_ratio:.12g}"])
+
+
+MOTOR_ID = "placeholder-2024-motor"
+BATTERY_ID = "placeholder-2024-battery"
+POWERTRAIN_ID = "placeholder-2024-powertrain"
+
+
+def build_powertrain(
+    real: dict[str, float],
+    nominal_bus_voltage: float,
+    inverter_efficiency: float,
+    motor_efficiency: float,
+    regeneration_torque_fraction: float,
+    cell_capacity: float,
+    minimum_cell_voltage: float,
+    maximum_cell_voltage: float,
+) -> tuple[dict[str, float], dict[str, float]]:
+    """Return the motor scalars and the battery scalars."""
+
+    unit_count = 2.0 * real["motor_count"]
+    motor = {
+        "unit_count": float(round(unit_count)),
+        "gear_ratio": obfuscate(real["gear_ratio"], "gear_ratio"),
+        "motor_efficiency": motor_efficiency,
+        "peak_motor_torque": obfuscate(real["motor_peak_torque"], "peak_motor_torque"),
+        "continuous_motor_torque": obfuscate(
+            real["motor_continuous_torque"], "continuous_motor_torque"
+        ),
+        "peak_power": obfuscate(
+            real["motor_peak_power_kw"] * 1000.0, "peak_power"
+        ),
+        "continuous_power": obfuscate(
+            real["motor_continuous_power_kw"] * 1000.0, "continuous_power"
+        ),
+        "maximum_motor_speed": obfuscate(
+            real["motor_max_rpm"], "maximum_motor_speed"
+        ),
+        "nominal_bus_voltage": nominal_bus_voltage,
+        "maximum_bus_voltage": nominal_bus_voltage,
+        "regeneration_torque_fraction": regeneration_torque_fraction,
+        "inverter_efficiency": inverter_efficiency,
+    }
+    battery = {
+        "series_count": real["pack_series_count"],
+        "parallel_count": real["pack_parallel_count"],
+        "discharge_current_limit": obfuscate(
+            real["pack_peak_power_kw"] * 1000.0 / nominal_bus_voltage,
+            "discharge_current_limit",
+        ),
+        "charge_current_limit": obfuscate(
+            real["pack_charge_power_kw"] * 1000.0 / nominal_bus_voltage,
+            "charge_current_limit",
+        ),
+        "cell_capacity": obfuscate(cell_capacity, "cell_capacity"),
+        "minimum_cell_voltage": obfuscate(
+            minimum_cell_voltage, "minimum_cell_voltage"
+        ),
+        "maximum_cell_voltage": obfuscate(
+            maximum_cell_voltage, "maximum_cell_voltage"
+        ),
+        "initial_bus_voltage": nominal_bus_voltage,
+    }
+    return motor, battery
+
+
+def _write_simple(
+    path: Path,
+    model_id: str,
+    model_type: str,
+    subtype: str,
+    values: dict[str, float],
+    units: dict[str, str],
+    comments: tuple[str, ...],
+) -> None:
+    """Write one flat parameter model."""
+
+    model = ElementTree.Element(
+        "model",
+        {
+            "schema-version": "1.0",
+            "id": model_id,
+            "type": model_type,
+            "subtype": subtype,
+        },
+    )
+    for comment in comments:
+        model.append(ElementTree.Comment(f" {comment}"))
+    parameters = ElementTree.SubElement(model, "parameters")
+    for name, value in values.items():
+        ElementTree.SubElement(
+            parameters,
+            "parameter",
+            {"name": name, "value": repr(float(value)), "unit": units[name]},
+        )
+    _write(model, path)
 
 
 def write_aero(
@@ -453,6 +596,16 @@ def main() -> None:
     parser.add_argument("--source", type=Path, required=True)
     parser.add_argument("--output-vehicle", type=Path, required=True)
     parser.add_argument("--output-aero", type=Path, required=True)
+    parser.add_argument("--output-motor", type=Path, required=True)
+    parser.add_argument("--output-battery", type=Path, required=True)
+    parser.add_argument("--output-powertrain", type=Path, required=True)
+    parser.add_argument("--nominal-bus-voltage", type=float, default=600.0)
+    parser.add_argument("--inverter-efficiency", type=float, default=0.95)
+    parser.add_argument("--motor-efficiency", type=float, default=0.95)
+    parser.add_argument("--regeneration-torque-fraction", type=float, default=0.5)
+    parser.add_argument("--cell-capacity", type=float, default=14.146)
+    parser.add_argument("--minimum-cell-voltage", type=float, default=3.117)
+    parser.add_argument("--maximum-cell-voltage", type=float, default=4.227)
     parser.add_argument("--output-ackermann", type=Path, required=True)
     parser.add_argument("--output-pedal-ratio", type=Path, required=True)
     parser.add_argument("--driver-mass", type=float, default=68.0)
@@ -514,6 +667,93 @@ def main() -> None:
         yaw_inertia_reference=options.yaw_inertia_reference,
         yaw_mass_reference=options.yaw_mass_reference,
     )
+    motor, battery = build_powertrain(
+        real,
+        nominal_bus_voltage=options.nominal_bus_voltage,
+        inverter_efficiency=options.inverter_efficiency,
+        motor_efficiency=options.motor_efficiency,
+        regeneration_torque_fraction=options.regeneration_torque_fraction,
+        cell_capacity=options.cell_capacity,
+        minimum_cell_voltage=options.minimum_cell_voltage,
+        maximum_cell_voltage=options.maximum_cell_voltage,
+    )
+    _write_simple(
+        options.output_motor,
+        MOTOR_ID,
+        "power-plant",
+        "torque-speed-envelope",
+        motor,
+        {
+            "unit_count": "1",
+            "gear_ratio": "1",
+            "motor_efficiency": "1",
+            "peak_motor_torque": "N*m",
+            "continuous_motor_torque": "N*m",
+            "peak_power": "W",
+            "continuous_power": "W",
+            "maximum_motor_speed": "rpm",
+            "nominal_bus_voltage": "V",
+            "maximum_bus_voltage": "V",
+            "regeneration_torque_fraction": "1",
+            "inverter_efficiency": "1",
+        },
+        (
+            "Placeholder smooth motor envelope. Every sheet-derived value is"
+            " rounded to two significant figures and skewed.",
+            "The envelope is smooth, so a nonlinear program can differentiate"
+            " it. The fitted map in the older power plant is not.",
+        ),
+    )
+    _write_simple(
+        options.output_battery,
+        BATTERY_ID,
+        "energy-storage",
+        "battery-pack",
+        battery,
+        {
+            "series_count": "1",
+            "parallel_count": "1",
+            "discharge_current_limit": "A",
+            "charge_current_limit": "A",
+            "cell_capacity": "A*h",
+            "minimum_cell_voltage": "V",
+            "maximum_cell_voltage": "V",
+            "initial_bus_voltage": "V",
+        },
+        (
+            "Placeholder battery pack. The series and parallel counts and the"
+            " initial voltage are exact; the rest is rounded and skewed.",
+            "The cell curves come from models/data/cosmx_cell_curves.csv.",
+        ),
+    )
+    powertrain = ElementTree.Element(
+        "model",
+        {
+            "schema-version": "1.0",
+            "id": POWERTRAIN_ID,
+            "type": "powertrain-assembly",
+            "subtype": "electric",
+        },
+    )
+    components = ElementTree.SubElement(powertrain, "components")
+    ElementTree.SubElement(
+        components,
+        "component",
+        {
+            "role": "power-plant",
+            "ref": f"../power-plants/{options.output_motor.name}",
+        },
+    )
+    ElementTree.SubElement(
+        components,
+        "component",
+        {
+            "role": "energy-storage",
+            "ref": f"../energy-storages/{options.output_battery.name}",
+        },
+    )
+    _write(powertrain, options.output_powertrain)
+
     write_tables(
         options.output_ackermann,
         options.output_pedal_ratio,
@@ -553,6 +793,11 @@ def main() -> None:
     print(f"pedal ratio (calibrated, then obfuscated) {pedal_ratio!r}")
     print(f"wrote {options.output_vehicle}")
     print(f"wrote {options.output_aero}")
+    print("emitted motor:", {k: motor[k] for k in ("unit_count","gear_ratio","peak_motor_torque","peak_power","maximum_motor_speed")})
+    print("emitted battery:", {k: battery[k] for k in ("series_count","parallel_count","discharge_current_limit","cell_capacity")})
+    print(f"wrote {options.output_motor}")
+    print(f"wrote {options.output_battery}")
+    print(f"wrote {options.output_powertrain}")
     print(f"wrote {options.output_ackermann}")
     print(f"wrote {options.output_pedal_ratio}")
 

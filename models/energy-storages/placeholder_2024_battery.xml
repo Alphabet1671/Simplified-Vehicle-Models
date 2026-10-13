@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<model schema-version="1.0" id="placeholder-2024-battery" type="energy-storage" subtype="battery-pack">
+    <!-- Placeholder battery pack. The series and parallel counts and the initial voltage are exact; the rest is rounded and skewed.-->
+    <!-- The cell curves come from models/data/cosmx_cell_curves.csv.-->
+    <parameters>
+        <parameter name="series_count" value="144.0" unit="1" />
+        <parameter name="parallel_count" value="1.0" unit="1" />
+        <parameter name="discharge_current_limit" value="434.0543" unit="A" />
+        <parameter name="charge_current_limit" value="200.646" unit="A" />
+        <parameter name="cell_capacity" value="14.1781" unit="A*h" />
+        <parameter name="minimum_cell_voltage" value="3.1167" unit="V" />
+        <parameter name="maximum_cell_voltage" value="4.2356" unit="V" />
+        <parameter name="initial_bus_voltage" value="600.0" unit="V" />
+    </parameters>
+</model>

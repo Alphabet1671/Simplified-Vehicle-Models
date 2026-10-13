@@ -36,7 +36,7 @@
     <components>
         <component role="tire" ref="../tires/hoosier-43075-r20-simple.xml" />
         <component role="aero" ref="../aero/placeholder_2024_aero.xml" />
-        <component role="powertrain" ref="../powertrains/murphy_2024.xml" />
+        <component role="powertrain" ref="../powertrains/placeholder_2024_powertrain.xml" />
         <component role="drivetrain" ref="../drivetrains/murphy_2024_drivetrain.xml" />
     </components>
 </model>

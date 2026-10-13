@@ -160,3 +160,18 @@ iterations throughout (no late-stint slowdown: the 400-600 V axis keeps the
 speed solve in-domain as SOC declines). Result recorded in
 endurance-22-post-w4.md once complete; gates: all laps converged, all energy
 loops converged, zero pack-discharge violations, 5x vs the 11-lap baseline.
+
+## W6 — RESULT (final)
+
+22-lap stint at 1f987e3: **960.0 s (16.0 min)**, 22/22 laps and energy loops
+converged, 3 -> 2 energy iterations per lap, flat 39.9-45.1 s per lap, final
+SOC 0.2842, bus voltage 516.95-600.0 V (all in-domain), 0 pack violations.
+Identical 11-lap prefix: 525.1 s vs baseline 2,972.7 s = **5.66x (target 5x:
+MET)**. Worst single lap 9.0x. Full details in endurance-22-post-w4.md.
+
+REDESIGN COMPLETE: W0 (instrumentation) -> Gate A (pre-registered rules; W4
+mandatory, energy-path routing dropped) -> W1 (undamped update, e866aa4) ->
+Gate B (W3 skipped on measurement) -> W4 (axis 400-600 V, controller-finished
+after two Ling failures) -> W6 (final stint). 293 tests OK throughout. The
+redesign branch feature/energy-coupling remains local (unpushed); the user's
+push instruction covered the working baseline branch feature/powertrain.

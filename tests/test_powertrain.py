@@ -344,13 +344,23 @@ class ClampedEnvelopeAgreementTests(unittest.TestCase):
         # interpolation), 0.0609 Nm above.  Stated tolerances add a small margin.
         voltages = list(np.linspace(530.0, 600.0, 15)) + [611.09, 620.0]
         speeds = list(np.linspace(0.0, 700.0, 57)) + [8.4, 88.35]
+        # Regen measured: <= 0.1362 Nm below 300 rpm, 0.00033 Nm above; above
+        # 700 rpm <= 0.0235 Nm.  Fallback cells skipped: 0 here, 1 in the
+        # high-speed sweep; bounds below are slightly above those counts.
         checked = 0
+        skipped = 0
         for voltage in voltages:
             for speed in speeds:
                 limits = motor_torque_limits(self.motor, float(speed), float(voltage))
                 exact = _exact_limit(self.motor, float(speed), float(voltage))
                 if limits.used_fallback:
+                    skipped += 1
                     continue
+                exact_regen = _exact_limit(self.motor, float(speed), float(voltage), True)
+                self.assertAlmostEqual(
+                    limits.maximum_regen_torque, exact_regen,
+                    delta=0.14 if speed < 300.0 else 0.001, msg=("regen", voltage, speed),
+                )
                 self.assertGreater(limits.maximum_drive_torque, 20.0, (voltage, speed))
                 tolerance = 0.14 if speed < 300.0 else 0.001
                 self.assertAlmostEqual(
@@ -358,18 +368,27 @@ class ClampedEnvelopeAgreementTests(unittest.TestCase):
                 )
                 checked += 1
         self.assertGreater(checked, 900)
+        self.assertLessEqual(skipped, 2)  # measured 0
+        high_skipped = 0
         high = [
             (v, s) for v in np.linspace(530.0, 600.0, 8) for s in np.linspace(700.0, 18000.0, 40)
         ]
         for voltage, speed in high:
             limits = motor_torque_limits(self.motor, float(speed), float(voltage))
             if limits.used_fallback:
+                high_skipped += 1
                 continue
             self.assertAlmostEqual(
                 limits.maximum_drive_torque,
                 _exact_limit(self.motor, float(speed), float(voltage)),
                 delta=0.07, msg=(voltage, speed),
             )
+            self.assertAlmostEqual(
+                limits.maximum_regen_torque,
+                _exact_limit(self.motor, float(speed), float(voltage), True),
+                delta=0.03, msg=("regen", voltage, speed),
+            )
+        self.assertLessEqual(high_skipped, 3)  # measured 1
 
     def test_no_near_zero_drive_node_below_the_corner(self):
         mapping = self.motor.operating_map
@@ -465,6 +484,31 @@ class ClampedEnvelopeAgreementTests(unittest.TestCase):
             motor_torque_limits(motor, 5000.0, 600.0),
             motor_torque_limits(motor, 5000.0, 580.0),
         )
+
+    def test_raising_maximum_bus_voltage_above_600_exposes_known_defect(self):
+        """GUARD: documents the above-reference field-weakening defect.
+
+        Raising ``maximum_bus_voltage`` above the 600 V identification voltage
+        re-exposes a spurious zero-torque bus draw because the smallest-
+        magnitude d-axis root in ``solve_direct_current`` grows with available
+        voltage.  The d-axis root choice must be fixed in
+        ``solve_direct_current`` BEFORE the limit is raised; when it is, this
+        test will fail and must be replaced by a small-draw assertion.
+        Measured with an 800 V limit at a 650 V bus: 129,629 W at 0 rpm and
+        124,919 W at 145 rpm (reviewer saw 580,740 W / 124,919 W).
+        """
+        text = self.path.read_text()
+        data_path = (self.path.parent / "../data/amk_dd5_100c_operating_map.npz").resolve()
+        text = text.replace('value="600" unit="V"/>', 'value="800" unit="V"/>')
+        text = text.replace("../data/amk_dd5_100c_operating_map.npz", str(data_path))
+        with tempfile.TemporaryDirectory() as folder:
+            xml = Path(folder) / "motor.xml"
+            xml.write_text(text)
+            motor = compile_electric_motor(load_model(xml))
+        self.assertEqual(motor.maximum_bus_voltage, 800.0)
+        for speed in (0.0, 145.0):
+            power = evaluate_shaft_power_exact(motor, speed, 0.0, 650.0).bus_power
+            self.assertGreater(power, 50000.0, speed)  # defect; physical is < 50 W
 
     def test_invalid_maximum_bus_voltage_is_rejected(self):
         text = self.path.read_text()

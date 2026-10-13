@@ -91,3 +91,33 @@ Gate B with measured numbers.
 
 Sequence from here: W1 (undamped + divergence guard) → Gate B → W4 (axis
 extension) → W5 if needed → W6.
+
+## Gate B — decided 2026-10-12 (W1 verified independently)
+
+W1 landed: e866aa4 (undamped update + divergence guard, +5 tests),
+4b2bda3 (report). Controller verification: full suite **293 OK**; independent
+full-track SOC 0.5 run confirms **2 coupling iterations (was 13), converged,
+wall 164.3 s (was 894.8 s), answer matches the W0 reference to 0.0014 ms /
+2.9e-9 SOC / 0.0e0 %**. W1 measured per-lap speedup: **4.9x at SOC 0.96
+(182.5 -> 37.5 s), 6.3x at SOC 0.5 (894.8 -> ~142-164 s)**.
+
+**W3 (joint speed/SOC fixed point) — SKIPPED.** Pre-registered rule: projected
+W1 x W4 >= 5x → defer/skip W3. W1 alone already measures 4.9-6.3x per lap
+across the stint SOC range; W4 projects ~4.3x more at low SOC; product ~20x.
+The 5x endurance target does not need W3's structural risk. Revisit only if
+the final stint measurement misses the target.
+
+**W5 (stint-level SOC seeding) — DEFERRED to W6 decision.** At 3-4 passes/lap
+the seeding saves ~1 pass/lap (~25-30% stint time); decide after the W4 stint
+measurement, not before.
+
+Notes: (1) W1 added UndampedFullTrackAcceptanceTests (two full-track solves,
+~190 s) pinning the scope's acceptance deltas vs the W0 references — accepted
+for now as the acceptance gates; W6 may gate them behind an env flag if suite
+time matters. (2) Those pins compare LUT-mode answers; when W4 changes the axis,
+sub-530V speed queries move from exact fallback to in-domain interpolation.
+Because in-domain LUT approximates the oracle to ~1e-7 (existing tests), the
+pins should hold; if any fails, W4 must escalate with evidence, not re-pin.
+
+Sequence from here: W4 (voltage-axis extension) -> W6 (stint measurement,
+final gates, docs). W3 skipped, W5 deferred.

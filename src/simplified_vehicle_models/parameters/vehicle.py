@@ -3,8 +3,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from simplified_vehicle_models.controls.brakes import (
+    PedalRatioCurve,
+    maximum_brake_torques,
+)
+from simplified_vehicle_models.controls.steering import AckermannTable
 from simplified_vehicle_models.parameters.aero import AeroParameters
 from simplified_vehicle_models.parameters.drivetrain import DrivetrainParameters
+from simplified_vehicle_models.core.types import FloatArray
 from simplified_vehicle_models.parameters.tire import (
     TireEnvelopeParameters,
     UniTireSimpleParameters,
@@ -64,11 +70,21 @@ class PlanarVehicleParameters:
     steer_ratio: float
     steering_maximum_angle: float
     steering_maximum_rate: float
+    rack_travel_per_revolution: float
+    steer_arm_length: float
     caster_angle: float
     kingpin_inclination_angle: float
+    ackermann: AckermannTable
     brake_bias: float
-    maximum_brake_torque_front: float
-    maximum_brake_torque_rear: float
+    maximum_pedal_force: float
+    hydraulic_ratio: float
+    maximum_brake_pressure: float
+    caliper_area: float
+    pad_mu_front: float
+    pad_mu_rear: float
+    brake_effective_radius_front: float
+    brake_effective_radius_rear: float
+    pedal_curve: PedalRatioCurve
     tire: UniTireSimpleParameters
     aero: AeroParameters
     drivetrain: DrivetrainParameters
@@ -105,3 +121,23 @@ class PlanarVehicleParameters:
         """Return the half track width."""
 
         return 0.5 * self.track_width
+
+    def maximum_brake_torques(self) -> FloatArray:
+        """Return the brake torque magnitude at full pedal.
+
+        This value follows the driver force limit and the pedal chain. It is
+        not a fixed brake limit.
+        """
+
+        return maximum_brake_torques(
+            maximum_pedal_force=self.maximum_pedal_force,
+            pedal_curve=self.pedal_curve,
+            hydraulic_ratio=self.hydraulic_ratio,
+            maximum_brake_pressure=self.maximum_brake_pressure,
+            caliper_area=self.caliper_area,
+            brake_bias=self.brake_bias,
+            pad_mu_front=self.pad_mu_front,
+            pad_mu_rear=self.pad_mu_rear,
+            effective_radius_front=self.brake_effective_radius_front,
+            effective_radius_rear=self.brake_effective_radius_rear,
+        )

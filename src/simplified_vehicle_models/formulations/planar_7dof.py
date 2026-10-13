@@ -21,13 +21,17 @@ Wheel order is always FL, FR, RL, RR.
 
 from __future__ import annotations
 
+import csv
 from collections.abc import Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TypeVar, cast
 
 import numpy as np
 
 from simplified_vehicle_models.aero import fixed_aero
+from simplified_vehicle_models.controls.brakes import PedalRatioCurve
+from simplified_vehicle_models.controls.steering import AckermannTable
 from simplified_vehicle_models.compiler.adapters import ResolutionResult
 from simplified_vehicle_models.compiler.capabilities import (
     AERO_LOADS,
@@ -74,11 +78,19 @@ PLANAR_7DOF_VEHICLE_PARAMETER_UNITS: dict[str, str] = {
     "steer_ratio": "1",
     "steering_maximum_angle": "rad",
     "steering_maximum_rate": "rad/s",
+    "rack_travel_per_revolution": "m",
+    "steer_arm_length": "m",
     "caster_angle": "rad",
     "kingpin_inclination_angle": "rad",
     "brake_bias": "1",
-    "maximum_brake_torque_front": "N*m",
-    "maximum_brake_torque_rear": "N*m",
+    "maximum_pedal_force": "N",
+    "hydraulic_ratio": "1",
+    "maximum_brake_pressure": "Pa",
+    "caliper_area": "m^2",
+    "pad_mu_front": "1",
+    "pad_mu_rear": "1",
+    "brake_effective_radius_front": "m",
+    "brake_effective_radius_rear": "m",
 }
 
 _CapabilityValue = TypeVar("_CapabilityValue")
@@ -110,8 +122,16 @@ def compile_planar_7dof_vehicle(
         "steer_ratio",
         "steering_maximum_angle",
         "steering_maximum_rate",
-        "maximum_brake_torque_front",
-        "maximum_brake_torque_rear",
+        "rack_travel_per_revolution",
+        "steer_arm_length",
+        "maximum_pedal_force",
+        "hydraulic_ratio",
+        "maximum_brake_pressure",
+        "caliper_area",
+        "pad_mu_front",
+        "pad_mu_rear",
+        "brake_effective_radius_front",
+        "brake_effective_radius_rear",
     )
     require_nonnegative(
         assembly,
@@ -154,9 +174,19 @@ def compile_planar_7dof_vehicle(
         steering_maximum_rate=values["steering_maximum_rate"],
         caster_angle=values["caster_angle"],
         kingpin_inclination_angle=values["kingpin_inclination_angle"],
+        rack_travel_per_revolution=values["rack_travel_per_revolution"],
+        steer_arm_length=values["steer_arm_length"],
+        ackermann=_read_ackermann_table(assembly),
         brake_bias=values["brake_bias"],
-        maximum_brake_torque_front=values["maximum_brake_torque_front"],
-        maximum_brake_torque_rear=values["maximum_brake_torque_rear"],
+        maximum_pedal_force=values["maximum_pedal_force"],
+        hydraulic_ratio=values["hydraulic_ratio"],
+        maximum_brake_pressure=values["maximum_brake_pressure"],
+        caliper_area=values["caliper_area"],
+        pad_mu_front=values["pad_mu_front"],
+        pad_mu_rear=values["pad_mu_rear"],
+        brake_effective_radius_front=values["brake_effective_radius_front"],
+        brake_effective_radius_rear=values["brake_effective_radius_rear"],
+        pedal_curve=_read_pedal_curve(assembly),
         tire=_capability_value(
             assembly,
             resolutions,
@@ -196,6 +226,83 @@ def _capability_value(
             f"{expected_type.__name__}"
         )
     return cast(_CapabilityValue, resolution.value)
+
+
+def _table_path(assembly: Model, role: str) -> Path:
+    """Return the path of one named data table of the assembly."""
+
+    for reference in assembly.data:
+        if reference.role == role:
+            if reference.format != "csv":
+                raise ValueError(
+                    f"{assembly.path}: table {role!r} must use the csv format"
+                )
+            return reference.path
+    raise ValueError(f"{assembly.path}: missing the {role!r} data table")
+
+
+def _read_number_table(
+    assembly: Model,
+    role: str,
+    columns: tuple[str, str],
+) -> tuple[FloatArray, FloatArray]:
+    """Read a two column numeric table from a named assembly data file."""
+
+    path = _table_path(assembly, role)
+    first: list[float] = []
+    second: list[float] = []
+    try:
+        with path.open(newline="", encoding="utf-8") as handle:
+            reader = csv.reader(handle)
+            header = next(reader, None)
+            if header is None or [item.strip() for item in header] != list(columns):
+                raise ValueError(
+                    f"{path}: columns must be {', '.join(columns)}"
+                )
+            for number, row in enumerate(reader, start=2):
+                if not row or all(not cell.strip() for cell in row):
+                    continue
+                if len(row) != 2:
+                    raise ValueError(f"{path}: row {number} must hold two values")
+                try:
+                    first.append(float(row[0]))
+                    second.append(float(row[1]))
+                except ValueError as error:
+                    raise ValueError(
+                        f"{path}: row {number} holds a non-numeric value"
+                    ) from error
+    except OSError as error:
+        raise ValueError(f"cannot read the {role!r} table at {path}: {error}") from error
+    return (
+        np.asarray(first, dtype=np.float64),
+        np.asarray(second, dtype=np.float64),
+    )
+
+
+def _read_ackermann_table(assembly: Model) -> AckermannTable:
+    """Read the Ackermann table of one assembly."""
+
+    inner, outer = _read_number_table(
+        assembly, "ackermann", ("inner_angle_rad", "outer_offset_rad")
+    )
+    return AckermannTable(inner_angle=inner, outer_offset=outer)
+
+
+def _read_pedal_curve(assembly: Model) -> PedalRatioCurve:
+    """Read the pedal ratio curve of one assembly."""
+
+    force, ratio = _read_number_table(
+        assembly, "pedal-ratio", ("pedal_force_n", "pedal_ratio")
+    )
+    constant = float(ratio[0]) if ratio.size else 1.0
+    if ratio.size and float(np.ptp(ratio)) == 0.0:
+        # A constant curve needs no table.
+        return PedalRatioCurve(
+            pedal_force=np.asarray([], dtype=np.float64),
+            pedal_ratio=np.asarray([], dtype=np.float64),
+            constant_ratio=constant,
+        )
+    return PedalRatioCurve(pedal_force=force, pedal_ratio=ratio, constant_ratio=constant)
 
 
 def wheel_positions(vehicle: PlanarVehicleParameters) -> FloatArray:
@@ -303,11 +410,38 @@ def body_lateral_acceleration(
     return lateral_velocity_rate + yaw_rate * v_x
 
 
+def wheel_steering_angles(
+    steering: float | FloatArray,
+    wheel_count: int = 4,
+    steering_axle: int = 2,
+) -> FloatArray:
+    """Return one steering angle for each wheel.
+
+    A scalar applies to the steering axle and leaves the other wheels straight.
+    A full array is validated and returned unchanged. Use the full form for an
+    Ackermann pair, where the two front wheels differ.
+    """
+
+    values = np.asarray(steering, dtype=np.float64)
+    if values.ndim == 0:
+        if not np.isfinite(float(values)):
+            raise ValueError("steering must be finite")
+        angles = np.zeros(wheel_count, dtype=np.float64)
+        angles[:steering_axle] = float(values)
+        return angles
+    if values.shape != (wheel_count,):
+        raise ValueError(
+            f"steering must be a scalar or hold {wheel_count} wheel angles"
+        )
+    if not np.all(np.isfinite(values)):
+        raise ValueError("steering must be finite")
+    return values
+
+
 def contact_velocities(
     state: PlanarState,
     positions: FloatArray,
-    steering: float,
-    steering_axle: int = 2,
+    steering: float | FloatArray,
 ) -> tuple[FloatArray, FloatArray]:
     """Return the contact velocity of each wheel in its own tire axes.
 
@@ -322,8 +456,7 @@ def contact_velocities(
 
     body_longitudinal = state.v_x - state.yaw_rate * positions[:, 1]
     body_lateral = state.v_y + state.yaw_rate * positions[:, 0]
-    angle = np.zeros(positions.shape[0], dtype=np.float64)
-    angle[:steering_axle] = steering
+    angle = wheel_steering_angles(steering, positions.shape[0])
     cosine = np.cos(angle)
     sine = np.sin(angle)
     longitudinal = body_longitudinal * cosine + body_lateral * sine
@@ -366,16 +499,14 @@ def slip_quantities(
 def rotate_tire_forces_to_body(
     longitudinal_force: FloatArray,
     lateral_force: FloatArray,
-    steering: float,
-    steering_axle: int = 2,
+    steering: float | FloatArray,
 ) -> tuple[FloatArray, FloatArray]:
     """Rotate each tire force from its tire axes into the body axes.
 
     The moment about the vertical axis does not change under this rotation.
     """
 
-    angle = np.zeros(longitudinal_force.shape[0], dtype=np.float64)
-    angle[:steering_axle] = steering
+    angle = wheel_steering_angles(steering, longitudinal_force.shape[0])
     cosine = np.cos(angle)
     sine = np.sin(angle)
     body_longitudinal = longitudinal_force * cosine - lateral_force * sine
@@ -588,8 +719,7 @@ def evaluate_planar_dynamics(
     """
 
     torques = parse_wheel_torques(wheel_torques)
-    if not np.isfinite(steering):
-        raise ValueError("steering must be finite")
+    wheel_angles = wheel_steering_angles(steering)
     if not np.isfinite(speed_floor) or speed_floor <= 0.0:
         raise ValueError("speed_floor must be finite and positive")
     if not np.isfinite(load_tolerance) or load_tolerance <= 0.0:
@@ -604,7 +734,7 @@ def evaluate_planar_dynamics(
     positions = wheel_positions(vehicle)
     speed = float(np.hypot(state.v_x, state.v_y))
     longitudinal_velocity, lateral_velocity = contact_velocities(
-        state, positions, steering
+        state, positions, wheel_angles
     )
     # The tire model recovers the rolling speed from the hub speed magnitude.
     rolling_speed = np.abs(state.wheel_speeds)
@@ -613,7 +743,7 @@ def evaluate_planar_dynamics(
         return _load_step(
             vehicle,
             state,
-            steering,
+            wheel_angles,
             speed,
             rolling_speed,
             longitudinal_velocity,

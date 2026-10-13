@@ -289,14 +289,27 @@ class PlanarCompileRejectionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             compile_planar_7dof_vehicle(replace(model, parameters=parameters), {})
 
-    def test_rejects_a_nonpositive_inertia(self) -> None:
+    def test_rejects_a_nonpositive_parameter(self) -> None:
+        # Match the parameter name in the message, so the test proves the
+        # parameter check failed and not some later step.
         for name, value in (
             ("wheel_inertia", 0.0),
             ("yaw_radius_of_gyration", -1.0),
-            ("maximum_brake_torque_front", 0.0),
             ("steering_maximum_angle", 0.0),
+            ("steering_maximum_rate", 0.0),
+            ("rack_travel_per_revolution", 0.0),
+            ("steer_arm_length", -1.0),
+            ("maximum_pedal_force", 0.0),
+            ("hydraulic_ratio", 0.0),
+            ("maximum_brake_pressure", 0.0),
+            ("caliper_area", 0.0),
+            ("pad_mu_front", 0.0),
+            ("pad_mu_rear", -0.5),
+            ("brake_effective_radius_front", 0.0),
+            ("brake_effective_radius_rear", 0.0),
+            ("steer_ratio", 0.0),
         ):
-            with self.subTest(name=name), self.assertRaises(ValueError):
+            with self.subTest(name=name), self.assertRaisesRegex(ValueError, name):
                 self._compile(**{name: value})
 
     def test_rejects_an_invalid_fraction(self) -> None:
@@ -304,9 +317,10 @@ class PlanarCompileRejectionTests(unittest.TestCase):
             ("front_mass_fraction", 0.0),
             ("front_mass_fraction", 1.0),
             ("brake_bias", 1.2),
+            ("brake_bias", 0.0),
             ("lateral_load_transfer_distribution", 1.5),
         ):
-            with self.subTest(name=name), self.assertRaises(ValueError):
+            with self.subTest(name=name), self.assertRaisesRegex(ValueError, name):
                 self._compile(**{name: value})
 
     def test_rejects_a_mass_that_does_not_cover_the_driver(self) -> None:

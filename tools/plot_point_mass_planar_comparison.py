@@ -40,7 +40,9 @@ def _cumulative_energy_kwh(power: np.ndarray, elapsed_time: np.ndarray) -> np.nd
     return np.r_[0.0, np.cumsum(increments)] / 3.6e6
 
 
-def _save_plots(data: dict[str, np.ndarray], output_dir: Path) -> tuple[Path, Path]:
+def _save_plots(
+    data: dict[str, np.ndarray], output_dir: Path
+) -> tuple[Path, Path, Path]:
     os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib-config")
     import matplotlib
 
@@ -106,7 +108,39 @@ def _save_plots(data: dict[str, np.ndarray], output_dir: Path) -> tuple[Path, Pa
     delta_ax.grid(True, alpha=0.25)
     fig.savefig(velocity_path, dpi=180, facecolor="white")
     plt.close(fig)
-    return energy_path, velocity_path
+
+    power_path = output_dir / "point-mass-planar-power.png"
+    segment_distance_km = data["segment_distance"] / 1000.0
+    power_delta_kw = (
+        data["point_mass_segment_bus_power"]
+        - data["planar_segment_bus_power"]
+    ) / 1000.0
+    fig, (power_ax, delta_power_ax) = plt.subplots(
+        2, 1, figsize=(11.5, 7.5), sharex=True, constrained_layout=True,
+        gridspec_kw={"height_ratios": [2.0, 1.0]},
+    )
+    for key in ("point_mass", "planar"):
+        power_ax.plot(
+            segment_distance_km,
+            data[f"{key}_segment_bus_power"] / 1000.0,
+            color=colors[key],
+            lw=1.7,
+            label=labels[key],
+        )
+    power_ax.set_ylabel("Segment-average bus power (kW)")
+    power_ax.set_title("Electrical power demand along the lap")
+    power_ax.grid(True, alpha=0.25)
+    power_ax.legend(loc="best", frameon=False)
+    delta_power_ax.plot(
+        segment_distance_km, power_delta_kw, color="#009e73", lw=1.4
+    )
+    delta_power_ax.axhline(0.0, color="black", lw=0.8, alpha=0.7)
+    delta_power_ax.set_ylabel("Point mass − planar (kW)")
+    delta_power_ax.set_xlabel("Distance along track (km)")
+    delta_power_ax.grid(True, alpha=0.25)
+    fig.savefig(power_path, dpi=180, facecolor="white")
+    plt.close(fig)
+    return energy_path, velocity_path, power_path
 
 
 def run(spacing: float, maximum_iterations: int, output_dir: Path) -> dict[str, object]:
@@ -144,30 +178,44 @@ def run(spacing: float, maximum_iterations: int, output_dir: Path) -> dict[str, 
     if not np.allclose(point_mass_track.distance, distance, atol=1.0e-9, rtol=0.0):
         raise RuntimeError("point-mass and planar meshes do not align")
     pm_time = np.asarray(point_mass.elapsed_time, dtype=np.float64)
+    point_mass_bus_power = np.asarray(
+        point_mass.energy.bus_power, dtype=np.float64
+    )
     pm_energy = np.r_[
         0.0,
-        np.cumsum(point_mass.energy.bus_power * np.diff(pm_time)),
+        np.cumsum(point_mass_bus_power * np.diff(pm_time)),
     ] / 3.6e6
     planar_time = np.asarray(planar.elapsed_time, dtype=np.float64)
+    planar_bus_power = np.asarray(planar.bus_power, dtype=np.float64)
+    planar_segment_bus_power = 0.5 * (
+        planar_bus_power[:-1] + planar_bus_power[1:]
+    )
+    segment_distance = 0.5 * (distance[:-1] + distance[1:])
     pm_speed = np.asarray(point_mass.speed, dtype=np.float64)
     planar_speed = np.asarray(planar.speed, dtype=np.float64)
     if not (
         distance.shape == pm_speed.shape == planar_speed.shape
         == point_mass.energy.state_trace.shape == planar.state_of_charge.shape
         == planar.bus_power.shape
+        and point_mass_bus_power.shape
+        == planar_segment_bus_power.shape
+        == segment_distance.shape
     ):
-        raise RuntimeError("solver traces have incompatible node counts")
-    planar_energy = _cumulative_energy_kwh(planar.bus_power, planar_time)
+        raise RuntimeError("solver traces have incompatible node or segment counts")
+    planar_energy = _cumulative_energy_kwh(planar_bus_power, planar_time)
     data = {
         "distance": distance,
+        "segment_distance": segment_distance,
         "point_mass_speed": pm_speed,
         "planar_speed": planar_speed,
         "point_mass_soc": np.asarray(point_mass.energy.state_trace),
         "planar_soc": np.asarray(planar.state_of_charge),
         "point_mass_cumulative_energy_kwh": pm_energy,
         "planar_cumulative_energy_kwh": planar_energy,
+        "point_mass_segment_bus_power": point_mass_bus_power,
+        "planar_segment_bus_power": planar_segment_bus_power,
     }
-    energy_path, velocity_path = _save_plots(data, output_dir)
+    energy_path, velocity_path, power_path = _save_plots(data, output_dir)
     np.savez_compressed(output_dir / "point-mass-planar-curves.npz", **data)
 
     return {
@@ -180,6 +228,12 @@ def run(spacing: float, maximum_iterations: int, output_dir: Path) -> dict[str, 
         "planar_final_soc": float(planar.state_of_charge[-1]),
         "point_mass_net_bus_energy_kwh": float(pm_energy[-1]),
         "planar_net_bus_energy_kwh": float(planar_energy[-1]),
+        "point_mass_peak_segment_bus_power_kw": float(
+            np.max(point_mass_bus_power) / 1000.0
+        ),
+        "planar_peak_segment_bus_power_kw": float(
+            np.max(planar_segment_bus_power) / 1000.0
+        ),
         "point_mass_converged": bool(point_mass.converged and point_mass.energy.energy_converged),
         "planar_converged": bool(planar.converged),
         "planar_status": planar.status,
@@ -187,6 +241,7 @@ def run(spacing: float, maximum_iterations: int, output_dir: Path) -> dict[str, 
         "outputs": [
             str(energy_path.relative_to(ROOT)),
             str(velocity_path.relative_to(ROOT)),
+            str(power_path.relative_to(ROOT)),
             str((output_dir / "point-mass-planar-curves.npz").relative_to(ROOT)),
             str((output_dir / "summary.json").relative_to(ROOT)),
         ],

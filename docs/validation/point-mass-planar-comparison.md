@@ -46,7 +46,11 @@ Velocity profiles share the same 1 m distance mesh. Their pointwise difference h
 
 ![Velocity profiles and difference](docs/validation/point-mass-planar-plots/point-mass-planar-velocity.png)
 
-The plotted node traces and integrated energy arrays are saved in [`point-mass-planar-curves.npz`](docs/validation/point-mass-planar-plots/point-mass-planar-curves.npz). Recreate the figures by running `tools/plot_point_mass_planar_comparison.py`.
+The power comparison shows segment-average electrical bus power versus distance. Point mass peaks at **118.38 kW** and planar at **76.58 kW**; the peaks are localized and the curves cross repeatedly, so the peak difference should not be read as a lap-average power difference.
+
+![Segment-average bus power profiles and difference](docs/validation/point-mass-planar-plots/point-mass-planar-power.png)
+
+The plotted node/segment traces and integrated energy arrays are saved in [`point-mass-planar-curves.npz`](docs/validation/point-mass-planar-plots/point-mass-planar-curves.npz), with a short numerical summary in [`summary.json`](docs/validation/point-mass-planar-plots/summary.json). Recreate the figures by running `tools/plot_point_mass_planar_comparison.py`.
 
 ## Warm-start experiment
 

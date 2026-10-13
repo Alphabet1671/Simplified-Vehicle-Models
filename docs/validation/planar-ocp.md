@@ -2,10 +2,14 @@
 
 > **Validated result:** the placeholder vehicle reaches a converged,
 > independently verified minimum-time lap of **43.9 s** on the closed
-> Michigan endurance path. The 1 m and 2 m meshes agree to 0.24 %, and the
-> route is re-checked outside the solver with the NumPy dynamics. See
-> *A converged 1 m lap* below for the full evidence and
-> *Known limitations* for what the number does not cover.
+> Michigan endurance path, constrained to a **0.05 m corridor** around the
+> recorded centreline. The 1 m and 2 m meshes agree to 0.24 %, and the route
+> is re-checked outside the solver with the NumPy dynamics.
+>
+> This is a **path-following** optimum, not a free racing-line optimum: a
+> 0.25 m corridor gives 41.8 s. See *A converged 1 m lap* for the evidence,
+> *The heading bound is insensitive, the lateral bound is not* for the
+> sensitivity, and *Known limitations* for what the number does not cover.
 
 > **Correction (fine-mesh investigation):** the earlier 36.294 s result and
 > coarse-to-fine table are **historical, not validated lap times**. The
@@ -216,11 +220,15 @@ of Model 3 and Model 4, and only if a library supplies it.
 
 - The lap time is for the **placeholder obfuscated vehicle**, not the real car,
   and it is a minimum-time optimum rather than a lap a driver would repeat.
+- The lap time is a **path-following** result inside a 0.05 m corridor around
+  the recorded centreline. It is not a free racing-line optimum: the 0.25 m
+  corridor case is 2.1 s faster, and the repository holds no track-width data
+  to do better. Treat 43.9 s as an upper bound on the free-line optimum.
 - The 20 m and 10 m meshes are not usable for lap time: they miss 4.3 and
   0.17 rad of the lap's 6.28 rad of turning.
-- Both path-following bounds are active. The measured sensitivity to the
-  heading bound is 0.12 % across a factor of two, so the optimum is
-  physically set, but the lateral bound has not been swept to the same depth.
+- The heading bound is insensitive (0.10 % across a factor of two) but the
+  lateral corridor is not (4.8 % from 0.05 m to 0.25 m). Both are active at
+  the reported operating point.
 - The transcription is a trapezoid rule, which is second order.
 - The steering uses parallel steering, because the Ackermann table is a zero
   array. The OCP applies one common front angle; a non-zero Ackermann table
@@ -482,30 +490,56 @@ The fastest wheel reaches 178.92 rad/s against a voltage-scaled motor limit of
 straight**, not grip limited there. The battery ends the lap at 0.910 state of
 charge, so the pack is not a limiting factor at this length.
 
-### The result is not an artefact of the path bounds
+### The heading bound is insensitive, the lateral bound is not
 
-Both path-following bounds are active in the solution: the lateral error is
-pinned at 0.05 m and the heading error at 0.20 rad. A minimum-time problem
-with a bounded racing line will always use its bounds, so the honest question
-is how much the answer depends on them.
+Both path-following bounds are active in every solution, so both were swept.
+They behave very differently.
+
+Heading allowance, at a 0.05 m lateral bound and with the rate limit active:
 
 | Maximum heading error | Lap time | Iterations | Status |
 |---:|---:|---:|---|
-| 0.10 rad | 43.936 s | 299 | `Solve_Succeeded` |
-| 0.15 rad | 43.899 s | 1228 | `Solve_Succeeded` |
-| 0.20 rad | 43.884 s | 340 | `Solve_Succeeded` |
+| 0.10 rad | 43.952 s | 208 | `Solve_Succeeded` |
+| 0.15 rad | 43.920 s | 1101 | `Solve_Succeeded` |
+| 0.20 rad | 43.907 s | 296 | `Solve_Succeeded` |
 
-Doubling the heading allowance changes the lap by **0.052 s, or 0.12 %**. The
-optimum is set by the tires, the motors and the track, not by the bound. The
-0.10 rad case is still above the 0.095 rad that the tightest balanced turn
-needs, so it remains a physically admissible bound rather than an artificial
-restriction.
+Doubling the heading allowance from 0.10 to 0.20 rad changes the lap by
+**0.045 s, or 0.10 %**. All three cases converged and passed the same
+geometric and replay checks. The 0.10 rad case is still above the 0.095 rad
+that the tightest balanced turn needs, so it stays physically admissible.
+
+Lateral allowance, at a 0.20 rad heading bound, all converged and verified:
+
+| Lateral corridor | Lap time | Iterations | Status |
+|---:|---:|---:|---|
+| 0.02 m | 44.604 s | 645 | `Solve_Succeeded` |
+| 0.05 m | 43.907 s | 296 | `Solve_Succeeded` |
+| 0.25 m | 41.800 s | 342 | `Solve_Succeeded` |
+
+The lateral bound is **about 47 times more influential** than the heading
+bound by relative lap-time change. Widening the corridor from 0.05 m to
+0.25 m removes **2.11 s, or 4.8 %**, because a wider corridor lets the car
+straighten the corners.
+
+This is a genuine racing-line freedom rather than a solver artefact, and it
+changes how the headline number must be read:
+
+> **43.9 s is the minimum-time lap constrained to a 0.05 m corridor around the
+> recorded centreline.** It is a *path-following* optimum, not a free
+> racing-line optimum. A free line would be faster, and the 0.25 m column
+> shows how much faster.
+
+The corridor is not a track-width limit. The track is a recorded centreline
+and this repository holds no usable width data, so the corridor is the only
+control on how far the car may leave that centreline. A free-line optimum
+needs the track edges, which is why it is listed first under what to do next.
 
 ## What to do next
 
-1. Sweep the **lateral** error bound, which is active at 0.05 m. The heading
-   bound was swept and changes the lap by 0.12 % across a factor of two, so a
-   comparable sweep of the lateral bound is the remaining sensitivity question.
+1. Recover the **track width** and re-solve with the true corridor, or with a
+   free lateral offset between the track edges. The lateral corridor is the
+   single largest modelling influence measured here: 0.02 m to 0.25 m spans
+   2.8 s, so this is worth more than any further solver tuning.
 2. Replace the trapezoid rule with a higher-order collocation once the mesh is
    fine enough for it to matter; at 1 m the trapezoid error is already smaller
    than the physical modelling uncertainty.

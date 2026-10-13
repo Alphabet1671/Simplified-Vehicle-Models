@@ -171,7 +171,7 @@ generator `motor-lut-v4` (drive/regen envelopes capped at the voltage-scaled map
 PYTHONPATH=src <bundled python3> tools/generate_motor_lut.py \
   models/power-plants/amk_dd5_100c.xml \
   models/data/amk_dd5_100c_operating_map.npz \
-  --voltage-points 25 --speed-points 129 --load-points 65 --voltage-min 530 --voltage-max 620
+  --voltage-points 25 --speed-points 129 --load-points 65 --voltage-min 530 --voltage-max 600
 ```
 
 `models/data/provenance.md` records the chosen grid and digest. Refining the
@@ -352,12 +352,19 @@ call), at the top of `evaluate_shaft_power_exact`, `_lut_forward`,
 the generator and the assembly (which now calls `voltage_scaled_envelope`
 instead of re-deriving `V/sqrt(3)`) cannot bypass it. Battery OCV, resistance,
 current and SOC are not clamped; only what the motor and inverter see is.
+`DriveLimit.bus_voltage` and the energy-trace voltage report the physical
+battery terminal voltage (unclamped, may exceed 600 V at SOC 1.0), while the
+motor/inverter sees `min(terminal, maximum_bus_voltage)`; battery current is
+computed from the motor bus power at the clamped voltage, so supply equals
+draw. The repeated clamps are idempotent defence in depth, and the per-phase
+cap in `maximum_motor_torque` is a no-op for non-negative drops.
 
 **Disclosures.** The canonical pack's 608.7 V OCV at SOC 1.0 itself exceeds the
 600 V limit; battery data were not changed. Raising `maximum_bus_voltage` above
 the 600 V motor reference (e.g. 800 V) would re-expose the above-reference
 field-weakening correction defect, which then needs a source-model fix (d-axis
-root choice) before use.
+root choice) before use. Raising `maximum_bus_voltage` above 600 V is currently
+guarded by `test_raising_maximum_bus_voltage_above_600_exposes_known_defect`.
 
 **Map.** 530-600 V x 0-18,600 rpm x 65 loads, `motor-lut-v4`, SHA-256
 `166bf1346d263267224f77fe7396ab15180e0c2f54391652fee28f8575fcfc5b`; two

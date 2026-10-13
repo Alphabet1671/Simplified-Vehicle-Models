@@ -80,6 +80,15 @@ class RegenLimit:
 
 @dataclass(frozen=True, slots=True)
 class DriveLimit:
+    """Report the drive limit at one operating point.
+
+    ``bus_voltage`` (and the energy-trace voltage) is the physical battery
+    terminal voltage, unclamped, so it may exceed 600 V at SOC 1.0.  The
+    motor/inverter sees ``min(terminal, maximum_bus_voltage)``.  Battery
+    current is computed from the motor bus power at the clamped voltage, so
+    supply equals draw.
+    """
+
     maximum_drive_force: float
     maximum_wheel_torque: float
     bus_voltage: float

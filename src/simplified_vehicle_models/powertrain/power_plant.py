@@ -228,6 +228,8 @@ def maximum_motor_torque(parameters, motor_speed, available_voltage):
 
     _map_values(motor_speed, 0.0, parameters)
     # ``available_voltage`` is per-phase; cap it at the clamped bus voltage.
+    # Idempotent defence in depth; the per-phase cap is a no-op for
+    # non-negative drops (resistive/device drops only reduce the voltage).
     available_voltage = min(
         available_voltage, parameters.maximum_bus_voltage / _SQRT_THREE
     )
@@ -590,9 +592,13 @@ def _exact_limit(parameters, speed, voltage, regen=False):
     results are memoized on a 1.0e-3 V/rpm-quantized key.  That quantum is far
     below the maps' own accuracy while keeping the cache bounded and observable.
     Entries are keyed by the map's content identity, so a cache entry can never
-    be served to a differently compiled motor.
+    be served to a differently compiled motor.  The voltage is clamped to
+    ``maximum_bus_voltage`` before the cache key is formed, so all voltages
+    above the limit share one entry.
     """
 
+    # The repeated clamps in this module are idempotent defence in depth
+    # (min(v, limit)); they cannot compound.
     voltage = limit_bus_voltage(parameters, voltage)
     mapping = parameters.operating_map
     if mapping is None:

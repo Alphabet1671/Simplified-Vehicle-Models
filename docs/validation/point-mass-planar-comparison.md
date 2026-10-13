@@ -36,6 +36,18 @@ One isolated same-process timing sample (single trial, not a median):
 
 For this sample, point mass was **6.45× faster** than the planar solve. The point-mass count is forward/backward profile sweeps plus outer energy iterations; it is not directly comparable to IPOPT iterations. Timings are machine- and load-dependent and should be repeated before treating the ratio as a stable benchmark.
 
+## Energy and velocity profiles
+
+The matched rerun integrated net bus energy over distance and compared the SOC traces. Point mass used 0.38131 kWh and ended at 91.0732% SOC; planar used 0.40147 kWh and ended at 90.9601% SOC. The planar run therefore used about 0.02016 kWh (5.0%) more net bus energy, while finishing the lap 1.833 s sooner. The SOC curves stay close (maximum difference 0.323 percentage points).
+
+![Energy and SOC profiles](docs/validation/point-mass-planar-plots/point-mass-planar-energy.png)
+
+Velocity profiles share the same 1 m distance mesh. Their pointwise difference has a 2.43 m/s RMS; the largest positive difference is +4.73 m/s near 0.400 km, and the largest negative difference is −6.44 m/s near 0.328 km. These local changes are consistent with the fidelity differences noted above; the point-mass profile reaches 35.27 m/s versus 31.52 m/s for the planar run.
+
+![Velocity profiles and difference](docs/validation/point-mass-planar-plots/point-mass-planar-velocity.png)
+
+The plotted node traces and integrated energy arrays are saved in [`point-mass-planar-curves.npz`](docs/validation/point-mass-planar-plots/point-mass-planar-curves.npz). Recreate the figures by running `tools/plot_point_mass_planar_comparison.py`.
+
 ## Warm-start experiment
 
 Mapped the point-mass speed/time trajectory to the planar mesh; retained the planar equilibrium seed's sideslip and steering (which point mass cannot supply), estimated pedal guesses from the speed slope, and invoked the planar local algebraic projection. With a 500-iteration cap, IPOPT returned `Maximum_Iterations_Exceeded` after 500 iterations. The result failed feasibility checks (maximum algebraic residual 5.22e4, dynamics residual 28.99, inequality violation 4.06); its 129.61 s objective is **not a valid lap time**. The converged cold/equilibrium-seed run needed 296 iterations, so this trial saved no iterations. Do not use this mapping as a production warm start yet; a useful bridge needs a dynamically consistent reconstruction of planar body and wheel states, not speed interpolation alone.

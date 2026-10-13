@@ -1,0 +1,29 @@
+{
+  "lap_length_m": 1016.70064959,
+  "mesh_spacing_m": 1.0,
+  "nodes": 1018,
+  "point_mass_lap_s": 45.739836684642285,
+  "planar_lap_s": 43.906623128917936,
+  "point_mass_final_soc": 0.9107316138411639,
+  "planar_final_soc": 0.9096013044644736,
+  "point_mass_net_bus_energy_kwh": 0.38130896918067475,
+  "planar_net_bus_energy_kwh": 0.40147077290315386,
+  "point_mass_converged": true,
+  "planar_converged": true,
+  "planar_status": "Solve_Succeeded",
+  "pointwise_velocity_delta_mps": {
+    "rms": 2.4296039220181513,
+    "max": 4.72847205752964,
+    "max_at_distance_km": 0.3998822613923304,
+    "min": -6.439005374925085,
+    "min_at_distance_km": 0.3279034543417109
+  },
+  "maximum_absolute_soc_difference_percentage_points": 0.3233677052600137,
+  "elapsed_wall_s": 250.99018395901658,
+  "outputs": [
+    "point-mass-planar-energy.png",
+    "point-mass-planar-velocity.png",
+    "point-mass-planar-curves.npz"
+  ],
+  "command": "PYTHONPATH=src:/tmp/casadi_pkgs MPLCONFIGDIR=/tmp/matplotlib-config python3 tools/plot_point_mass_planar_comparison.py --spacing 1 --iterations 500"
+}

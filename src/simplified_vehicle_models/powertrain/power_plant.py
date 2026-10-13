@@ -90,6 +90,9 @@ class PowerPlantParameters:
     measured_reference_quadrature_voltage: float
     measured_reference_voltage: float
     operating_map: MotorOperatingMap | None = None
+    # Regulatory DC bus voltage limit (V).  Distinct from
+    # ``reference_bus_voltage``, the voltage at which the motor was identified.
+    maximum_bus_voltage: float = 600.0
 
     @property
     def phase_flux_linkage(self) -> float:
@@ -183,6 +186,29 @@ def _map_values(speed, torque, parameters):
     return envelope, loss
 
 
+def limit_bus_voltage(parameters, bus_voltage):
+    """Return the bus voltage the motor and inverter are allowed to see.
+
+    This is the single documented choke point of the regulatory bus-voltage
+    clamp: ``min(terminal voltage, parameters.maximum_bus_voltage)``.
+    ``maximum_bus_voltage`` is the regulatory DC bus limit (exceeding it is a
+    disqualification) and is configured in the power-plant XML.  It is distinct
+    from ``reference_bus_voltage``, the voltage at which the motor maps were
+    identified; the two happen to be 600 V today but may diverge (e.g. an 800 V
+    limit) and must not be conflated.
+
+    The clamp is applied inside every primitive that consumes a bus voltage
+    (``calculate_available_voltage``, ``maximum_motor_torque``,
+    ``evaluate_shaft_power_exact`` and, through them, every analytical, LUT,
+    limit, inverse, fallback and generator path) and again at each LUT entry
+    point that indexes the voltage axis, so no caller can bypass it.  Battery
+    physics (OCV, resistance, current, SOC) is never clamped; only what the
+    motor/inverter sees is.
+    """
+
+    return min(bus_voltage, parameters.maximum_bus_voltage)
+
+
 def calculate_available_voltage(parameters, bus_voltage, current):
     """Return available per-phase peak voltage.
 
@@ -191,7 +217,7 @@ def calculate_available_voltage(parameters, bus_voltage, current):
     """
 
     return (
-        bus_voltage / _SQRT_THREE
+        limit_bus_voltage(parameters, bus_voltage) / _SQRT_THREE
         - parameters.resistance * current
         - parameters.device_drop
     )
@@ -201,6 +227,10 @@ def maximum_motor_torque(parameters, motor_speed, available_voltage):
     """Scale the map envelope along its speed axis."""
 
     _map_values(motor_speed, 0.0, parameters)
+    # ``available_voltage`` is per-phase; cap it at the clamped bus voltage.
+    available_voltage = min(
+        available_voltage, parameters.maximum_bus_voltage / _SQRT_THREE
+    )
     if available_voltage <= 0.0:
         return 0.0
     reference_speed = (
@@ -257,7 +287,13 @@ def solve_direct_current(
 
 
 def evaluate_shaft_power_exact(parameters, motor_speed, motor_torque, bus_voltage):
-    """Analytical motor oracle: evaluate power or report voltage infeasibility."""
+    """Analytical motor oracle: evaluate power or report voltage infeasibility.
+
+    ``bus_voltage`` is clamped to ``maximum_bus_voltage`` (see
+    ``limit_bus_voltage``) before any use.
+    """
+
+    bus_voltage = limit_bus_voltage(parameters, bus_voltage)
 
     quadrature_current = motor_torque / (
         1.5 * parameters.pole_pairs * parameters.phase_flux_linkage
@@ -327,7 +363,11 @@ def evaluate_shaft_power_exact(parameters, motor_speed, motor_torque, bus_voltag
     )
 
 
-_LOOKUP_COUNTERS = {"forward": 0, "inverse": 0, "fallback": 0}
+_LOOKUP_COUNTERS = {"forward": 0, "inverse": 0, "fallback": 0, "limit_fallback": 0}
+
+# Envelope values at or below this many N*m are treated as a zero envelope when
+# detecting corner/cliff cells (stored rows of such nodes carry no information).
+_ENVELOPE_ZERO_TOLERANCE = 1.0e-6
 
 
 @dataclass(frozen=True, slots=True)
@@ -396,7 +436,7 @@ def _envelope_cliff_cell(mapping, vi, si):
 
     for array in (mapping.drive_torque, mapping.regen_torque):
         block = array[vi:vi + 2, si:si + 2]
-        if block.min() <= 0.0 < block.max():
+        if block.min() <= _ENVELOPE_ZERO_TOLERANCE < block.max():
             return True
     return False
 
@@ -460,6 +500,7 @@ def _exact_fallback(parameters, motor_speed, shaft_torque, bus_voltage):
 
 
 def _lut_forward(parameters, motor_speed, shaft_torque, bus_voltage):
+    bus_voltage = limit_bus_voltage(parameters, bus_voltage)
     mapping = parameters.operating_map
     if mapping is None:
         return _exact_fallback(parameters, motor_speed, shaft_torque, bus_voltage)
@@ -475,7 +516,7 @@ def _lut_forward(parameters, motor_speed, shaft_torque, bus_voltage):
         load = 0.0
     else:
         envelope = drive if shaft_torque > 0.0 else regen
-        if envelope <= 0.0:
+        if envelope <= _ENVELOPE_ZERO_TOLERANCE:
             return _exact_fallback(parameters, motor_speed, shaft_torque, bus_voltage)
         load = (
             shaft_torque / drive
@@ -552,6 +593,7 @@ def _exact_limit(parameters, speed, voltage, regen=False):
     be served to a differently compiled motor.
     """
 
+    voltage = limit_bus_voltage(parameters, voltage)
     mapping = parameters.operating_map
     if mapping is None:
         return _exact_limit_uncached(parameters, speed, voltage, regen)
@@ -583,6 +625,7 @@ def voltage_scaled_envelope(parameters, speed, voltage):
     speed passes the end of the map.
     """
 
+    voltage = limit_bus_voltage(parameters, voltage)
     return maximum_motor_torque(parameters, max(0.0, speed), voltage / _SQRT_THREE)
 
 
@@ -622,6 +665,7 @@ def lut_bus_power_range(parameters, motor_speed_rpm, bus_voltage):
     mapping = parameters.operating_map
     if mapping is None:
         return None
+    bus_voltage = limit_bus_voltage(parameters, bus_voltage)
     if not (
         mapping.voltage[0] <= bus_voltage <= mapping.voltage[-1]
         and mapping.speed[0] <= motor_speed_rpm <= mapping.speed[-1]
@@ -635,6 +679,7 @@ def lut_bus_power_range(parameters, motor_speed_rpm, bus_voltage):
 
 
 def motor_torque_limits(parameters, motor_speed_rpm, bus_voltage):
+    bus_voltage = limit_bus_voltage(parameters, bus_voltage)
     mapping = parameters.operating_map
     # The boundary tolerance accepts a query a few ulps outside the axis.  The
     # assembled motor speed lands exactly on 18,600 rpm, which is simultaneously
@@ -648,6 +693,7 @@ def motor_torque_limits(parameters, motor_speed_rpm, bus_voltage):
         and mapping.speed[0] - boundary <= motor_speed_rpm <= mapping.speed[-1] + boundary
     )
     if not in_map:
+        _LOOKUP_COUNTERS["limit_fallback"] += 1
         return TorqueLimits(
             _exact_limit(parameters, motor_speed_rpm, bus_voltage),
             _exact_limit(parameters, motor_speed_rpm, bus_voltage, True),
@@ -659,6 +705,7 @@ def motor_torque_limits(parameters, motor_speed_rpm, bus_voltage):
         mapping, clamped_voltage, clamped_speed
     )
     if _envelope_cliff_cell(mapping, vi, si):
+        _LOOKUP_COUNTERS["limit_fallback"] += 1
         return TorqueLimits(
             _exact_limit(parameters, motor_speed_rpm, bus_voltage),
             _exact_limit(parameters, motor_speed_rpm, bus_voltage, True),
@@ -789,6 +836,7 @@ def torque_for_bus_power(parameters, motor_speed_rpm, bus_voltage, target_bus_po
     if direction not in ("drive", "regen"):
         raise ValueError("direction must be 'drive' or 'regen'")
     mapping = parameters.operating_map
+    bus_voltage = limit_bus_voltage(parameters, bus_voltage)
     in_map = (
         mapping is not None
         and mapping.voltage[0] <= bus_voltage <= mapping.voltage[-1]
@@ -800,8 +848,8 @@ def torque_for_bus_power(parameters, motor_speed_rpm, bus_voltage, target_bus_po
     drive, regen, vi, si, vf, sf = _interpolated_envelopes(
         mapping, bus_voltage, motor_speed_rpm
     )
-    if _envelope_cliff_cell(mapping, vi, si) or (direction == "drive" and drive <= 0.0) or (
-        direction == "regen" and regen <= 0.0
+    if _envelope_cliff_cell(mapping, vi, si) or (direction == "drive" and drive <= _ENVELOPE_ZERO_TOLERANCE) or (
+        direction == "regen" and regen <= _ENVELOPE_ZERO_TOLERANCE
     ):
         _LOOKUP_COUNTERS["inverse"] += 1
         return _inverse_fallback(
@@ -941,6 +989,7 @@ _UNITS = {
     "unit_power_limit": "W",
     "inverter_efficiency": "1",
     "device_drop": "V",
+    "maximum_bus_voltage": "V",
 }
 
 
@@ -954,6 +1003,8 @@ def _compile_motor_source(model: Model, operating_map=None) -> PowerPlantParamet
             raise ValueError(f"{name} must be positive")
     if not 0.0 < values["inverter_efficiency"] <= 1.0:
         raise ValueError("inverter_efficiency must be from zero to one")
+    if not math.isfinite(values["maximum_bus_voltage"]) or values["maximum_bus_voltage"] <= 0.0:
+        raise ValueError("maximum_bus_voltage must be positive and finite")
     parameters = _parameter_file()
     if parameters["resistance"] <= 0.0:
         raise ValueError("motor resistance must be positive")
@@ -970,6 +1021,7 @@ def _compile_motor_source(model: Model, operating_map=None) -> PowerPlantParamet
         tuple(float(row[2]) for row in loss_map), float(reference[0]), float(reference[2]),
         float(reference[3]), float(reference[4]), float(reference[5]),
         math.hypot(float(reference[4]), float(reference[5])), operating_map,
+        values["maximum_bus_voltage"],
     )
 
 

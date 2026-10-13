@@ -5,6 +5,7 @@
     <parameter name="unit_power_limit" value="20000" unit="W"/>
     <parameter name="inverter_efficiency" value="0.95" unit="1"/>
     <parameter name="device_drop" value="0" unit="V"/>
+    <parameter name="maximum_bus_voltage" value="600" unit="V"/>
   </parameters>
-  <data role="operating-map" path="../data/amk_dd5_100c_operating_map.npz" format="npz" sha256="0fe463ea9f8c74a7b29aa2f7ebdb17aa8b376d9a38dfcd9dd4dee4723ee1eeb9"/>
+  <data role="operating-map" path="../data/amk_dd5_100c_operating_map.npz" format="npz" sha256="166bf1346d263267224f77fe7396ab15180e0c2f54391652fee28f8575fcfc5b"/>
 </model>

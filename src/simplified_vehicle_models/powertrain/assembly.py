@@ -28,7 +28,7 @@ from simplified_vehicle_models.powertrain.power_plant import (
     evaluate_motor,
     evaluate_shaft_power,
     lut_bus_power_range,
-    maximum_motor_torque,
+    voltage_scaled_envelope,
     motor_torque_limits,
     torque_for_bus_power,
 )
@@ -194,7 +194,7 @@ def compile_powertrain_drivetrain(model: Model) -> DrivetrainParameters:
         )
     state = StorageState(powertrain.energy_storage.initial_state_of_charge)
     limits = evaluate_storage(powertrain.energy_storage, state)
-    torque = maximum_motor_torque(motor, 1.0, limits.bus_voltage / math.sqrt(3.0))
+    torque = voltage_scaled_envelope(motor, 1.0, limits.bus_voltage)
     return FullDrivetrainRuntime(
         motor_count=motor.unit_count,
         gear_ratio=transmission.gear_ratio,
@@ -302,7 +302,7 @@ def maximum_drive_force(
     tolerance = 1.0e-6
     for iterations in range(1, 3):
         if powertrain.motor_mode == "analytical":
-            envelope = maximum_motor_torque(motor, motor_speed, voltage / math.sqrt(3.0))
+            envelope = voltage_scaled_envelope(motor, motor_speed, voltage)
             upper_result = _motor_operating_point(motor, powertrain.motor_mode, motor_speed, envelope, voltage)
             if upper_result.feasible and upper_result.bus_power <= storage.discharge_power_limit / motor.unit_count:
                 torque, operating = envelope, upper_result
@@ -454,7 +454,7 @@ def maximum_regen_force(
             "motor_speed", 0.0, True, 0,
         )
     if powertrain.motor_mode == "analytical":
-        envelope = maximum_motor_torque(motor, motor_speed, storage.bus_voltage / math.sqrt(3.0))
+        envelope = voltage_scaled_envelope(motor, motor_speed, storage.bus_voltage)
     else:
         envelope = motor_torque_limits(motor, motor_speed, storage.bus_voltage).maximum_regen_torque
     regen_gear_factor = 1.0 / transmission.gear_efficiency

@@ -5,7 +5,7 @@
 | Field | Value |
 |---|---|
 | File | `amk_dd5_100c_operating_map.npz` |
-| SHA-256 | `0fe463ea9f8c74a7b29aa2f7ebdb17aa8b376d9a38dfcd9dd4dee4723ee1eeb9` |
+| SHA-256 | `166bf1346d263267224f77fe7396ab15180e0c2f54391652fee28f8575fcfc5b` |
 | Axes | voltage 25, speed 129, signed normalized load 65 |
 | Arrays | drive_torque (25,129), regen_torque (25,129), bus_power (25,129,65), loss_power (25,129,65), regen_feasible (25,129,65) |
 | Generator | `tools/generate_motor_lut.py`, motor-lut-v3 |

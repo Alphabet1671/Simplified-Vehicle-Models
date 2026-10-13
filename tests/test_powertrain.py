@@ -27,6 +27,8 @@ from simplified_vehicle_models.drivetrain.lumped import compile_lumped_drivetrai
 from simplified_vehicle_models.xml.loader import load_model
 from simplified_vehicle_models.xml.model import DataReference
 from simplified_vehicle_models.powertrain.power_plant import (
+    _envelope_cliff_cell,
+    _exact_limit,
     compile_electric_motor,
     evaluate_shaft_power,
     evaluate_motor,
@@ -91,6 +93,7 @@ class RegenGenerationTests(unittest.TestCase):
         parameters = SimpleNamespace(
             torque_speed=np.array([0.0, 18600.0]),
             torque_values=np.array([20.0, 20.0]),
+            maximum_bus_voltage=600.0,
         )
 
         def evaluate(_parameters, _speed, torque, _voltage):
@@ -288,7 +291,7 @@ class OperatingMapValidationTests(unittest.TestCase):
         loaded = _validate_operating_map(self.data)
         self.assertEqual(loaded.bus_power.shape, (25, 129, 65))
         digest = hashlib.sha256((ROOT / "models/data/amk_dd5_100c_operating_map.npz").read_bytes()).hexdigest()
-        self.assertEqual(digest, "0fe463ea9f8c74a7b29aa2f7ebdb17aa8b376d9a38dfcd9dd4dee4723ee1eeb9")
+        self.assertEqual(digest, "166bf1346d263267224f77fe7396ab15180e0c2f54391652fee28f8575fcfc5b")
 
 
 class VoltageScaledEnvelopeTests(unittest.TestCase):
@@ -308,22 +311,171 @@ class VoltageScaledEnvelopeTests(unittest.TestCase):
             self.assertEqual(limits.maximum_regen_torque, 0.0, (speed, voltage))
 
     def test_limits_never_exceed_voltage_scaled_cap_including_below_map_floor(self):
-        voltages = list(np.linspace(530.0, 620.0, 31)) + [529.999, 529.0, 517.95, 500.0, 450.0]
+        voltages = list(np.linspace(530.0, 620.0, 31))  # above 600 V the clamp applies + [529.999, 529.0, 517.95, 500.0, 450.0]
         checked = 0
         for voltage in voltages:
             for speed in np.linspace(0.0, 18600.0, 187):
                 cap = voltage_scaled_envelope(self.motor, float(speed), float(voltage))
                 limits = motor_torque_limits(self.motor, float(speed), float(voltage))
                 # Below ~300 rpm the bilinear interpolation of the source
-                # envelope's own breakpoints may overshoot by <= 0.11 Nm; above
-                # that the LUT matches the cap to interpolation round-off.
-                slack = 0.15 if speed < 300.0 else 1.0e-5
+                # envelope's own breakpoints overshoots by at most 0.1359 Nm
+                # (measured on a 0.05 rpm x 1 V grid: 530 V / 88.35 rpm);
+                # above that the LUT matches the cap to interpolation round-off
+                # (measured 1.06e-6 Nm).
+                slack = 0.14 if speed < 300.0 else 1.0e-5
                 if cap == 0.0:
                     slack = 0.0
                 for value in (limits.maximum_drive_torque, limits.maximum_regen_torque):
                     self.assertLessEqual(value, cap + slack, (voltage, speed))
                 checked += 1
         self.assertEqual(checked, len(voltages) * 187)
+
+
+class ClampedEnvelopeAgreementTests(unittest.TestCase):
+    """Two-sided envelope check plus the regulatory bus-voltage clamp."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.path = ROOT / "models/power-plants/amk_dd5_100c.xml"
+        cls.motor = compile_electric_motor(load_model(cls.path))
+
+    def test_drive_limit_matches_exact_limit_two_sided(self):
+        # Measured: <= 0.1152 Nm below 700 rpm (low-speed breakpoint
+        # interpolation), 0.0609 Nm above.  Stated tolerances add a small margin.
+        voltages = list(np.linspace(530.0, 600.0, 15)) + [611.09, 620.0]
+        speeds = list(np.linspace(0.0, 700.0, 57)) + [8.4, 88.35]
+        checked = 0
+        for voltage in voltages:
+            for speed in speeds:
+                limits = motor_torque_limits(self.motor, float(speed), float(voltage))
+                exact = _exact_limit(self.motor, float(speed), float(voltage))
+                if limits.used_fallback:
+                    continue
+                self.assertGreater(limits.maximum_drive_torque, 20.0, (voltage, speed))
+                tolerance = 0.14 if speed < 300.0 else 0.001
+                self.assertAlmostEqual(
+                    limits.maximum_drive_torque, exact, delta=tolerance, msg=(voltage, speed)
+                )
+                checked += 1
+        self.assertGreater(checked, 900)
+        high = [
+            (v, s) for v in np.linspace(530.0, 600.0, 8) for s in np.linspace(700.0, 18000.0, 40)
+        ]
+        for voltage, speed in high:
+            limits = motor_torque_limits(self.motor, float(speed), float(voltage))
+            if limits.used_fallback:
+                continue
+            self.assertAlmostEqual(
+                limits.maximum_drive_torque,
+                _exact_limit(self.motor, float(speed), float(voltage)),
+                delta=0.07, msg=(voltage, speed),
+            )
+
+    def test_no_near_zero_drive_node_below_the_corner(self):
+        mapping = self.motor.operating_map
+        low = mapping.speed <= 17000.0
+        # Before the clamp 26 nodes at 601-620 V, 0-581 rpm held ~1e-10 Nm.
+        self.assertGreater(float(mapping.drive_torque[:, low].min()), 10.0)
+
+    def test_known_former_collapse_probe(self):
+        limits = motor_torque_limits(self.motor, 8.4, 611.09)
+        self.assertGreater(limits.maximum_drive_torque, 21.0)
+
+    def test_cliff_cell_routes_to_fallback_and_is_counted(self):
+        mapping = self.motor.operating_map
+        vi, si = 0, 121
+        self.assertTrue(_envelope_cliff_cell(mapping, vi, si))
+        voltage = float(mapping.voltage[vi] + 0.1)
+        speed = float(mapping.speed[si] + 1.0)
+        reset_motor_lut_counters()
+        limits = motor_torque_limits(self.motor, speed, voltage)
+        self.assertTrue(limits.used_fallback)
+        self.assertEqual(motor_lut_counters()["limit_fallback"], 1)
+        self.assertGreater(motor_lut_counters()["fallback"], 0)
+        reset_motor_lut_counters()
+        evaluate_motor(self.motor, speed, 1.0, voltage)
+        counters = motor_lut_counters()
+        self.assertGreaterEqual(counters["fallback"], 1)
+        self.assertEqual(counters["forward"], 0)
+        reset_motor_lut_counters()
+        result = torque_for_bus_power(self.motor, speed, voltage, 1000.0, "drive")
+        self.assertTrue(result.used_fallback)
+        self.assertEqual(motor_lut_counters()["inverse"], 1)
+
+    def test_above_maximum_bus_voltage_equals_maximum(self):
+        maximum = self.motor.maximum_bus_voltage
+        self.assertEqual(maximum, 600.0)
+        analytical = replace(self.motor, operating_map=None)
+        for motor in (self.motor, analytical):
+            for speed in (0.0, 145.0, 1000.0, 9000.0, 17000.0):
+                for torque in (-10.0, 0.0, 5.0, 15.0):
+                    base = evaluate_shaft_power_exact(motor, speed, torque, maximum)
+                    for voltage in (601.25, 608.688, 650.0):
+                        self.assertEqual(
+                            evaluate_shaft_power_exact(motor, speed, torque, voltage), base
+                        )
+                        self.assertEqual(
+                            evaluate_motor(motor, speed, torque, voltage),
+                            evaluate_motor(motor, speed, torque, maximum),
+                        )
+                self.assertEqual(
+                    voltage_scaled_envelope(motor, speed, 610.0),
+                    voltage_scaled_envelope(motor, speed, maximum),
+                )
+                self.assertEqual(
+                    motor_torque_limits(motor, speed, 610.0),
+                    motor_torque_limits(motor, speed, maximum),
+                )
+        self.assertEqual(
+            torque_for_bus_power(self.motor, 1000.0, 610.0, 5000.0, "drive"),
+            torque_for_bus_power(self.motor, 1000.0, maximum, 5000.0, "drive"),
+        )
+
+    def test_zero_torque_draw_at_pack_ocv_is_small(self):
+        # Before the clamp the zero-torque draw at 608.688 V was 530-21,780 W per
+        # motor.  At or below the 600 V reference it is the loss-map value: at
+        # most 3.6 W was measured at 145 rpm and the loss map gives the same
+        # order everywhere; 50 W is a generous bound, orders below the kW error.
+        analytical = replace(self.motor, operating_map=None)
+        for motor in (self.motor, analytical):
+            for speed in np.linspace(0.0, 1000.0, 21):
+                for evaluator in (evaluate_shaft_power_exact, evaluate_motor):
+                    power = evaluator(motor, float(speed), 0.0, 608.688).bus_power
+                    self.assertLess(abs(power), 50.0, (speed, power))
+
+    def test_maximum_bus_voltage_is_configurable_from_xml(self):
+        text = self.path.read_text()
+        data_path = (self.path.parent / "../data/amk_dd5_100c_operating_map.npz").resolve()
+        text = text.replace('value="600" unit="V"/>', 'value="580" unit="V"/>')
+        text = text.replace("../data/amk_dd5_100c_operating_map.npz", str(data_path))
+        with tempfile.TemporaryDirectory() as folder:
+            xml = Path(folder) / "motor.xml"
+            xml.write_text(text)
+            motor = compile_electric_motor(load_model(xml))
+        self.assertEqual(motor.maximum_bus_voltage, 580.0)
+        self.assertEqual(
+            evaluate_shaft_power_exact(motor, 5000.0, 10.0, 600.0),
+            evaluate_shaft_power_exact(motor, 5000.0, 10.0, 580.0),
+        )
+        self.assertNotEqual(
+            voltage_scaled_envelope(motor, 17000.0, 600.0),
+            voltage_scaled_envelope(self.motor, 17000.0, 600.0),
+        )
+        self.assertEqual(
+            motor_torque_limits(motor, 5000.0, 600.0),
+            motor_torque_limits(motor, 5000.0, 580.0),
+        )
+
+    def test_invalid_maximum_bus_voltage_is_rejected(self):
+        text = self.path.read_text()
+        data_path = (self.path.parent / "../data/amk_dd5_100c_operating_map.npz").resolve()
+        text = text.replace("../data/amk_dd5_100c_operating_map.npz", str(data_path))
+        for bad in ("0", "-5", "nan", "inf"):
+            with tempfile.TemporaryDirectory() as folder:
+                xml = Path(folder) / "motor.xml"
+                xml.write_text(text.replace('value="600" unit="V"/>', f'value="{bad}" unit="V"/>'))
+                with self.assertRaises(ValueError, msg=bad):
+                    compile_electric_motor(load_model(xml))
 
 
 class MotorLutQueryTests(unittest.TestCase):

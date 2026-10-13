@@ -19,7 +19,7 @@ from simplified_vehicle_models.powertrain.power_plant import (  # noqa: E402
 )
 from simplified_vehicle_models.xml.loader import load_model  # noqa: E402
 
-GENERATOR_VERSION = "motor-lut-v3"
+GENERATOR_VERSION = "motor-lut-v4"
 
 # Default grid resolution.  These values are also the documented canonical
 # command in ``models/data/provenance.md``; changing them changes the artifact
@@ -179,12 +179,20 @@ def validate_grid(voltage_points: int, speed_points: int, load_points: int) -> N
 
 def generate(path, voltage_points=DEFAULT_VOLTAGE_POINTS,
              speed_points=DEFAULT_SPEED_POINTS, load_points=DEFAULT_LOAD_POINTS,
-             xml_path=None, voltage_min=448.848, voltage_max=608.688) -> str:
+             xml_path=None, voltage_min=530.0, voltage_max=600.0) -> str:
     """Generate the canonical map and return its SHA-256 digest."""
     validate_grid(voltage_points, speed_points, load_points)
     path = Path(path)
     xml_path = Path(xml_path) if xml_path is not None else _ROOT / "models" / "power-plants" / "amk_dd5_100c.xml"
     parameters = compile_analytical_motor_source(load_model(xml_path))
+    if voltage_max > parameters.maximum_bus_voltage:
+        # Voltages above the regulatory limit are never evaluated (the clamp in
+        # ``limit_bus_voltage`` maps them to the limit), so such nodes would
+        # only duplicate the last node.
+        raise ValueError(
+            f"voltage_max {voltage_max} exceeds maximum_bus_voltage "
+            f"{parameters.maximum_bus_voltage}"
+        )
     source_digests = {str(source): _sha256(source) for source in _source_paths(xml_path)}
     voltage = np.linspace(voltage_min, voltage_max, voltage_points, dtype=np.float64)
     speed = np.linspace(0.0, 18600.0, speed_points, dtype=np.float64)
@@ -292,12 +300,12 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"signed normalized-load samples, must be odd (default: {DEFAULT_LOAD_POINTS})",
     )
     parser.add_argument(
-        "--voltage-min", type=float, default=448.848,
-        help="minimum bus-voltage axis value (default: 448.848)",
+        "--voltage-min", type=float, default=530.0,
+        help="minimum bus-voltage axis value (default: 530.0)",
     )
     parser.add_argument(
-        "--voltage-max", type=float, default=608.688,
-        help="maximum bus-voltage axis value (default: 608.688)",
+        "--voltage-max", type=float, default=600.0,
+        help="maximum bus-voltage axis value (default: 600.0)",
     )
     return parser
 

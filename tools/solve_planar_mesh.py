@@ -41,6 +41,9 @@ def main() -> None:
     parser.add_argument("--iterations", type=int, default=12000)
     parser.add_argument("--output", type=Path, default=Path("/tmp/planar-mesh"))
     parser.add_argument("--exact-hessian", action="store_true")
+    parser.add_argument("--equilibrium-seed", action="store_true",
+                        help="start from a balanced low-speed turning trajectory")
+    parser.add_argument("--equilibrium-speed", type=float, default=8.0)
     parser.add_argument("--projection", action="store_true",
                         help="experimentally project node algebraics before IPOPT")
     parser.add_argument("--scaling", action="store_true",
@@ -70,11 +73,16 @@ def main() -> None:
                         "pass --resume-same-mesh"
                     )
             previous = {key: saved[key] for key in ("distance", "state", "control", "algebraic")}
+            for key in ("lam_x", "lam_g"):
+                if key in saved.files:
+                    previous[key] = saved[key]
     for spacing in args.spacings:
         options = PlanarOcpOptions(
             mesh_spacing=spacing,
             maximum_iterations=args.iterations,
             exact_hessian=args.exact_hessian,
+            equilibrium_seed=args.equilibrium_seed,
+            equilibrium_speed=args.equilibrium_speed,
             project_initial_guess=args.projection,
             scale_constraints=args.scaling,
             warm_start=False,
@@ -84,9 +92,14 @@ def main() -> None:
         duration = time.monotonic() - start
         reference = track.path_coordinates
         assert reference is not None
-        curvature = _build_path_data(track, spacing)["curvature"]
+        sampled_path = _build_path_data(track, spacing)
+        curvature = sampled_path["curvature"]
         interpolated = np.interp(reference.distance, result.distance, curvature)
         mismatch = float(np.max(np.abs(reference.curvature - interpolated)))
+        heading_closure_error = abs(float(
+            np.trapezoid(curvature, result.distance)
+            - (sampled_path["heading"][-1] - sampled_path["heading"][0])
+        ))
         # Re-evaluate feasible nodes independently with the NumPy seven-DOF
         # dynamics (which runs its own quasi-static vertical-load iteration).
         replay_load_error = 0.0
@@ -114,6 +127,11 @@ def main() -> None:
         report = {
             "spacing_m": spacing,
             "nodes": result.node_count,
+            "project_initial_guess": options.project_initial_guess,
+            "scale_constraints": options.scale_constraints,
+            "exact_hessian": options.exact_hessian,
+            "maximum_allowed_pedal_overlap": options.maximum_throttle_brake_overlap,
+            "equilibrium_seed": options.equilibrium_seed,
             "lap_time_s": result.lap_time,
             "status": result.status,
             "verified": bool(result.converged and replay_valid),
@@ -123,6 +141,7 @@ def main() -> None:
             "maximum_dynamics_residual": result.maximum_dynamics_residual,
             "maximum_inequality_violation": result.maximum_inequality_violation,
             "maximum_power_mismatch_w": result.maximum_power_mismatch,
+            "maximum_simultaneous_pedals": result.maximum_control_overlap,
             "periodicity_residual": result.periodicity_residual,
             "seam_control_jump": float(max(
                 abs(result.throttle[-1] - result.throttle[0]),
@@ -133,12 +152,17 @@ def main() -> None:
                 result.wheel_speeds[:, -1] - result.wheel_speeds[:, 0]
             ))),
             "maximum_curvature_interpolation_error_per_m": mismatch,
+            "heading_curvature_closure_error_rad": heading_closure_error,
             "minimum_speed_m_per_s": float(np.min(result.speed)),
             "final_soc": float(result.state_of_charge[-1]),
             "numpy_load_replay_error_n": replay_load_error,
             "numpy_wheel_balance_error_nm": replay_wheel_balance,
             "numpy_load_failures": replay_failures,
-            "lap_trustworthy": bool(result.converged and replay_valid and mismatch < 0.003),
+            "lap_trustworthy": bool(
+                result.converged and replay_valid and mismatch < 0.003
+                and heading_closure_error < 0.01
+                and result.maximum_control_overlap <= options.maximum_throttle_brake_overlap + 1e-6
+            ),
         }
         print(json.dumps(report, indent=2), flush=True)
         filename = args.output / f"mesh-{spacing:g}m"

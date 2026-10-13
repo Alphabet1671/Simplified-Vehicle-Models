@@ -30,6 +30,7 @@ except ImportError:  # pragma: no cover - depends on the host
 
 if HAS_CASADI:
     from simplified_vehicle_models.solvers import planar_ocp
+    from simplified_vehicle_models.solvers.planar_equilibrium import equilibrium_start
     from simplified_vehicle_models.solvers.planar_symbolic import symbolic_tire
 
 
@@ -212,6 +213,19 @@ class SymbolicResidualTests(unittest.TestCase):
         self.assertLess(float(np.max(np.abs(after[:8]))), 1e-4)
         self.assertLess(float(abs(after[8])), 1e-5)
 
+    def test_one_metre_curvature_resolves_the_closed_heading(self) -> None:
+        track = load_track(TRACK_PATH)
+        coarse = planar_ocp._build_path_data(track, 20.0)
+        fine = planar_ocp._build_path_data(track, 1.0)
+
+        def winding_error(path):
+            heading_change = float(path["heading"][-1] - path["heading"][0])
+            return abs(float(np.trapezoid(path["curvature"], path["distance"]))
+                       - heading_change)
+
+        self.assertGreater(winding_error(coarse), 4.0)
+        self.assertLess(winding_error(fine), 0.01)
+
     def test_motor_speed_limit_is_exposed(self) -> None:
         vehicle = self.vehicle
         state = np.array([0.0, 0.0, 40.0, 0.0, 0.0,
@@ -221,6 +235,66 @@ class SymbolicResidualTests(unittest.TestCase):
         bounds = self.functions.bounds(state, np.zeros(3), algebraic, 0.0)
         self.assertEqual(len(bounds), 8)
         self.assertTrue(np.any(np.asarray(bounds[-1]).ravel() > 0.0))
+
+
+@unittest.skipUnless(HAS_CASADI, "the optimal control needs casadi")
+class EquilibriumSeedTests(unittest.TestCase):
+    """Check the balanced low-speed seed used to start a fine mesh."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.vehicle = compile_formulation(FORMULATION_PATH).model
+        cls.track = load_track(TRACK_PATH)
+        cls.spacing = 10.0
+        cls.path = planar_ocp._build_path_data(cls.track, cls.spacing)
+        peak = (
+            cls.vehicle.motor.peak_motor_torque
+            * cls.vehicle.motor.gear_ratio
+            * cls.vehicle.motor.motor_efficiency
+        )
+        cls.functions = planar_ocp._build_node_functions(
+            planar_ocp._require_casadi(),
+            cls.vehicle,
+            4.0 * peak,
+            np.asarray(planar_ocp._brake_torque_magnitudes(cls.vehicle)),
+        )
+        cls.seed = equilibrium_start(cls.vehicle, cls.path, cls.functions, 10.0)
+
+    def test_every_node_satisfies_the_algebraic_equations(self) -> None:
+        worst = 0.0
+        for index, curvature in enumerate(self.path["curvature"]):
+            residual = np.asarray(
+                self.functions.algebraic(
+                    self.seed["state"][:, index],
+                    self.seed["control"][:, index],
+                    self.seed["algebraic"][:, index],
+                    curvature,
+                )
+            ).ravel()
+            worst = max(worst, float(np.max(np.abs(residual))))
+
+        self.assertLess(worst, 1.0e-6)
+
+    def test_the_heading_error_stays_inside_the_bound(self) -> None:
+        heading = np.abs(self.seed["state"][1])
+        options = planar_ocp.PlanarOcpOptions()
+
+        self.assertLess(float(np.max(heading)), options.maximum_heading_error)
+        # The tightest corner needs real sideslip, so the old 0.05 rad bound
+        # would have excluded a balanced centred turn.
+        self.assertGreater(float(np.max(heading)), 0.05)
+
+    def test_the_seed_drives_and_stays_inside_the_motor_limits(self) -> None:
+        bound = (
+            self.vehicle.motor.maximum_motor_speed / self.vehicle.motor.gear_ratio
+        )
+
+        self.assertTrue(np.all(self.seed["control"][0] > 0.0))
+        self.assertLess(float(np.max(self.seed["algebraic"][4:8])), bound)
+
+    def test_a_speed_beyond_the_friction_limit_is_rejected(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "balanced equilibrium"):
+            equilibrium_start(self.vehicle, self.path, self.functions, 14.0)
 
 
 @unittest.skipUnless(HAS_CASADI, "the optimal control needs casadi")
@@ -314,6 +388,16 @@ class OptimalControlTests(unittest.TestCase):
         self.assertLessEqual(
             float(np.max(self.result.brake)), self.options.maximum_brake + 1.0e-9
         )
+        self.assertAlmostEqual(
+            self.result.maximum_control_overlap,
+            float(np.max(self.result.throttle * self.result.brake)),
+            places=10,
+        )
+        if self.result.converged:
+            self.assertLessEqual(
+                self.result.maximum_control_overlap,
+                self.options.maximum_throttle_brake_overlap + 1.0e-6,
+            )
 
     def test_the_tire_loads_stay_compressive(self) -> None:
         self.assertGreaterEqual(float(np.min(self.result.normal_loads)), 0.0)

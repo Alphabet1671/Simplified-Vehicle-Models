@@ -103,13 +103,15 @@ class PlanarOcpOptions:
     #: Greatest lateral deviation from the path in metres.
     maximum_lateral_error: float = 0.05
     #: Greatest heading error against the tangent in radians.
-    maximum_heading_error: float = 0.05
+    maximum_heading_error: float = 0.20
     #: Smallest allowed progress speed in metres per second.
     minimum_progress_speed: float = 2.0
     #: Greatest steering angle in radians. ``None`` uses the vehicle limit.
     maximum_steering: float | None = None
     #: Greatest brake pedal fraction.
     maximum_brake: float = 1.0
+    #: Bound simultaneous throttle/brake to forbid artificial torque vectoring.
+    maximum_throttle_brake_overlap: float = 1.0e-3
     #: Greatest yaw rate in radians per second. The value only keeps the
     #: solver out of a physically impossible region; it is not a model limit.
     maximum_yaw_rate: float = 8.0
@@ -119,6 +121,9 @@ class PlanarOcpOptions:
     initial_speed: float = 15.0
     #: Initial guess throttle fraction.
     initial_throttle: float = 0.3
+    #: Build a low-speed algebraically exact steady-turn starting trajectory.
+    equilibrium_seed: bool = False
+    equilibrium_speed: float = 8.0
     #: Solver iteration limit. A coarse mesh needs several thousand, because
     #: the vertical load and the wheel balance converge slowly.
     maximum_iterations: int = 9000
@@ -175,8 +180,23 @@ class PlanarOcpResult:
     maximum_dynamics_residual: float
     maximum_inequality_violation: float
     maximum_power_mismatch: float
+    maximum_control_overlap: float
     maximum_lateral_error: float
     iterations: int
+    #: IPOPT multipliers for an exact same-mesh primal/dual restart.
+    lam_x: FloatArray | None = None
+    lam_g: FloatArray | None = None
+
+    @property
+    def maximum_algebraic_residual(self) -> float:
+        """Return the largest load, wheel or electrical-power equality error.
+
+        ``maximum_load_residual`` is retained as the older field name.
+        The components have different SI units, so inspect the separated
+        ``maximum_power_mismatch`` when evaluating electrical accuracy.
+        """
+
+        return self.maximum_load_residual
 
     @property
     def node_count(self) -> int:
@@ -690,6 +710,8 @@ def _as_start(result: PlanarOcpResult) -> dict[str, np.ndarray]:
         "algebraic": np.vstack(
             (result.normal_loads, result.wheel_speeds, result.pack_current)
         ),
+        **({"lam_x": result.lam_x, "lam_g": result.lam_g}
+           if result.lam_x is not None and result.lam_g is not None else {}),
     }
 
 
@@ -942,6 +964,8 @@ def _solve(
         # Keep the path parametrization from folding over.
         add(1.0 - curvature[index] * state[0, index], 0.5, np.inf)
         add(control[1, index] * brake_magnitude, 0.0, np.inf)
+        add(control[0, index] * control[1, index],
+            -np.inf, options.maximum_throttle_brake_overlap)
 
     # The mechanical states repeat after one lap.
     add(
@@ -1023,7 +1047,11 @@ def _solve(
     initial_state_lower[STATE_COUNT - 1] = 0.0
     initial_state_upper[STATE_COUNT - 1] = 0.0
 
-    guess = _initial_guess(path, vehicle, options)
+    if options.equilibrium_seed and start is None:
+        from simplified_vehicle_models.solvers.planar_equilibrium import equilibrium_start
+        guess = equilibrium_start(vehicle, path, functions, options.equilibrium_speed)
+    else:
+        guess = _initial_guess(path, vehicle, options)
     if start is not None:
         resampled = _interpolate_start(start, path["distance"])
         guess["state"] = resampled["state"]
@@ -1037,7 +1065,22 @@ def _solve(
             guess["state"][2] = speed
             guess["state"][4] = speed * curvature
             guess["control"][2] = np.arctan(vehicle.wheelbase * curvature)
-    if options.project_initial_guess:
+    # Make a restarted point respect the driver's no-two-pedals policy. The
+    # old unconstrained OCP exploited this to create a hidden axle yaw input.
+    requested = guess["control"]
+    overlap = options.maximum_throttle_brake_overlap
+    if not np.isfinite(overlap) or overlap < 0.0:
+        raise ValueError("maximum_throttle_brake_overlap must be nonnegative and finite")
+    drive_dominant = requested[0] >= requested[1]
+    requested[1, drive_dominant] = np.minimum(
+        requested[1, drive_dominant],
+        overlap / np.maximum(requested[0, drive_dominant], 1.0e-12),
+    )
+    requested[0, ~drive_dominant] = np.minimum(
+        requested[0, ~drive_dominant],
+        overlap / np.maximum(requested[1, ~drive_dominant], 1.0e-12),
+    )
+    if options.project_initial_guess and not (options.equilibrium_seed and start is None):
         guess = _project_start(guess, vehicle, path, functions)
     guess_vector = np.concatenate(
         [
@@ -1047,6 +1090,15 @@ def _solve(
         ]
     )
     guess_vector = np.clip(guess_vector, lower_vector, upper_vector)
+    same_mesh = start is not None and np.array_equal(
+        np.asarray(start["distance"]), path["distance"]
+    )
+    warm_duals = bool(
+        same_mesh and start is not None
+        and "lam_x" in start and "lam_g" in start
+        and np.size(start["lam_x"]) == decision.numel()
+        and np.size(start["lam_g"]) == len(lower)
+    )
 
     nlp = {
         "x": decision,
@@ -1065,6 +1117,9 @@ def _solve(
             "ipopt.acceptable_tol": max(options.tolerance * 10.0, 1.0e-6),
             "ipopt.acceptable_iter": 15,
             "ipopt.mu_strategy": "adaptive",
+            "ipopt.warm_start_init_point": "yes" if warm_duals else "no",
+            "ipopt.warm_start_bound_push": 1.0e-8,
+            "ipopt.warm_start_mult_bound_push": 1.0e-8,
             "ipopt.hessian_approximation": (
                 "exact" if options.exact_hessian else "limited-memory"
             ),
@@ -1076,6 +1131,8 @@ def _solve(
         ubx=initial_state_upper,
         lbg=np.asarray(lower),
         ubg=np.asarray(upper),
+        **({"lam_x0": start["lam_x"], "lam_g0": start["lam_g"]}
+           if warm_duals and start is not None else {}),
     )
     status = solver.stats()["return_status"]
     converged = "Solve_Succeeded" in status or (
@@ -1105,6 +1162,9 @@ def _solve(
         converged,
         int(solver.stats().get("iter_count", 0)),
         options.minimum_progress_speed,
+        options.maximum_throttle_brake_overlap,
+        np.asarray(solution["lam_x"]).ravel(),
+        np.asarray(solution["lam_g"]).ravel(),
     )
 
 
@@ -1119,6 +1179,9 @@ def _build_result(
     converged: bool,
     iterations: int,
     minimum_progress_speed: float,
+    maximum_control_overlap: float,
+    lam_x: FloatArray,
+    lam_g: FloatArray,
 ) -> PlanarOcpResult:
     """Evaluate the physics at the solution and pack the result."""
 
@@ -1165,7 +1228,8 @@ def _build_result(
             [vehicle.storage.series_count * vehicle.storage.minimum_cell_voltage
              - float(terminal),
              minimum_progress_speed - float(progress),
-             0.5 - (1.0 - curvature[index] * state[0, index])],
+             0.5 - (1.0 - curvature[index] * state[0, index]),
+             control[0, index] * control[1, index] - maximum_control_overlap],
         ))
         worst_inequality = max(worst_inequality, float(np.max(inequalities)))
         wheel_torque[:, index] = (
@@ -1221,6 +1285,9 @@ def _build_result(
         maximum_dynamics_residual=worst_dynamics,
         maximum_inequality_violation=max(0.0, worst_inequality),
         maximum_power_mismatch=worst_power,
+        maximum_control_overlap=float(np.max(control[0] * control[1])),
         maximum_lateral_error=float(np.max(np.abs(state[0]))),
         iterations=iterations,
+        lam_x=lam_x,
+        lam_g=lam_g,
     )

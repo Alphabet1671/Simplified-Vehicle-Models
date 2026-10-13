@@ -1,5 +1,15 @@
 # Planar optimal control
 
+> **Correction (fine-mesh investigation):** The earlier 36.294 s result and
+> coarse-to-fine table below are **historical, not validated lap times**. The
+> previous formulation omitted the motor-to-pack power equality and divided
+> battery charge by time rather than distance; its load transfer used body
+> velocity derivatives instead of inertial acceleration. Result construction
+> also attempted to unpack vector outputs into scalars, so a returned lap
+> from that source revision could not have passed the current result path.
+> All numerical results below must be rerun with the corrected physics. See
+> the final section for the new, independently checked experiments.
+
 ## What this solves
 
 `solvers/planar_ocp.py` solves a minimum-time hot lap of the planar vehicle on
@@ -93,9 +103,12 @@ rear wheels as well. The error was invisible at zero steering and grew with
 steering: 5.6 N at 3 degrees, 41 N at 12 degrees. The rotation now uses one
 angle per wheel.
 
-### A converged solve
+### Historical IPOPT status — invalid physics
 
-At a 20 m mesh with a 9000 iteration limit, IPOPT returns `Solve_Succeeded`:
+Before the power/current and load-transfer corrections, a 20 m mesh with a
+9000-iteration limit *reported* `Solve_Succeeded`. This status must not be
+used as a physical validation, and the result-construction code in that
+revision could not have produced a complete result object:
 
 | Quantity | Value |
 |---|---|
@@ -104,9 +117,10 @@ At a 20 m mesh with a 9000 iteration limit, IPOPT returns `Solve_Succeeded`:
 | Periodicity residual | 0.0 |
 | Lap time | 36.294 s |
 
-The formulation is therefore consistent and solvable. A 2500 iteration limit is
-**not** enough, which is the trap: the solver stops with a plausible lap time
-and a load residual of 30 N.
+This only measures IPOPT's old, incomplete mathematical system. The corrected
+formulation includes electric conservation, spatial SOC, motor speed, inertial
+load transfer, and independent post-solve feasibility checks. A plausible lap
+time by itself does not demonstrate that those equations hold.
 
 ## The mesh must resolve the track curvature
 
@@ -117,7 +131,8 @@ The path is sampled at the mesh nodes only. A corner about 10 m long that falls
 between two nodes is never seen by the mesh. The optimisation then legitimately
 drives a much faster lap on the **smoothed** path that it was given.
 
-Measured lap time against mesh spacing, all with the same physics:
+Historical pre-correction lap times against mesh spacing; **not feasible
+minimum-time results** under the corrected physical/electrical system:
 
 | Mesh spacing | Nodes | Lap time |
 |---|---|---|
@@ -198,11 +213,15 @@ of Model 3 and Model 4, and only if a library supplies it.
   would benefit from a higher-order collocation.
 - The lateral error bound is a few centimetres, which is a driving-line
   tolerance, not a track-width limit.
-- The pack current carries bounds but no equation, so the driver may draw any
-  current the pack allows. That is deliberate.
-- The steering uses parallel steering, because the Ackermann table is a zero
-  array. A non-zero table would change the two front wheel angles, and the
-  formulation already accepts one angle per wheel.
+- Pack current is now constrained by the four motors' electrical power and
+  the terminal-voltage/current relation at every node. The prior omission
+  made SOC free and invalidated all pre-correction lap times.
+- Steering remains parallel at the front because the placeholder Ackermann
+  table is zero. The OCP uses one common front angle; a nonzero Ackermann
+  table still needs separate front wheel angles in this symbolic formulation.
+- The symbolic brake command scales the full-pedal brake torque linearly.
+  This matches the current constant pedal-ratio placeholder, but a nonconstant
+  pedal-ratio table would need symbolic interpolation and pressure limiting.
 - The motor torque and power bounds are imposed at the peak rating, so the
   thermal duty cycle is not modelled.
 
@@ -220,7 +239,9 @@ PYTHONPATH=src:/tmp/casadi_pkgs python3 -m unittest tests.test_planar_ocp
 
 The obvious next step is to solve a coarse mesh, interpolate the solution onto
 a finer mesh, and solve again. It was implemented as a refinement ladder, and
-it measured **worse than a cold start**:
+it measured **worse than a cold start**. These numbers predate the electrical
+and inertial corrections, so they demonstrate the *refinement strategy*
+failing rather than any valid lap time:
 
 | Target | Start | Iterations | Lap time | Algebraic residual | Status |
 |---|---|---|---|---|---|
@@ -237,14 +258,130 @@ of recovering.
 `warm_start` therefore defaults to **off**. A cold start at 20 m is the only
 configuration that reaches `Solve_Succeeded` here.
 
+## Corrected-physics fine-mesh attempt
+
+The electrical and inertial corrections were not cosmetic:
+
+- The old pack current was an unconstrained decision variable. It could be
+  zero while the four motors drew positive power. The corrected OCP enforces
+  `terminal_voltage * pack_current == sum(motor electrical powers)` at every
+  node. The numerical motor envelope also no longer counts motor efficiency
+  twice when computing bus power.
+- The previous SOC expression was a time derivative inside a distance-domain
+  NLP; it now divides by the path progress speed.
+- Lateral load transfer now uses `sum(Fy)/mass`, not `dv_y/dt`. A car in a
+  steady turn can have zero `dv_y/dt` while still sustaining `r*v_x` lateral
+  acceleration and substantial load transfer.
+- The voltage-scaled motor speed limit is now an explicit per-wheel inequality.
+- A successful IPOPT status is only reported as `converged` when the unscaled
+  load/wheel/power residuals, spatial defects, inequalities, and periodicity
+  all pass explicit post-solve thresholds. A failed solve still retains its
+  traces and measured residuals for diagnosis.
+
+The dense stored path has a maximum curvature of 0.16170 1/m. A uniform 2 m
+mesh samples a peak of 0.16170 1/m with a maximum piecewise-linear curvature
+reconstruction error of **0.00811 1/m**; a 1 m mesh samples 0.16166 1/m with
+**0.00259 1/m**. A 20 m mesh misses the peak (0.12776 1/m) with an error of
+0.2020 1/m.
+
+### The coarse lap hid four radians of turning
+
+The mesh samples the path only at its nodes. Integrating the **sampled**
+curvature and comparing it with the path's actual heading change exposes how
+much turning a mesh loses:
+
+| Mesh | `integral(kappa ds)` | Path heading change | Error |
+|---|---:|---:|---:|
+| 20 m | -1.969 rad | -6.284 rad | **4.315 rad** |
+| 10 m | -6.118 rad | -6.284 rad | 0.166 rad |
+| 2 m | -6.290 rad | -6.284 rad | 0.0056 rad |
+| 1 m | -6.287 rad | -6.284 rad | 0.0033 rad |
+
+A 20 m transcription therefore misses **over four of the lap's 6.28 radians of
+turning**. That is why its lap time looked fast: the vehicle was solving a
+nearly straight track. `_quasi_steady_speed` also caps the seed speed at the
+voltage-scaled motor limit, so it no longer seeds a speed the motor cannot
+reach.
+
+### A balanced low-speed seed
+
+A cold start on a 1 to 2 m mesh does not converge, and projecting the coarse
+solution onto a fine mesh made things worse. `solvers/planar_equilibrium.py`
+instead builds a different kind of start.
+
+At every node it solves eleven local unknowns - body lateral velocity,
+steering, throttle, four vertical loads and four wheel speeds - against eleven
+equations: the four load balances, the four quasi-steady wheel balances, the
+battery power equality, and **zero body-x, body-y and yaw acceleration**. The
+heading cancels the sideslip and the yaw rate follows the path, so the path
+states have zero derivative and the seed is a genuine steady turn.
+
+| Mesh | Nodes | Seed speed | Lap time of the seed | Max algebraic residual |
+|---|---:|---:|---:|---:|
+| 20 m | 52 | 10 m/s | 101.6 s | 4.2e-09 |
+| 10 m | 103 | 10 m/s | 101.6 s | 2.2e-09 |
+| 5 m | 204 | 10 m/s | 101.6 s | 4.4e-09 |
+| 2 m | 509 | 10 m/s | 101.6 s | 9.3e-09 |
+| 1 m | 1018 | 10 m/s | 101.6 s | 1.1e-08 |
+
+The seed is algebraically exact to about 1e-8, so IPOPT starts from a feasible
+mechanical and electrical point. Its remaining spatial defect is not zero -
+curvature, sideslip and yaw rate still change between nodes - so the NLP must
+close that gap before a lap can be trusted.
+
+The seed speed is limited by friction, not by the solver. A 10 m/s turn at the
+tightest 0.146 1/m corner needs 14.6 m/s^2 of lateral acceleration; 12 m/s
+needs 21 m/s^2 and **no balanced equilibrium exists**, so `equilibrium_start`
+raises rather than returning a silently infeasible start.
+
+### The heading-error bound was too tight
+
+The tightest corner needs about **0.095 rad** of sideslip-related heading error
+to hold a balanced centred turn. The original `maximum_heading_error = 0.05`
+therefore **excluded the balanced state at the tightest corners**. It is now
+0.20 rad, which admits the balanced turn while still keeping the car pointed
+along the path. The lateral-error bound stays at 0.05 m.
+
+### Simultaneous throttle and brake was a hidden control
+
+Inspection of an unscaled 1 m iterate found `throttle * brake` reaching
+**0.519**, with 18.6 m of integrated overlap. Pressing both pedals together
+produces a net axle torque that the driver cannot command and that acts as a
+hidden, unmodelled yaw control, because the fixed split makes the front and
+rear torques cancel differently when the inside wheels are light.
+
+The solver now constrains `throttle * brake <= 0.001` at every node, applied to
+the initial guess as well.
+
+### The experiments so far are not convergence results
+
+| Mesh | IPOPT iterations | Approximate lap | Max algebraic residual | Max spatial defect | Status |
+|---|---:|---:|---:|---:|---|
+| 10 m, cold/unscaled | 200 | 42.899 s | 1.73 | 0.00650 | iteration limit |
+| 2 m, cold/unscaled | 1400 | 44.158 s | 0.196 | 0.000324 | iteration limit |
+| 2 m, projected/scaled | 1200 | 90.878 s | 14461 | 2.431 | iteration limit |
+| 1 m, cold/unscaled | 350 | 59.115 s | 1578 | 1.055 | iteration limit |
+| 1 m, dual restart | 1600 | 50.405 s | 1151 | 1.592 | iteration limit |
+| 1 m, cold, exclusive pedals | 2200 | 77.502 s | 21.30 | 1.021 | iteration limit |
+
+The columns mix newtons, newton-metres and watts, so the algebraic residual is
+a screening number only. Every run also reports a separate electrical-power
+mismatch, inequality violation and curvature-closure error in its JSON output.
+Neither algebraic projection nor constraint row scaling helped the cold
+starts; both remain optional and are disabled by default.
+
+`tools/solve_planar_mesh.py` checkpoints every rung and refuses to propagate an
+infeasible intermediate result to a **finer** mesh. It can continue the *same*
+mesh from an iteration-limited checkpoint with `--resume-same-mesh`, and new
+checkpoints store IPOPT primal/dual multipliers for an exact-mesh restart.
+
 ## What to do next
 
-1. Solve a 1 to 2 m mesh cold, or repair the refinement ladder so that the
-   interpolated start is projected back onto the algebraic equations before it
-   is used. The projection is the missing piece: the loads and the wheel speeds
-   are algebraic, so they must be re-solved at the new mesh rather than
-   interpolated.
-2. Raise the iteration limit with the mesh. The 20 m solve needed 5972
-   iterations, so 9000 is not a safe limit at 10 m.
-3. Replace the trapezoid rule with a higher-order collocation once the mesh is
-   fine enough for it to matter.
+1. Run the balanced low-speed seed (`--equilibrium-seed`) at 1 m and 2 m for
+   enough iterations to converge, then confirm the optimum against a 2 m
+   reference before quoting any lap time.
+2. Replace the trapezoid rule with a higher-order collocation once the mesh is
+   fine enough for it to matter; at 1 m the trapezoid error is already smaller
+   than the physical modelling uncertainty.
+3. Add the thermal, regen and pedal-ratio-curve models listed under known
+   limitations before treating the result as a setup tool.

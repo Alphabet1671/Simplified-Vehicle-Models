@@ -20,6 +20,7 @@
 ## File Structure
 
 - Modify `src/simplified_vehicle_models/solvers/planar_ocp.py`: correct OCP equations, path mesh, initialization, solve options, and feasibility reporting.
+- Create `src/simplified_vehicle_models/solvers/planar_equilibrium.py`: optional low-speed, per-curvature simultaneous mechanical and electrical equilibrium seed with a continuous centered path.
 - Modify `tests/test_planar_ocp.py`: regression tests for electrical balance, SOC conversion, speed cap and projected interpolation.
 - Modify `docs/validation/planar-ocp.md`: reproducible mesh study, constraint residuals, caveats.
 - Create `tools/solve_planar_mesh.py`: restartable mesh experiment and compact result trace.

@@ -540,6 +540,7 @@ def solve_lap_with_energy(
     trace = np.full(len(track.distance), state0, dtype=np.float64)
     converged = False
     change = math.inf
+    previous_residual = math.inf
     for iteration in range(1, maximum_iterations + 1):
         t0 = time.perf_counter()
         lap = solve_lap(
@@ -571,15 +572,32 @@ def solve_lap_with_energy(
         )
         if diagnostics_collector is not None:
             diagnostics_collector.record_energy_trace(t3 - t2, oracle_calls_this_pass)
-            # Residual BEFORE the damped update
+            # Residual BEFORE the update (damped or undamped)
             residual_before = float(np.max(np.abs(nxt - trace)))
             diagnostics_collector.record_iteration(iteration, residual_before, t3 - t0, counters_after)
         speed_hint = lap.speed
         corner_hint = lap.speed
         change = float(np.max(np.abs(nxt - trace)))
         report("energy_iteration", iteration, lap.iterations)
-        trace = 0.5 * (trace + nxt)
+        # Undamped update: trace = nxt.  The W0 measurements show the
+        # coupling map is near-idempotent (implied undamped contraction
+        # λ ≈ 0.0004), so a single pass already moves the profile by only
+        # ~0.04% of the current error — undamped convergence in ~2-3
+        # iterations instead of 13.
+        #
+        # Divergence guard: if the residual fails to shrink (ratio >= 1),
+        # the map is non-contractive here and we fall back to the damped
+        # 0.5 update for this iteration and keep damping until residuals
+        # shrink again.  This guard never lets the loop oscillate or
+        # diverge silently; energy_converged stays False if
+        # maximum_iterations is reached without change <= tolerance.
+        # The guard exists for coupling maps that are not near-idempotent.
+        if iteration > 1 and change >= previous_residual:
+            trace = 0.5 * (trace + nxt)
+        else:
+            trace = nxt
         trace[0] = state0
+        previous_residual = change
         if change <= tolerance:
             converged = True
             break

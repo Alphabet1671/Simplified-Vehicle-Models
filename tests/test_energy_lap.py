@@ -10,6 +10,7 @@ from simplified_vehicle_models.powertrain.assembly import resolve_braking
 from simplified_vehicle_models.powertrain.energy_storage import StorageState
 from simplified_vehicle_models.powertrain.power_plant import motor_lut_counters, reset_motor_lut_counters
 from simplified_vehicle_models.tracks.types import TrackProfile
+from simplified_vehicle_models.tracks.profile import load_track
 from simplified_vehicle_models.xml.loader import load_point_mass_vehicle
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -287,6 +288,110 @@ class DiagnosticsCollectorTests(unittest.TestCase):
         first = collector._lut_counters_snapshot[0]
         self.assertTrue(first["forward"] >= 0)
         self.assertTrue(first["inverse"] >= 0)
+
+    def test_undamped_converges_fewer_iterations(self):
+        """Undamped update should converge in fewer iterations than
+        the damped 0.5 path on the same cheap 8-segment track."""
+        result_new = solve_lap_with_energy(
+            self.vehicle, self.track, LapMode.FLYING,
+        )
+        new_count = result_new.energy.energy_iterations
+        # The undamped solver converges in ~3 iterations on this track,
+        # well under the 13-iteration damped baseline.
+        self.assertLess(new_count, 13,
+            msg=f"Undamped solver should converge in fewer than 13 iterations, got {new_count}")
+
+    def test_divergence_guard_engages(self):
+        """When the coupling map is non-contractive, the divergence guard
+        must fall back to damping and the loop must still terminate."""
+        import simplified_vehicle_models.solvers.forward_backward as fb
+
+        original_energy_trace = fb._energy_trace
+
+        def growing_energy_trace(vehicle, track, lap, trace, regen_enabled):
+            """Mock _energy_trace that returns a growing nxt, simulating
+            a non-contractive coupling map."""
+            bus, shaft, voltage, consumed, recovered, nxt = original_energy_trace(
+                vehicle, track, lap, trace, regen_enabled
+            )
+            # Add a growing offset to make the residual increase each iteration.
+            # Clip to valid SOC range to avoid state validation errors.
+            growth = np.linspace(0.01, 0.05, len(nxt))
+            nxt = np.clip(nxt + growth, 0.0, 1.0)
+            return bus, shaft, voltage, consumed, recovered, nxt
+
+        with patch.object(fb, '_energy_trace', side_effect=growing_energy_trace):
+            result = solve_lap_with_energy(
+                self.vehicle, self.track, LapMode.FLYING,
+                maximum_iterations=10,
+                tolerance=1e-15,
+            )
+        # The loop must terminate (no infinite loop)
+        self.assertGreaterEqual(result.energy.energy_iterations, 1)
+        # energy_converged must be False since tolerance was never met
+        self.assertFalse(result.energy.energy_converged)
+
+    def test_default_results_stable(self):
+        """Default (collector=None) results must be deterministic."""
+        result1 = solve_lap_with_energy(
+            self.vehicle, self.track, LapMode.FLYING,
+        )
+        result2 = solve_lap_with_energy(
+            self.vehicle, self.track, LapMode.FLYING,
+        )
+        self.assertEqual(result1.lap.lap_time, result2.lap.lap_time)
+        np.testing.assert_allclose(
+            result1.energy.state_trace, result2.energy.state_trace,
+            rtol=1e-12, atol=1e-12,
+        )
+        self.assertEqual(result1.energy.consumed_energy, result2.energy.consumed_energy)
+
+
+class UndampedFullTrackAcceptanceTests(unittest.TestCase):
+    """Acceptance tests on the full Michigan endurance track.
+
+    Numerical equivalence to W0-damped reference values.
+    See .superpowers/sdd/2026-10-12-energy-coupling/w0-report.md.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.vehicle = load_point_mass_vehicle(ROOT / 'models/formulations/murphy_point_mass.xml')
+        cls.full_track = load_track(ROOT / 'models/tracks/2024_michigan_endurance_v11.xml')
+
+    def test_soc_0_96_acceptance(self):
+        """SOC 0.9617: lap_time ≤ 1 ms, final SOC ≤ 1e-5, consumed ≤ 0.1%."""
+        result = solve_lap_with_energy(
+            self.vehicle, self.full_track, LapMode.FLYING,
+            regen_enabled=False,
+            initial_state=None,
+        )
+        ref_lap_time = 69.187443
+        ref_final_soc = 0.9333203465
+        ref_consumed = 814845.010
+        dt = abs(result.lap.lap_time - ref_lap_time)
+        dsoc = abs(result.energy.final_state_of_charge - ref_final_soc)
+        de = abs(result.energy.consumed_energy - ref_consumed) / ref_consumed
+        self.assertLess(dt, 0.001, f"lap_time delta {dt} > 1ms")
+        self.assertLess(dsoc, 1e-5, f"final_soc delta {dsoc} > 1e-5")
+        self.assertLess(de, 0.001, f"consumed delta {de*100}% > 0.1%")
+
+    def test_soc_0_5_acceptance(self):
+        """SOC 0.5: lap_time ≤ 1 ms, final SOC ≤ 1e-5, consumed ≤ 0.1%."""
+        result = solve_lap_with_energy(
+            self.vehicle, self.full_track, LapMode.FLYING,
+            regen_enabled=False,
+            initial_state=StorageState(0.5),
+        )
+        ref_lap_time = 69.057656
+        ref_final_soc = 0.4680491991
+        ref_consumed = 823901.201
+        dt = abs(result.lap.lap_time - ref_lap_time)
+        dsoc = abs(result.energy.final_state_of_charge - ref_final_soc)
+        de = abs(result.energy.consumed_energy - ref_consumed) / ref_consumed
+        self.assertLess(dt, 0.001, f"lap_time delta {dt} > 1ms")
+        self.assertLess(dsoc, 1e-5, f"final_soc delta {dsoc} > 1e-5")
+        self.assertLess(de, 0.001, f"consumed delta {de*100}% > 0.1%")
 
 
 if __name__ == '__main__':

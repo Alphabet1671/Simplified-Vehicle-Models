@@ -22,10 +22,14 @@ from simplified_vehicle_models.formulations.point_mass import (
 )
 from simplified_vehicle_models.parameters.aero import AeroParameters
 from simplified_vehicle_models.parameters.drivetrain import DrivetrainParameters
-from simplified_vehicle_models.parameters.tire import TireEnvelopeParameters
+from simplified_vehicle_models.parameters.tire import (
+    TireEnvelopeParameters,
+    UniTireSimpleParameters,
+)
 from simplified_vehicle_models.parameters.vehicle import PointMassVehicleParameters
 from simplified_vehicle_models.results.traces import LapMode, LapResult
 from simplified_vehicle_models.solvers.forward_backward import solve_lap
+from simplified_vehicle_models.tires.unitire_simple import evaluate_unitire
 from simplified_vehicle_models.tracks.profile import load_track
 from simplified_vehicle_models.tracks.types import TrackProfile
 from simplified_vehicle_models.xml.loader import load_point_mass_vehicle
@@ -54,11 +58,13 @@ __all__ = [
     "RIGHT_TURN_CURVATURE_SIGN",
     "TireEnvelopeParameters",
     "TrackProfile",
+    "UniTireSimpleParameters",
     "VEHICLE_AXIS_CONVENTION",
     "WHEEL_ORDER",
     "acceleration_limits",
     "compile_formulation",
     "evaluate_equilibrium",
+    "evaluate_unitire",
     "lateral_transfer_loads",
     "load_point_mass_vehicle",
     "load_track",

@@ -12,3 +12,60 @@ class TireEnvelopeParameters:
     load_sensitivity_slope: float
     load_sensitivity_intercept: float
     effective_radius: float
+
+
+@dataclass(frozen=True, slots=True)
+class UniTireSimpleParameters:
+    """Store one fitted simplified steady-state UniTire parameter set.
+
+    The model assumes zero inclination angle.
+    Every polynomial coefficient tuple uses descending power order.
+    Element zero multiplies the highest power of the normalized load.
+    The name of each field matches the MATLAB source field.
+    """
+
+    f_z_rated: float
+    k_cx: float
+    k_cy: float
+    k_x: tuple[float, ...]
+    k_y: tuple[float, ...]
+    e_1: float
+    d_x_0: tuple[float, ...]
+    d_e: tuple[float, ...]
+    d_1: tuple[float, ...]
+    d_2: tuple[float, ...]
+    mu_0_x: float
+    mu_s_x: float
+    h_x: float
+    v_m_x: float
+    mu_0_y: float
+    mu_s_y: float
+    h_y: float
+    v_m_y: float
+    k_11: float
+    k_12: float
+    k_13: float
+    k_21: float
+    k_22: float
+    k_23: float
+    m_x_r_1: float
+    m_x_r_2: float
+    m_x_r_3: float
+    r_1: float
+    r_2: float
+    r_3: float
+    f_y_shift_0: float
+    f_y_shift_fz: float
+    k_rl_0: float
+    k_rl_1: float
+    k_rl_2: float
+    f_rr_0: float
+    f_rr_1: float
+    f_rr_2: float
+    h_rr: float
+    omega_cr: float
+    omega_eps: float
+    vroll_min: float
+    force_eps: float
+    stiff_eps: float
+    slip_eps: float

@@ -20,6 +20,7 @@ from simplified_vehicle_models.core.types import FloatArray
 
 
 TIRE_FORCE_ENVELOPE = "tire-force-envelope"
+STEADY_COMBINED_SLIP = "steady-combined-slip"
 AERO_LOADS = "aero-loads"
 DRIVE_FORCE_LIMIT = "drive-force-limit"
 BRAKE_LIMITS = "brake-limits"
@@ -39,6 +40,23 @@ class TireForceEnvelope(Protocol):
     load_sensitivity_slope: float
     load_sensitivity_intercept: float
     effective_radius: float
+
+
+@runtime_checkable
+class SteadyCombinedSlip(Protocol):
+    """Provide a steady combined-slip tire law with load sensitivity.
+
+    The value holds fitted coefficients and carries no state.
+    Pass the value to the tire evaluation function of its subtype.
+    The envelope capability cannot become this capability.
+    A steady tire cannot invent slip or relaxation behavior.
+    """
+
+    f_z_rated: float
+    k_x: tuple[float, ...]
+    k_y: tuple[float, ...]
+    mu_0_x: float
+    mu_0_y: float
 
 
 @runtime_checkable

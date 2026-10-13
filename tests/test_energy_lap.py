@@ -25,7 +25,10 @@ class EnergyLapTests(unittest.TestCase):
         self.assertEqual(r.energy.bus_power.shape, (len(self.track.segment_length),))
         self.assertEqual(r.energy.shaft_power.shape, (len(self.track.segment_length),))
         self.assertEqual(r.energy.state_trace.shape, (len(self.track.distance),))
-        self.assertAlmostEqual(r.energy.state_trace[0], 1.0)
+        initial_soc = self.vehicle.drivetrain.powertrain.energy_storage.initial_state_of_charge
+        self.assertAlmostEqual(r.energy.state_trace[0], initial_soc)
+        self.assertAlmostEqual(initial_soc, 0.9617234998917527)
+        self.assertLess(initial_soc, 1.0)
         self.assertAlmostEqual(r.energy.final_state_of_charge, r.energy.state_trace[-1])
 
     def test_default_regen_is_disabled_and_shaft_is_mechanical(self):

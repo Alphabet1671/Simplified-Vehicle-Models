@@ -2,16 +2,38 @@
 
 ## Deterministic motor operating map
 
+Current model: approved Fix 1 (`dq-inequality-conservative-v1`). The d-axis
+solve satisfies a voltage inequality, returns zero current with headroom, and
+adds only conservative extra copper loss below the fixed 600 V reference.
+At/above reference, it retains measured map losses. The canonical voltage axis
+remains 530–600 V; the regulatory limit remains 600 V. The regenerated map is
+byte-identical in two runs and has zero drive-envelope reductions.
+
+Scalar NPZ metadata records `model_version`, `source_fingerprint`, and
+`generator_version`. The loader checks model version and a fingerprint of all
+per-motor equation/source-map inputs as well as the XML-declared file digest.
+Regulatory cap and unit count are excluded from the physics fingerprint:
+the former clamps query coordinates and the latter scales per-motor outputs.
+An unchanged 600 V map can therefore serve an 800 V configuration up to its
+axis ceiling, with corrected exact fallback above it; an 800 V LUT is generated
+in regression tests for direct mapped-query validation.
+
+The battery XML now requests `initial_bus_voltage=600 V`, inverted through
+the measured OCV curve to SOC 0.9617234998917527. Full-charge OCV remains
+608.688 V; no source voltage/capacity curve is clipped. The powertrain compiler
+rejects a configured starting OCV above its regulatory voltage limit.
+Historical grid measurements below predate this physics and start-charge fix.
+
 | Field | Value |
 |---|---|
 | File | `amk_dd5_100c_operating_map.npz` |
-| SHA-256 | `166bf1346d263267224f77fe7396ab15180e0c2f54391652fee28f8575fcfc5b` |
+| SHA-256 | `78f5992cd7ab11649540e00cef49e6d2e798fc4ea3d465c4f32928fd0487b2f6` |
 | Axes | voltage 25, speed 129, signed normalized load 65 |
 | Arrays | drive_torque (25,129), regen_torque (25,129), bus_power (25,129,65), loss_power (25,129,65), regen_feasible (25,129,65) |
-| Generator | `tools/generate_motor_lut.py`, motor-lut-v4 |
+| Generator | `tools/generate_motor_lut.py`, motor-lut-v5 |
 | Command | `PYTHONPATH=src /Users/alphabet1671/.dsh/dsh-runtimes/dsh-primary-runtime/dependencies/python/bin/python3 tools/generate_motor_lut.py models/power-plants/amk_dd5_100c.xml models/data/amk_dd5_100c_operating_map.npz --voltage-points 25 --speed-points 129 --load-points 65 --voltage-min 530 --voltage-max 600` |
 | Maximum drive monotonic violation | 0 W (generation fails above 1e-9 W; no repair is applied) |
-| Source digests | XML `e765f9c4424e5a2bba9fe1d512dd1425e810965dd45f3f6171abd52061af8789` (as read at generation time, i.e. with the previous map digest in its `<data>` line; the committed XML, with the new map digest, is `e36e52b296e505fef82dc79ae63716d984955964803911c1bee8e4b6f06f4499`); machine parameters `122fda775bda425b6ec66e895db1017fac662abac476faf9fce508b901349dce`; torque map `1ccf1500764e5c5203919d2968ee6a626a1ba86dc117755f0e0974c00a24798d`; loss map `f79f651c13494373e638929556f9efcdf8220c6558dfdd007b706a8832ec6651`; identification `9078970586f7e0500b302ba70dfa960e23b6364a83d88535fca257f3e5fc5be8` |
+| Source digests | XML `61ef7c7b5e9f2a9b7437cc471289a6ce4922ff03669cec520f7cc13bcb43d5ba` (reproduction with the current declaration; XML digest is printed provenance, not included in the artifact, avoiding a self-referential digest); machine parameters `122fda775bda425b6ec66e895db1017fac662abac476faf9fce508b901349dce`; torque map `1ccf1500764e5c5203919d2968ee6a626a1ba86dc117755f0e0974c00a24798d`; loss map `f79f651c13494373e638929556f9efcdf8220c6558dfdd007b706a8832ec6651`; identification `9078970586f7e0500b302ba70dfa960e23b6364a83d88535fca257f3e5fc5be8` |
 | Grid choice | 25x129x65 is the chosen canonical grid. Task 9 (generator motor-lut-v4): the voltage axis is 530-600 V. `maximum_bus_voltage` (600 V, regulatory DC bus limit, XML parameter of the power plant, distinct from the 600 V motor identification `reference_bus_voltage`) clamps the bus voltage seen by the motor and inverter to `min(terminal, 600)`, so voltages above 600 V are never evaluated and nodes there would only duplicate the 600 V node; the generator refuses `--voltage-max` above `maximum_bus_voltage`. The 530 V floor covers the loaded terminal range (553.20-608.69 V, clamped to 600 V) with margin, as before. The 26 near-zero (~1e-10 Nm) drive nodes of the 530-620 V map (601-620 V, 0-581 rpm) are gone; the SHA-256 changed from `0fe463ea...1eeb9` to `166bf1346d263267224f77fe7396ab15180e0c2f54391652fee28f8575fcfc5b`; two regenerations are byte-identical. Earlier history: voltage axis extended from 448.848-608.688 V to 530-620 V to cover the observed loaded terminal voltage range (553.20-608.69 V) with margin. Refining the grid to 33x257x65 or 41x257x65 changes the assembled lap-time displacement by less than 0.04 ms and the maximum pointwise speed displacement by less than 0.001 m/s, so the finer grids buy no gate margin at 3x-10x the file size. The generator defaults are 9x129x65 for cheap test fixtures; pass `--voltage-points 25 --speed-points 129 --load-points 65` to reproduce the canonical map. Regenerating twice is byte-identical (same SHA-256). Task 8 (generator motor-lut-v3): the drive and regen envelopes are capped at the voltage-scaled map envelope `maximum_motor_torque(V/sqrt(3))` (zero once the scaled speed passes 20,000 rpm), the same cap the analytical path bisects inside; the SHA-256 changed from `31cfadc8...5fe9` to `0fe463ea...1eeb9`. Cells straddling the zero/non-zero cap corner (14 of 3,072) are answered by the exact oracle at run time rather than interpolated. After Task 8 the compare benchmark gives lap delta -0.714 ms and max speed displacement 0.004999 m/s (the figures quoted earlier in this row, +9.797 ms / 0.134642 m/s, are superseded). The voltage-axis extension was justified by the measurement at commit bd861e4: with the 530-620 V axis the LUT mode achieves 4.394 s median wall vs 8.253 s analytical (1.878x speedup) with zero fallback queries (was 360,611 before the extension), both converged, lap delta +9.797 ms (FAIL <=1 ms), max speed displacement 0.134642 m/s (FAIL <=0.05 m/s). |
 | Regen convention | The complete feasible negative-torque curve is retained without sign coercion or truncation. `regen_feasible` marks exactly the productive samples whose analytical bus power is below -1e-9 W; positive bus draw remains in the curve with a false mask. Regen bus power is not assumed monotone. Load zero is the physical zero-torque anchor. |
 

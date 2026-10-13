@@ -7,6 +7,7 @@
     <parameter name="cell_capacity" value="14.146" unit="A*h"/>
     <parameter name="minimum_cell_voltage" value="3.117" unit="V"/>
     <parameter name="maximum_cell_voltage" value="4.227" unit="V"/>
-    <parameter name="initial_state_of_charge" value="1" unit="1"/>
+    <!-- Start at the no-load regulation voltage, not full charge. -->
+    <parameter name="initial_bus_voltage" value="600" unit="V"/>
   </parameters>
 </model>

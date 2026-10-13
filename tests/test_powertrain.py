@@ -121,7 +121,9 @@ class RegenGenerationTests(unittest.TestCase):
                     lambda _parameters, _speed, _voltage: 20.0,
                 ),
             )
-            with patches[0], patches[1], patches[2], patches[3], patches[4]:
+            with patches[0], patches[1], patches[2], patches[3], patches[4], mock.patch.object(
+                generate_motor_lut, "motor_source_fingerprint", return_value="synthetic-fixture"
+            ):
                 generate_motor_lut.generate(
                     output, voltage_points=2, speed_points=2, load_points=5
                 )
@@ -288,11 +290,28 @@ class OperatingMapValidationTests(unittest.TestCase):
         self.assertGreater(int(np.argmin(row)), 0)
         self.assertTrue(np.any(self.data["regen_feasible"][0, 9, :negative]))
 
+    def test_rejects_stale_source_even_when_artifact_digest_is_correct(self):
+        model = load_model(ROOT / "models/power-plants/amk_dd5_100c.xml")
+        altered = replace(model, parameters=dict(model.parameters, device_drop=1.0))
+        with self.assertRaisesRegex(ValueError, "source_fingerprint mismatch"):
+            _load_operating_map(altered)
+
+    def test_rejects_old_model_version_even_with_matching_digest(self):
+        model = load_model(ROOT / "models/power-plants/amk_dd5_100c.xml")
+        data = dict(self.data, model_version=np.asarray("old-boundary-equation"))
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "stale.npz"
+            np.savez_compressed(path, **data)
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            reference = DataReference("operating-map", path, "npz", digest)
+            with self.assertRaisesRegex(ValueError, "model_version mismatch"):
+                _load_operating_map(replace(model, data=(reference,)))
+
     def test_canonical_shape_and_digest(self):
         loaded = _validate_operating_map(self.data)
         self.assertEqual(loaded.bus_power.shape, (25, 129, 65))
         digest = hashlib.sha256((ROOT / "models/data/amk_dd5_100c_operating_map.npz").read_bytes()).hexdigest()
-        self.assertEqual(digest, "166bf1346d263267224f77fe7396ab15180e0c2f54391652fee28f8575fcfc5b")
+        self.assertEqual(digest, "78f5992cd7ab11649540e00cef49e6d2e798fc4ea3d465c4f32928fd0487b2f6")
 
 
 class VoltageScaledEnvelopeTests(unittest.TestCase):
@@ -486,18 +505,8 @@ class ClampedEnvelopeAgreementTests(unittest.TestCase):
             motor_torque_limits(motor, 5000.0, 580.0),
         )
 
-    def test_raising_maximum_bus_voltage_above_600_exposes_known_defect(self):
-        """GUARD: documents the above-reference field-weakening defect.
-
-        Raising ``maximum_bus_voltage`` above the 600 V identification voltage
-        re-exposes a spurious zero-torque bus draw because the smallest-
-        magnitude d-axis root in ``solve_direct_current`` grows with available
-        voltage.  The d-axis root choice must be fixed in
-        ``solve_direct_current`` BEFORE the limit is raised; when it is, this
-        test will fail and must be replaced by a small-draw assertion.
-        Measured with an 800 V limit at a 650 V bus: 129,629 W at 0 rpm and
-        124,919 W at 145 rpm (reviewer saw 580,740 W / 124,919 W).
-        """
+    def test_800v_configuration_has_no_fake_headroom_loss(self):
+        """Higher voltage uses the corrected oracle, including LUT fallback."""
         text = self.path.read_text()
         data_path = (self.path.parent / "../data/amk_dd5_100c_operating_map.npz").resolve()
         text = text.replace('value="600" unit="V"/>', 'value="800" unit="V"/>')
@@ -507,9 +516,13 @@ class ClampedEnvelopeAgreementTests(unittest.TestCase):
             xml.write_text(text)
             motor = compile_electric_motor(load_model(xml))
         self.assertEqual(motor.maximum_bus_voltage, 800.0)
-        for speed in (0.0, 145.0):
-            power = evaluate_shaft_power_exact(motor, speed, 0.0, 650.0).bus_power
-            self.assertGreater(power, 50000.0, speed)  # defect; physical is < 50 W
+        for voltage in (650.0, 800.0):
+            for speed in (0.0, 145.0, 1000.0):
+                for evaluator in (evaluate_shaft_power_exact, evaluate_motor):
+                    result = evaluator(motor, speed, 0.0, voltage)
+                    self.assertTrue(result.feasible)
+                    self.assertLess(result.bus_power, 50.0, (voltage, speed))
+                    self.assertEqual(result.field_weakening_correction, 0.0)
 
     def test_invalid_maximum_bus_voltage_is_rejected(self):
         text = self.path.read_text()
@@ -898,6 +911,21 @@ class PowertrainAssemblyTests(unittest.TestCase):
         self.assertEqual(vehicle.manifest.component("powertrain").subtype, "electric")
         self.assertEqual(vehicle.manifest.component("drivetrain").subtype, "electric-four-wheel")
         self.assertEqual(vehicle.manifest.component("powertrain_drivetrain").subtype, "four-wheel")
+
+    def test_canonical_pack_starts_at_regulation_voltage(self):
+        powertrain = compile_powertrain_assembly(
+            load_model(ROOT / "models/powertrains/murphy_2024.xml")
+        )
+        storage = powertrain.energy_storage
+        voltage = evaluate_storage(storage, StorageState(storage.initial_state_of_charge)).bus_voltage
+        self.assertAlmostEqual(voltage, powertrain.power_plant.maximum_bus_voltage, places=10)
+        self.assertLess(storage.initial_state_of_charge, 1.0)
+        with mock.patch(
+            "simplified_vehicle_models.powertrain.energy_storage.compile_battery_pack",
+            return_value=replace(storage, initial_state_of_charge=1.0),
+        ):
+            with self.assertRaisesRegex(ValueError, "reduce starting charge"):
+                compile_powertrain_assembly(load_model(ROOT / "models/powertrains/murphy_2024.xml"))
 
     def test_nested_assemblies_are_recorded(self):
         vehicle = load_point_mass_vehicle(ROOT / "models/formulations/murphy_point_mass.xml")

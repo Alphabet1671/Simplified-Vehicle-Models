@@ -16,10 +16,12 @@ from simplified_vehicle_models.powertrain.power_plant import (  # noqa: E402
     compile_analytical_motor_source,
     evaluate_shaft_power_exact,
     voltage_scaled_envelope,
+    ANALYTICAL_MODEL_VERSION,
+    motor_source_fingerprint,
 )
 from simplified_vehicle_models.xml.loader import load_model  # noqa: E402
 
-GENERATOR_VERSION = "motor-lut-v4"
+GENERATOR_VERSION = "motor-lut-v5"
 
 # Default grid resolution.  These values are also the documented canonical
 # command in ``models/data/provenance.md``; changing them changes the artifact
@@ -260,7 +262,10 @@ def generate(path, voltage_points=DEFAULT_VOLTAGE_POINTS,
     np.savez_compressed(temporary, voltage=voltage, speed=speed, load=load,
                         drive_torque=drive_torque, regen_torque=regen_torque,
                         bus_power=bus_power, loss_power=loss_power,
-                        regen_feasible=regen_feasible)
+                        regen_feasible=regen_feasible,
+                        model_version=np.asarray(ANALYTICAL_MODEL_VERSION),
+                        source_fingerprint=np.asarray(motor_source_fingerprint(parameters)),
+                        generator_version=np.asarray(GENERATOR_VERSION))
     produced = temporary if temporary.exists() else Path(str(temporary) + ".npz")
     os.replace(produced, path)
     digest = _sha256(path)

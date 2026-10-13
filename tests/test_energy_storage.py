@@ -1,5 +1,6 @@
 import math
 import unittest
+from dataclasses import replace
 
 import numpy as np
 
@@ -20,6 +21,48 @@ class EnergyStorageTests(unittest.TestCase):
         cls.parameters = compile_battery_pack(
             load_model("models/energy-storages/murphy_2024_battery.xml")
         )
+
+    def test_initial_voltage_compiles_to_soc_without_clamping_battery(self):
+        model = load_model("models/energy-storages/murphy_2024_battery.xml")
+        parameters = dict(model.parameters)
+        units = dict(model.units)
+        parameters.pop("initial_state_of_charge", None)
+        units.pop("initial_state_of_charge", None)
+        parameters["initial_bus_voltage"] = 600.0
+        units["initial_bus_voltage"] = "V"
+        pack = compile_battery_pack(replace(model, parameters=parameters, units=units))
+        self.assertLess(pack.initial_state_of_charge, 1.0)
+        self.assertGreater(pack.initial_state_of_charge, 0.9)
+        actual = evaluate_storage(pack, StorageState(pack.initial_state_of_charge))
+        self.assertAlmostEqual(actual.bus_voltage, 600.0, places=10)
+        self.assertGreater(evaluate_storage(pack, StorageState(1.0)).bus_voltage, 600.0)
+
+    def test_initial_voltage_rejects_invalid_and_ambiguous_configuration(self):
+        model = load_model("models/energy-storages/murphy_2024_battery.xml")
+        parameters = dict(model.parameters)
+        units = dict(model.units)
+        parameters.pop("initial_state_of_charge", None)
+        units.pop("initial_state_of_charge", None)
+        units["initial_bus_voltage"] = "V"
+        for invalid in (0.0, 400.0, 800.0, float("nan"), float("inf")):
+            parameters["initial_bus_voltage"] = invalid
+            with self.assertRaises(ValueError):
+                compile_battery_pack(replace(model, parameters=dict(parameters), units=units))
+        parameters.update(initial_bus_voltage=600.0, initial_state_of_charge=1.0)
+        units["initial_state_of_charge"] = "1"
+        with self.assertRaisesRegex(ValueError, "exactly one"):
+            compile_battery_pack(replace(model, parameters=parameters, units=units))
+
+    def test_explicit_soc_initialization_still_supported(self):
+        model = load_model("models/energy-storages/murphy_2024_battery.xml")
+        parameters = dict(model.parameters)
+        units = dict(model.units)
+        parameters.pop("initial_bus_voltage", None)
+        units.pop("initial_bus_voltage", None)
+        parameters["initial_state_of_charge"] = 0.5
+        units["initial_state_of_charge"] = "1"
+        pack = compile_battery_pack(replace(model, parameters=parameters, units=units))
+        self.assertEqual(pack.initial_state_of_charge, 0.5)
 
     def test_descending_curve_is_reversed(self):
         parameters = self.parameters

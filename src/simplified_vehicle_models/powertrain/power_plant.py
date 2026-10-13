@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import json
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import numpy as np
@@ -26,6 +27,27 @@ from simplified_vehicle_models.xml.schema import (
 _ROOT = Path(__file__).resolve().parents[3]
 _DATA = _ROOT / "models" / "data"
 _SQRT_THREE = math.sqrt(3.0)
+ANALYTICAL_MODEL_VERSION = "dq-inequality-conservative-v1"
+
+
+def motor_source_fingerprint(parameters):
+    """Bind persisted tables to the per-motor source physics, not XML layout.
+
+    Regulatory voltage limits only clamp query coordinates; unit_count scales
+    per-motor outputs at assembly level. Neither changes table source values.
+    Excluding these permits a valid 600 V table plus exact higher-voltage
+    fallback in an 800 V configuration, but not stale equations or calibration.
+    """
+    names = (
+        "maximum_motor_speed", "unit_power_limit", "inverter_efficiency",
+        "device_drop", "pole_pairs", "reference_bus_voltage", "resistance",
+        "flux_linkage", "direct_inductance", "quadrature_inductance",
+        "torque_speed", "torque_values", "loss_speed", "loss_torque", "loss_values",
+    )
+    payload = {name: getattr(parameters, name) for name in names}
+    payload["model_version"] = ANALYTICAL_MODEL_VERSION
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True, slots=True)
@@ -209,6 +231,19 @@ def limit_bus_voltage(parameters, bus_voltage):
     return min(bus_voltage, parameters.maximum_bus_voltage)
 
 
+def _available_voltage_unclamped(parameters, bus_voltage, current):
+    """Convert a voltage to phase basis, also used for fixed calibration data.
+
+    Only the reference-map calibration may bypass the regulatory clamp;
+    actual motor bus-voltage callers use ``calculate_available_voltage``.
+    """
+    return (
+        bus_voltage / _SQRT_THREE
+        - parameters.resistance * current
+        - parameters.device_drop
+    )
+
+
 def calculate_available_voltage(parameters, bus_voltage, current):
     """Return available per-phase peak voltage.
 
@@ -216,10 +251,8 @@ def calculate_available_voltage(parameters, bus_voltage, current):
     resistive drop before the direct-axis solve and is refined by that solve.
     """
 
-    return (
-        limit_bus_voltage(parameters, bus_voltage) / _SQRT_THREE
-        - parameters.resistance * current
-        - parameters.device_drop
+    return _available_voltage_unclamped(
+        parameters, limit_bus_voltage(parameters, bus_voltage), current
     )
 
 
@@ -253,7 +286,14 @@ def solve_direct_current(
     quadrature_current,
     available_voltage,
 ):
-    """Solve the d-axis voltage equation and report infeasibility."""
+    """Minimize |id| subject to the dq voltage inequality at fixed iq.
+
+    Voltage headroom needs no d-axis current. When the constraint binds, the
+    nearest endpoint of the feasible quadratic interval is the minimum-|id|
+    solution; this is not a full current-constrained MTPA controller.
+    """
+    if not math.isfinite(available_voltage) or available_voltage < 0.0:
+        return DirectCurrentResult(0.0, False)
 
     electrical_speed = (
         parameters.pole_pairs * 2.0 * math.pi * max(motor_speed, 0.0) / 60.0
@@ -276,16 +316,24 @@ def solve_direct_current(
         + (resistance * quadrature_current + electrical_speed * flux_linkage) ** 2
         - available_voltage**2
     )
+    if c <= 0.0:
+        return DirectCurrentResult(0.0, True)
     if abs(a) < 1.0e-30:
-        return DirectCurrentResult(0.0, c <= 0.0)
-    discriminant = b**2 - 4.0 * a * c
-    if discriminant < 0.0:
         return DirectCurrentResult(0.0, False)
-    roots = (
-        (-b - math.sqrt(discriminant)) / (2.0 * a),
-        (-b + math.sqrt(discriminant)) / (2.0 * a),
-    )
-    return DirectCurrentResult(min(roots, key=abs), True)
+    discriminant = b**2 - 4.0 * a * c
+    tolerance = 32.0 * math.ulp(1.0) * max(b**2, abs(4.0 * a * c), 1.0)
+    if discriminant < -tolerance:
+        return DirectCurrentResult(0.0, False)
+    # Stable quadratic formula avoids cancellation near the id=0 boundary.
+    q = -0.5 * (b + math.copysign(math.sqrt(max(0.0, discriminant)), b))
+    roots = (q / a, c / q) if q else (-b / (2.0 * a),)
+    direct_current = min(roots, key=abs)
+    vd = resistance * direct_current - quadrature_term * quadrature_current
+    vq = resistance * quadrature_current + electrical_speed * flux_linkage + direct_term * direct_current
+    voltage_squared = vd**2 + vq**2
+    residual_tolerance = 64.0 * math.ulp(1.0) * max(voltage_squared, available_voltage**2, 1.0)
+    feasible = voltage_squared <= available_voltage**2 + residual_tolerance
+    return DirectCurrentResult(direct_current, feasible)
 
 
 def evaluate_shaft_power_exact(parameters, motor_speed, motor_torque, bus_voltage):
@@ -318,32 +366,28 @@ def evaluate_shaft_power_exact(parameters, motor_speed, motor_torque, bus_voltag
             "voltage",
             False,
         )
-    reference_voltage = calculate_available_voltage(
-        parameters, parameters.reference_bus_voltage, quadrature_current
-    )
-    reference = solve_direct_current(
-        parameters, motor_speed, quadrature_current, reference_voltage
-    )
-    if not reference.feasible:
-        return ShaftPowerResult(
-            0.0,
-            map_loss,
-            0.0,
-            current.direct_current,
-            0.0,
-            "voltage",
-            False,
+    correction = 0.0
+    if bus_voltage < parameters.reference_bus_voltage:
+        # Calibration belongs to the fixed identification voltage, even when
+        # the competition limit is lower. It is not an actual bus query.
+        reference_voltage = _available_voltage_unclamped(
+            parameters, parameters.reference_bus_voltage, quadrature_current
         )
-    correction = (
-        0.0
-        if abs(bus_voltage - parameters.reference_bus_voltage) < 1.0e-12
-        else parameters.resistance
-        * 1.5
-        * (current.direct_current**2 - reference.direct_current**2)
-    )
-    # Voltage correction represents an added physical loss. A lower current
-    # estimate cannot make total loss negative.
-    loss_power = map_loss + max(correction, 0.0)
+        reference = solve_direct_current(
+            parameters, motor_speed, quadrature_current, reference_voltage
+        )
+        if not reference.feasible:
+            return ShaftPowerResult(
+                0.0, map_loss, 0.0, current.direct_current, 0.0, "voltage", False
+            )
+        correction = max(
+            1.5 * parameters.resistance
+            * (current.direct_current**2 - reference.direct_current**2),
+            0.0,
+        )
+    # At/above reference retain measured map losses conservatively: no guessed
+    # efficiency credit and no veto from an infeasible reference-voltage solve.
+    loss_power = map_loss + correction
     raw_bus_power = shaft_power + loss_power
     if raw_bus_power >= 0.0:
         bus_power = raw_bus_power / parameters.inverter_efficiency
@@ -1086,7 +1130,7 @@ def _validate_operating_map(data: dict[str, np.ndarray]) -> MotorOperatingMap:
     return MotorOperatingMap(**arrays)
 
 
-def _load_operating_map(model: Model) -> MotorOperatingMap:
+def _load_operating_map(model: Model, parameters=None) -> MotorOperatingMap:
     references = [item for item in model.data if item.role == "operating-map"]
     if len(references) != 1 or references[0].format != "npz":
         raise ValueError("electric motor requires one operating-map NPZ declaration")
@@ -1096,13 +1140,21 @@ def _load_operating_map(model: Model) -> MotorOperatingMap:
     digest = hashlib.sha256(reference.path.read_bytes()).hexdigest()
     if digest.lower() != reference.sha256.lower():
         raise ValueError("operating-map digest mismatch")
+    source = parameters if parameters is not None else _compile_motor_source(model)
     with np.load(reference.path, allow_pickle=False) as archive:
+        for name, expected in (
+            ("model_version", ANALYTICAL_MODEL_VERSION),
+            ("source_fingerprint", motor_source_fingerprint(source)),
+        ):
+            if name not in archive or archive[name].shape != () or archive[name].item() != expected:
+                raise ValueError(f"operating-map {name} mismatch; regenerate from current source")
         return _validate_operating_map({name: archive[name] for name in archive.files})
 
 
 def compile_electric_motor(model: Model) -> PowerPlantParameters:
     """Compile the XML motor and require its declared, validated LUT."""
-    return _compile_motor_source(model, _load_operating_map(model))
+    source = _compile_motor_source(model)
+    return replace(source, operating_map=_load_operating_map(model, source))
 
 
 register_component(

@@ -187,7 +187,7 @@ class AssembledMisRegressionTests(unittest.TestCase):
     def test_assembled_flying_lap_matches_reported_reference(self) -> None:
         self.assertTrue(self.result.converged)
         self.assertEqual(self.vehicle.drivetrain.powertrain.motor_mode, "lut")
-        self.assertAlmostEqual(self.result.lap_time, 69.20391204362008, places=6)
+        self.assertAlmostEqual(self.result.lap_time, 69.1917773155225, places=6)
         self.assertGreater(self.result.motor_forward_queries, 0)
         self.assertGreater(self.result.motor_inverse_queries, 0)
         self.assertEqual(len(self.result.speed), GOLDEN_NODE_COUNT)
@@ -204,7 +204,7 @@ class AssembledMisRegressionTests(unittest.TestCase):
         )
         result = solve_lap(analytical, self.track, LapMode.FLYING, tolerance=1.0e-6)
         self.assertTrue(result.converged)
-        self.assertAlmostEqual(result.lap_time, 69.20459210208878, places=6)
+        self.assertAlmostEqual(result.lap_time, 69.19098996790376, places=6)
         self.assertLess(abs(result.lap_time - self.result.lap_time), 0.001)
         self.assertLess(float(np.max(np.abs(result.speed - self.result.speed))), 0.05)
 

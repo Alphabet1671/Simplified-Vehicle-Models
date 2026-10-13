@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import csv
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import numpy as np
@@ -50,6 +50,8 @@ class EnergyStorageParameters:
     open_circuit_voltage_axis: tuple[float, ...]
     resistance_axis: tuple[float, ...]
     energy_axis: tuple[float, ...]
+    # Optional requested starting open-circuit pack voltage, compiled to SOC.
+    initial_bus_voltage: float | None = None
 
     @property
     def pack_capacity_ah(self) -> float:
@@ -110,6 +112,25 @@ def _pack_values(parameters, state_of_charge):
     if resistance <= 0.0:
         raise ValueError("pack resistance must be positive")
     return voltage, resistance
+
+
+def state_of_charge_at_voltage(parameters: EnergyStorageParameters, bus_voltage: float) -> float:
+    """Invert the monotone OCV curve without extrapolation or battery clamping.
+
+    A start specified at regulation voltage is a no-load voltage, not a loaded
+    terminal voltage dependent on the first motor operating point.
+    """
+    cell_voltage = bus_voltage / parameters.series_count
+    axis = parameters.open_circuit_voltage_axis
+    if not math.isfinite(bus_voltage) or not (
+        max(axis[0], parameters.minimum_cell_voltage)
+        <= cell_voltage
+        <= min(axis[-1], parameters.maximum_cell_voltage)
+    ):
+        raise ValueError("initial_bus_voltage is outside the cell OCV/voltage limits")
+    if not all(b > a for a, b in zip(axis, axis[1:])):
+        raise ValueError("voltage initialization requires a strictly increasing OCV curve")
+    return float(np.interp(cell_voltage, axis, parameters.state_of_charge_axis))
 
 
 def evaluate_storage(parameters: EnergyStorageParameters, state: StorageState):
@@ -201,7 +222,17 @@ _STORAGE_UNITS = {
 def compile_battery_pack(model: Model) -> EnergyStorageParameters:
     """Compile a battery XML model and validate its source curves."""
 
-    values = closed_parameters(model, _STORAGE_UNITS)
+    starts = {"initial_state_of_charge", "initial_bus_voltage"} & model.parameters.keys()
+    if len(starts) != 1:
+        raise ValueError("battery requires exactly one initial_state_of_charge or initial_bus_voltage")
+    units = dict(_STORAGE_UNITS)
+    if "initial_bus_voltage" in starts:
+        units.pop("initial_state_of_charge")
+        units["initial_bus_voltage"] = "V"
+    values = closed_parameters(model, units)
+    initial_voltage = values.pop("initial_bus_voltage", None)
+    # Placeholder only until the complete source curves have been constructed.
+    values.setdefault("initial_state_of_charge", 0.0)
     require_no_references(model)
     for name in ("series_count", "parallel_count"):
         value = values[name]
@@ -220,7 +251,7 @@ def compile_battery_pack(model: Model) -> EnergyStorageParameters:
     axis, open_circuit_voltage, resistance, energy = _curve()
     if any(value <= 0.0 for value in resistance):
         raise ValueError("source resistance must be positive")
-    return EnergyStorageParameters(
+    pack = EnergyStorageParameters(
         int(values.pop("series_count")),
         int(values.pop("parallel_count")),
         state_of_charge_axis=axis,
@@ -229,6 +260,12 @@ def compile_battery_pack(model: Model) -> EnergyStorageParameters:
         energy_axis=energy,
         **values,
     )
+    if initial_voltage is not None:
+        pack = replace(
+            pack, initial_bus_voltage=initial_voltage,
+            initial_state_of_charge=state_of_charge_at_voltage(pack, initial_voltage),
+        )
+    return pack
 
 
 register_component(

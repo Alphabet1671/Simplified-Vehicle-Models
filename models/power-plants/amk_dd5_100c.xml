@@ -7,5 +7,5 @@
     <parameter name="device_drop" value="0" unit="V"/>
     <parameter name="maximum_bus_voltage" value="600" unit="V"/>
   </parameters>
-  <data role="operating-map" path="../data/amk_dd5_100c_operating_map.npz" format="npz" sha256="166bf1346d263267224f77fe7396ab15180e0c2f54391652fee28f8575fcfc5b"/>
+  <data role="operating-map" path="../data/amk_dd5_100c_operating_map.npz" format="npz" sha256="78f5992cd7ab11649540e00cef49e6d2e798fc4ea3d465c4f32928fd0487b2f6"/>
 </model>

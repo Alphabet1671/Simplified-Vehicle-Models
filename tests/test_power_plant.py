@@ -5,6 +5,7 @@ from dataclasses import replace
 from simplified_vehicle_models.powertrain.power_plant import (
     calculate_available_voltage,
     compile_electric_motor,
+    compile_analytical_motor_source,
     evaluate_shaft_power,
     maximum_motor_torque,
     scalar_efficiency_bus_power,
@@ -84,7 +85,8 @@ class PowerPlantTests(unittest.TestCase):
     def test_reduced_voltage_field_weakening_and_correction(self):
         parameters = self.parameters
         result = evaluate_shaft_power(parameters, 10000.0, 10.0, 600.0)
-        reduced = evaluate_shaft_power(parameters, 10000.0, 10.0, 450.0)
+        # 450 V still has headroom at this point; 300 V genuinely binds.
+        reduced = evaluate_shaft_power(parameters, 10000.0, 10.0, 300.0)
         self.assertTrue(result.feasible)
         self.assertTrue(reduced.feasible)
         self.assertEqual(result.field_weakening_correction, 0.0)
@@ -132,6 +134,84 @@ class PowerPlantTests(unittest.TestCase):
         self.assertEqual(high, high_edge)
         with self.assertRaises(ValueError):
             evaluate_shaft_power(parameters, 21000.0, 1.0, 600.0)
+
+
+class VoltageInequalityTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.motor = compile_analytical_motor_source(
+            load_model("models/power-plants/amk_dd5_100c.xml")
+        )
+
+    def test_headroom_needs_no_direct_current(self):
+        for rpm in (0.0, 145.0, 1000.0, 10000.0):
+            for iq in (-10.0, 0.0, 10.0):
+                result = solve_direct_current(self.motor, rpm, iq, 800.0)
+                self.assertTrue(result.feasible)
+                self.assertEqual(result.direct_current, 0.0)
+
+    def test_negative_available_voltage_is_infeasible(self):
+        result = solve_direct_current(self.motor, 0.0, 0.0, -1.0)
+        self.assertFalse(result.feasible)
+
+    def test_signed_current_grid_satisfies_voltage_inequality(self):
+        p = self.motor
+        binding = 0
+        for rpm in (0.0, 145.0, 1000.0, 10000.0, 18000.0):
+            w = p.pole_pairs * 2.0 * math.pi * rpm / 60.0
+            for iq in (-50.0, 0.0, 50.0):
+                for voltage in (50.0, 200.0, 350.0, 500.0):
+                    result = solve_direct_current(p, rpm, iq, voltage)
+                    if not result.feasible:
+                        continue
+                    id_ = result.direct_current
+                    vd = p.resistance * id_ - w * p.phase_quadrature_inductance * iq
+                    vq = p.resistance * iq + w * (p.phase_flux_linkage + p.phase_direct_inductance * id_)
+                    self.assertLessEqual(vd * vd + vq * vq, voltage * voltage + 1e-7)
+                    if id_ != 0.0:
+                        binding += 1
+                        self.assertAlmostEqual(vd * vd + vq * vq, voltage * voltage, delta=1e-7)
+        self.assertGreater(binding, 0)
+
+    def test_field_weakening_onset_is_continuous(self):
+        p = self.motor
+        w = p.pole_pairs * 2.0 * math.pi * 18000.0 / 60.0
+        boundary = w * p.phase_flux_linkage
+        headroom = solve_direct_current(p, 18000.0, 0.0, boundary + 1e-6)
+        weak = solve_direct_current(p, 18000.0, 0.0, boundary - 1e-6)
+        self.assertEqual(headroom.direct_current, 0.0)
+        self.assertTrue(weak.feasible)
+        self.assertLess(weak.direct_current, 0.0)
+        self.assertLess(abs(weak.direct_current), 1e-4)
+
+    def test_high_voltage_retains_map_loss_without_fake_penalty(self):
+        p = replace(self.motor, maximum_bus_voltage=800.0)
+        for voltage in (600.0, 650.0, 800.0):
+            for rpm in (0.0, 145.0, 1000.0, 18000.0):
+                result = evaluate_shaft_power(p, rpm, 0.0, voltage)
+                self.assertTrue(result.feasible)
+                self.assertEqual(result.field_weakening_correction, 0.0)
+                self.assertAlmostEqual(result.loss_power, _loss_interpolate(p, max(rpm, p.torque_speed[0]), 0.0))
+                if rpm <= 1000.0:
+                    self.assertLess(result.bus_power, 50.0)
+
+    def test_high_voltage_feasible_point_does_not_need_feasible_reference(self):
+        p = replace(self.motor, maximum_bus_voltage=800.0)
+        iq = -20.0 / (1.5 * p.pole_pairs * p.phase_flux_linkage)
+        reference = solve_direct_current(p, 15000.0, iq, calculate_available_voltage(p, 600.0, iq))
+        self.assertFalse(reference.feasible)
+        result = evaluate_shaft_power(p, 15000.0, -20.0, 800.0)
+        self.assertTrue(result.feasible)
+        self.assertEqual(result.field_weakening_correction, 0.0)
+
+    def test_reference_loss_baseline_is_not_regulatory_clamped(self):
+        p = replace(self.motor, maximum_bus_voltage=300.0)
+        independent = replace(self.motor, maximum_bus_voltage=800.0)
+        limited = evaluate_shaft_power(p, 18000.0, 0.0, 600.0)
+        actual = evaluate_shaft_power(independent, 18000.0, 0.0, 300.0)
+        self.assertTrue(limited.feasible)
+        self.assertEqual(limited, actual)
+        self.assertGreater(limited.field_weakening_correction, 0.0)
 
 
 if __name__ == "__main__":

@@ -193,3 +193,120 @@ python3 tools/import_vehicle_spec_sheet.py \
 
 PYTHONPATH=src python -m unittest tests.test_planar_7dof -v
 ```
+
+## Rigid chassis dynamics
+
+`formulations/planar_7dof.py` evaluates the seven-degree-of-freedom rigid
+chassis. The state is `v_x`, `v_y`, the yaw rate `r`, and four wheel speeds.
+The input is a net torque at each wheel. A positive torque drives the wheel
+forward; a braking torque is negative.
+
+### Slip kinematics
+
+The contact velocity of a wheel at body position `(x, y)` is
+`(v_x - r*y, v_y + r*x)`. Express it in the wheel axes, which the front wheels
+rotate by the steering angle. A positive steering angle turns the wheel to the
+right, so a right-steered wheel at zero body slip sees `v_lat = -v_x*sin(delta)`.
+
+```text
+slip ratio = (Re*w - v_long) / max(|v_long|, speed_floor)
+slip angle = -atan2(v_lat, max(|v_long|, speed_floor))
+```
+
+A driving wheel therefore has a positive slip ratio, and a right-steered wheel
+has a positive slip angle and gives a positive lateral force. With no body slip
+a wheel steered by `delta` has a slip angle of exactly `delta`; a test pins
+that.
+
+`speed_floor` regularizes the low-speed singularity. It is a numerical device,
+not a physical quantity.
+
+### Force balance
+
+The tire forces rotate from the wheel axes into the body axes. The vertical
+moment does not change. The body equations are
+
+```text
+m*(v_x_dot - r*v_y) = sum(Fx_body) - drag
+m*(v_y_dot + r*v_x) = sum(Fy_body)
+Izz*r_dot           = sum(x*Fy_body - y*Fx_body + Mz)
+J*omega_dot_i       = T_i - Re_i*Fx_tire_i + M_rolling_i
+```
+
+A forward force on the right wheels gives a negative yaw moment, so it turns
+the vehicle to the left. That follows the SAE frame.
+
+### The load and force coupling
+
+The vertical load depends on the body acceleration, and the tire force depends
+on the vertical load. The solver closes that loop with a bounded fixed point.
+It uses the undamped update while the residual contracts, and halves the step
+while it does not. It then evaluates once more at the returned acceleration, so
+the loads, the slip, and the forces all describe the same state.
+
+Measured behavior over 1875 states from 2 to 35 m/s, with wheel speeds from
+half to 1.6 times rolling, torques from -250 to 250 N·m, steering to 25
+degrees, and yaw rates to 1 rad/s:
+
+| Result | Count |
+|---|---|
+| Converged to `1e-9` m/s² | 1845 |
+| Not converged within 60 iterations | 30 |
+| Worst residual among converged | `1.0e-9` |
+| Worst iteration count among converged | 55 |
+
+**Every one of the 30 non-converged states is physically impossible**: a wheel
+lifts, the minimum load reaches -309 N, and the lateral acceleration reaches
+3.13 g, which is beyond the tire's friction limit. The solver reports those
+states as `load_converged=False` and `contact_feasible=False`. A caller must
+reject them; it must never integrate them as if they were valid.
+
+### Two defects found and fixed during this work
+
+1. **An overflow on a lifted wheel.** A negative vertical load made the
+   pneumatic-trail decay term change sign and grow, so `exp` overflowed. The
+   tire now clamps the contact load to a compressive value, so a lifted wheel
+   carries no force and the coefficients stay in their physical domain. The
+   MATLAB reference vectors are unaffected, because all of their loads are
+   positive.
+2. **A non-contractive fixed point.** The undamped iteration failed to converge
+   in 60 of 1125 test states with the residual stalling near 0.42 m/s². The
+   divergence guard reduced that to 30 of 1875 and cut the worst residual from
+   50.4 to `1.9e-6`. The remaining 30 are the impossible states above.
+
+### Limits
+
+- The load loop is a NumPy reference device. An optimal-control formulation
+  must not nest it. Carry the loads as algebraic variables and impose the
+  consistency equations in the residual instead.
+- The loop costs 8 to 55 tire evaluations per evaluation. It converges quickly
+  in normal driving and slowly near the limit.
+- The model has no camber, no tire relaxation, and no suspension compliance.
+  The wheel positions are constant in the body frame.
+- The tire aligning moment is carried into the yaw moment. The overturning and
+  rolling-resistance moments are returned by the tire but only the rolling
+  moment enters the wheel equation. This fit has a zero rolling moment and zero
+  overturning contribution from the fitted coefficients.
+
+## Torque allocation
+
+`drivetrain/fixed_split.py` maps a drive and a brake demand to four wheel
+torques. It is deterministic, holds no state, and runs no iteration.
+
+The drive split sends 20 percent of the torque to the front axle and 80 percent
+to the rear. Each axle splits its share equally, so the four shares are 0.1,
+0.1, 0.4 and 0.4.
+
+The largest total that every wheel can carry while keeping the split is
+`min(limit_i / share_i)`. A larger request is reduced, so **the front torque
+falls with the rear torque and the split is never broken**. That is the
+requested behavior when the rear reaches its limit. When one rear wheel allows
+20 N·m, the total falls to 50 N·m and each front wheel carries 5 N·m.
+
+The brake allocation uses the same rule with the front bias. A real system
+without a proportioning valve would lock the rear instead of holding the bias;
+this model holds the bias and reports the shortfall in `unmet_total`.
+
+The allocator cannot see the tire. It does not limit a wheel by slip, and it is
+not a traction controller. A tire limit belongs to the vehicle residual as a
+constraint.

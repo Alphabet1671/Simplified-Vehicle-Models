@@ -216,6 +216,34 @@ def _friction_law(
     return mu_s + (mu_0 - mu_s) * np.exp(-(shape**2) * soft**2)
 
 
+def loaded_radius(
+    parameters: UniTireSimpleParameters,
+    vertical_load: FloatArray,
+) -> FloatArray:
+    """Return the loaded radius of one tire at a vertical load.
+
+    The radius depends on the normalized load only.
+    It does not depend on the slip, so a caller can use it before it evaluates
+    the tire forces.
+    """
+
+    load_ratio = vertical_load / max(parameters.f_z_rated, _EPSILON)
+    radius_from_load = (
+        parameters.r_1
+        + parameters.r_2 * load_ratio
+        + parameters.r_3 * load_ratio**2
+    )
+    lateral_shift = (
+        parameters.f_y_shift_0 + parameters.f_y_shift_fz * load_ratio
+    )
+    radius_from_lateral = (
+        parameters.k_rl_0
+        + parameters.k_rl_1 * load_ratio
+        + parameters.k_rl_2 * load_ratio**2
+    ) * (0.0 - lateral_shift) ** 2
+    return np.maximum(radius_from_load + radius_from_lateral, 1.0e-4)
+
+
 def evaluate_unitire(
     parameters: UniTireSimpleParameters,
     slip_angle: FloatArray,
@@ -243,24 +271,16 @@ def evaluate_unitire(
         np.asarray(wheel_speed, dtype=np.float64),
     )
 
+    # A tire cannot pull on the road. Clamp the load to a compressive value, so
+    # a lifted wheel carries no force. The clamp also keeps the load-dependent
+    # coefficients inside their physical domain. Without it, a large negative
+    # load turns the pneumatic-trail decay into a growth and overflows.
+    f_z = np.maximum(f_z, 0.0)
+
     # Normalized load and the load dependent radius.
     f_zn = f_z / max(parameters.f_z_rated, _EPSILON)
-    radius_from_load = (
-        parameters.r_1 + parameters.r_2 * f_zn + parameters.r_3 * f_zn**2
-    )
-    lateral_shift = (
-        parameters.f_y_shift_0 + parameters.f_y_shift_fz * f_zn
-    )
-    radius_from_lateral = (
-        parameters.k_rl_0
-        + parameters.k_rl_1 * f_zn
-        + parameters.k_rl_2 * f_zn**2
-    ) * (0.0 - lateral_shift) ** 2
-    loaded_radius = np.maximum(
-        radius_from_load + radius_from_lateral,
-        1.0e-4,
-    )
-    effective_radius = loaded_radius
+    radius = loaded_radius(parameters, f_z)
+    effective_radius = radius
 
     # Slip stiffness at the current load.
     k_x = _polyval(parameters.k_x, f_zn)
@@ -338,7 +358,7 @@ def evaluate_unitire(
     )
 
     # Overturning moment. The source cubic term is zero in the fitted set.
-    gamma_e = np.arctan2(carcass_offset_y, loaded_radius)
+    gamma_e = np.arctan2(carcass_offset_y, radius)
     k_1 = (
         parameters.k_11 + parameters.k_12 * f_zn + parameters.k_13 * f_zn**2
     )
@@ -367,7 +387,7 @@ def evaluate_unitire(
     rolling_moment = (
         -f_z
         * rolling_coefficient
-        * loaded_radius
+        * radius
         * (
             1.0
             + parameters.h_rr
@@ -389,7 +409,7 @@ def evaluate_unitire(
         rolling_resistance_moment=rolling_moment,
         aligning_moment=aligning_moment,
         effective_radius=effective_radius,
-        loaded_radius=loaded_radius,
+        loaded_radius=radius,
         mu_x=mu_x,
         mu_y=mu_y,
         pneumatic_trail=pneumatic_trail,

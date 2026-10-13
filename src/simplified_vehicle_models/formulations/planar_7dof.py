@@ -40,6 +40,10 @@ from simplified_vehicle_models.parameters.drivetrain import DrivetrainParameters
 from simplified_vehicle_models.parameters.tire import UniTireSimpleParameters
 from simplified_vehicle_models.parameters.vehicle import PlanarVehicleParameters
 from simplified_vehicle_models.suspension import quasi_static
+from simplified_vehicle_models.tires.unitire_simple import (
+    evaluate_unitire,
+    loaded_radius,
+)
 from simplified_vehicle_models.xml.model import Model
 from simplified_vehicle_models.xml.schema import (
     require_closed_unit_interval,
@@ -297,3 +301,408 @@ def body_lateral_acceleration(
     """
 
     return lateral_velocity_rate + yaw_rate * v_x
+
+
+def contact_velocities(
+    state: PlanarState,
+    positions: FloatArray,
+    steering: float,
+    steering_axle: int = 2,
+) -> tuple[FloatArray, FloatArray]:
+    """Return the contact velocity of each wheel in its own tire axes.
+
+    Return the longitudinal and the lateral velocity.
+    The first ``steering_axle`` wheels steer by ``steering``.
+    The contact velocity of a rigid body at position ``(x, y)`` in body axes is
+    ``(v_x - r*y, v_y + r*x)``.
+
+    A positive steering angle turns the wheel to the right, which follows the
+    SAE frame. Express each body velocity in the rotated wheel axes.
+    """
+
+    body_longitudinal = state.v_x - state.yaw_rate * positions[:, 1]
+    body_lateral = state.v_y + state.yaw_rate * positions[:, 0]
+    angle = np.zeros(positions.shape[0], dtype=np.float64)
+    angle[:steering_axle] = steering
+    cosine = np.cos(angle)
+    sine = np.sin(angle)
+    longitudinal = body_longitudinal * cosine + body_lateral * sine
+    lateral = -body_longitudinal * sine + body_lateral * cosine
+    return longitudinal, lateral
+
+
+def slip_quantities(
+    wheel_speeds: FloatArray,
+    effective_radii: FloatArray,
+    longitudinal_velocity: FloatArray,
+    lateral_velocity: FloatArray,
+    speed_floor: float,
+) -> tuple[FloatArray, FloatArray]:
+    """Return the slip ratio and the slip angle of each wheel.
+
+    The slip ratio is ``(Re*w - v_long) / max(|v_long|, speed_floor)``.
+    A driving wheel therefore has a positive slip ratio and a braking wheel has
+    a negative one.
+
+    The slip angle is ``-atan2(v_lat, max(|v_long|, speed_floor))``.
+    A positive angle steers the wheel to the right, which is the sense that the
+    tire model documents. A right-steered wheel therefore has a positive slip
+    angle and gives a positive lateral force.
+
+    ``speed_floor`` regularizes the low-speed singularity. It is a numerical
+    device, not a physical quantity.
+    """
+
+    if speed_floor <= 0.0:
+        raise ValueError("the speed floor must be positive")
+    denominator = np.maximum(np.abs(longitudinal_velocity), speed_floor)
+    slip_ratio = (
+        effective_radii * wheel_speeds - longitudinal_velocity
+    ) / denominator
+    slip_angle = -np.arctan2(lateral_velocity, denominator)
+    return slip_ratio, slip_angle
+
+
+def rotate_tire_forces_to_body(
+    longitudinal_force: FloatArray,
+    lateral_force: FloatArray,
+    steering: float,
+    steering_axle: int = 2,
+) -> tuple[FloatArray, FloatArray]:
+    """Rotate each tire force from its tire axes into the body axes.
+
+    The moment about the vertical axis does not change under this rotation.
+    """
+
+    angle = np.zeros(longitudinal_force.shape[0], dtype=np.float64)
+    angle[:steering_axle] = steering
+    cosine = np.cos(angle)
+    sine = np.sin(angle)
+    body_longitudinal = longitudinal_force * cosine - lateral_force * sine
+    body_lateral = longitudinal_force * sine + lateral_force * cosine
+    return body_longitudinal, body_lateral
+
+
+@dataclass(frozen=True, slots=True)
+class PlanarEvaluation:
+    """Store one planar vehicle evaluation.
+
+    Every four-element array uses the wheel order FL, FR, RL, RR.
+    The tire forces and moments use the tire axes.
+    The body forces use the vehicle axes.
+
+    The three accelerations and the four wheel accelerations are the state
+    derivative. Position and heading are not part of this evaluation.
+    """
+
+    normal_loads: FloatArray
+    longitudinal_forces: FloatArray
+    lateral_forces: FloatArray
+    aligning_moments: FloatArray
+    body_longitudinal_forces: FloatArray
+    body_lateral_forces: FloatArray
+    slip_ratios: FloatArray
+    slip_angles: FloatArray
+    effective_radii: FloatArray
+    drag_force: float
+    yaw_moment: float
+    longitudinal_acceleration: float
+    lateral_acceleration: float
+    yaw_acceleration: float
+    wheel_accelerations: FloatArray
+    load_iterations: int
+    load_residual: float
+    load_converged: bool
+
+    @property
+    def is_feasible(self) -> bool:
+        """Return true when no tire load is negative."""
+
+        return bool(np.all(self.normal_loads >= 0.0))
+
+    @property
+    def contact_feasible(self) -> bool:
+        """Return true when the load solve converged and no tire lifted."""
+
+        return self.load_converged and self.is_feasible
+
+
+def parse_wheel_torques(wheel_torques: FloatArray) -> FloatArray:
+    """Validate and copy one four-wheel torque vector."""
+
+    torques = np.asarray(wheel_torques, dtype=np.float64)
+    if torques.shape != (4,):
+        raise ValueError("wheel_torques must hold four values in FL, FR, RL, RR order")
+    if not np.all(np.isfinite(torques)):
+        raise ValueError("wheel_torques must be finite")
+    return torques
+
+
+def yaw_moment_of(
+    positions: FloatArray,
+    body_longitudinal_forces: FloatArray,
+    body_lateral_forces: FloatArray,
+    aligning_moments: FloatArray,
+) -> float:
+    """Return the total yaw moment about the vertical axis.
+
+    The moment of one wheel is ``x * Fy - y * Fx + Mz``.
+    The right wheels sit at a positive ``y``, so a forward force on the right
+    wheels gives a negative moment, which turns the vehicle to the left.
+    """
+
+    return float(
+        np.sum(
+            positions[:, 0] * body_lateral_forces
+            - positions[:, 1] * body_longitudinal_forces
+            + aligning_moments
+        )
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _LoadStep:
+    """Hold one evaluation of the coupled load and force balance."""
+
+    loads: FloatArray
+    radii: FloatArray
+    slip_ratios: FloatArray
+    slip_angles: FloatArray
+    longitudinal_forces: FloatArray
+    lateral_forces: FloatArray
+    aligning_moments: FloatArray
+    rolling_moments: FloatArray
+    body_longitudinal: FloatArray
+    body_lateral: FloatArray
+    drag: float
+    implied_longitudinal_acceleration: float
+    implied_lateral_acceleration: float
+
+
+def _load_step(
+    vehicle: PlanarVehicleParameters,
+    state: PlanarState,
+    steering: float,
+    speed: float,
+    rolling_speed: FloatArray,
+    longitudinal_velocity: FloatArray,
+    lateral_velocity: FloatArray,
+    longitudinal_acceleration: float,
+    lateral_acceleration: float,
+    speed_floor: float,
+) -> _LoadStep:
+    """Evaluate the loads and the tire forces at one acceleration guess.
+
+    The vertical load follows from the acceleration guess.
+    The tire force follows from the load and the slip.
+    The implied acceleration follows from the tire force.
+    The caller compares the two accelerations to judge convergence.
+    """
+
+    loads = evaluate_normal_loads(
+        vehicle,
+        speed,
+        longitudinal_acceleration,
+        lateral_acceleration,
+    )
+    radii = loaded_radius(vehicle.tire, loads)
+    slip_ratio, slip_angle = slip_quantities(
+        state.wheel_speeds,
+        radii,
+        longitudinal_velocity,
+        lateral_velocity,
+        speed_floor,
+    )
+    tire = evaluate_unitire(
+        vehicle.tire,
+        slip_angle,
+        slip_ratio,
+        loads,
+        rolling_speed,
+    )
+    body_longitudinal, body_lateral = rotate_tire_forces_to_body(
+        tire.longitudinal_force,
+        tire.lateral_force,
+        steering,
+    )
+    _, drag = aerodynamic_forces(vehicle, speed)
+    mass = vehicle.total_mass
+    implied_longitudinal = (
+        (float(np.sum(body_longitudinal)) - drag) / mass
+        + state.yaw_rate * state.v_y
+    )
+    implied_lateral = (
+        float(np.sum(body_lateral)) / mass
+        - state.yaw_rate * state.v_x
+    )
+    return _LoadStep(
+        loads=loads,
+        radii=radii,
+        slip_ratios=slip_ratio,
+        slip_angles=slip_angle,
+        longitudinal_forces=tire.longitudinal_force,
+        lateral_forces=tire.lateral_force,
+        aligning_moments=tire.aligning_moment,
+        rolling_moments=tire.rolling_resistance_moment,
+        body_longitudinal=body_longitudinal,
+        body_lateral=body_lateral,
+        drag=drag,
+        implied_longitudinal_acceleration=implied_longitudinal,
+        implied_lateral_acceleration=implied_lateral,
+    )
+
+
+#: Damping applied when the load fixed point stops contracting.
+_LOAD_DAMPING = 0.5
+
+
+def evaluate_planar_dynamics(
+    vehicle: PlanarVehicleParameters,
+    state: PlanarState,
+    wheel_torques: FloatArray,
+    steering: float,
+    speed_floor: float = 1.0,
+    load_tolerance: float = 1.0e-9,
+    load_maximum_iterations: int = 60,
+) -> PlanarEvaluation:
+    """Evaluate the planar vehicle dynamics at one state.
+
+    ``wheel_torques`` holds the **net** torque at each wheel in the order FL,
+    FR, RL, RR. A positive torque drives the wheel forward; a braking torque is
+    negative. The caller owns the split between drive and brake. The wheel
+    torque does not change the tire force at the current state; it changes the
+    wheel acceleration, and therefore the next state.
+
+    ``steering`` is the road-wheel angle in radians and turns the front wheels.
+
+    The vertical load depends on the body acceleration, and the tire force
+    depends on the vertical load. Solve that loop with a bounded fixed point.
+    Apply the undamped update while the residual contracts, and halve the step
+    while it does not. Then evaluate once more at the converged acceleration,
+    so every returned quantity belongs to the same state.
+
+    A large slip can make the loop non-contractive. The guard keeps the loop
+    bounded, and the returned ``load_converged`` and ``load_residual`` report
+    whether it actually converged. Never treat an unconverged answer as a
+    converged one.
+    """
+
+    torques = parse_wheel_torques(wheel_torques)
+    if not np.isfinite(steering):
+        raise ValueError("steering must be finite")
+    if not np.isfinite(speed_floor) or speed_floor <= 0.0:
+        raise ValueError("speed_floor must be finite and positive")
+    if not np.isfinite(load_tolerance) or load_tolerance <= 0.0:
+        raise ValueError("load_tolerance must be finite and positive")
+    if load_maximum_iterations < 1:
+        raise ValueError("load_maximum_iterations must be positive")
+    if vehicle.wheel_inertia <= 0.0:
+        raise ValueError("the wheel inertia must be positive")
+    if vehicle.yaw_inertia <= 0.0:
+        raise ValueError("the yaw inertia must be positive")
+
+    positions = wheel_positions(vehicle)
+    speed = float(np.hypot(state.v_x, state.v_y))
+    longitudinal_velocity, lateral_velocity = contact_velocities(
+        state, positions, steering
+    )
+    # The tire model recovers the rolling speed from the hub speed magnitude.
+    rolling_speed = np.abs(state.wheel_speeds)
+
+    def step(longitudinal: float, lateral: float) -> _LoadStep:
+        return _load_step(
+            vehicle,
+            state,
+            steering,
+            speed,
+            rolling_speed,
+            longitudinal_velocity,
+            lateral_velocity,
+            longitudinal,
+            lateral,
+            speed_floor,
+        )
+
+    longitudinal_acceleration = 0.0
+    lateral_acceleration = 0.0
+    evaluation = step(0.0, 0.0)
+    residual = float("inf")
+    previous_residual = float("inf")
+    load_converged = False
+    iteration = 0
+    for iteration in range(1, load_maximum_iterations + 1):
+        residual = max(
+            abs(
+                evaluation.implied_longitudinal_acceleration
+                - longitudinal_acceleration
+            ),
+            abs(evaluation.implied_lateral_acceleration - lateral_acceleration),
+        )
+        if residual <= load_tolerance:
+            load_converged = True
+            break
+        if iteration > 1 and residual >= previous_residual:
+            # The map stopped contracting. Take half a step.
+            longitudinal_acceleration += _LOAD_DAMPING * (
+                evaluation.implied_longitudinal_acceleration
+                - longitudinal_acceleration
+            )
+            lateral_acceleration += _LOAD_DAMPING * (
+                evaluation.implied_lateral_acceleration - lateral_acceleration
+            )
+        else:
+            longitudinal_acceleration = (
+                evaluation.implied_longitudinal_acceleration
+            )
+            lateral_acceleration = evaluation.implied_lateral_acceleration
+        previous_residual = residual
+        evaluation = step(longitudinal_acceleration, lateral_acceleration)
+
+    # Evaluate once more at the returned acceleration, so the loads, the slip,
+    # and the forces all describe the same state.
+    evaluation = step(longitudinal_acceleration, lateral_acceleration)
+    final_residual = max(
+        abs(
+            evaluation.implied_longitudinal_acceleration
+            - longitudinal_acceleration
+        ),
+        abs(evaluation.implied_lateral_acceleration - lateral_acceleration),
+    )
+    load_residual = max(residual, final_residual)
+    load_converged = load_converged and final_residual <= load_tolerance
+
+    moment = yaw_moment_of(
+        positions,
+        evaluation.body_longitudinal,
+        evaluation.body_lateral,
+        evaluation.aligning_moments,
+    )
+    yaw_acceleration = moment / vehicle.yaw_inertia
+    # A positive wheel speed rolls the wheel forward. The tire force resists the
+    # drive torque, and the rolling resistance moment retards a forward roll.
+    wheel_accelerations = (
+        torques
+        - evaluation.radii * evaluation.longitudinal_forces
+        + evaluation.rolling_moments
+    ) / vehicle.wheel_inertia
+
+    return PlanarEvaluation(
+        normal_loads=evaluation.loads,
+        longitudinal_forces=evaluation.longitudinal_forces,
+        lateral_forces=evaluation.lateral_forces,
+        aligning_moments=evaluation.aligning_moments,
+        body_longitudinal_forces=evaluation.body_longitudinal,
+        body_lateral_forces=evaluation.body_lateral,
+        slip_ratios=evaluation.slip_ratios,
+        slip_angles=evaluation.slip_angles,
+        effective_radii=evaluation.radii,
+        drag_force=evaluation.drag,
+        yaw_moment=moment,
+        longitudinal_acceleration=longitudinal_acceleration,
+        lateral_acceleration=lateral_acceleration,
+        yaw_acceleration=yaw_acceleration,
+        wheel_accelerations=wheel_accelerations,
+        load_iterations=iteration,
+        load_residual=load_residual,
+        load_converged=load_converged,
+    )

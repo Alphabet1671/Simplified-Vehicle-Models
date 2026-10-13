@@ -178,4 +178,9 @@ def register_builtin_components() -> None:
         "point-mass",
         kind=FORMULATION_KIND,
     )
+    register_component(
+        "vehicle-formulation",
+        "planar-7dof",
+        kind=FORMULATION_KIND,
+    )
     _BOOTSTRAPPED = True

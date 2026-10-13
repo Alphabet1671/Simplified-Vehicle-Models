@@ -318,6 +318,19 @@ def _formulation_definition(formulation: Model) -> FormulationDefinition:
             consumed_parameters=tuple(POINT_MASS_VEHICLE_PARAMETER_UNITS),
             compile_function=compile_point_mass_vehicle,
         )
+    if key == ("vehicle-formulation", "planar-7dof"):
+        from simplified_vehicle_models.formulations.planar_7dof import (
+            PLANAR_7DOF_REQUESTED_CAPABILITIES,
+            PLANAR_7DOF_VEHICLE_PARAMETER_UNITS,
+            compile_planar_7dof_vehicle,
+        )
+
+        return FormulationDefinition(
+            assembly_type="vehicle-assembly",
+            requested_capabilities=PLANAR_7DOF_REQUESTED_CAPABILITIES,
+            consumed_parameters=tuple(PLANAR_7DOF_VEHICLE_PARAMETER_UNITS),
+            compile_function=compile_planar_7dof_vehicle,
+        )
     raise ValueError(
         f"{formulation.path}: unknown formulation type "
         f"{formulation.model_type}/{formulation.subtype}"

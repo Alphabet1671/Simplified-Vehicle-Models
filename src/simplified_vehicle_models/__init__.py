@@ -20,13 +20,23 @@ from simplified_vehicle_models.formulations.point_mass import (
     normal_loads,
     tire_force_capacities,
 )
+from simplified_vehicle_models.formulations.planar_7dof import (
+    PlanarControls,
+    PlanarState,
+    body_lateral_acceleration,
+    evaluate_normal_loads,
+    wheel_positions,
+)
 from simplified_vehicle_models.parameters.aero import AeroParameters
 from simplified_vehicle_models.parameters.drivetrain import DrivetrainParameters
 from simplified_vehicle_models.parameters.tire import (
     TireEnvelopeParameters,
     UniTireSimpleParameters,
 )
-from simplified_vehicle_models.parameters.vehicle import PointMassVehicleParameters
+from simplified_vehicle_models.parameters.vehicle import (
+    PlanarVehicleParameters,
+    PointMassVehicleParameters,
+)
 from simplified_vehicle_models.results.traces import LapMode, LapResult
 from simplified_vehicle_models.solvers.forward_backward import solve_lap
 from simplified_vehicle_models.tires.unitire_simple import evaluate_unitire
@@ -55,6 +65,9 @@ __all__ = [
     "LEFT_TURN_CURVATURE_SIGN",
     "LapMode",
     "LapResult",
+    "PlanarControls",
+    "PlanarState",
+    "PlanarVehicleParameters",
     "PointMassVehicleParameters",
     "RIGHT_TURN_CURVATURE_SIGN",
     "TireEnvelopeParameters",
@@ -64,8 +77,10 @@ __all__ = [
     "VEHICLE_AXIS_CONVENTION",
     "WHEEL_ORDER",
     "acceleration_limits",
+    "body_lateral_acceleration",
     "compile_formulation",
     "evaluate_equilibrium",
+    "evaluate_normal_loads",
     "evaluate_path",
     "evaluate_unitire",
     "lateral_transfer_loads",
@@ -76,6 +91,7 @@ __all__ = [
     "normal_loads",
     "solve_lap",
     "tire_force_capacities",
+    "wheel_positions",
     "TorqueLimits",
     "TorqueSolveResult",
     "evaluate_motor",

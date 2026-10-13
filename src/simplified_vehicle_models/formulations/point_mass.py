@@ -13,7 +13,9 @@ from simplified_vehicle_models.compiler.capabilities import (
     DRIVE_FORCE_LIMIT,
     TIRE_FORCE_ENVELOPE,
 )
+from simplified_vehicle_models.aero import fixed_aero
 from simplified_vehicle_models.core.conventions import GRAVITY
+from simplified_vehicle_models.suspension import quasi_static
 from simplified_vehicle_models.core.types import FloatArray
 from simplified_vehicle_models.parameters.aero import AeroParameters
 from simplified_vehicle_models.parameters.drivetrain import DrivetrainParameters
@@ -222,11 +224,7 @@ def aerodynamic_forces(
 ) -> tuple[float, float]:
     """Calculate downforce and drag at the specified speed."""
 
-    dynamic_pressure = 0.5 * vehicle.aero.air_density * speed * speed
-    return (
-        dynamic_pressure * vehicle.aero.downforce_area,
-        dynamic_pressure * vehicle.aero.drag_area,
-    )
+    return fixed_aero.aerodynamic_forces(vehicle.aero, speed)
 
 
 def lateral_transfer_loads(
@@ -243,19 +241,14 @@ def lateral_transfer_loads(
     Return the loads in the order FL, FR, RL, RR.
     """
 
-    total_transfer = (
-        vehicle.total_mass
-        * lateral_acceleration
-        * vehicle.cg_height
-        / vehicle.track_width
-    )
-    front_transfer = total_transfer * vehicle.lateral_load_transfer_distribution
-    rear_transfer = total_transfer - front_transfer
-    return (
-        front_axle * 0.5 + front_transfer,
-        front_axle * 0.5 - front_transfer,
-        rear_axle * 0.5 + rear_transfer,
-        rear_axle * 0.5 - rear_transfer,
+    return quasi_static.lateral_transfer_loads(
+        front_axle,
+        rear_axle,
+        total_mass=vehicle.total_mass,
+        cg_height=vehicle.cg_height,
+        track_width=vehicle.track_width,
+        lateral_transfer_distribution=vehicle.lateral_load_transfer_distribution,
+        lateral_acceleration=lateral_acceleration,
     )
 
 

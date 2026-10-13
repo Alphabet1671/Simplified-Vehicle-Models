@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- The planar 7-DOF formulation declares the capabilities that it requires.
+     The compiler resolves each one against the assembly.
+     This formulation is a placeholder vehicle, not a measured car. -->
+<model schema-version="1.0" id="placeholder-planar-7dof" type="vehicle-formulation" subtype="planar-7dof">
+    <source ref="../vehicles/placeholder_2024_formula.xml"/>
+    <requires capability="steady-combined-slip"/>
+    <requires capability="aero-loads"/>
+    <requires capability="drive-force-limit"/>
+</model>

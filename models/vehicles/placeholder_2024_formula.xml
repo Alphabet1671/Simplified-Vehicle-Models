@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<model schema-version="1.0" id="placeholder-2024-formula" type="vehicle-assembly" subtype="four-wheel">
+    <!-- Placeholder vehicle for the planar 7-DOF model. Every sheet-derived value is rounded to two significant figures and skewed, so this file does not carry a real car's data. Replace every value with a measured value before any correlated result.-->
+    <!-- Source IEM_24_DSS.xlsx sha256=e436c2f61d46f23614515e34cbce381e45a5e508b9840012c88511f59afac5d8. The source file stays outside the repository.-->
+    <!-- Not from the sheet, and kept exact: yaw_radius_of_gyration and wheel_inertia follow a general estimation request; steering_maximum_angle, steering_maximum_rate, brake_bias and maximum_brake_torque_* are stated placeholders.-->
+    <parameters>
+        <parameter name="total_mass" value="274.9338" unit="kg" />
+        <parameter name="mass_without_driver" value="206.9338" unit="kg" />
+        <parameter name="driver_mass" value="68.0" unit="kg" />
+        <parameter name="wheelbase" value="1.5738" unit="m" />
+        <parameter name="track_width" value="1.1602" unit="m" />
+        <parameter name="cg_height" value="0.2442" unit="m" />
+        <parameter name="front_mass_fraction" value="0.4738" unit="1" />
+        <parameter name="lateral_load_transfer_distribution" value="0.4022" unit="1" />
+        <parameter name="yaw_radius_of_gyration" value="0.679366" unit="m" />
+        <parameter name="wheel_inertia" value="0.247741" unit="kg*m^2" />
+        <parameter name="steer_ratio" value="5.3962" unit="1" />
+        <parameter name="steering_maximum_angle" value="0.5235987755982988" unit="rad" />
+        <parameter name="steering_maximum_rate" value="3.141592653589793" unit="rad/s" />
+        <parameter name="caster_angle" value="0.08134979643545569" unit="rad" />
+        <parameter name="kingpin_inclination_angle" value="0.12447688225223558" unit="rad" />
+        <parameter name="brake_bias" value="0.65" unit="1" />
+        <parameter name="maximum_brake_torque_front" value="262.9673" unit="N*m" />
+        <parameter name="maximum_brake_torque_rear" value="141.5978" unit="N*m" />
+    </parameters>
+    <components>
+        <component role="tire" ref="../tires/hoosier-43075-r20-simple.xml" />
+        <component role="aero" ref="../aero/placeholder_2024_aero.xml" />
+        <component role="powertrain" ref="../powertrains/murphy_2024.xml" />
+        <component role="drivetrain" ref="../drivetrains/murphy_2024_drivetrain.xml" />
+    </components>
+</model>

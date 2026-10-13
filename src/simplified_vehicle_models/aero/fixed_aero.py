@@ -1,7 +1,7 @@
 """Compile the fixed-aero component.
 
 The component declares the aero-loads capability.
-The behavior functions stay in the point-mass formulation until Task P0C.
+The behavior function lives here, so every formulation shares one aero law.
 """
 
 from __future__ import annotations
@@ -29,6 +29,20 @@ _PARAMETER_UNITS = {
     "drag_area": "m^2",
     "aero_balance": "1",
 }
+
+
+def aerodynamic_forces(parameters: AeroParameters, speed: float) -> tuple[float, float]:
+    """Return the downforce and the drag at one speed.
+
+    Both forces scale with the square of the speed.
+    The downforce acts downward and adds to the tire load.
+    """
+
+    dynamic_pressure = 0.5 * parameters.air_density * speed * speed
+    return (
+        dynamic_pressure * parameters.downforce_area,
+        dynamic_pressure * parameters.drag_area,
+    )
 
 
 def compile_fixed_aero(model: Model) -> AeroParameters:

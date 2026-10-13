@@ -1,0 +1,235 @@
+from pathlib import Path
+from dataclasses import replace
+import math
+import unittest
+
+import numpy as np
+
+from simplified_vehicle_models.core.conventions import GRAVITY
+from simplified_vehicle_models.formulations.point_mass import DriveCachePolicy, maximum_vehicle_speed
+from simplified_vehicle_models.results.traces import LapMode, LapResult
+from simplified_vehicle_models.solvers.forward_backward import solve_lap
+from simplified_vehicle_models.tracks.profile import load_track
+from simplified_vehicle_models.xml.loader import load_point_mass_vehicle
+
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+# MIS golden pins the legacy scalar reduction; assembled P8 dispatch is
+# covered separately in test_powertrain and test_point_mass.
+FORMULATION_PATH = REPOSITORY_ROOT / "models/formulations/murphy_legacy_point_mass.xml"
+TRACK_PATH = REPOSITORY_ROOT / "models/tracks/2024_michigan_endurance_v11.xml"
+
+# The golden values come from docs/validation/mis-point-mass.md.
+# They pin the validated MIS lap result.
+# A physics change must fail these tests. A human then decides if the change is correct.
+# The relative tolerance is 1e-9. A tighter bound is brittle across platforms.
+# A looser bound lets a real physics change through.
+GOLDEN_FLYING_LAP_TIME = 69.22653728547469
+GOLDEN_STANDING_LAP_TIME = 70.38955050759907
+GOLDEN_PEAK_SPEED = 29.582305037708668
+GOLDEN_NODE_COUNT = 1407
+GOLDEN_RELATIVE_TOLERANCE = 1.0e-9
+
+
+class MisRegressionTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.vehicle = load_point_mass_vehicle(FORMULATION_PATH)
+        cls.track = load_track(TRACK_PATH)
+        cls.flying = solve_lap(
+            cls.vehicle,
+            cls.track,
+            LapMode.FLYING,
+            tolerance=1.0e-5,
+        )
+        cls.standing = solve_lap(
+            cls.vehicle,
+            cls.track,
+            LapMode.STANDING_START,
+            tolerance=1.0e-5,
+        )
+
+    def test_lap_times_are_reasonable(self) -> None:
+        for result in (self.flying, self.standing):
+            self.assertTrue(result.converged)
+            self.assertTrue(np.isfinite(result.lap_time))
+            self.assertGreater(result.lap_time, 50.0)
+            self.assertLess(result.lap_time, 100.0)
+        self.assertGreater(self.standing.lap_time, self.flying.lap_time)
+        self.assertLess(self.standing.lap_time - self.flying.lap_time, 15.0)
+
+    def test_boundary_conditions_are_satisfied(self) -> None:
+        self.assertAlmostEqual(self.flying.speed[0], self.flying.speed[-1])
+        self.assertEqual(self.standing.speed[0], 0.0)
+
+    def test_golden_flying_lap_time(self) -> None:
+        self._assert_golden(self.flying.lap_time, GOLDEN_FLYING_LAP_TIME)
+
+    def test_golden_standing_lap_time(self) -> None:
+        self._assert_golden(self.standing.lap_time, GOLDEN_STANDING_LAP_TIME)
+
+    def test_golden_peak_speed(self) -> None:
+        self._assert_golden(
+            float(np.max(self.flying.speed)),
+            GOLDEN_PEAK_SPEED,
+        )
+        self._assert_golden(
+            float(np.max(self.standing.speed)),
+            GOLDEN_PEAK_SPEED,
+        )
+
+    def test_golden_node_count(self) -> None:
+        self.assertEqual(len(self.track.distance), GOLDEN_NODE_COUNT)
+        self.assertEqual(len(self.flying.speed), GOLDEN_NODE_COUNT)
+        self.assertEqual(len(self.standing.speed), GOLDEN_NODE_COUNT)
+
+    def _assert_golden(self, actual: float, expected: float) -> None:
+        self.assertTrue(
+            math.isclose(
+                actual,
+                expected,
+                rel_tol=GOLDEN_RELATIVE_TOLERANCE,
+                abs_tol=0.0,
+            ),
+            f"expected {expected!r} within {GOLDEN_RELATIVE_TOLERANCE}, "
+            f"received {actual!r}",
+        )
+
+    def test_independent_equilibrium_closure(self) -> None:
+        speed_limit = maximum_vehicle_speed(self.vehicle)
+        for result in (self.flying, self.standing):
+            self.assertLessEqual(float(np.max(result.speed)), speed_limit + 1.0e-8)
+            self._assert_equilibrium(result)
+
+    def _assert_equilibrium(self, result: LapResult) -> None:
+        vehicle = self.vehicle
+        midpoint_speed = 0.5 * (result.speed[:-1] + result.speed[1:])
+        dynamic_pressure = 0.5 * vehicle.aero.air_density * midpoint_speed**2
+        drag = dynamic_pressure * vehicle.aero.drag_area
+        downforce = dynamic_pressure * vehicle.aero.downforce_area
+        force_residual = (
+            np.sum(result.longitudinal_forces, axis=1)
+            - drag
+            - vehicle.total_mass * result.longitudinal_acceleration
+        )
+        np.testing.assert_allclose(force_residual, 0.0, atol=1.0e-8)
+        np.testing.assert_allclose(
+            np.sum(result.normal_loads, axis=1),
+            vehicle.total_mass * GRAVITY + downforce,
+            atol=1.0e-8,
+        )
+        self.assertTrue(np.all(result.normal_loads >= 0.0))
+
+        distance_to_front = vehicle.wheelbase * (
+            1.0 - vehicle.front_mass_fraction
+        )
+        distance_to_rear = vehicle.wheelbase * vehicle.front_mass_fraction
+        lateral_moment = (
+            np.sum(result.lateral_forces[:, :2], axis=1) * distance_to_front
+            - np.sum(result.lateral_forces[:, 2:], axis=1) * distance_to_rear
+        )
+        left_force = (
+            result.longitudinal_forces[:, 0]
+            + result.longitudinal_forces[:, 2]
+        )
+        right_force = (
+            result.longitudinal_forces[:, 1]
+            + result.longitudinal_forces[:, 3]
+        )
+        longitudinal_moment = (
+            right_force - left_force
+        ) * vehicle.track_width * 0.5
+        yaw_moment = lateral_moment + longitudinal_moment
+        np.testing.assert_allclose(yaw_moment, 0.0, atol=1.0e-8)
+
+        tire = vehicle.tire
+        load_factor = (
+            tire.load_sensitivity_slope * result.normal_loads
+            + tire.load_sensitivity_intercept
+        )
+        longitudinal_capacity = (
+            tire.longitudinal_mu_scale * load_factor * result.normal_loads
+        )
+        lateral_capacity = (
+            tire.lateral_mu_scale * load_factor * result.normal_loads
+        )
+        utilization = np.sqrt(
+            (result.longitudinal_forces / longitudinal_capacity) ** 2
+            + (result.lateral_forces / lateral_capacity) ** 2
+        )
+        self.assertLessEqual(float(np.max(utilization)), 1.0 + 1.0e-7)
+
+        commanded_force = (
+            result.throttle * result.drive_force_limit
+            - result.brake * result.brake_force_limit
+        )
+        np.testing.assert_allclose(
+            commanded_force,
+            np.sum(result.longitudinal_forces, axis=1),
+            atol=1.0e-8,
+        )
+        self.assertFalse(
+            np.any((result.throttle > 0.0) & (result.brake > 0.0))
+        )
+        mild_deceleration = result.longitudinal_acceleration < 0.0
+        self.assertTrue(np.any(mild_deceleration & (result.throttle > 0.0)))
+
+
+class AssembledMisRegressionTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.vehicle = load_point_mass_vehicle(
+            REPOSITORY_ROOT / "models/formulations/murphy_point_mass.xml"
+        )
+        cls.track = load_track(TRACK_PATH)
+        cls.result = solve_lap(cls.vehicle, cls.track, LapMode.FLYING, tolerance=1.0e-6)
+
+    def test_assembled_flying_lap_matches_reported_reference(self) -> None:
+        self.assertTrue(self.result.converged)
+        self.assertEqual(self.vehicle.drivetrain.powertrain.motor_mode, "lut")
+        # W4 (400-600 V axis): 69.19177483621608 s.  The 2.5 us shift from the
+        # pre-W4 pin 69.1917773155225 s comes from speed-solve coupled voltages
+        # below the old 530 V floor moving from exact fallback to in-domain
+        # interpolation; the analytical reference is unchanged.
+        self.assertAlmostEqual(self.result.lap_time, 69.19177483621608, places=6)
+        self.assertGreater(self.result.motor_forward_queries, 0)
+        self.assertGreater(self.result.motor_inverse_queries, 0)
+        self.assertEqual(len(self.result.speed), GOLDEN_NODE_COUNT)
+
+    def test_explicit_analytical_reference_remains_available(self) -> None:
+        analytical = replace(
+            self.vehicle,
+            drivetrain=replace(
+                self.vehicle.drivetrain,
+                powertrain=replace(
+                    self.vehicle.drivetrain.powertrain, motor_mode="analytical"
+                ),
+            ),
+        )
+        result = solve_lap(analytical, self.track, LapMode.FLYING, tolerance=1.0e-6)
+        self.assertTrue(result.converged)
+        self.assertAlmostEqual(result.lap_time, 69.19098996790376, places=6)
+        self.assertLess(abs(result.lap_time - self.result.lap_time), 0.001)
+        self.assertLess(float(np.max(np.abs(result.speed - self.result.speed))), 0.05)
+
+    def test_exact_cache_default_keeps_cache_approximation_disabled(self) -> None:
+        self.assertEqual(self.result.drive_cache_max_speed_displacement, 0.0)
+        self.assertEqual(self.result.drive_cache_max_soc_displacement, 0.0)
+
+    def test_quantized_cache_stays_within_mis_policy(self) -> None:
+        quantized = solve_lap(
+            self.vehicle,
+            self.track,
+            LapMode.FLYING,
+            tolerance=1.0e-6,
+            drive_cache_policy=DriveCachePolicy(1.0e-3, 1.0e-5),
+        )
+        self.assertTrue(quantized.converged)
+        self.assertLess(abs(quantized.lap_time - self.result.lap_time), 0.01)
+        self.assertLessEqual(float(np.max(quantized.speed)), maximum_vehicle_speed(self.vehicle) + 1.0e-8)
+        self.assertGreater(quantized.drive_cache_hits, 0)
+        self.assertGreater(quantized.drive_cache_max_speed_displacement, 0.0)
+
+
+if __name__ == "__main__":
+    unittest.main()

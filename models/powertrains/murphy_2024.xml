@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<model schema-version="1.0" id="murphy-2024-powertrain" type="powertrain-assembly" subtype="electric">
+    <components>
+        <component role="power-plant" ref="../power-plants/amk_dd5_100c.xml"/>
+        <component role="energy-storage" ref="../energy-storages/murphy_2024_battery.xml"/>
+    </components>
+</model>

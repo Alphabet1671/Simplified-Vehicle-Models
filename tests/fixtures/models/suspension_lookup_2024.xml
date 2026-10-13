@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- This test fixture is a suspension lookup table.
+     It provides the suspension-load-transfer capability.
+     No current formulation requests that capability.
+     tests/test_cross_fidelity.py registers the fixture schema type.
+     This file declares no suspension physics. -->
+<model schema-version="1.0" id="fixture-suspension-lookup-2024" type="suspension-model" subtype="lookup-table">
+    <parameters>
+        <parameter name="front_roll_stiffness" value="12000" unit="N*m/rad"/>
+        <parameter name="rear_roll_stiffness" value="14000" unit="N*m/rad"/>
+        <parameter name="front_ride_height" value="0.075" unit="m"/>
+        <parameter name="rear_ride_height" value="0.08" unit="m"/>
+        <parameter name="motion_ratio" value="1.4" unit="1"/>
+    </parameters>
+</model>

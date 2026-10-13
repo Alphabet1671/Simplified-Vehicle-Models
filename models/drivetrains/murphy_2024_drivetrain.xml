@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<model schema-version="1.0" id="murphy-2024-drivetrain" type="drivetrain-assembly" subtype="electric-four-wheel">
+    <components>
+        <component role="transmission" ref="../transmissions/murphy_2024_fixed_gear.xml"/>
+    </components>
+</model>

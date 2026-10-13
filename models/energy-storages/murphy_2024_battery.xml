@@ -1,0 +1,13 @@
+<model schema-version="1.0" id="murphy-2024-battery" type="energy-storage" subtype="battery-pack">
+  <parameters>
+    <parameter name="series_count" value="144" unit="1"/>
+    <parameter name="parallel_count" value="1" unit="1"/>
+    <parameter name="discharge_current_limit" value="200" unit="A"/>
+    <parameter name="charge_current_limit" value="100" unit="A"/>
+    <parameter name="cell_capacity" value="14.146" unit="A*h"/>
+    <parameter name="minimum_cell_voltage" value="3.117" unit="V"/>
+    <parameter name="maximum_cell_voltage" value="4.227" unit="V"/>
+    <!-- Start at the no-load regulation voltage, not full charge. -->
+    <parameter name="initial_bus_voltage" value="600" unit="V"/>
+  </parameters>
+</model>

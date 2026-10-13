@@ -1,0 +1,1 @@
+"""Provide electric powertrain components."""

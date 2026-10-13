@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- This test fixture is the reduction assembly for the test-only adapter.
+     The tire role holds a transient tire.
+     No component provides tire-force-envelope directly.
+     A registered adapter must reduce transient-combined-slip to tire-force-envelope. -->
+<model schema-version="1.0" id="fixture-murphy-2024-reduced" type="vehicle-assembly" subtype="four-wheel">
+    <parameters>
+        <parameter name="total_mass" value="299.0" unit="kg"/>
+        <parameter name="wheelbase" value="1.535" unit="m"/>
+        <parameter name="track_width" value="1.016" unit="m"/>
+        <parameter name="cg_height" value="0.3" unit="m"/>
+        <parameter name="front_mass_fraction" value="0.47" unit="1"/>
+        <parameter name="lateral_load_transfer_distribution" value="0.44" unit="1"/>
+        <parameter name="brake_bias" value="0.65" unit="1"/>
+    </parameters>
+    <components>
+        <component role="tire" ref="transient_comp_2024.xml"/>
+        <component role="aero" ref="../../../models/aero/murphy_2024.xml"/>
+        <component role="drivetrain" ref="../../../models/drivetrains/murphy_4wd.xml"/>
+    </components>
+</model>

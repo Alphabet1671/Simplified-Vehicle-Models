@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- This test fixture compiles the point-mass model against the Promise 1 fixture. -->
+<model schema-version="1.0" id="fixture-murphy-point-mass" type="vehicle-formulation" subtype="point-mass">
+    <source ref="fixture_four_wheel.xml"/>
+</model>

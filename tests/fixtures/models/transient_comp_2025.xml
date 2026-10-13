@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- This test fixture is a second transient tire.
+     Promise 2 adds this component to the fixture assembly.
+     The point-mass formulation does not request its capability. -->
+<model schema-version="1.0" id="fixture-transient-comp-2025" type="tire-model" subtype="transient-combined-slip">
+    <parameters>
+        <parameter name="relaxation_length" value="0.18" unit="m"/>
+        <parameter name="cornering_stiffness" value="48000" unit="N/rad"/>
+        <parameter name="longitudinal_slip_stiffness" value="64000" unit="N"/>
+        <parameter name="effective_radius" value="0.2032" unit="m"/>
+    </parameters>
+</model>

@@ -1,6 +1,6 @@
 # Architecture-compatible 800 V motor-model options
 
-Status: proposal only. The current production cap stays at 600 V. The LUT has been promoted independently of this proposal.
+Status: **Option 1 approved and implemented.** The production cap stays at 600 V; the canonical pack starts at 600 V OCV (SOC 0.9617234998917527), not full charge. Explicit 800 V solver/LUT tests cover the corrected equations; they do not certify the present hardware. Options 2 and 3 remain alternatives. The findings and in-memory experiment below describe the pre-fix diagnosis.
 
 ## Finding: solve a voltage inequality, not an equality
 

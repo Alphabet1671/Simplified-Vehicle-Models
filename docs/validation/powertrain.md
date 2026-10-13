@@ -274,7 +274,7 @@ attribution section. Key findings:
 ## Reference checks and assumptions
 
 Legacy MIS flying and standing-start golden results remain 69.22653728547469 s
-and 70.38955050759907 s. The assembled flying reference is 69.20391204362008 s (promoted LUT default); explicit analytical mode remains 69.20459210208878 s (Task 9; was 69.20462625809404 s after the Task 8 fix and 69.20128624364081 s before it)
+and 70.38955050759907 s. The assembled flying reference is 69.1917773155225 s (Fix 1, regulation-voltage start, LUT default); explicit analytical mode is 69.19098996790376 s (24-step reference). Historical pins were 69.20391204362008 s (promoted LUT), 69.20459210208878 s (Task 9 analytical), 69.20462625809404 s (Task 8 analytical), and 69.20128624364081 s (before the pack-power unit fix)
 s. The motor-speed ceiling is 34.60897 m/s, while the MIS peak is below that
 ceiling; MIS is therefore not a voltage-field-weakening regression track.
 
@@ -395,7 +395,7 @@ fallback 104,716 / 24,619 / 1,725. Correctness sweep (SOC 1.0-0.02, 0-38 m/s,
 the clamped voltage-scaled cap (1,890 limit queries), max |dF| 16.55 N, mean
 2.82 N, 0 zero-versus-nonzero force mismatches.
 
-## LUT default promotion (user approved)
+## LUT default promotion (user approved; measurements superseded by Fix 1 below)
 
 `PowertrainParameters.motor_mode` now defaults to `"lut"`; explicit
 `"analytical"` mode and exact out-of-domain fallback remain available. The
@@ -414,9 +414,107 @@ voltage instead of comparing power against the post-update reported voltage;
 its six-decimal power tolerance is unchanged. No source-model equation,
 battery data, voltage limit or LUT artifact was changed by promotion.
 
-The 800 V source-model redesign is proposed, not implemented, in
+At promotion time, the 800 V source-model redesign was proposed, not implemented, in
 [Architecture-compatible 800 V options](../superpowers/specs/2026-10-12-motor-800v-options.md).
 The underlying issue is forcing a voltage-boundary equality when zero d-axis
 current already satisfies the voltage inequality, not merely picking the wrong
 quadratic root. A software voltage clamp does not establish regulatory
 compliance of an over-voltage battery or represent a physical DC/DC converter.
+
+## Approved Fix 1 and regulation-voltage starting charge
+
+The shared analytical motor now solves the dq **voltage inequality**, returning
+`id=0` with headroom and a stable minimum-magnitude boundary root only when the
+voltage constraint binds. Negative available voltage is infeasible. At/above
+the fixed 600 V reference, measured map losses are retained without a guessed
+efficiency credit or a fake added loss. Below reference, only nonnegative extra
+d-axis copper loss is added. The calibration/reference solve uses the fixed
+identification voltage without the regulatory clamp; actual motor queries are
+still clamped. A high-voltage feasible point no longer requires feasibility at
+the reference voltage.
+
+The source-equation guard that asserted huge high-voltage draw has been
+replaced with small-draw regressions. At 650–800 V, zero-torque draw is now
+0 W at standstill, 3.57 W at 145 rpm, and 23.17 W at 1,000 rpm per motor.
+The 1,565.57 W at 18,000 rpm is retained source-map loss, not fake headroom loss.
+An explicitly configured 800 V test motor generates a separate 600–800 V
+25x129x65 LUT and checks forward/exact node agreement, signed inverse power
+constraints, productive regen masks and the absence of collapsed low-speed
+envelopes. These tests do not certify an 800 V hardware conversion.
+
+**Starting charge.** Battery XML now specifies `initial_bus_voltage=600 V`
+instead of full SOC. The monotone measured OCV curve is inverted to
+`initial_state_of_charge=0.9617234998917527` (96.17235%). The compiled solver
+interface still consumes SOC. Battery XML must specify exactly one of initial
+SOC or initial bus voltage; invalid/out-of-range voltage and ambiguous
+configuration are rejected. The full-charge OCV remains 608.688 V: we restrict
+starting charge, not the physical source curve or nominal capacity. The
+powertrain compiler rejects starting OCV above `maximum_bus_voltage`. Use
+open-circuit/no-load voltage for this configuration; loaded terminal voltage
+depends on current. Raising the competition limit does not silently alter the
+battery start voltage or certify the motor/inverter hardware.
+
+**Artifact.** Generator `motor-lut-v5`, analytical model
+`dq-inequality-conservative-v1`, canonical axis still 530–600 V.
+SHA-256 `78f5992cd7ab11649540e00cef49e6d2e798fc4ea3d465c4f32928fd0487b2f6`.
+Two regenerations are byte-identical. Drive monotonic violations and
+monotonicity-induced envelope reductions are both zero. Loader checks the
+embedded model version/source fingerprint in addition to the declared digest,
+so a correctly hashed stale table cannot silently use the new exact fallback.
+
+**Reference accuracy and timing disclosure.** The first corrected-model run
+retained the old 8-step analytical bisection: analytical median 8.983 s, LUT
+5.036 s (1.784x), analytical lap 69.1928124620338 s, LUT lap
+69.1917773155225 s, displacement -1.035 ms / 0.007959 m/s. The lap gate missed
+by 0.035 ms. A 12-step probe gave analytical lap 69.19110606344084 s; 24 steps
+gave 69.19098996790376 s. The old 8-step lower-bound torque search therefore
+biased the analytical lap by 1.822 ms. Explicit analytical mode now uses
+24 steps (about 1.3e-6 Nm torque interval) as a more accurate reference; this
+does not change the production LUT hot path. Its extra compute must not be
+represented as an additional optimization of the LUT.
+
+Final isolated three-run comparison:
+
+| Gate | Measurement | Result |
+|---|---|---|
+| Median wall time | analytical reference 15.597 s; LUT 5.099 s | PASS (3.059x versus tightened reference; 1.784x versus old 8-step solve) |
+| Absolute lap delta ≤1 ms | +0.787 ms | PASS |
+| Maximum pointwise speed displacement ≤0.05 m/s | 0.022211 m/s | PASS |
+| Both converged | yes / yes | PASS |
+
+Current pinned laps: LUT default 69.1917773155225 s, explicit analytical
+69.19098996790376 s. LUT forward / inverse / fallback counts are
+98,550 / 18,580 / 301. These lap changes combine the approved source-model
+correction, reduced starting charge, and (for analytical mode) tightened torque
+solve; the legacy lumped MIS pins are unchanged.
+
+**Safety evidence.** SOC/speed sweep: 693 points per mode, zero pack-discharge
+violations, zero zero/nonzero force mismatches; maximum / mean force difference
+15.763 / 0.221 N. Voltage/speed cap sweep: 4,884 drive/regen queries, zero cap
+violations above 1e-3 Nm (maximum excess 1.389e-6 Nm). Signed-torque dq sweep
+from 300 to 800 V: 8,009 feasible points, zero voltage-inequality violations,
+finite nonnegative losses; all 7,365 headroom points return zero d-axis current.
+
+**Remaining scope.** Starting at regulation OCV is not a guarantee that every
+regenerative charging event stays below the voltage limit: charging raises
+terminal voltage and needs voltage headroom/charge-control constraints.
+Regeneration remains opt-in; this change does not introduce a new charge
+controller. The existing two-pass voltage coupling and recovered-energy unit
+accounting limitations are not corrected by Fix 1. Option 1 remains a
+conservative voltage-dependent approximation, not full MTPA/current-limit
+optimization or a calibrated 800 V efficiency map.
+
+Full regression discovery after these changes: **283 tests pass** (87.332 s).
+The initial full run exposed an energy test hard-coded to SOC 1.0; it now
+asserts the compiled regulation-voltage SOC and the new numerical pin, rather
+than assuming a full pack. Reproduction commands:
+
+```text
+PYTHONPATH=src python3 -m unittest discover -s tests -q
+PYTHONPATH=src python3 examples/benchmark_soc_solver.py --mode compare --runs 3
+PYTHONPATH=src python3 tools/generate_motor_lut.py models/power-plants/amk_dd5_100c.xml /tmp/fix1-repro.npz --voltage-points 25 --speed-points 129 --load-points 65 --voltage-min 530 --voltage-max 600
+cmp models/data/amk_dd5_100c_operating_map.npz /tmp/fix1-repro.npz
+```
+
+Use the same configured Python runtime for tests, generation and benchmarks;
+all reported runs used the bundled Python 3.12 runtime.

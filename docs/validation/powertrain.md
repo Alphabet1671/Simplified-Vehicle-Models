@@ -164,10 +164,8 @@ zero-load power) uses the exact analytical fallback, which is observable through
 the LUT counters.
 
 The canonical map is the regenerated 25x129x65 NPZ with SHA-256
-`0fe463ea9f8c74a7b29aa2f7ebdb17aa8b376d9a38dfcd9dd4dee4723ee1eeb9` and
-generator `motor-lut-v3` (drive/regen envelopes capped at the voltage-scaled map envelope; see Task 8). The voltage axis was extended from 448.848-608.688 V to
-530-620 V to cover the observed loaded terminal voltage range (553.20-608.69 V)
-with margin. It is reproducible byte-for-byte from:
+`166bf1346d263267224f77fe7396ab15180e0c2f54391652fee28f8575fcfc5b` and
+generator `motor-lut-v4` (drive/regen envelopes capped at the voltage-scaled map envelope, Task 8; voltage axis 530-600 V because bus voltage is clamped to `maximum_bus_voltage` = 600 V, Task 9; the Task 8 map was `0fe463ea...1eeb9` on 530-620 V). It is reproducible byte-for-byte from:
 
 ```text
 PYTHONPATH=src <bundled python3> tools/generate_motor_lut.py \
@@ -193,14 +191,14 @@ retains the full speed arrays and computes `max(abs(lut.speed -
 analytical.speed))`, along with median/min wall time, lap delta, force residual,
 query/fallback counters, and map-load cost.
 
-### Measured result (bd861e4)
+### Measured result (bd861e4) - SUPERSEDED by Tasks 8 and 9 (see the Task 9 section for current figures)
 
 | Quantity | Analytical | LUT | Gate | Result |
 |---|---|---|---|---|
-| Lap time | 69.201286244 s | 69.21108300 s | delta <= 1 ms | +9.797 ms, **fail** |
+| Lap time | 69.201286244 s | 69.21108300 s | delta <= 1 ms | +9.797 ms, **fail** (superseded) |
 | Max pointwise speed displacement | - | 0.134642 m/s | <= 0.05 m/s | **fail** |
 | Converged | yes | yes | both converged | pass |
-| Median wall time (runs=3) | 8.253 s | 4.394 s | LUT < analytical | **pass** (1.878x) |
+| Median wall time (runs=3) | 8.253 s | 4.394 s | LUT < analytical | **pass** (1.878x, superseded) |
 | Force residual max | 6.821e-13 | 6.821e-13 | existing tolerances | pass |
 | LUT forward / inverse / fallback queries | - | 105,166 / 24,856 / 0 | observable | pass (zero fallback) |
 
@@ -272,7 +270,7 @@ attribution section. Key findings:
 ## Reference checks and assumptions
 
 Legacy MIS flying and standing-start golden results remain 69.22653728547469 s
-and 70.38955050759907 s. The assembled flying reference is 69.20462625809404 s (was 69.20128624364081 s before the Task 8 per-motor discharge-limit fix)
+and 70.38955050759907 s. The assembled flying reference is 69.20459210208878 s (Task 9; was 69.20462625809404 s after the Task 8 fix and 69.20128624364081 s before it)
 s. The motor-speed ceiling is 34.60897 m/s, while the MIS peak is below that
 ceiling; MIS is therefore not a voltage-field-weakening regression track.
 
@@ -315,11 +313,73 @@ two regenerations are byte-identical).
 significant, so the 14 of 3,072 cells that straddle a zero/non-zero envelope
 corner are never interpolated: `_envelope_cliff_cell` routes them to the exact
 oracle (forward, limits, inverse). After that, no LUT limit exceeds the cap by
-more than 1e-5 Nm above 300 rpm (0.108 Nm below 300 rpm, from interpolation of
+more than 1e-5 Nm above 300 rpm (measured 0.1359 Nm at most, at 530 V / 88.35 rpm, below 300 rpm - an earlier 0.108 Nm figure was wrong - from interpolation of
 the source envelope's own breakpoints); everywhere the cap is 0 the LUT returns 0.
 
 **C. Residual attribution** (after A and B; see task-4-report.md for numbers).
-The +9.797 ms / 0.1346 m/s displacement is gone: LUT 69.20391185 s vs analytical
+The +9.797 ms / 0.1346 m/s displacement (and the 1.878x speedup quoted for bd861e4, both superseded) is gone: LUT 69.20391185 s vs analytical
 69.20462626 s (-0.714 ms), max displacement 0.004999 m/s. The remaining
 difference is an accepted approximation difference, dominated by the analytical
 8-step bisection (a lower bound on the torque), not a defect.
+
+
+## Task 9: regulatory bus-voltage clamp (`maximum_bus_voltage`)
+
+**Root cause.** `evaluate_shaft_power_exact` adds a field-weakening correction
+`R*1.5*(id(V)^2 - id(600 V)^2)`, clamped at zero below the 600 V motor
+identification voltage but large and positive above it (the smallest-magnitude
+d-axis root grows with available voltage at low speed). At zero torque and
+145 rpm the per-motor bus draw was 3.58 W at 560-600 V but 3,004 W at 601.25 V
+and 48,762 W at 620 V; at the SOC 1.0 OCV of 608.688 V it was 21,780 W at 0 rpm.
+Drive bus power therefore fell with torque at low speed and the generator's
+monotone-drive bisection collapsed the envelope to ~1e-10 Nm at 26 map nodes
+(601-620 V, 0-581 rpm) where the exact limit is 21.4-21.8 Nm. The analytical
+default was affected too whenever terminal voltage exceeded 600 V (SOC > ~0.96).
+
+**Decision (user).** 600 V is the regulatory DC bus voltage limit; exceeding it
+is a disqualification. The power-plant XML parameter `maximum_bus_voltage`
+(unit V, 600 for the AMK DD5-100C) is compiled into `PowerPlantParameters`
+(validated positive and finite). It is the regulatory limit and is deliberately
+separate from `reference_bus_voltage` (the voltage at which the motor was
+identified); both are 600 V today but the former can become 800 V.
+
+**Choke point.** `limit_bus_voltage(parameters, v) = min(v, maximum_bus_voltage)`.
+It is applied inside `calculate_available_voltage` and `maximum_motor_torque`
+(which every analytical path, the voltage-scaled envelope and the exact oracle
+call), at the top of `evaluate_shaft_power_exact`, `_lut_forward`,
+`motor_torque_limits`, `torque_for_bus_power`, `lut_bus_power_range` and
+`_exact_limit`. Because the clamp lives in the primitives, out-of-map fallbacks,
+the generator and the assembly (which now calls `voltage_scaled_envelope`
+instead of re-deriving `V/sqrt(3)`) cannot bypass it. Battery OCV, resistance,
+current and SOC are not clamped; only what the motor and inverter see is.
+
+**Disclosures.** The canonical pack's 608.7 V OCV at SOC 1.0 itself exceeds the
+600 V limit; battery data were not changed. Raising `maximum_bus_voltage` above
+the 600 V motor reference (e.g. 800 V) would re-expose the above-reference
+field-weakening correction defect, which then needs a source-model fix (d-axis
+root choice) before use.
+
+**Map.** 530-600 V x 0-18,600 rpm x 65 loads, `motor-lut-v4`, SHA-256
+`166bf1346d263267224f77fe7396ab15180e0c2f54391652fee28f8575fcfc5b`; two
+regenerations are byte-identical. No near-zero drive node remains below the
+17,700 rpm cap corner.
+
+**Golden lap.** The assembled analytical flying lap changes from
+69.20462625809404 s to 69.20459210208878 s (-0.034 ms) because the flying lap
+starts at SOC 1.0 (608.7 V terminal), which is now clamped to 600 V for the
+motor. Pinned in `tests/test_mis_regression.py`.
+
+**Review findings closed.** Cliff detector now uses a 1e-6 Nm tolerance instead
+of exact 0.0; the envelope test is two-sided against the exact limit; low-speed
+overshoot is 0.1359 Nm (test slack 0.14); `motor_torque_limits` fallbacks are
+counted in `limit_fallback`; stale 1.878x / +9.797 ms figures are marked
+superseded.
+
+**Task 9 measurements** (`examples/benchmark_soc_solver.py --mode compare --runs 3`, run alone):
+analytical median wall 9.007 s, lap 69.20459210 s; LUT median wall 5.193 s
+(1.735x), lap 69.20391204 s; lap delta -0.680 ms; max pointwise speed
+displacement 0.003946 m/s; both converged; LUT counters forward / inverse /
+fallback 104,716 / 24,619 / 1,725. Correctness sweep (SOC 1.0-0.02, 0-38 m/s,
+693 points per mode): 0 pack-limit violations in both modes, 0 LUT limits above
+the clamped voltage-scaled cap (1,890 limit queries), max |dF| 16.55 N, mean
+2.82 N, 0 zero-versus-nonzero force mismatches.

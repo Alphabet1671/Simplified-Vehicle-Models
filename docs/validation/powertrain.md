@@ -164,8 +164,8 @@ zero-load power) uses the exact analytical fallback, which is observable through
 the LUT counters.
 
 The canonical map is the regenerated 25x129x65 NPZ with SHA-256
-`31cfadc88b66d1425d210ad71cbc85ba0dea75564903014a1075efb7669d5fe9` and
-generator `motor-lut-v2`. The voltage axis was extended from 448.848-608.688 V to
+`0fe463ea9f8c74a7b29aa2f7ebdb17aa8b376d9a38dfcd9dd4dee4723ee1eeb9` and
+generator `motor-lut-v3` (drive/regen envelopes capped at the voltage-scaled map envelope; see Task 8). The voltage axis was extended from 448.848-608.688 V to
 530-620 V to cover the observed loaded terminal voltage range (553.20-608.69 V)
 with margin. It is reproducible byte-for-byte from:
 
@@ -280,3 +280,46 @@ The model assumes quasi-static battery terminal voltage, fixed ratio and motor
 count, reference iron/mechanical losses, planar unsigned-radius track geometry,
 and a perfect-limit point-mass driver. Full state-coupled 22-lap regen remains
 an open performance/validation item.
+
+
+## Task 8: unit-bug fix, voltage-scaled envelope, residual attribution
+
+Three defects were diagnosed on 17f8d69 and fixed in separate commits.
+
+**A. Per-motor power compared with the pack limit (analytical default).**
+`maximum_drive_force` compared per-motor `bus_power` with the PACK
+`discharge_power_limit`, so each motor could draw the whole pack limit (17 of 378
+points over the limit; worst SOC 1.0 / 17.5 m/s: 102,775 W vs 100,495 W). The
+bug pre-dates the LUT (present at 9aedaf6). The analytical branch now compares
+with `discharge_power_limit / unit_count`, as the LUT branch always did. The
+legacy lumped path clamps total bus power to the pack limit and does not have
+this bug. **The canonical assembled flying lap changes from 69.20128624364081 s
+to 69.20462625809404 s (+3.34 ms); this is intended.** Regression test:
+`test_drive_limit_never_exceeds_pack_discharge_limit_in_both_modes`.
+
+**B. Voltage-scaled envelope.** The analytical path bisects inside
+`maximum_motor_torque(V/sqrt(3))`, which scales the 600 V map speed axis and is a
+hard zero once the scaled speed passes 20,000 rpm. The generator and the
+out-of-map `_exact_limit` used only electrical feasibility. Both now use
+`voltage_scaled_envelope` (= `maximum_motor_torque(V/sqrt(3))`), so
+drive = min(voltage-scaled envelope, electrical feasibility). The regen envelope
+gets the same cap: the analytical regen path uses the same
+`maximum_motor_torque(V/sqrt(3))` as its torque limit, so it is the reference.
+The map was regenerated (generator `motor-lut-v3`, SHA-256 `0fe463ea...1eeb9`;
+two regenerations are byte-identical).
+
+*Cliff interpolation.* The cap drops from ~10-20 Nm to 0 along a diagonal in
+(V, speed). Bilinear interpolation across such a cell smeared the step by up to
+10.4 Nm over / 9.5 Nm under the exact value (3,614 of 4,991 probe points in the
+17,000-18,600 rpm, 530-560 V region differed by more than 1e-6 Nm). That is
+significant, so the 14 of 3,072 cells that straddle a zero/non-zero envelope
+corner are never interpolated: `_envelope_cliff_cell` routes them to the exact
+oracle (forward, limits, inverse). After that, no LUT limit exceeds the cap by
+more than 1e-5 Nm above 300 rpm (0.108 Nm below 300 rpm, from interpolation of
+the source envelope's own breakpoints); everywhere the cap is 0 the LUT returns 0.
+
+**C. Residual attribution** (after A and B; see task-4-report.md for numbers).
+The +9.797 ms / 0.1346 m/s displacement is gone: LUT 69.20391185 s vs analytical
+69.20462626 s (-0.714 ms), max displacement 0.004999 m/s. The remaining
+difference is an accepted approximation difference, dominated by the analytical
+8-step bisection (a lower bound on the torque), not a defect.

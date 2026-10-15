@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<model schema-version="1.0" id="iem24-murphy-real-rear-motors" type="power-plant" subtype="electric-motor">
+    <parameters>
+        <parameter name="unit_count" value="2" unit="1" />
+        <parameter name="maximum_motor_speed" value="18600" unit="rpm" />
+        <parameter name="unit_power_limit" value="20000" unit="W" />
+        <parameter name="inverter_efficiency" value="0.95" unit="1" />
+        <parameter name="device_drop" value="0" unit="V" />
+        <parameter name="maximum_bus_voltage" value="600" unit="V" />
+    </parameters>
+    <data role="operating-map" path="../data/amk_dd5_100c_operating_map.npz" format="npz" sha256="79a615bb836054818aecc45cd6c7a7d5bdb02967c9dea8d16a0eb26a93559448" />
+</model>

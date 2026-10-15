@@ -8,6 +8,7 @@ from simplified_vehicle_models.controls.brakes import (
     maximum_brake_torques,
 )
 from simplified_vehicle_models.controls.steering import AckermannTable
+from simplified_vehicle_models.drivetrain.controller import PedalControllerParameters
 from simplified_vehicle_models.parameters.aero import AeroParameters
 from simplified_vehicle_models.parameters.drivetrain import DrivetrainParameters
 from simplified_vehicle_models.core.types import FloatArray
@@ -41,6 +42,10 @@ class PointMassVehicleParameters:
     tire: TireEnvelopeParameters | UniTirePeakEnvelope
     aero: AeroParameters
     drivetrain: DrivetrainParameters
+    #: Let an inside wheel lift at zero load and move the unreacted roll
+    #: moment to the other axle (see ``quasi_static.lateral_transfer_loads``).
+    #: False keeps the historic fixed-distribution transfer.
+    wheel_lift: bool = False
     manifest: CompileManifest | None = field(
         default=None,
         compare=False,
@@ -97,6 +102,9 @@ class PlanarVehicleParameters:
     storage: EnergyStorageParameters
     aero: AeroParameters
     drivetrain: DrivetrainParameters
+    controller: PedalControllerParameters = field(
+        default_factory=PedalControllerParameters
+    )
     manifest: CompileManifest | None = field(
         default=None,
         compare=False,

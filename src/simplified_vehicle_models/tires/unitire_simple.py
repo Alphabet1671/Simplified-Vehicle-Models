@@ -456,6 +456,14 @@ def compile_unitire_simple(model: Model) -> UniTireSimpleParameters:
             for element in elements
         }
     }
+    # Compute effective radius from loaded radius at rated load
+    # For point-mass compatibility, use loaded_radius at f_z_rated
+    from simplified_vehicle_models.tires.unitire_simple import loaded_radius
+    rated_load = scalars.get("f_z_rated", 1000.0)
+    # Create a temporary parameters object to compute loaded radius
+    temp_params = UniTireSimpleParameters(**scalars, **vectors, effective_radius=0.0)
+    effective_radius = float(loaded_radius(temp_params, rated_load))
+    scalars["effective_radius"] = effective_radius
     return UniTireSimpleParameters(**scalars, **vectors)
 
 

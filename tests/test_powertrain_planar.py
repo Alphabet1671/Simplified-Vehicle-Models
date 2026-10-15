@@ -7,9 +7,15 @@ import unittest
 import numpy as np
 
 from simplified_vehicle_models.compiler.compile import compile_formulation
+from simplified_vehicle_models.drivetrain.fixed_split import (
+    DRIVE_FRONT_FRACTION,
+    wheel_shares,
+)
 from simplified_vehicle_models.powertrain.assembly import (
     compile_powertrain_drivetrain,
     maximum_drive_force,
+    maximum_regen_force,
+    resolve_braking,
 )
 from simplified_vehicle_models.powertrain.energy_storage import (
     StorageState,
@@ -36,7 +42,7 @@ from simplified_vehicle_models.xml.loader import load_model
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
-FORMULATION_PATH = REPOSITORY_ROOT / "models/formulations/placeholder_planar_7dof.xml"
+FORMULATION_PATH = REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_planar_7dof.xml"
 MOTOR_PATH = REPOSITORY_ROOT / "models/power-plants/placeholder_2024_motor.xml"
 
 RPM_TO_RAD = 2.0 * math.pi / 60.0
@@ -101,6 +107,21 @@ class MotorEnvelopeTests(unittest.TestCase):
 
         self.assertEqual(above, 0.0)
         self.assertGreater(below, 0.0)
+
+    def test_the_loaded_voltage_speed_bound_stops_the_motor(self) -> None:
+        voltage = 450.0
+        nominal_limit = motor_speed_limit(self.motor, 600.0)
+        loaded_limit = motor_speed_limit(self.motor, voltage)
+
+        self.assertEqual(
+            float(motor_torque_limit(self.motor, loaded_limit * 1.01, voltage)),
+            0.0,
+        )
+        self.assertGreater(
+            float(motor_torque_limit(self.motor, loaded_limit * 0.99, voltage)),
+            0.0,
+        )
+        self.assertGreater(nominal_limit, loaded_limit)
 
     def test_the_wheel_speed_limit_is_the_motor_limit_over_the_gear(self) -> None:
         self.assertAlmostEqual(
@@ -222,13 +243,18 @@ class DriveLimitTests(unittest.TestCase):
         )
 
     def test_high_speed_is_power_limited(self) -> None:
-        result = self._limits(30.0)
+        motor = replace(self.motor, peak_power=10_000.0)
+        result = evaluate_drive_limits(
+            motor,
+            np.full(4, 30.0 / 0.192),
+            self.voltage,
+            self.storage,
+            self.state,
+        )
 
         self.assertLess(
             float(result.wheel_torque_limits[0]),
-            self.motor.peak_motor_torque
-            * self.motor.gear_ratio
-            * self.motor.motor_efficiency,
+            motor.peak_motor_torque * motor.gear_ratio * motor.motor_efficiency,
         )
 
     def test_above_the_speed_limit_the_drive_is_zero(self) -> None:
@@ -289,7 +315,7 @@ class DriveLimitTests(unittest.TestCase):
 
     def test_point_mass_drive_limit_accepts_the_smooth_motor_envelope(self) -> None:
         vehicle_model = load_model(
-            REPOSITORY_ROOT / "models/vehicles/placeholder_2024_formula.xml"
+            REPOSITORY_ROOT / "models/vehicles/iem24_murphy_real_planar.xml"
         )
         runtime = compile_powertrain_drivetrain(vehicle_model)
         state = StorageState(
@@ -313,12 +339,100 @@ class DriveLimitTests(unittest.TestCase):
             ).discharge_power_limit + 1.0e-6,
         )
 
+    def test_point_mass_drive_limit_uses_rear_motor_shares(self) -> None:
+        vehicle_model = load_model(
+            REPOSITORY_ROOT / "models/vehicles/iem24_murphy_real_planar.xml"
+        )
+        runtime = compile_powertrain_drivetrain(vehicle_model)
+        state = StorageState(
+            runtime.powertrain.energy_storage.initial_state_of_charge
+        )
+        unit_count = runtime.powertrain.power_plant.unit_count
+        shares = np.full(unit_count, 1.0 / unit_count)
+        limit = maximum_drive_force(
+            runtime.powertrain,
+            runtime.drivetrain,
+            speed=5.0,
+            state=state,
+            effective_radius=0.204,
+            wheel_shares=shares,
+        )
+
+        self.assertEqual(runtime.drivetrain.transmission.driven_wheels, ("rl", "rr"))
+        self.assertAlmostEqual(float(np.sum(shares)), 1.0)
+        self.assertGreater(limit.maximum_drive_force, 0.0)
+
+    def test_smooth_motor_braking_blends_regen_and_friction_under_charge_limit(self) -> None:
+        runtime = compile_powertrain_drivetrain(
+            load_model(REPOSITORY_ROOT / "models/vehicles/iem24_murphy_real_planar.xml")
+        )
+        state = StorageState(
+            runtime.powertrain.energy_storage.initial_state_of_charge
+        )
+        shares = np.full(self.motor.unit_count, 1.0 / self.motor.unit_count)
+
+        limit = maximum_regen_force(
+            runtime.powertrain,
+            runtime.drivetrain,
+            speed=10.0,
+            state=state,
+            effective_radius=0.204,
+            wheel_shares=shares,
+        )
+        braking = resolve_braking(
+            runtime.powertrain,
+            runtime.drivetrain,
+            speed=10.0,
+            state=state,
+            braking_demand=5000.0,
+            tire_force_capacity=5000.0,
+            effective_radius=0.204,
+            wheel_shares=shares,
+        )
+
+        self.assertGreater(limit.force_limit, 0.0)
+        self.assertAlmostEqual(braking.regen_force_used, limit.force_limit)
+        self.assertGreater(braking.friction_force_used, 0.0)
+        self.assertLessEqual(
+            braking.recovered_bus_power,
+            abs(limit.charge_power_limit) + 1.0e-6,
+        )
+
+    def test_point_mass_energy_trace_records_smooth_regeneration_as_negative(self) -> None:
+        from simplified_vehicle_models.solvers.forward_backward import _energy_trace
+
+        runtime = compile_powertrain_drivetrain(
+            load_model(
+                REPOSITORY_ROOT / "models/vehicles/iem24_murphy_real_planar.xml"
+            )
+        )
+        soc = runtime.powertrain.energy_storage.initial_state_of_charge
+        vehicle = SimpleNamespace(
+            drivetrain=runtime,
+            tire=SimpleNamespace(effective_radius=0.204),
+        )
+        lap = SimpleNamespace(
+            speed=np.array([10.0, 10.0]),
+            elapsed_time=np.array([0.0, 0.1]),
+            longitudinal_forces=np.full((1, 4), -100.0),
+        )
+        track = SimpleNamespace(segment_length=np.array([1.0]))
+
+        bus, shaft, _voltage, _used, recovered, next_soc = _energy_trace(
+            vehicle, track, lap, np.array([soc, soc]), regen_enabled=True
+        )
+
+        self.assertLess(bus[0], 0.0)
+        self.assertLess(shaft[0], 0.0)
+        self.assertGreater(recovered, 0.0)
+        self.assertGreater(next_soc[-1], soc)
+
     def test_point_mass_energy_trace_uses_smooth_motor_efficiency(self) -> None:
         from simplified_vehicle_models.solvers.forward_backward import _energy_trace
 
         runtime = compile_powertrain_drivetrain(
             load_model(
-                REPOSITORY_ROOT / "models/vehicles/placeholder_2024_formula.xml"
+                REPOSITORY_ROOT / "models/vehicles/iem24_murphy_real_planar.xml"
             )
         )
         soc = runtime.powertrain.energy_storage.initial_state_of_charge

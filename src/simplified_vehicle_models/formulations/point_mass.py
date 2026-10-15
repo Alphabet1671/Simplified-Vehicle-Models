@@ -15,6 +15,10 @@ from simplified_vehicle_models.compiler.capabilities import (
 )
 from simplified_vehicle_models.aero import fixed_aero
 from simplified_vehicle_models.core.conventions import GRAVITY
+from simplified_vehicle_models.drivetrain.fixed_split import (
+    DRIVE_FRONT_FRACTION,
+    wheel_shares,
+)
 from simplified_vehicle_models.suspension import quasi_static
 from simplified_vehicle_models.core.types import FloatArray
 from simplified_vehicle_models.parameters.aero import AeroParameters
@@ -22,10 +26,12 @@ from simplified_vehicle_models.parameters.drivetrain import DrivetrainParameters
 from simplified_vehicle_models.parameters.tire import (
     TireEnvelopeParameters,
     UniTirePeakEnvelope,
+    UniTireSimpleParameters,
 )
 from simplified_vehicle_models.parameters.vehicle import PointMassVehicleParameters
 from simplified_vehicle_models.powertrain.assembly import (
     FullDrivetrainRuntime,
+    _default_motor_shares,
     maximum_drive_force,
 )
 from simplified_vehicle_models.powertrain.motor_envelope import (
@@ -228,6 +234,44 @@ class AccelerationLimits:
     coasting_state: EquilibriumState
 
 
+def point_mass_view_of_planar(vehicle) -> PointMassVehicleParameters:
+    """Return the point-mass reduction of a planar 7DoF vehicle.
+
+    The reduction shares the 7DoF vehicle's mass, geometry, load transfer,
+    aero, brake bias, and assembled drivetrain, and replaces its simplified
+    UniTire with that same tire's pure-slip peak force envelope, sampled at
+    every vertical load (``build_unitire_peak_envelope``). Wheel lift is
+    enabled, as in the 7DoF model's own load transfer. The point-mass
+    equilibrium then combines the per-wheel peaks with a friction ellipse.
+    """
+
+    from simplified_vehicle_models.tires.unitire_envelope import (
+        build_unitire_peak_envelope,
+    )
+
+    cached = _PLANAR_VIEW_CACHE.get(id(vehicle))
+    if cached is not None and cached[0] is vehicle:
+        return cached[1]
+    view = PointMassVehicleParameters(
+        total_mass=vehicle.total_mass,
+        wheelbase=vehicle.wheelbase,
+        track_width=vehicle.track_width,
+        cg_height=vehicle.cg_height,
+        front_mass_fraction=vehicle.front_mass_fraction,
+        lateral_load_transfer_distribution=vehicle.lateral_load_transfer_distribution,
+        brake_bias=vehicle.brake_bias,
+        tire=build_unitire_peak_envelope(vehicle.tire),
+        aero=vehicle.aero,
+        drivetrain=vehicle.drivetrain,
+        wheel_lift=True,
+    )
+    _PLANAR_VIEW_CACHE[id(vehicle)] = (vehicle, view)
+    return view
+
+
+_PLANAR_VIEW_CACHE: dict[int, tuple[object, PointMassVehicleParameters]] = {}
+
+
 def aerodynamic_forces(
     vehicle: PointMassVehicleParameters,
     speed: float,
@@ -259,6 +303,7 @@ def lateral_transfer_loads(
         track_width=vehicle.track_width,
         lateral_transfer_distribution=vehicle.lateral_load_transfer_distribution,
         lateral_acceleration=lateral_acceleration,
+        wheel_lift=vehicle.wheel_lift,
     )
 
 
@@ -309,6 +354,13 @@ def tire_force_capacities(
             contact_loads
         )
         return longitudinal_capacity, lateral_capacity
+    if isinstance(tire, UniTireSimpleParameters):
+        raise TypeError(
+            "the point-mass formulation needs a tire force envelope; reduce a "
+            "simplified UniTire with tires.unitire_envelope."
+            "build_unitire_peak_envelope (point_mass_view_of_planar does this "
+            "for a planar 7DoF vehicle)"
+        )
     load_factor = (
         tire.load_sensitivity_slope * contact_loads
         + tire.load_sensitivity_intercept
@@ -318,13 +370,21 @@ def tire_force_capacities(
     return longitudinal_mu * contact_loads, lateral_mu * contact_loads
 
 
-def maximum_vehicle_speed(vehicle: PointMassVehicleParameters) -> float:
-    """Calculate the speed limit from the compiled motor speed model."""
+def maximum_vehicle_speed(
+    vehicle: PointMassVehicleParameters,
+    storage_state: StorageState | None = None,
+) -> float:
+    """Calculate the no-load motor speed cap at the supplied SOC.
+
+    Loaded-voltage derating is enforced by the assembled drive limit at each
+    operating point. This state-dependent cap prevents a lower-SOC lap from
+    retaining the initial-SOC speed ceiling.
+    """
 
     if isinstance(vehicle.drivetrain, FullDrivetrainRuntime):
         motor = vehicle.drivetrain.powertrain.power_plant
         if isinstance(motor, MotorEnvelopeParameters):
-            state = StorageState(
+            state = storage_state or StorageState(
                 vehicle.drivetrain.powertrain.energy_storage.initial_state_of_charge
             )
             voltage = evaluate_storage(
@@ -339,6 +399,28 @@ def maximum_vehicle_speed(vehicle: PointMassVehicleParameters) -> float:
 
     motor_speed = vehicle.drivetrain.maximum_motor_speed * 2.0 * math.pi / 60.0
     return motor_speed * vehicle.tire.effective_radius / vehicle.drivetrain.gear_ratio
+
+
+def _point_mass_drive_shares(
+    vehicle: PointMassVehicleParameters,
+) -> FloatArray | None:
+    """Return per-wheel drive shares for an assembled drivetrain.
+
+    The planar smooth-envelope assembly retains its explicit 20/80 split.
+    Legacy full-four-wheel assemblies retain their historic tire-based
+    allocation. A partial driven-wheel set uses the transmission's axle split,
+    so a rear-only model assigns no front-axle tractive force.
+    """
+    if not isinstance(vehicle.drivetrain, FullDrivetrainRuntime):
+        return None
+    motor = vehicle.drivetrain.powertrain.power_plant
+    transmission = vehicle.drivetrain.drivetrain.transmission
+    all_wheels = {"fl", "fr", "rl", "rr"}
+    if isinstance(motor, MotorEnvelopeParameters) and set(transmission.driven_wheels) == all_wheels:
+        return wheel_shares(DRIVE_FRONT_FRACTION)
+    if set(transmission.driven_wheels) == all_wheels:
+        return None
+    return wheel_shares(transmission.front_torque_fraction)
 
 
 def evaluate_equilibrium(
@@ -406,7 +488,11 @@ def evaluate_equilibrium(
     required_force = vehicle.total_mass * longitudinal_acceleration + drag
     longitudinal_forces = np.zeros(4, dtype=np.float64)
     if required_force >= 0.0:
-        _allocate_total_force(longitudinal_forces, remaining, required_force)
+        drive_shares = _point_mass_drive_shares(vehicle)
+        if drive_shares is None:
+            _allocate_total_force(longitudinal_forces, remaining, required_force)
+        else:
+            longitudinal_forces[:] = drive_shares * required_force
         longitudinal_feasible = required_force <= drive_limit + 1.0e-8
         active_constraint = drive_constraint
     else:
@@ -657,7 +743,7 @@ def maximum_corner_speed(
         raise ValueError("radius must be finite and positive")
     if not math.isfinite(tolerance) or tolerance <= 0.0:
         raise ValueError("tolerance must be finite and positive")
-    upper = min(maximum_speed, maximum_vehicle_speed(vehicle))
+    upper = min(maximum_speed, maximum_vehicle_speed(vehicle, storage_state))
     lower = 0.0
     if evaluate_equilibrium(vehicle, upper, 1.0 / radius, 0.0, storage_state, drive_cache).is_feasible:
         return upper
@@ -771,12 +857,24 @@ def _available_drive_force(
     storage_state: StorageState | None = None,
     drive_cache: DriveCache | None = None,
 ) -> tuple[float, str]:
-    if speed > maximum_vehicle_speed(vehicle) + 1.0e-9:
-        return 0.0, "motor_speed"
-    left_limit = float(tire_limits[0] + tire_limits[2])
-    right_limit = float(tire_limits[1] + tire_limits[3])
-    tire_force = 2.0 * min(left_limit, right_limit)
     drivetrain = vehicle.drivetrain
+    state = None
+    if isinstance(drivetrain, FullDrivetrainRuntime):
+        state = storage_state or StorageState(
+            drivetrain.powertrain.energy_storage.initial_state_of_charge
+        )
+    speed_cap = maximum_vehicle_speed(vehicle, state)
+    if speed > speed_cap + 1.0e-9:
+        return 0.0, "motor_speed"
+    shares = _point_mass_drive_shares(vehicle)
+    if shares is None:
+        left_limit = float(tire_limits[0] + tire_limits[2])
+        right_limit = float(tire_limits[1] + tire_limits[3])
+        tire_force = 2.0 * min(left_limit, right_limit)
+    else:
+        available_totals = np.full(4, np.inf, dtype=np.float64)
+        np.divide(tire_limits, shares, out=available_totals, where=shares > 0.0)
+        tire_force = float(np.min(available_totals))
     if isinstance(drivetrain, FullDrivetrainRuntime):
         # The assembled capability owns the motor, storage, and transmission
         # coupling.  Point mass supplies only the operating speed and tire cap;
@@ -787,12 +885,19 @@ def _available_drive_force(
         else:
             drive = None
         if drive is None:
+            motor = drivetrain.powertrain.power_plant
+            motor_shares = (
+                _default_motor_shares(motor, drivetrain.drivetrain.transmission)
+                if isinstance(motor, MotorEnvelopeParameters)
+                else shares
+            )
             drive = maximum_drive_force(
                 drivetrain.powertrain,
                 drivetrain.drivetrain,
                 speed,
                 state,
                 effective_radius=vehicle.tire.effective_radius,
+                wheel_shares=motor_shares,
             )
             if drive_cache is not None:
                 drive_cache.put(speed, state.state_of_charge, drive)

@@ -35,8 +35,8 @@ from simplified_vehicle_models.xml.loader import load_model
 
 
 ROOT = Path(__file__).resolve().parents[1]
-FORMULATION = ROOT / "models/formulations/placeholder_planar_7dof.xml"
-ASSEMBLY = ROOT / "models/vehicles/placeholder_2024_formula.xml"
+FORMULATION = ROOT / "models/formulations/iem24_murphy_real_planar_7dof.xml"
+ASSEMBLY = ROOT / "models/vehicles/iem24_murphy_real_planar.xml"
 TRACK = ROOT / "models/tracks/2024_michigan_endurance_closed.xml"
 
 

@@ -35,13 +35,28 @@ class TransmissionTests(unittest.TestCase):
     def test_rejects_invalid_driven_wheels(self):
         model = load_model("models/transmissions/murphy_2024_fixed_gear.xml")
         invalid_wheels = (
-            ("xx", "fr", "rl", "rr"),
-            ("fl", "fl", "rl", "rr"),
-            ("fl", "fr", "rl"),
+            ("xx", "fr"),
+            ("fl", "fl"),
+            (),
         )
         for wheels in invalid_wheels:
             with self.subTest(wheels=wheels), self.assertRaises(ValueError):
                 compile_fixed_gear_transmission(replace(model, driven_wheels=wheels))
+
+    def test_rear_only_driven_wheel_subset_is_supported(self):
+        model = load_model("models/transmissions/murphy_2024_fixed_gear.xml")
+        rear = compile_fixed_gear_transmission(
+            replace(
+                model,
+                parameters={**model.parameters, "front_torque_fraction": 0.0},
+                driven_wheels=("rl", "rr"),
+            )
+        )
+        self.assertEqual(rear.driven_wheels, ("rl", "rr"))
+        self.assertEqual(
+            wheel_torque_from_motor_torque(rear, 10.0).tolist(),
+            [51.775, 51.775],
+        )
 
     def test_speed_conversion(self):
         self.assertAlmostEqual(

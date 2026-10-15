@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<model schema-version="1.0" id="iem24-murphy-real-powertrain" type="powertrain-assembly" subtype="electric">
+    <components>
+        <component role="power-plant" ref="../power-plants/iem24_murphy_real_rear_motors.xml" />
+        <component role="energy-storage" ref="../energy-storages/iem24_murphy_real_battery.xml" />
+    </components>
+</model>

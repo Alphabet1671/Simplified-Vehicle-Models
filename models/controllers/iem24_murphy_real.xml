@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<model schema-version="1.0" id="iem24-murphy-real-controller" type="controller-model" subtype="pedal-map">
+    <parameters>
+        <parameter name="maximum_tps_percent" value="100.0" unit="%" />
+        <parameter name="regen_pedal_force_limit" value="0.0" unit="N" />
+        <parameter name="regen_motor_torque_limit" value="0.0" unit="N*m" />
+        <parameter name="maximum_drive_motor_torque_nm" value="10.5" unit="N*m" />
+        <parameter name="regen_enabled" value="0.0" unit="1" />
+    </parameters>
+</model>

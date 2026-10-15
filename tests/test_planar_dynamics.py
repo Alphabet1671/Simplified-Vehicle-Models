@@ -21,7 +21,7 @@ from simplified_vehicle_models.tires.unitire_simple import loaded_radius
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
-FORMULATION_PATH = REPOSITORY_ROOT / "models/formulations/placeholder_planar_7dof.xml"
+FORMULATION_PATH = REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_planar_7dof.xml"
 
 
 def _free_rolling_speeds(vehicle, speed: float) -> np.ndarray:
@@ -328,12 +328,13 @@ class PlanarDynamicsTests(unittest.TestCase):
         self.assertTrue(evaluation.contact_feasible)
 
     def test_an_over_limit_state_is_reported_unconverged(self) -> None:
-        # A sharp right turn at 20 m/s lifts one side. The fixed point can
-        # converge algebraically to a negative load, but contact is infeasible.
+        # An intentionally excessive CG height makes the same sharp turn
+        # unload a contact patch. This is a stress case, not an IEM24 parameter.
         state = self._state(yaw_rate=1.0)
+        extreme_vehicle = replace(self.vehicle, cg_height=1.0)
 
         evaluation = evaluate_planar_dynamics(
-            self.vehicle, state, np.zeros(4), math.radians(25.0)
+            extreme_vehicle, state, np.zeros(4), math.radians(25.0)
         )
 
         self.assertFalse(evaluation.is_feasible)

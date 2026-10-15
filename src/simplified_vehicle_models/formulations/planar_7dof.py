@@ -227,6 +227,7 @@ def compile_planar_7dof_vehicle(
             AeroParameters,
         ),
         drivetrain=drivetrain,
+        controller=drivetrain.drivetrain.controller,
         motor=motor,
         storage=storage,
     )
@@ -372,6 +373,10 @@ def evaluate_normal_loads(
     a right turn and moves load to the left wheels. Unlike the point-mass
     model, the sign is significant even though the axle total is not.
 
+    An inside wheel lifts at zero load instead of taking a negative load; the
+    roll moment it can no longer react moves to the other axle. A negative
+    load is returned only for a two-wheel (rollover) state.
+
     Return the loads in the order FL, FR, RL, RR.
     """
 
@@ -387,6 +392,7 @@ def evaluate_normal_loads(
         aero_balance=vehicle.aero.aero_balance,
         longitudinal_acceleration=longitudinal_acceleration,
         lateral_acceleration=lateral_acceleration,
+        wheel_lift=True,
     )
 
 

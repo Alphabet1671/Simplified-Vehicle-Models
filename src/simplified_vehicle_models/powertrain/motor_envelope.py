@@ -246,13 +246,53 @@ def motor_torque_limit(
     ``motor_torque_bounds`` and imposes both bounds as constraints.
     """
 
-    speed = np.abs(np.asarray(motor_speed, dtype=np.float64))
+    scaled_speed = voltage_scaled_speed(parameters, motor_speed, bus_voltage)
     torque, power, speed_bound = motor_torque_bounds(
         parameters, motor_speed, bus_voltage, peak
     )
     limit = np.minimum(torque, power)
-    # Above the speed limit the motor cannot turn, so it makes no torque.
-    return np.where(speed <= speed_bound, limit, 0.0)
+    # A low terminal voltage reduces both the power envelope and the maximum
+    # motor speed. Keep this simulation helper consistent with the OCP's
+    # voltage-scaled speed constraint.
+    return np.where(scaled_speed <= speed_bound, limit, 0.0)
+
+
+#: Width of the inverter speed-regulation band, as a fraction of the
+#: voltage-scaled maximum motor speed.
+INVERTER_SPEED_REGULATION_BAND = 0.02
+
+
+def speed_regulated_torque_limit(
+    parameters: MotorEnvelopeParameters,
+    motor_speed: FloatArray,
+    bus_voltage: float,
+    peak: bool = True,
+    band_fraction: float = INVERTER_SPEED_REGULATION_BAND,
+) -> FloatArray:
+    """Return the drive torque limit with the inverter's speed regulation.
+
+    ``motor_torque_limit`` drops the torque from the power bound straight to
+    zero at the voltage-scaled maximum speed. A real inverter regulates speed
+    instead: it reduces torque continuously as the motor approaches the speed
+    limit, so an unloaded (spinning or lifted) driven wheel accelerates until
+    the motor parks at that limit. This helper tapers the envelope linearly to
+    zero over the last ``band_fraction`` of the speed limit, so the torque is
+    a continuous function of both the motor speed and the bus voltage, and is
+    zero at and above the limit.
+
+    For a forward simulation only. A nonlinear program should still bound the
+    speed as a state constraint through ``motor_torque_bounds``.
+    """
+
+    if not np.isfinite(band_fraction) or not 0.0 < band_fraction < 1.0:
+        raise ValueError("band_fraction must lie in (0, 1)")
+    speed = np.abs(np.asarray(motor_speed, dtype=np.float64))
+    limit = motor_speed_limit(parameters, bus_voltage)
+    torque, power, _ = motor_torque_bounds(parameters, speed, bus_voltage, peak)
+    envelope = np.minimum(torque, power)
+    band = band_fraction * limit
+    regulation = np.clip((limit - speed) / band, 0.0, 1.0)
+    return envelope * regulation
 
 
 def wheel_torque_limit(

@@ -9,7 +9,7 @@ from simplified_vehicle_models.tires.unitire_simple import evaluate_unitire, loa
 
 
 ROOT = Path(__file__).resolve().parents[1]
-FORMULATION = ROOT / "models/formulations/placeholder_planar_7dof.xml"
+FORMULATION = ROOT / "models/formulations/iem24_murphy_real_planar_7dof.xml"
 
 
 class UnitirePeakEnvelopeTests(unittest.TestCase):

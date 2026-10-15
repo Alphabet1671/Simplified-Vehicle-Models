@@ -7,16 +7,26 @@ runtime reduction exposes the drive-force limit used by low-fidelity models.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 from simplified_vehicle_models.compiler.adapters import register_adapter
 from simplified_vehicle_models.compiler.capabilities import DRIVE_FORCE_LIMIT
 from simplified_vehicle_models.compiler.registry import register_component
+from simplified_vehicle_models.drivetrain.fixed_split import (
+    DRIVE_FRONT_FRACTION,
+    wheel_shares as fixed_wheel_shares,
+)
+from simplified_vehicle_models.drivetrain.controller import (
+    PedalControllerParameters,
+    compile_pedal_controller,
+)
 from simplified_vehicle_models.drivetrain.transmission import FixedGearParameters
 from simplified_vehicle_models.parameters.drivetrain import DrivetrainParameters
 from simplified_vehicle_models.powertrain.motor_envelope import (
     MotorEnvelopeParameters,
+    bus_power as envelope_bus_power,
+    motor_speed_limit,
     motor_torque_limit,
     wheel_torque_limit,
 )
@@ -45,6 +55,20 @@ POWERTRAIN_SUBTYPE = "electric"
 DRIVETRAIN_ASSEMBLY_TYPE = "drivetrain-assembly"
 DRIVETRAIN_SUBTYPE = "electric-four-wheel"
 ASSEMBLY_SOURCE_CAPABILITY = "powertrain-and-drivetrain"
+_WHEEL_INDEX = {"fl": 0, "fr": 1, "rl": 2, "rr": 3}
+
+
+def _default_motor_shares(motor, transmission) -> np.ndarray:
+    """Map the default axle split onto only the wheels driven by this motor set."""
+    driven = tuple(transmission.driven_wheels)
+    if len(driven) != motor.unit_count:
+        raise ValueError("motor count must match the transmission's driven wheels")
+    wheel = fixed_wheel_shares(DRIVE_FRONT_FRACTION)
+    shares = np.asarray([wheel[_WHEEL_INDEX[position]] for position in driven], dtype=np.float64)
+    total = float(np.sum(shares))
+    if total <= 0.0:
+        return np.full(motor.unit_count, 1.0 / motor.unit_count)
+    return shares / total
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,6 +84,9 @@ class PowertrainParameters:
 class DrivetrainAssemblyParameters:
     transmission: FixedGearParameters
     differential_declared: bool = False
+    controller: PedalControllerParameters = field(
+        default_factory=PedalControllerParameters
+    )
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -178,16 +205,23 @@ def compile_drivetrain_assembly(model: Model) -> DrivetrainAssemblyParameters:
     if "transmission" not in references or set(references) - {
         "transmission",
         "differential",
+        "controller",
     }:
         raise ValueError(
-            f"{model.path}: drivetrain needs transmission and optional differential"
+            f"{model.path}: drivetrain needs transmission and optional differential/controller"
         )
     from simplified_vehicle_models.drivetrain.transmission import (
         compile_fixed_gear_transmission,
     )
+    controller = (
+        compile_pedal_controller(load_model(references["controller"].path))
+        if "controller" in references
+        else PedalControllerParameters()
+    )
     return DrivetrainAssemblyParameters(
         compile_fixed_gear_transmission(load_model(references["transmission"].path)),
         differential_declared="differential" in references,
+        controller=controller,
     )
 
 
@@ -224,12 +258,17 @@ def compile_powertrain_drivetrain(model: Model) -> DrivetrainParameters:
     limits = evaluate_storage(powertrain.energy_storage, state)
     if isinstance(motor, MotorEnvelopeParameters):
         # A smooth envelope carries its own limits and its own gearing.
-        torque = float(
-            wheel_torque_limit(motor, np.zeros(1), limits.bus_voltage)[0]
+        torque = min(
+            float(wheel_torque_limit(motor, np.zeros(1), limits.bus_voltage)[0]),
+            drivetrain.controller.maximum_drive_motor_torque_nm
+            * motor.gear_ratio * motor.motor_efficiency,
         )
         power_limit = motor.unit_count * motor.peak_power
     else:
-        torque = voltage_scaled_envelope(motor, 1.0, limits.bus_voltage)
+        torque = min(
+            voltage_scaled_envelope(motor, 1.0, limits.bus_voltage),
+            drivetrain.controller.maximum_drive_motor_torque_nm,
+        )
         power_limit = motor.unit_count * motor.unit_power_limit
     return FullDrivetrainRuntime(
         motor_count=motor.unit_count,
@@ -314,6 +353,7 @@ def maximum_drive_force(
     speed: float,
     state: StorageState,
     effective_radius: float = 1.0,
+    wheel_shares: np.ndarray | None = None,
 ) -> DriveLimit:
     """Solve the coupled motor, inverter, and storage drive limit."""
     if speed < 0.0 or effective_radius <= 0.0:
@@ -324,56 +364,89 @@ def maximum_drive_force(
     if isinstance(motor, MotorEnvelopeParameters):
         # The smooth envelope used by the planar formulation reports motor
         # speed in rad/s and has an algebraic efficiency model rather than a
-        # persisted operating-map LUT. Keep the point-mass reduction on that
-        # same model and apply the pack discharge limit at the same bus-power
-        # level as the four motors.
-        # Match the ratio embedded in the smooth motor model; the assembly's
-        # independent transmission ratio is a legacy field not used by planar.
+        # persisted operating-map LUT. Match its per-motor voltage-scaled
+        # torque, power, and speed limits, then constrain total torque by the
+        # requested wheel shares and the coupled battery current.
         gear_ratio = motor.gear_ratio
         motor_speed_rad_s = gear_ratio * speed / effective_radius
-        voltage = storage.bus_voltage
-        torque = 0.0
-        current = 0.0
-        feasible = False
-        converged = False
-        residual = math.inf
-        bus_power = 0.0
-        iterations = 0
-        for iterations in range(1, 33):
-            torque = float(motor_torque_limit(motor, motor_speed_rad_s, voltage))
-            if motor_speed_rad_s > 0.0:
-                pack_torque = (
-                    storage.discharge_power_limit
-                    * motor.drive_efficiency
-                    / (motor_speed_rad_s * motor.unit_count)
+        if wheel_shares is None:
+            shares = np.full(motor.unit_count, 1.0 / motor.unit_count)
+        else:
+            shares = np.asarray(wheel_shares, dtype=np.float64)
+            if (
+                shares.shape != (motor.unit_count,)
+                or not np.all(np.isfinite(shares))
+                or np.any(shares < 0.0)
+                or not math.isclose(float(np.sum(shares)), 1.0, abs_tol=1.0e-12)
+                or not np.any(shares > 0.0)
+            ):
+                raise ValueError(
+                    "wheel_shares must be a finite nonnegative vector with one "
+                    "entry per motor and sum to one"
                 )
-                torque = min(torque, max(pack_torque, 0.0))
+        active_shares = shares > 0.0
+
+        def operating_point(total_motor_torque: float):
             bus_power = (
-                motor_speed_rad_s * torque * motor.unit_count / motor.drive_efficiency
+                motor_speed_rad_s
+                * total_motor_torque
+                / motor.drive_efficiency
             )
             current, feasible = solve_current(
                 powertrain.energy_storage, state, bus_power
             )
-            next_voltage = terminal_voltage(
+            voltage = terminal_voltage(
                 powertrain.energy_storage, state, current
             )
-            residual = abs(next_voltage - voltage)
-            if residual <= 1.0e-6:
-                voltage = next_voltage
-                converged = feasible
-                break
-            voltage = 0.5 * (voltage + next_voltage)
+            per_motor_limit = min(
+                float(motor_torque_limit(motor, motor_speed_rad_s, voltage)),
+                drivetrain.controller.maximum_drive_motor_torque_nm,
+            )
+            total_motor_limit = float(
+                np.min(per_motor_limit / shares[active_shares])
+            )
+            feasible = (
+                feasible
+                and bus_power <= storage.discharge_power_limit + 1.0e-6
+                and total_motor_torque <= total_motor_limit + 1.0e-10
+            )
+            return feasible, bus_power, current, voltage
+
+        no_load_limit = min(
+            float(motor_torque_limit(motor, motor_speed_rad_s, storage.bus_voltage)),
+            drivetrain.controller.maximum_drive_motor_torque_nm,
+        )
+        upper = float(np.min(no_load_limit / shares[active_shares]))
+        lower = 0.0
+        feasible, bus_power, current, voltage = operating_point(upper)
+        iterations = 1
+        if not feasible:
+            upper_bound = upper
+            for iterations in range(2, 50):
+                candidate = 0.5 * (lower + upper_bound)
+                candidate_feasible, candidate_bus, candidate_current, candidate_voltage = (
+                    operating_point(candidate)
+                )
+                if candidate_feasible:
+                    lower = candidate
+                    bus_power = candidate_bus
+                    current = candidate_current
+                    voltage = candidate_voltage
+                else:
+                    upper_bound = candidate
+            upper = lower
+            feasible, bus_power, current, voltage = operating_point(upper)
+        else:
+            lower = upper
+
+        total_motor_torque = lower
         wheel_torque = (
-            torque
-            * motor.unit_count
-            * gear_ratio
-            * transmission.gear_efficiency
+            total_motor_torque * gear_ratio * transmission.gear_efficiency
         )
         force = wheel_torque / effective_radius
         active = (
             "storage_power"
-            if motor_speed_rad_s > 0.0
-            and bus_power >= storage.discharge_power_limit - 1.0e-6
+            if bus_power >= storage.discharge_power_limit - 1.0e-6
             else "motor_envelope"
         )
         return DriveLimit(
@@ -384,8 +457,8 @@ def maximum_drive_force(
             active,
             -current / powertrain.energy_storage.pack_capacity_joules,
             current,
-            residual,
-            converged,
+            0.0,
+            feasible,
             iterations,
         )
     # Transmission uses angular speed; motor maps use rpm.
@@ -405,7 +478,10 @@ def maximum_drive_force(
     tolerance = 1.0e-6
     for iterations in range(1, 3):
         if powertrain.motor_mode == "analytical":
-            envelope = voltage_scaled_envelope(motor, motor_speed, voltage)
+            envelope = min(
+                voltage_scaled_envelope(motor, motor_speed, voltage),
+                drivetrain.controller.maximum_drive_motor_torque_nm,
+            )
             upper_result = _motor_operating_point(motor, powertrain.motor_mode, motor_speed, envelope, voltage)
             if upper_result.feasible and upper_result.bus_power <= storage.discharge_power_limit / motor.unit_count:
                 torque, operating = envelope, upper_result
@@ -426,7 +502,10 @@ def maximum_drive_force(
                 torque = lower
         else:
             limits = motor_torque_limits(motor, motor_speed, voltage)
-            envelope = limits.maximum_drive_torque
+            envelope = min(
+                limits.maximum_drive_torque,
+                drivetrain.controller.maximum_drive_motor_torque_nm,
+            )
             envelope_result = evaluate_motor(motor, motor_speed, envelope, voltage)
             target = storage.discharge_power_limit / motor.unit_count
             if envelope_result.feasible and envelope_result.bus_power <= target:
@@ -541,6 +620,7 @@ def maximum_regen_force(
     effective_radius: float = 1.0,
     tolerance: float = 1.0e-9,
     max_iterations: int = 100,
+    wheel_shares: np.ndarray | None = None,
 ) -> RegenLimit:
     """Resolve torque and charge-power regeneration limits.
 
@@ -552,6 +632,74 @@ def maximum_regen_force(
     storage = evaluate_storage(powertrain.energy_storage, state)
     motor = powertrain.power_plant
     transmission = drivetrain.transmission
+    if isinstance(motor, MotorEnvelopeParameters):
+        motor_speed = motor.gear_ratio * speed / effective_radius
+        if wheel_shares is None:
+            shares = _default_motor_shares(motor, transmission)
+        else:
+            shares = np.asarray(wheel_shares, dtype=np.float64)
+            if (
+                shares.shape != (motor.unit_count,)
+                or not np.all(np.isfinite(shares))
+                or np.any(shares < 0.0)
+                or not math.isclose(float(np.sum(shares)), 1.0, abs_tol=1.0e-12)
+                or not np.any(shares > 0.0)
+            ):
+                raise ValueError(
+                    "wheel_shares must be a finite nonnegative vector with one "
+                    "entry per motor and sum to one"
+                )
+        voltage = min(storage.bus_voltage, motor.nominal_bus_voltage)
+        if motor_speed > motor_speed_limit(motor, voltage):
+            return RegenLimit(
+                0.0, 0.0, 0.0, storage.charge_power_limit, math.inf,
+                "motor_speed", 0.0, True, 0,
+            )
+        per_motor_limit = float(
+            motor_torque_limit(motor, motor_speed, voltage)
+        ) * motor.regeneration_torque_fraction
+        active_shares = shares > 0.0
+        total_motor_torque_limit = float(
+            np.min(per_motor_limit / shares[active_shares])
+        )
+        torque_force = (
+            total_motor_torque_limit
+            * motor.gear_ratio
+            / (transmission.gear_efficiency * effective_radius)
+        )
+        power_force = (
+            math.inf
+            if speed == 0.0
+            else abs(storage.charge_power_limit)
+            / (
+                speed
+                * transmission.gear_efficiency
+                * motor.drive_efficiency
+            )
+        )
+        crossover = (
+            math.inf
+            if torque_force == 0.0
+            else abs(storage.charge_power_limit)
+            / (
+                torque_force
+                * transmission.gear_efficiency
+                * motor.drive_efficiency
+            )
+        )
+        limit = min(torque_force, power_force)
+        return RegenLimit(
+            limit,
+            torque_force,
+            power_force,
+            storage.charge_power_limit,
+            crossover,
+            "storage_power" if power_force < torque_force else "motor_torque",
+            0.0,
+            True,
+            1,
+        )
+
     # Transmission uses angular speed; motor maps use rpm.
     motor_speed = transmission.motor_speed(speed / effective_radius) * 60.0 / (2.0 * math.pi)
     if motor_speed > motor.maximum_motor_speed:
@@ -655,12 +803,18 @@ def resolve_braking(
     braking_demand: float = math.inf,
     tire_force_capacity: float = math.inf,
     effective_radius: float = 1.0,
+    wheel_shares: np.ndarray | None = None,
 ) -> BrakingResult:
     """Allocate a braking demand between regen and friction brakes."""
     if braking_demand < 0.0 or tire_force_capacity < 0.0:
         raise ValueError("braking demand and tire capacity must be nonnegative")
     regen_limit = maximum_regen_force(
-        powertrain, drivetrain, speed, state, effective_radius=effective_radius
+        powertrain,
+        drivetrain,
+        speed,
+        state,
+        effective_radius=effective_radius,
+        wheel_shares=wheel_shares,
     )
     demand = min(braking_demand, tire_force_capacity)
     if not math.isfinite(demand):
@@ -672,6 +826,32 @@ def resolve_braking(
     transmission = drivetrain.transmission
     if speed == 0.0 or regen_limit.active_constraint == "motor_speed":
         recovered_bus_power = 0.0
+    elif isinstance(motor, MotorEnvelopeParameters):
+        motor_speed = motor.gear_ratio * speed / effective_radius
+        shares = (
+            _default_motor_shares(motor, transmission)
+            if wheel_shares is None
+            else np.asarray(wheel_shares, dtype=np.float64)
+        )
+        total_motor_torque = (
+            regen_force
+            * effective_radius
+            * transmission.gear_efficiency
+            / motor.gear_ratio
+        )
+        per_motor_torque = -shares * total_motor_torque
+        recovered_bus_power = max(
+            0.0,
+            -float(
+                np.sum(
+                    envelope_bus_power(
+                        motor,
+                        np.full(motor.unit_count, motor_speed),
+                        per_motor_torque,
+                    )
+                )
+            ),
+        )
     else:
         # Transmission uses angular speed; motor maps use rpm.
         motor_speed = transmission.motor_speed(speed / effective_radius) * 60.0 / (2.0 * math.pi)

@@ -12,7 +12,7 @@ A positive angle turns the wheel to the right, which follows the SAE frame.
 
 The Ackermann table holds the angle that the outer wheel gives up against the
 inner wheel, indexed by the magnitude of the inner angle. A table of zeros
-gives parallel steering, which is the current placeholder.
+gives parallel steering.
 """
 
 from __future__ import annotations

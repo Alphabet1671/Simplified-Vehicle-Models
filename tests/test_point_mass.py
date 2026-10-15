@@ -15,7 +15,15 @@ from simplified_vehicle_models.core.conventions import (
     VEHICLE_AXIS_CONVENTION,
     WHEEL_ORDER,
 )
-from simplified_vehicle_models.powertrain.assembly import FullDrivetrainRuntime, maximum_drive_force
+from simplified_vehicle_models.drivetrain.fixed_split import (
+    DRIVE_FRONT_FRACTION,
+    wheel_shares,
+)
+from simplified_vehicle_models.powertrain.assembly import (
+    FullDrivetrainRuntime,
+    compile_powertrain_drivetrain,
+    maximum_drive_force,
+)
 from simplified_vehicle_models.powertrain.energy_storage import StorageState
 from simplified_vehicle_models.parameters.tire import UniTirePeakEnvelope
 from simplified_vehicle_models.formulations.point_mass import (
@@ -272,6 +280,33 @@ class PointMassTests(unittest.TestCase):
             policy.speed_resolution = 1.0
         with self.assertRaises(ValueError):
             DriveCachePolicy(speed_resolution=-1.0)
+
+    def test_smooth_motor_equilibrium_holds_rear_only_drive_split(self) -> None:
+        runtime = compile_powertrain_drivetrain(
+            load_model(REPOSITORY_ROOT / "models/vehicles/iem24_murphy_real_planar.xml")
+        )
+        vehicle = replace(self.vehicle, drivetrain=runtime)
+        state = evaluate_equilibrium(vehicle, 5.0, 0.0, 1.0)
+
+        self.assertTrue(state.is_feasible)
+        actual_shares = state.longitudinal_forces / np.sum(state.longitudinal_forces)
+        np.testing.assert_allclose(
+            actual_shares,
+            np.array([0.0, 0.0, 0.5, 0.5]),
+            rtol=0.0,
+            atol=1.0e-12,
+        )
+
+    def test_smooth_motor_speed_cap_tracks_storage_state_of_charge(self) -> None:
+        runtime = compile_powertrain_drivetrain(
+            load_model(REPOSITORY_ROOT / "models/vehicles/iem24_murphy_real_planar.xml")
+        )
+        vehicle = replace(self.vehicle, drivetrain=runtime)
+
+        high_soc_cap = maximum_vehicle_speed(vehicle, StorageState(0.99))
+        low_soc_cap = maximum_vehicle_speed(vehicle, StorageState(0.80))
+
+        self.assertGreater(high_soc_cap, low_soc_cap)
 
     def test_assembled_dispatch_matches_compiled_drive_capability(self) -> None:
         self.assertIsInstance(self.vehicle.drivetrain, FullDrivetrainRuntime)

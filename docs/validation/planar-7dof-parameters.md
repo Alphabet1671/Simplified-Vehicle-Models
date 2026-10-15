@@ -1,5 +1,11 @@
 # Planar 7-DOF vehicle parameters
 
+> **Historical note:** This report describes the former obfuscated placeholder
+> testing assembly. Its vehicle/formulation XML were removed when the dedicated
+> IEM24 configuration was added. Current IEM24 7-DOF configuration lives in
+> `models/formulations/iem24_murphy_real_planar_7dof.xml`; provisional steering
+> and brake assumptions are documented with that run.
+
 ## Scope
 
 This report covers the placeholder vehicle that feeds the planar 7-DOF model,
@@ -70,17 +76,23 @@ change the radius of gyration.
 
 ### Wheel inertia
 
-The sheet does not give a wheel inertia. The model uses a solid cylinder:
+The sheet does not give a measured wheel inertia. The user specifies a 10 kg
+solid cylinder per wheel, with a 16 inch diameter and an 8 inch width:
 
 ```text
 wheel_radius  = 16 in / 2 = 0.2032 m
-wheel_inertia = 0.5 * 12 kg * wheel_radius^2 = 0.247741 kg*m^2
+wheel_inertia = 0.5 * 10 kg * wheel_radius^2 = 0.2064512 kg*m^2
 ```
 
-A real wheel assembly carries most of its mass near the rim, so a thin ring
-(`m*r^2`, which is twice this value) is the more physical assumption. A solid
-cylinder was requested for testing, so the model uses one. Change
-`wheel_inertia` when a measured value exists.
+Width does not enter axial inertia when total mass is fixed. This assumption
+allocates the specified mass to rotation; actual unsprung mass can also include
+nonrotating parts. A thin ring gives twice this inertia, but is not the requested
+mass distribution. Replace this estimate when a measured value exists.
+
+Historical runs used a 12 kg cylinder estimate, `0.247741 kg*m^2`. The IEM24
+planar assembly now uses the requested 10 kg value. Archived results retain their
+original parameters. The spatial OCP uses quasi-steady wheel torque balance and
+does not apply wheel inertia; the transient forward evaluator does.
 
 ### Brake torque
 
@@ -318,6 +330,10 @@ The wheel-speed equation is stiff. Its time constant is
 ```text
 tau = J * v / (Re^2 * Kx)
 ```
+
+The following historical measurements use the former 12 kg cylinder inertia,
+not the corrected 10 kg value. Holding other quantities fixed, the corrected
+inertia reduces the estimated time constant by a factor of 10/12.
 
 At 8 m/s with the placeholder inertia and the fitted longitudinal slip
 stiffness, `tau` is about **1.4 ms**. An explicit integrator therefore needs a

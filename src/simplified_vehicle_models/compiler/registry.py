@@ -154,7 +154,7 @@ def register_builtin_components() -> None:
     if _BOOTSTRAPPED:
         return
     from simplified_vehicle_models.aero import fixed_aero
-    from simplified_vehicle_models.drivetrain import lumped, transmission
+    from simplified_vehicle_models.drivetrain import controller, lumped, transmission
     from simplified_vehicle_models.tires import friction_ellipse, unitire_simple
     from simplified_vehicle_models.powertrain import (
         assembly,
@@ -165,6 +165,7 @@ def register_builtin_components() -> None:
 
     _ = (
         fixed_aero,
+        controller,
         lumped,
         transmission,
         friction_ellipse,

@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 7-DOF-only assembly: measured IEM24 vehicle parameters with tester-fitted UniTire. -->
+<model schema-version="1.0" id="iem24-murphy-real-planar" type="vehicle-assembly" subtype="four-wheel">
+    <parameters>
+        <parameter name="total_mass" value="287.0" unit="kg" />
+        <parameter name="mass_without_driver" value="209.0" unit="kg" />
+        <parameter name="driver_mass" value="78.0" unit="kg" />
+        <parameter name="wheelbase" value="1.535" unit="m" />
+        <parameter name="track_width" value="1.016" unit="m" />
+        <parameter name="cg_height" value="0.300" unit="m" />
+        <parameter name="front_mass_fraction" value="0.55" unit="1" />
+        <parameter name="lateral_load_transfer_distribution" value="0.42" unit="1" />
+        <parameter name="brake_bias" value="0.65" unit="1" />
+        <!-- Parallel steering, 3.5 in/rev Narco rack, and 65% front brake bias are user-confirmed; steering-arm/rate and hydraulic details remain provisional. -->
+        <parameter name="yaw_radius_of_gyration" value="0.679366" unit="m" />
+        <!-- Each wheel uses a 10 kg solid cylinder with 16 inch diameter and 8 inch width. -->
+        <parameter name="wheel_inertia" value="0.2064512" unit="kg*m^2" />
+        <parameter name="steer_ratio" value="5.3962" unit="1" />
+        <parameter name="caster_angle" value="0.08134979643545569" unit="rad" />
+        <parameter name="kingpin_inclination_angle" value="0.12447688225223558" unit="rad" />
+        <parameter name="rack_travel_per_revolution" value="0.0889" unit="m" />
+        <parameter name="steering_maximum_angle" value="0.5235987755982988" unit="rad" />
+        <parameter name="steering_maximum_rate" value="3.141592653589793" unit="rad/s" />
+        <parameter name="steer_arm_length" value="0.0651" unit="m" />
+        <parameter name="maximum_pedal_force" value="1176.798" unit="N" />
+        <parameter name="hydraulic_ratio" value="2.0" unit="1" />
+        <parameter name="maximum_brake_pressure" value="10000000.0" unit="Pa" />
+        <parameter name="caliper_area" value="0.00114" unit="m^2" />
+        <parameter name="pad_mu_front" value="0.35" unit="1" />
+        <parameter name="pad_mu_rear" value="0.35" unit="1" />
+        <parameter name="brake_effective_radius_front" value="0.077622" unit="m" />
+        <parameter name="brake_effective_radius_rear" value="0.075184" unit="m" />
+    </parameters>
+    <data role="ackermann" path="../data/iem24_murphy_parallel_steering.csv" format="csv" />
+    <data role="pedal-ratio" path="../data/placeholder_pedal_ratio.csv" format="csv" />
+    <components>
+        <component role="tire" ref="../tires/iem24_murphy_real_unitire.xml" />
+        <component role="aero" ref="../aero/iem24_murphy_real_aero.xml" />
+        <component role="powertrain" ref="../powertrains/iem24_murphy_real_planar.xml" />
+        <component role="drivetrain" ref="../drivetrains/iem24_murphy_real.xml" />
+    </components>
+</model>

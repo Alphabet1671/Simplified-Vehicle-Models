@@ -110,3 +110,4 @@ class UniTireSimpleParameters:
     force_eps: float
     stiff_eps: float
     slip_eps: float
+    effective_radius: float

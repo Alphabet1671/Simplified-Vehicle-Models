@@ -18,7 +18,7 @@ from simplified_vehicle_models.controls.steering import (
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
-FORMULATION_PATH = REPOSITORY_ROOT / "models/formulations/placeholder_planar_7dof.xml"
+FORMULATION_PATH = REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_planar_7dof.xml"
 
 RACK_TRAVEL_PER_REVOLUTION = 3.5 * 0.0254
 STEER_ARM = 0.065

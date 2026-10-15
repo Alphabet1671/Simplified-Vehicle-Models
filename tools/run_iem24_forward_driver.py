@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
+from numbers import Real
 from pathlib import Path
 import subprocess
 import sys
@@ -46,10 +48,16 @@ def acceptance_gate(summary):
     """Return true only when every required lap-validity gate is established."""
     delta = summary.get("periodic_state_delta")
     tolerances = summary.get("periodic_state_tolerances")
+    def finite_real_vector(values):
+        return (isinstance(values, (list, tuple)) and bool(values)
+                and all(isinstance(value, Real) and math.isfinite(value)
+                        for value in values))
+
     periodic = (summary.get("lap_completed") is True
-                and delta is not None and tolerances is not None
+                and finite_real_vector(delta)
+                and finite_real_vector(tolerances)
                 and len(delta) == len(tolerances)
-                and all(abs(value) <= tolerance
+                and all(tolerance >= 0 and abs(value) <= tolerance
                         for value, tolerance in zip(delta, tolerances)))
     return bool(periodic
                 and summary.get("periodicity_valid") is True

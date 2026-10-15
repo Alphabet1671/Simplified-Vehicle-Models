@@ -21,8 +21,32 @@ class RunnerTests(unittest.TestCase):
         self.assertTrue(any(abs(delta) > tolerance
                             for delta, tolerance in zip(deltas, tolerances)))
         self.assertFalse(acceptance_gate(summary))
-        summary["usable"] = acceptance_gate(summary)
-        self.assertFalse(summary["usable"])
+        self.assertFalse(acceptance_gate(summary))
+
+    def test_acceptance_gate_rejects_invalid_periodic_vectors(self):
+        valid = {
+            "lap_completed": True,
+            "periodic_state_delta": [0.0, -0.5],
+            "periodic_state_tolerances": [0.01, 0.5],
+            "periodicity_valid": True,
+            "integration_completed": True,
+            "path_tracking_valid": True,
+            "resolution_valid": True,
+            "checked_rhs_physics_valid": True,
+            "between_step_validation_complete": True,
+            "refinement_validated": True,
+            "contact_valid": True,
+        }
+        self.assertTrue(acceptance_gate(valid))
+        for delta, tolerances in (
+            ([], []), ([0.0], []), ([float("inf")], [float("inf")]),
+            ([float("nan")], [1.0]), ([0.0], [float("inf")]),
+            ([0.0], [-0.1]), (["0"], [1.0]), ([0.0], ["1"]),
+        ):
+            with self.subTest(delta=delta, tolerances=tolerances):
+                candidate = dict(valid, periodic_state_delta=delta,
+                                 periodic_state_tolerances=tolerances)
+                self.assertFalse(acceptance_gate(candidate))
 
     def test_limits_reject_nonfinite_and_over_budget_values(self):
         for arguments in (["--timeout-seconds", "301"], ["--timeout-seconds", "nan"],

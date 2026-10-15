@@ -1,25 +1,24 @@
 # Planar optimal control
 
-> **Support policy (2026-10-15): retired and unsupported.** The planar OCP
+> **ARCHIVED HISTORICAL RECORD — NOT SUPPORTED OR ACTIONABLE.** The planar OCP
 > implementation and its result-construction/seed APIs are absent from the
 > current source tree and will not be restored as part of this verification
-> fix. The evidence and historical results in this document remain archived;
-> in particular, solver status alone does not validate a lap, and the saved
-> IEM24 20 m / 52-node geometry is invalid. Treat dependent OCP numbers as
-> historical/unverified, not current usable claims. OCP-specific tests are kept
-> outside default unittest discovery while tests for extant planar parameter and
-> geometry functionality remain active.
+> work. **Every solver result, lap-time claim, convergence statement, mesh
+> recommendation, algorithm description, and reproduction instruction in this
+> document refers to past code and must not be treated as a current result or
+> instructions for an available API.** In particular, the saved IEM24 20 m /
+> 52-node geometry is invalid; the old 43.9 s placeholder result is historical,
+> not a present validated result. Solver status alone does not validate a lap.
+> This document is retained as provenance, not current validation evidence.
+> OCP-specific tests are outside default unittest discovery; extant planar
+> parameter and geometry functionality remains tested separately.
 
-> **Validated result:** the placeholder vehicle reaches a converged,
-> independently verified minimum-time lap of **43.9 s** on the closed
-> Michigan endurance path, constrained to a **0.05 m corridor** around the
-> recorded centreline. The 1 m and 2 m meshes agree to 0.24 %, and the route
-> is re-checked outside the solver with the NumPy dynamics.
->
-> This is a **path-following** optimum, not a free racing-line optimum: a
-> 0.25 m corridor gives 41.8 s. See *A converged 1 m lap* for the evidence,
-> *The heading bound is insensitive, the lateral bound is not* for the
-> sensitivity, and *Known limitations* for what the number does not cover.
+> **Historical result (unsupported):** the old placeholder vehicle run was
+> reported at 43.9 s under the historical configuration described below. That
+> result, its mesh checks, and its route-verification claims are not current
+> validated results. The old run was a **path-following** formulation, not a
+> free racing-line optimum. The detailed record below is preserved for context
+> only; see the prominent support warning above before interpreting any value.
 
 > **Correction (fine-mesh investigation):** the earlier 36.294 s result and
 > coarse-to-fine table are **historical, not validated lap times**. The
@@ -30,12 +29,14 @@
 > from that source revision could not have passed the current result path.
 > Every number above was produced after those corrections.
 
-## What this solves
+## Historical formulation description — unavailable in the current tree
 
-`solvers/planar_ocp.py` solves a minimum-time hot lap of the planar vehicle on
-the closed signed track. The lap is transcribed in the **distance domain**: the
-independent variable is the path distance, so the mesh follows the track and
-the periodic boundary is exact.
+The retired `solvers/planar_ocp.py` implementation was described as solving a
+minimum-time hot lap of the planar vehicle on the closed signed track. The lap
+was transcribed in the **distance domain**: the independent variable was path
+distance, so the mesh followed the track and the periodic boundary was exact.
+This describes archived code only; it is not an available API or a current
+solver instruction.
 
 States at every node:
 

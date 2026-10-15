@@ -1,0 +1,27 @@
+{
+  "status": "Child_Completed",
+  "return_code": 0,
+  "total_wall_seconds": 228.56867558299564,
+  "within_wall_limit": true,
+  "timeout_seconds": 300.0,
+  "command": [
+    "/Library/Frameworks/Python.framework/Versions/3.13/bin/python3",
+    "-u",
+    "/Users/alphabet1671/Dev/Simplified-Vehicle-Models/tools/run_iem24_forward_driver.py",
+    "--planner",
+    "live",
+    "--maximum-speed",
+    "60",
+    "--lateral-acceleration",
+    "3",
+    "--duration",
+    "300",
+    "--timeout-seconds",
+    "300",
+    "--method",
+    "BDF",
+    "--child-attempt",
+    "docs/validation/iem24-murphy/forward_driver_trials/attempt_1792014409550714000"
+  ],
+  "attempt": "docs/validation/iem24-murphy/forward_driver_trials/attempt_1792014409550714000"
+}

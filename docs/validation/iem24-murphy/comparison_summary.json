@@ -1,0 +1,136 @@
+{
+  "measured_stint": {
+    "flying_lap_count": 10,
+    "lap_indices": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10
+    ],
+    "median_driven_lap_distance_m": 1022.1768650965885,
+    "median_lap_time_s": 71.68501281738281,
+    "source": "/Users/alphabet1671/Desktop/0615CompEndurance.mat"
+  },
+  "measured_track_distance_sample": {
+    "first_m": 5.50108565939,
+    "last_m": 1022.2017352493903
+  },
+  "metrics": {
+    "lateral_acceleration_mps2": {
+      "bias": 0.8897340473045151,
+      "correlation": 0.956904740821845,
+      "mae": 1.9059759547351989,
+      "normalised_rmse": 0.3207750843194847,
+      "rmse": 2.4378133956315557
+    },
+    "longitudinal_acceleration_mps2": {
+      "bias": -0.11154070366787538,
+      "correlation": 0.6800793689404333,
+      "mae": 1.0115200639520123,
+      "normalised_rmse": 0.8474806536281105,
+      "rmse": 1.529496942055452
+    },
+    "motor_torque_request_nm": {
+      "bias": 0.9141443794697632,
+      "correlation": 0.49651718934792094,
+      "mae": 2.2509186449539866,
+      "normalised_rmse": 1.132028165081136,
+      "rmse": 3.010110010297694
+    },
+    "pack_voltage_v": {
+      "bias": 27.199032480874564,
+      "correlation": 0.5396433492429703,
+      "mae": 27.199032480874564,
+      "normalised_rmse": 6.345486384570882,
+      "rmse": 27.472817114223517
+    },
+    "speed_mps": {
+      "bias": -1.2601694581669947,
+      "correlation": 0.9348269787294881,
+      "mae": 1.4375362573562351,
+      "normalised_rmse": 0.546862822644268,
+      "rmse": 1.6590839090648617
+    },
+    "yaw_rate_rad_s": {
+      "bias": 0.00648719200390375,
+      "correlation": 0.9598978663220378,
+      "mae": 0.11865025700878909,
+      "normalised_rmse": 0.2813423845037388,
+      "rmse": 0.1645917062144679
+    }
+  },
+  "peaks": {
+    "measured_peak_braking_mps2": -7.443781583130452,
+    "measured_peak_lateral_acceleration_mps2": 14.419802952206567,
+    "measured_peak_speed_mps": 22.07549900562894,
+    "measured_peak_traction_mps2": 2.253229347679325,
+    "measured_peak_yaw_rate_rad_s": 1.4170503591767636,
+    "simulated_peak_braking_mps2": -8.334870891915008,
+    "simulated_peak_lateral_acceleration_mps2": 11.066666946872406,
+    "simulated_peak_speed_mps": 20.527955372530613,
+    "simulated_peak_traction_mps2": 2.2555184555414276,
+    "simulated_peak_yaw_rate_rad_s": 1.3055332099437806
+  },
+  "per_lap_rmse": {
+    "lateral_acceleration_mps2": {
+      "maximum_rmse": 3.500234856449205,
+      "median_rmse": 3.1030250946220406,
+      "minimum_rmse": 2.795386447875185
+    },
+    "longitudinal_acceleration_mps2": {
+      "maximum_rmse": 1.9029029645004358,
+      "median_rmse": 1.7000716229402855,
+      "minimum_rmse": 1.4803908459652657
+    },
+    "motor_torque_request_nm": {
+      "maximum_rmse": 3.4845875687130112,
+      "median_rmse": 3.2291461804453503,
+      "minimum_rmse": 2.949349454376815
+    },
+    "pack_voltage_v": {
+      "maximum_rmse": 47.56475249245185,
+      "median_rmse": 27.426521315329815,
+      "minimum_rmse": 8.487673365345943
+    },
+    "speed_mps": {
+      "maximum_rmse": 2.2154284350672393,
+      "median_rmse": 1.8254382708389958,
+      "minimum_rmse": 1.4655931602471681
+    },
+    "yaw_rate_rad_s": {
+      "maximum_rmse": 0.2581719631987543,
+      "median_rmse": 0.21231918702339478,
+      "minimum_rmse": 0.18889799934346313
+    }
+  },
+  "position_fit": {
+    "fitted_rmse_m": 1.4888021220493057,
+    "method": "constant translation fitted by nearest-centreline distance",
+    "offset_east_m": 3.431597778528189,
+    "offset_north_m": 9.96825882715748,
+    "residual_maximum_m": 5.365105523706252,
+    "residual_median_m": 0.9790676818154115,
+    "residual_p95_m": 2.4539401297459573,
+    "sample_count": 16167
+  },
+  "simulated_lap": {
+    "apps_torque_nm": 10.5,
+    "final_bus_voltage_v": 572.4463074763892,
+    "initial_bus_voltage_v": 574.3124124360515,
+    "initial_state_of_charge": 0.8290853425250001,
+    "lap_length_m": 1016.70064959,
+    "lap_time_s": 77.56125377531949,
+    "minimum_bus_voltage_v": 560.7946208836827,
+    "track": "models/tracks/2024_michigan_endurance_closed.xml"
+  },
+  "track": {
+    "lap_length_m": 1016.70064959,
+    "node_count": 2034
+  }
+}

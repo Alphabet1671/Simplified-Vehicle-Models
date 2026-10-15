@@ -1,4 +1,6 @@
 {
+  "verification_status": "historical_unverified",
+  "support_policy": "Planar OCP API retired and unsupported; paired results retained for provenance only. Saved coarse OCP geometry is invalid per docs/validation/planar-ocp.md.",
   "comparison": {
     "vehicle_formulation": "models/formulations/placeholder_planar_7dof.xml",
     "vehicle_assembly": "models/vehicles/placeholder_2024_formula.xml",

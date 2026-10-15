@@ -1,0 +1,176 @@
+{
+  "7dof_converged": null,
+  "7dof_curve_kind": "historical/unverified; retired OCP API; coarse geometry invalid",
+  "7dof_metrics_valid": false,
+  "verification_status": "historical_unverified",
+  "verification_note": "The saved 20 m / 52-node Solve_Succeeded result (53.967 s) has invalid coarse geometry per docs/validation/planar-ocp.md. OCP values and derived metrics are retained for provenance only and are not usable claims.",
+  "measured_lap_count": 10,
+  "measured_median_lap_time_s": 71.68501281738281,
+  "metrics_vs_measured_median": {
+    "planar_7dof": {
+      "lateral_acceleration_mps2": {
+        "bias": 1.7717533340746163,
+        "correlation": 0.491766561192869,
+        "mae": 6.055651133831024,
+        "normalised_rmse": 1.036266539114148,
+        "rmse": 7.883167859934689
+      },
+      "longitudinal_acceleration_mps2": {
+        "bias": -0.025737888833060857,
+        "correlation": 0.18683583811306076,
+        "mae": 1.8652084204482395,
+        "normalised_rmse": 1.4716921854252494,
+        "rmse": 2.653491455306652
+      },
+      "motor_torque_request_nm": {
+        "bias": 0.5126310091502494,
+        "correlation": 0.27880124294569236,
+        "mae": 3.361559705535511,
+        "normalised_rmse": 1.5188538679170707,
+        "rmse": 4.03492231686822
+      },
+      "pack_voltage_v": {
+        "bias": 4.328837632835074,
+        "correlation": 0.3864666493018198,
+        "mae": 7.075879677379782,
+        "normalised_rmse": 2.0308282845311316,
+        "rmse": 8.714937453105668
+      },
+      "speed_mps": {
+        "bias": 4.741256770713622,
+        "correlation": 0.7952947218664281,
+        "mae": 4.774316024036007,
+        "normalised_rmse": 1.7407255980409262,
+        "rmse": 5.2996388881854894
+      },
+      "yaw_rate_rad_s": {
+        "bias": 0.06356007703356228,
+        "correlation": 0.49399512271570534,
+        "mae": 0.4062379163372484,
+        "normalised_rmse": 0.9450538330183983,
+        "rmse": 0.5552422444038033
+      }
+    },
+    "point_mass": {
+      "lateral_acceleration_mps2": {
+        "bias": 0.8935742999026258,
+        "correlation": 0.9570523819549345,
+        "mae": 1.9077877803723702,
+        "normalised_rmse": 0.32056424277201195,
+        "rmse": 2.4386213780721735
+      },
+      "longitudinal_acceleration_mps2": {
+        "bias": -0.11025714831134906,
+        "correlation": 0.6799820553240723,
+        "mae": 1.0105619810498163,
+        "normalised_rmse": 0.8475522557159978,
+        "rmse": 1.5281542504205334
+      },
+      "motor_torque_request_nm": {
+        "bias": 0.9173014980992681,
+        "correlation": 0.49658726762321087,
+        "mae": 2.2514075514767367,
+        "normalised_rmse": 1.1327333717986943,
+        "rmse": 3.0091710976776382
+      },
+      "pack_voltage_v": {
+        "bias": 3.0802394848737205,
+        "correlation": 0.5032582487760298,
+        "mae": 3.808996088414128,
+        "normalised_rmse": 1.1747770155013377,
+        "rmse": 5.041346080032579
+      },
+      "speed_mps": {
+        "bias": -1.2569563599819138,
+        "correlation": 0.9351757581681481,
+        "mae": 1.4353647133945635,
+        "normalised_rmse": 0.5444246870260592,
+        "rmse": 1.657500898647486
+      },
+      "yaw_rate_rad_s": {
+        "bias": 0.00715559056971563,
+        "correlation": 0.9600354027656556,
+        "mae": 0.11909477720133772,
+        "normalised_rmse": 0.28106590127715386,
+        "rmse": 0.16513309231503487
+      }
+    }
+  },
+  "position_residual_p95_m": 2.4539401297459573,
+  "simulations": {
+    "planar_7dof": {
+      "assumptions": [
+        "The smooth OCP motor envelope approximates the real 10.5 N*m-per-motor command and real rear-only gearing; it is not the measured LUT.",
+        "Parallel steering, 3.5 in/rev rack travel, and 65% front brake bias are user-confirmed; steering-arm/rate and hydraulic/pedal details remain provisional.",
+        "Virtual brake force is extended only as needed to reach the current hydraulic pressure cap."
+      ],
+      "converged": null,
+      "verification_status": "historical_unverified",
+      "verification_note": "The 20 m / 52-node result has invalid coarse geometry; saved convergence and metrics are not usable evidence.",
+      "final_terminal_voltage_v": 571.2241333419955,
+      "formulation": "models/formulations/iem24_murphy_real_planar_7dof.xml",
+      "initial_state_of_charge": 0.8290853425250001,
+      "initial_terminal_voltage_v": 565.0520930520684,
+      "iterations": 2226,
+      "lap_time_s": 53.966622056089456,
+      "maximum_algebraic_residual": 3.6072833609068766e-09,
+      "maximum_brake_pedal_force_n": 1584.0659638416098,
+      "maximum_control_overlap": 0.0010000099899973366,
+      "maximum_dynamics_component": "longitudinal_speed_mps",
+      "maximum_dynamics_interval": 32,
+      "maximum_dynamics_residual": 3.59865470755949e-11,
+      "maximum_inequality_violation": 9.989997336529513e-09,
+      "maximum_lateral_error_m": 0.25,
+      "maximum_power_mismatch_w": 3.230525180697441e-09,
+      "maximum_speed_mps": 26.1460362439698,
+      "mesh_spacing_m": 20.0,
+      "minimum_speed_mps": 10.292580540963462,
+      "minimum_terminal_voltage_v": 546.3673939835226,
+      "node_count": 52,
+      "peak_mu_lateral": 1.5,
+      "peak_mu_longitudinal": 0.8,
+      "periodicity_residual": 0.0,
+      "project_initial_guess": false,
+      "scale_constraints": false,
+      "solver": "planar 7-DOF distance-domain OCP",
+      "status": "Solve_Succeeded",
+      "tire_model": "tester-fitted UniTire with provisional surface-mu scaling informed by measured peak deceleration/cornering (not a tire re-fit)",
+      "track": "models/tracks/2024_michigan_endurance_closed.xml"
+    },
+    "point_mass": {
+      "apps_max_motor_torque_nm": 10.5,
+      "average_speed_mps": 13.108357589669613,
+      "converged": true,
+      "driven_wheels": [
+        "rl",
+        "rr"
+      ],
+      "energy_converged": true,
+      "energy_iterations": 2,
+      "final_bus_voltage_v": 572.2052909477984,
+      "final_state_of_charge": 0.8141209434061603,
+      "formulation": "models/formulations/iem24_murphy_real_point_mass.xml",
+      "initial_bus_voltage_v": 574.4240264823003,
+      "initial_state_of_charge": 0.8290853425250001,
+      "iterations": 3,
+      "lap_mode": "flying",
+      "lap_time_s": 77.56125377531949,
+      "mass_kg": 287.0,
+      "maximum_speed_change_mps": 0.0,
+      "maximum_speed_mps": 20.532727302740298,
+      "maximum_yaw_rate_rad_s": 1.3436379140752395,
+      "minimum_bus_voltage_v": 560.7305841055529,
+      "minimum_speed_mps": 8.309359151046436,
+      "minimum_yaw_rate_rad_s": -1.2185052259623192,
+      "motor_count": 2,
+      "node_count": 2034,
+      "regen_enabled": false,
+      "regen_recovered_energy_j": 0.0,
+      "track": "models/tracks/2024_michigan_endurance_closed.xml",
+      "track_length_m": 1016.70064959
+    }
+  },
+  "tire_note": "Planar 7DoF uses tester-fitted UniTire with provisional surface-mu scaling informed by measured peak deceleration/cornering; this is not a tire re-fit and differs from the point-mass tire law.",
+  "track": "models/tracks/2024_michigan_endurance_closed.xml",
+  "voltage_reference": "Each measured flying lap, point-mass lap, and 7DoF lap is offset by its own first sample; measured_stint.csv is read-only and unchanged."
+}

@@ -1,5 +1,17 @@
 # Point-Mass vs Planar Lap Comparison
 
+> **Historical/unverified:** The planar OCP API is retired and unsupported in
+> the current tree. All OCP lap-time, profile, energy, timing, and warm-start
+> results below are retained as historical evidence only; the saved coarse
+> geometry is invalid per `docs/validation/planar-ocp.md`. Do not interpret these
+> OCP values or the derived point-mass-vs-OCP comparisons as usable claims. The
+> point-mass portions are historical too, as they were generated as a paired
+> comparison against that retired run.
+
+> **Historical result:** These values came from the now-removed obfuscated
+> placeholder vehicle/formulation. The current real-IEM24 three-way comparison
+> is documented in `docs/validation/iem24-murphy/comparison_three_way_report.md`.
+
 ## Lap-time result
 
 Both solvers used the placeholder 2024 Formula vehicle and the closed Michigan endurance track. On the 1 m / 1,018-node comparison mesh (1,016.701 m lap):

@@ -30,8 +30,8 @@ from tools.import_vehicle_spec_sheet import (
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
-FORMULATION_PATH = REPOSITORY_ROOT / "models/formulations/placeholder_planar_7dof.xml"
-ASSEMBLY_PATH = REPOSITORY_ROOT / "models/vehicles/placeholder_2024_formula.xml"
+FORMULATION_PATH = REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_planar_7dof.xml"
+ASSEMBLY_PATH = REPOSITORY_ROOT / "models/vehicles/iem24_murphy_real_planar.xml"
 VEHICLE_XML_PATH = ASSEMBLY_PATH
 
 
@@ -149,14 +149,12 @@ class PlanarCompileTests(unittest.TestCase):
             places=9,
         )
 
-    def test_assembly_carries_no_high_precision_real_values(self) -> None:
-        """The exported parameters must not carry a real car's precision."""
-
+    def test_assembly_uses_measured_iem24_mass_and_balance(self) -> None:
         text = VEHICLE_XML_PATH.read_text(encoding="utf-8")
 
-        self.assertIn("does not carry a real car's data", text)
-        self.assertIn("Replace every value with a measured value", text)
-        self.assertIn("sha256=", text)
+        self.assertIn('name="total_mass" value="287.0"', text)
+        self.assertIn('name="driver_mass" value="78.0"', text)
+        self.assertIn('name="lateral_load_transfer_distribution" value="0.42"', text)
 
 
 class WheelPositionTests(unittest.TestCase):

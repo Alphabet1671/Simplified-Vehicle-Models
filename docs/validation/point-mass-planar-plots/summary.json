@@ -1,4 +1,6 @@
 {
+  "verification_status": "historical_unverified",
+  "ocp_note": "Planar OCP API retired and unsupported; paired point-mass/OCP summary retained for provenance only because saved coarse OCP geometry is invalid.",
   "lap_length_m": 1016.70064959,
   "mesh_spacing_m": 1.0,
   "nodes": 1018,

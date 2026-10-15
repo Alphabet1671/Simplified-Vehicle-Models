@@ -1,5 +1,15 @@
 # Planar optimal control
 
+> **Support policy (2026-10-15): retired and unsupported.** The planar OCP
+> implementation and its result-construction/seed APIs are absent from the
+> current source tree and will not be restored as part of this verification
+> fix. The evidence and historical results in this document remain archived;
+> in particular, solver status alone does not validate a lap, and the saved
+> IEM24 20 m / 52-node geometry is invalid. Treat dependent OCP numbers as
+> historical/unverified, not current usable claims. OCP-specific tests are kept
+> outside default unittest discovery while tests for extant planar parameter and
+> geometry functionality remain active.
+
 > **Validated result:** the placeholder vehicle reaches a converged,
 > independently verified minimum-time lap of **43.9 s** on the closed
 > Michigan endurance path, constrained to a **0.05 m corridor** around the

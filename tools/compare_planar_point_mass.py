@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""Compare point-mass and planar lap solvers on one model and one path.
+"""Compare the supported real-IEM24 point-mass solver on the signed MIS path.
 
-The point-mass force envelope is sampled from the simplified UniTire model
-referenced by the placeholder planar formulation. No legacy Matlab lap-sim
-tire coefficients are read. The report separates setup, point-mass solve,
-planar solve, and point-mass-seed projection/solve wall time.
+The planar OCP solver and point-mass-seed workflow were retired. This script
+now provides a point-mass-only run summary and refuses to claim a planar
+comparison; use the transient forward-driver for an opt-in planar simulation.
 """
 
 from __future__ import annotations
@@ -21,11 +20,8 @@ from simplified_vehicle_models.compiler.compile import compile_formulation
 from simplified_vehicle_models.parameters.vehicle import PointMassVehicleParameters
 from simplified_vehicle_models.powertrain.assembly import compile_powertrain_drivetrain
 from simplified_vehicle_models.results.traces import LapMode
-from simplified_vehicle_models.solvers import forward_backward, planar_ocp
-from simplified_vehicle_models.solvers.planar_equilibrium import equilibrium_start
-from simplified_vehicle_models.solvers.point_mass_seed import (
-    point_mass_planar_primal_seed,
-)
+from simplified_vehicle_models.solvers import forward_backward
+from simplified_vehicle_models.tracks.path_coordinates import evaluate_path
 from simplified_vehicle_models.tires.unitire_envelope import (
     build_unitire_peak_envelope,
 )
@@ -43,8 +39,14 @@ TRACK = ROOT / "models/tracks/2024_michigan_endurance_closed.xml"
 def _point_mass_track(track: TrackProfile, spacing: float) -> TrackProfile:
     """Sample the same signed XY path on the requested comparison mesh."""
 
-    path = planar_ocp._build_path_data(track, spacing)
-    curvature = path["curvature"]
+    if not np.isfinite(spacing) or spacing <= 0.0:
+        raise ValueError("spacing must be positive and finite")
+    coordinates = track.path_coordinates
+    if coordinates is None:
+        raise ValueError("point-mass comparison requires signed closed-path geometry")
+    intervals = max(1, int(np.ceil(track.lap_length / spacing)))
+    distance = np.linspace(0.0, track.lap_length, intervals + 1)
+    _, _, _, curvature = evaluate_path(coordinates, distance)
     radius = np.divide(
         1.0,
         np.abs(curvature),
@@ -52,8 +54,8 @@ def _point_mass_track(track: TrackProfile, spacing: float) -> TrackProfile:
         where=np.abs(curvature) > 1.0e-12,
     )
     return TrackProfile(
-        distance=path["distance"],
-        segment_length=np.diff(path["distance"]),
+        distance=distance,
+        segment_length=np.diff(distance),
         radius=radius,
         curvature=curvature,
         is_closed=track.is_closed,
@@ -100,13 +102,13 @@ def _result_summary(result) -> dict[str, object]:
     }
 
 
-def run(spacing: float, maximum_iterations: int) -> dict[str, object]:
+def run(spacing: float, maximum_iterations: int = 200) -> dict[str, object]:
+    del maximum_iterations  # Retained as a CLI compatibility argument.
     setup_start = time.perf_counter()
-    planar_vehicle = compile_formulation(FORMULATION).model
+    vehicle = compile_formulation(FORMULATION).model
     source_track = load_track(TRACK)
-    pm_vehicle, source_transmission_ratio = _point_mass_vehicle(planar_vehicle)
+    pm_vehicle, source_transmission_ratio = _point_mass_vehicle(vehicle)
     pm_track = _point_mass_track(source_track, spacing)
-    path = planar_ocp._build_path_data(source_track, spacing)
     setup_seconds = time.perf_counter() - setup_start
 
     pm_start = time.perf_counter()
@@ -121,80 +123,8 @@ def run(spacing: float, maximum_iterations: int) -> dict[str, object]:
         regen_enabled=False,
     )
     pm_seconds = time.perf_counter() - pm_start
-
-    planar_options = planar_ocp.PlanarOcpOptions(
-        mesh_spacing=spacing,
-        maximum_iterations=maximum_iterations,
-        equilibrium_seed=True,
-        exact_hessian=True,
-        print_level=0,
-        warm_start=False,
-    )
-    cold_start = time.perf_counter()
-    planar_result = planar_ocp.solve_planar_hot_lap(
-        planar_vehicle, source_track, planar_options
-    )
-    planar_seconds = time.perf_counter() - cold_start
-
-    warm_start = time.perf_counter()
-    mapped = point_mass_planar_primal_seed(
-        pm_result.lap,
-        pm_track.distance,
-        path,
-        planar_vehicle,
-    )
-    # Retain the algebraically balanced equilibrium seed's sideslip and
-    # steering, which the point-mass model cannot provide. Use point mass only
-    # for the speed/time profile and approximate longitudinal pedals.
-    motor = planar_vehicle.motor
-    peak_wheel = (
-        motor.peak_motor_torque * motor.gear_ratio * motor.motor_efficiency
-    )
-    functions = planar_ocp._build_node_functions(
-        planar_ocp._require_casadi(),
-        planar_vehicle,
-        4.0 * peak_wheel,
-        planar_ocp._brake_torque_magnitudes(planar_vehicle),
-    )
-    equilibrium = equilibrium_start(
-        planar_vehicle,
-        path,
-        functions,
-        planar_options.equilibrium_speed,
-    )
-    state = equilibrium["state"].copy()
-    speed = mapped["state"][2]
-    side_ratio = state[3] / np.maximum(state[2], 1.0e-12)
-    state[2] = speed
-    state[3] = side_ratio * speed
-    state[4] = path["curvature"] * np.hypot(state[2], state[3])
-    state[5] = planar_vehicle.storage.initial_state_of_charge
-    state[6] = mapped["state"][6]
-    control = equilibrium["control"].copy()
-    # Point-mass pedal fractions satisfy a different force balance. Estimate
-    # only initial longitudinal pedal direction/magnitude from its speed slope,
-    # matching the planar cold-start heuristic instead of copying those pedals.
-    acceleration = np.gradient(speed**2, 2.0 * path["distance"])
-    control[0] = np.clip(acceleration / 6.0, 0.0, 1.0)
-    control[1] = np.clip(-acceleration / 12.0, 0.0, planar_options.maximum_brake)
-    seed = {
-        "distance": path["distance"],
-        "state": state,
-        "control": control,
-        "algebraic": equilibrium["algebraic"],
-    }
-    warm_options = replace(planar_options, project_initial_guess=True)
-    warm_result = planar_ocp._solve(
-        planar_ocp._require_casadi(),
-        planar_vehicle,
-        source_track,
-        warm_options,
-        seed,
-    )
-    warm_seconds = time.perf_counter() - warm_start
-
     pm_lap = float(pm_result.lap_time)
-    planar_lap = float(planar_result.lap_time)
+    path_node_count = int(pm_track.distance.size)
     envelope = pm_vehicle.tire
     lookup_loads = np.array([250.0, 660.0, 1500.0, 2500.0])
     fx, fy = envelope.force_capacities(lookup_loads)
@@ -215,7 +145,7 @@ def run(spacing: float, maximum_iterations: int) -> dict[str, object]:
         "track_title": source_track.title,
         "lap_distance_m": source_track.lap_length,
         "mesh_spacing_m": spacing,
-        "nodes": int(path["distance"].size),
+        "nodes": path_node_count,
         "tire_source": "simplified UniTire pure-slip peaks",
         "tire_reference_speed_mps": envelope.reference_speed,
         "tire_lookup_nodes": int(envelope.vertical_loads.size),
@@ -227,55 +157,21 @@ def run(spacing: float, maximum_iterations: int) -> dict[str, object]:
             "final_soc": float(pm_result.energy.final_state_of_charge),
             "minimum_pack_voltage_v": float(pm_result.energy.minimum_voltage),
         },
-        "planar_equilibrium_seed": {
-            **_result_summary(planar_result),
-            "ipopt_status": planar_result.status,
-            "max_algebraic_residual": planar_result.maximum_algebraic_residual,
-            "max_dynamics_residual": planar_result.maximum_dynamics_residual,
-            "max_inequality_violation": planar_result.maximum_inequality_violation,
-            "max_power_mismatch_w": planar_result.maximum_power_mismatch,
-            "max_steering_rate_rad_s": planar_result.maximum_steering_rate,
-        },
-        "point_mass_seeded_planar": {
-            **_result_summary(warm_result),
-            "ipopt_status": warm_result.status,
-            "max_algebraic_residual": warm_result.maximum_algebraic_residual,
-            "max_dynamics_residual": warm_result.maximum_dynamics_residual,
-            "max_inequality_violation": warm_result.maximum_inequality_violation,
-            "max_power_mismatch_w": warm_result.maximum_power_mismatch,
-            "max_steering_rate_rad_s": warm_result.maximum_steering_rate,
-            "projected_start": True,
-            "initialization_strategy": (
-                "point-mass speed/time; equilibrium sideslip/steering; "
-                "speed-slope pedals; local algebraic projection"
-            ),
-        },
-        "comparison": {
-            "point_mass_minus_planar_seconds": pm_lap - planar_lap,
-            "point_mass_minus_planar_percent": 100.0 * (pm_lap - planar_lap) / planar_lap,
-            "planar_equilibrium_iterations_saved_by_point_mass_seed": (
-                planar_result.iterations - warm_result.iterations
-            ),
+        "planar_comparison": {
+            "available": False,
+            "reason": "the planar OCP and point-mass-seed APIs are retired",
+            "supported_alternative": "tools/run_iem24_forward_driver.py",
         },
         "compute_time_seconds": {
             "input_compilation_and_lookup_setup": setup_seconds,
             "point_mass_energy_coupled_solve": pm_seconds,
-            "planar_equilibrium_seed_solve": planar_seconds,
-            "point_mass_seed_projection_and_planar_solve": warm_seconds,
-            "planar_to_point_mass_compute_speedup": planar_seconds / pm_seconds,
-            "point_mass_seeded_planar_vs_equilibrium_speedup": planar_seconds / warm_seconds,
         },
         "environment": {
             "python": platform.python_version(),
             "numpy": np.__version__,
             "solver_options": {
-                "maximum_iterations": maximum_iterations,
                 "point_mass_lap_maximum_iterations": 200,
                 "point_mass_energy_maximum_iterations": 40,
-                "planar_exact_hessian": True,
-                "planar_steering_rate_limit_rad_s": planar_vehicle.steering_maximum_rate,
-                "maximum_lateral_error_m": planar_options.maximum_lateral_error,
-                "maximum_heading_error_rad": planar_options.maximum_heading_error,
             },
             "point_mass_motor_gear_ratio_used": (
                 pm_vehicle.drivetrain.powertrain.power_plant.gear_ratio
@@ -288,7 +184,10 @@ def run(spacing: float, maximum_iterations: int) -> dict[str, object]:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--spacing", type=float, default=1.0)
-    parser.add_argument("--iterations", type=int, default=2500)
+    parser.add_argument(
+        "--iterations", type=int, default=2500,
+        help="deprecated OCP option, ignored by this point-mass-only tool",
+    )
     parser.add_argument("--output", type=Path, default=None)
     args = parser.parse_args()
     report = run(args.spacing, args.iterations)

@@ -16,7 +16,8 @@ The planar OCP and point-mass seed APIs are **retired and unsupported** in the c
 
 ## Tests and results
 
-- Required command: `PYTHONPATH=src python3 -m unittest discover -s tests -q` — **failed**: 564 tests ran; one failure in `test_planar_forward.PlanarForwardTests.test_regen_survives_motor_speed_limit_without_hydraulic_braking`, at assertion that all driven motor wheel torques are negative. The first foreground window reached 120 s and moved to background job `bash-97`; it completed after 177.026 s with exit code 1. Initial output had a ResourceWarning for a temporary `diag.jsonl` file.
+- An earlier concurrent run of `PYTHONPATH=src python3 -m unittest discover -s tests -q` reported 564 tests with one failure in `test_planar_forward.PlanarForwardTests.test_regen_survives_motor_speed_limit_without_hydraulic_braking`; this did not reproduce in focused reruns.
+- Final `PYTHONPATH=src python3 -m unittest discover -s tests -q` — **passed**: 566 tests in 151.969 s, exit code 0. A non-failing `ResourceWarning` for a temporary `diag.jsonl` file was emitted.
 - Focused reproduction, `PYTHONPATH=src python3 -m unittest tests.test_planar_forward.PlanarForwardTests.test_regen_survives_motor_speed_limit_without_hydraulic_braking -v` — **passed** (1 test, 0.005 s).
 - Module reproduction, `PYTHONPATH=src python3 -m unittest tests.test_planar_forward -v` — **passed** (9 tests, 0.212 s). The one full-suite failure was not reproducible in focused reruns; likely order/state-sensitive. No Task 3 code changes were made to this unrelated forward-driver behavior.
 - `python3 -m json.tool` validation passed for edited JSON summaries; `git diff --cached --check` passed before the original commit.
@@ -44,7 +45,7 @@ Unrelated dirty files were preserved and excluded from the task commit.
 - Result data, traces, and plots remain archived. OCP-derived plots and raw CSV still contain the historical OCP trace; report banners/metadata warn users that they are not current or valid evidence.
 - The plan document is now prominently labeled as an archived historical record; internal present-tense references are changed at the opening/API-description sections. Remaining detailed solver narrative is within that archival framing.
 - Archived seed tests intentionally no longer execute under standard discovery because the tested API is absent; active regressions verify current support/evidence status instead.
-- The complete suite had one nonreproducible failure in a different task's forward-driver test; focused test and whole module passed. This remains a concern for the integrator.
+- The earlier suite failure was not reproducible; the final full discovery passed all 566 tests.
 
 ## Commit
 

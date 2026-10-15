@@ -82,4 +82,4 @@ Reproduce the lap-time and warm-start run with:
 PYTHONPATH=src:/tmp/casadi_pkgs python3 tools/compare_planar_point_mass.py --spacing 1 --iterations 500 --output /tmp/point-mass-planar.json
 ```
 
-The machine-readable summary is in [`point-mass-planar-comparison.json`](point-mass-planar-comparison.json). The UniTire adapter, point-mass/planar seed bridge, and comparison runner are in `src/simplified_vehicle_models/tires/unitire_envelope.py`, `src/simplified_vehicle_models/solvers/point_mass_seed.py`, and `tools/compare_planar_point_mass.py`.
+The machine-readable summary is in [`point-mass-planar-comparison.json`](point-mass-planar-comparison.json). The UniTire adapter remains in `src/simplified_vehicle_models/tires/unitire_envelope.py`. The planar OCP and point-mass seed APIs were retired; the legacy `tools/compare_planar_point_mass.py` entrypoint now emits a point-mass-only result with an explicit unavailable-planar field, and `tools/plot_point_mass_planar_comparison.py` no longer recreates retired OCP plots.

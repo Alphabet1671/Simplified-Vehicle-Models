@@ -1,3 +1,4 @@
+import importlib.util
 import json
 from pathlib import Path
 import unittest
@@ -7,6 +8,18 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class RetiredOcpEvidenceTests(unittest.TestCase):
+    def test_legacy_comparison_entrypoints_import_without_retired_modules(self) -> None:
+        for name in (
+            "compare_planar_point_mass",
+            "plot_point_mass_planar_comparison",
+        ):
+            path = ROOT / "tools" / f"{name}.py"
+            spec = importlib.util.spec_from_file_location(name, path)
+            self.assertIsNotNone(spec)
+            self.assertIsNotNone(spec.loader)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+
     def test_three_way_summary_marks_ocp_unverified(self) -> None:
         summary = json.loads(
             (ROOT / "docs/validation/iem24-murphy/comparison_three_way_summary.json")

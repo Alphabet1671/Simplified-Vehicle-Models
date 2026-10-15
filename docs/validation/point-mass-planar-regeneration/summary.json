@@ -1,0 +1,72 @@
+{
+  "verification_status": "historical_nonvalidated_planar_result",
+  "verification_note": "Planar OCP did not converge; its lap time, traces, and derived metrics are illustrative only, not validation evidence.",
+  "lap_length_m": 1016.70064959,
+  "mesh_spacing_m": 1.0,
+  "nodes": 1018,
+  "regeneration_enabled": true,
+  "point_mass": {
+    "lap_time_s": 48.2326541087342,
+    "converged": true,
+    "iterations": 3,
+    "initial_soc": 0.9617234998917527,
+    "final_soc": 0.9269509073362576,
+    "consumed_kwh": 0.3293814895952798,
+    "recovered_kwh": 0.00010302223212080839,
+    "net_kwh": 0.329278467363159,
+    "peak_discharge_kw": 70.76015460779591,
+    "peak_regen_kw": -0.0599743080177094
+  },
+  "planar": {
+    "lap_time_s": 43.91236208951754,
+    "converged": false,
+    "status": "Maximum_Iterations_Exceeded",
+    "iterations": 500,
+    "initial_soc": 0.9617234998917527,
+    "final_soc": 0.9097361943200225,
+    "consumed_kwh": 0.4017973813930653,
+    "recovered_kwh": 0.0014583022812038702,
+    "net_kwh": 0.40033907911186145,
+    "peak_discharge_kw": 76.69245741296713,
+    "peak_regen_kw": -25.451543361902736
+  },
+  "trace_definitions": {
+    "common_x": "segment midpoint distance (m), common 1 m mesh",
+    "ax_ay_speed_fz_power": "point-mass segment signals; planar adjacent node values averaged to segment midpoint",
+    "dc_power_sign": "positive discharge, negative battery charging; W in archive and kW in figures",
+    "point_mass_radius": "centerline/reference radius 1/abs(curvature)",
+    "planar_radius": "ground speed/absolute yaw rate; infinity for straight lines; plotting clipped to 1000 m",
+    "wheel_order": [
+      "FL",
+      "FR",
+      "RL",
+      "RR"
+    ],
+    "normal_load_unit": "N",
+    "acceleration_unit": "m/s^2",
+    "speed_unit": "m/s",
+    "radius_unit": "m"
+  },
+  "model_limits": {
+    "drive_wheel_shares_FL_FR_RL_RR": [
+      0.1,
+      0.1,
+      0.4,
+      0.4
+    ],
+    "regeneration_torque_fraction": 0.5,
+    "charge_current_limit_A": 200.646
+  },
+  "elapsed_wall_s": 451.0246142090764,
+  "outputs": [
+    "ax.png",
+    "ay.png",
+    "velocity.png",
+    "dc-power.png",
+    "cornering-radius.png",
+    "fz-wheels.png",
+    "traces.npz",
+    "summary.json",
+    "full-report.md"
+  ]
+}

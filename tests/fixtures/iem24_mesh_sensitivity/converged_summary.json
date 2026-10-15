@@ -1,0 +1,11 @@
+{
+  "mesh_spacing_m": 0.5,
+  "node_count": 1201,
+  "converged": true,
+  "status": "Solve_Succeeded",
+  "iterations": 418,
+  "lap_time_s": 72.4,
+  "maximum_dynamics_residual": 1.2e-8,
+  "maximum_algebraic_residual": 2.5e-9,
+  "maximum_inequality_violation": 0.0
+}

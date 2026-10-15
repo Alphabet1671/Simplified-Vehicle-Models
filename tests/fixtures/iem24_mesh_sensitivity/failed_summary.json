@@ -1,0 +1,11 @@
+{
+  "mesh_spacing_m": 2.0,
+  "node_count": 301,
+  "converged": false,
+  "status": "Infeasible_Problem_Detected",
+  "iterations": 8000,
+  "lap_time_s": 83.7,
+  "maximum_dynamics_residual": 0.00031,
+  "maximum_algebraic_residual": 0.000004,
+  "maximum_inequality_violation": 0.0431
+}

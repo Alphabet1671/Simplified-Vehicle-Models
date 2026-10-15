@@ -1,0 +1,208 @@
+{
+  "channels": {
+    "lateral_acceleration": "AccelY rotated into the body frame",
+    "longitudinal_acceleration": "AccelX rotated into the body frame",
+    "motor_torque_request": "mean of Tq_RL_Req and Tq_RR_Req",
+    "pack_voltage": "VPack, the pack terminal voltage",
+    "yaw_rate": "GyroZ; unchanged by a yaw rotation"
+  },
+  "driving_window_s": [
+    117.0199966430664,
+    925.9099731445312
+  ],
+  "export_rate_hz": 19.98048780487805,
+  "lap_statistics": {
+    "count": 11,
+    "fastest_lap_time_s": 69.989990234375,
+    "flying_count": 10,
+    "maximum_closure_radius_m": 7.210902050031952,
+    "median_flying_lap_distance_m": 1022.4002900589808,
+    "median_flying_lap_time_s": 71.68501281738281,
+    "median_lap_distance_m": 1023.0283212244531,
+    "median_lap_time_s": 72.1300048828125
+  },
+  "lap_torque_map": {
+    "median_request_nm": 5.203999996185303,
+    "peak_request_nm": 10.449999809265137
+  },
+  "laps": [
+    {
+      "closure_radius_m": 7.210902050031952,
+      "distance_m": 1026.7124605806807,
+      "end_s": 190.36000061035156,
+      "index": 0,
+      "lap_time_s": 85.36000061035156,
+      "mean_speed_mps": 12.028027802710346,
+      "standing_start": true,
+      "start_s": 105.0,
+      "start_speed_mps": 0.0
+    },
+    {
+      "closure_radius_m": 0.8583236178323133,
+      "distance_m": 1020.8766479760641,
+      "end_s": 267.6700134277344,
+      "index": 1,
+      "lap_time_s": 77.31001281738281,
+      "mean_speed_mps": 13.204973208160231,
+      "standing_start": false,
+      "start_s": 190.36000061035156,
+      "start_speed_mps": 9.134119643142357
+    },
+    {
+      "closure_radius_m": 0.7090642168999748,
+      "distance_m": 1023.2230217250396,
+      "end_s": 340.25,
+      "index": 2,
+      "lap_time_s": 72.57998657226562,
+      "mean_speed_mps": 14.097867332976818,
+      "standing_start": false,
+      "start_s": 267.6700134277344,
+      "start_speed_mps": 9.203006596497287
+    },
+    {
+      "closure_radius_m": 0.1814694183589634,
+      "distance_m": 1021.5621539110516,
+      "end_s": 413.9599914550781,
+      "index": 3,
+      "lap_time_s": 73.70999145507812,
+      "mean_speed_mps": 13.85920868724606,
+      "standing_start": false,
+      "start_s": 340.25,
+      "start_speed_mps": 9.373590981370398
+    },
+    {
+      "closure_radius_m": 0.019315495223580798,
+      "distance_m": 1020.088761876641,
+      "end_s": 485.20001220703125,
+      "index": 4,
+      "lap_time_s": 71.24002075195312,
+      "mean_speed_mps": 14.319040773843039,
+      "standing_start": false,
+      "start_s": 413.9599914550781,
+      "start_speed_mps": 8.97246273442744
+    },
+    {
+      "closure_radius_m": 0.6180747997126542,
+      "distance_m": 1021.2138284095172,
+      "end_s": 555.2100219726562,
+      "index": 5,
+      "lap_time_s": 70.010009765625,
+      "mean_speed_mps": 14.586683130430506,
+      "standing_start": false,
+      "start_s": 485.20001220703125,
+      "start_speed_mps": 8.897287406455591
+    },
+    {
+      "closure_radius_m": 1.5968466291383878,
+      "distance_m": 1023.0283212244531,
+      "end_s": 629.4400024414062,
+      "index": 6,
+      "lap_time_s": 74.22998046875,
+      "mean_speed_mps": 13.781875123288449,
+      "standing_start": false,
+      "start_s": 555.2100219726562,
+      "start_speed_mps": 9.111497176692158
+    },
+    {
+      "closure_radius_m": 0.8751111572275712,
+      "distance_m": 1023.1540337564047,
+      "end_s": 699.4299926757812,
+      "index": 7,
+      "lap_time_s": 69.989990234375,
+      "mean_speed_mps": 14.618576604028316,
+      "standing_start": false,
+      "start_s": 629.4400024414062,
+      "start_speed_mps": 9.194153179835089
+    },
+    {
+      "closure_radius_m": 0.7229580434447491,
+      "distance_m": 1023.3805334705585,
+      "end_s": 770.3499755859375,
+      "index": 8,
+      "lap_time_s": 70.91998291015625,
+      "mean_speed_mps": 14.430073041148505,
+      "standing_start": false,
+      "start_s": 699.4299926757812,
+      "start_speed_mps": 9.115130755892002
+    },
+    {
+      "closure_radius_m": 1.1292351954941915,
+      "distance_m": 1023.2424323575087,
+      "end_s": 842.47998046875,
+      "index": 9,
+      "lap_time_s": 72.1300048828125,
+      "mean_speed_mps": 14.18608572146835,
+      "standing_start": false,
+      "start_s": 770.3499755859375,
+      "start_speed_mps": 9.219710545994273
+    },
+    {
+      "closure_radius_m": 0.6388017781628212,
+      "distance_m": 1021.7722588935085,
+      "end_s": 913.0499877929688,
+      "index": 10,
+      "lap_time_s": 70.57000732421875,
+      "mean_speed_mps": 14.478845867185406,
+      "standing_start": false,
+      "start_s": 842.47998046875,
+      "start_speed_mps": 9.214074142091313
+    }
+  ],
+  "navigation_unit_skew": {
+    "angle_deg": 8.550463229063,
+    "angle_interquartile_deg": 0.3040127483978914,
+    "method": "median velocity heading over high-speed low-yaw samples",
+    "residual_lateral_velocity_std_mps": 0.5644664250516089,
+    "straight_sample_count": 6752
+  },
+  "pack_voltage": {
+    "flying_lap_boundary_median_voltage_v": 550.6499938964844,
+    "lap_boundary_voltage_v": [
+      575.5999755859375,
+      571.4000244140625,
+      561.7999877929688,
+      561.0999755859375,
+      560.9000244140625,
+      554.5,
+      546.7999877929688,
+      546.4000244140625,
+      537.7000122070312,
+      532.5999755859375,
+      532.2999877929688
+    ],
+    "launch_voltage_v": 575.7000122070312,
+    "resting_sample_count": 1202,
+    "resting_standard_deviation_v": 0.04750814507934614,
+    "resting_voltage_v": 575.7000122070312,
+    "stint_median_voltage_v": 546.5,
+    "stint_minimum_voltage_v": 513.9000244140625
+  },
+  "record": {
+    "channel_count": 10,
+    "duration_s": 2223.929931640625,
+    "sample_count": 222394,
+    "sample_interval_s": 0.010009765625
+  },
+  "source": "/Users/alphabet1671/Desktop/0615CompEndurance.mat",
+  "stint_window_s": [
+    105.0,
+    938.0
+  ],
+  "validation": {
+    "cutoff_hz": 1.0,
+    "lateral_acceleration_vs_centripetal": {
+      "correlation": 0.993764562224441,
+      "rmse": 0.8889559596502256,
+      "slope": 0.9919105759790833
+    },
+    "longitudinal_acceleration_vs_velocity_rate": {
+      "correlation": 0.9836581216192497,
+      "rmse": 0.3224199475159627,
+      "slope": 0.9763109454184828
+    },
+    "peak_lateral_acceleration_mps2": 18.35788919874911,
+    "peak_longitudinal_acceleration_mps2": 7.96873720278816,
+    "peak_speed_mps": 24.010934582693253,
+    "sample_count": 79713
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "apps_max_motor_torque_nm": 10.5,
+  "average_speed_mps": 13.108357589669613,
+  "converged": true,
+  "driven_wheels": [
+    "rl",
+    "rr"
+  ],
+  "energy_converged": true,
+  "energy_iterations": 2,
+  "final_bus_voltage_v": 572.2052909477984,
+  "final_state_of_charge": 0.8141209434061603,
+  "formulation": "models/formulations/iem24_murphy_real_point_mass.xml",
+  "initial_bus_voltage_v": 574.4240264823003,
+  "initial_state_of_charge": 0.8290853425250001,
+  "iterations": 3,
+  "lap_mode": "flying",
+  "lap_time_s": 77.56125377531949,
+  "mass_kg": 287.0,
+  "maximum_speed_change_mps": 0.0,
+  "maximum_speed_mps": 20.532727302740298,
+  "maximum_yaw_rate_rad_s": 1.3436379140752395,
+  "minimum_bus_voltage_v": 560.7305841055529,
+  "minimum_speed_mps": 8.309359151046436,
+  "minimum_yaw_rate_rad_s": -1.2185052259623192,
+  "motor_count": 2,
+  "node_count": 2034,
+  "regen_enabled": false,
+  "regen_recovered_energy_j": 0.0,
+  "track": "models/tracks/2024_michigan_endurance_closed.xml",
+  "track_length_m": 1016.70064959
+}

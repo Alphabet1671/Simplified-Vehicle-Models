@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<model schema-version="1.0" id="placeholder-2024-aero" type="aero-model" subtype="fixed-aero">
+    <!-- Placeholder aero. downforce_area and drag_area are derived from the measured forces at the stated reference condition, then rounded to two significant figures and skewed.-->
+    <!-- Source IEM_24_DSS.xlsx sha256=e436c2f61d46f23614515e34cbce381e45a5e508b9840012c88511f59afac5d8.-->
+    <parameters>
+        <parameter name="air_density" value="1.162" unit="kg/m^3" />
+        <parameter name="downforce_area" value="4.3418" unit="m^2" />
+        <parameter name="drag_area" value="1.5719" unit="m^2" />
+        <parameter name="aero_balance" value="0.403" unit="1" />
+    </parameters>
+</model>

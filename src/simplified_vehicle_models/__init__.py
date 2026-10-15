@@ -20,15 +20,75 @@ from simplified_vehicle_models.formulations.point_mass import (
     normal_loads,
     tire_force_capacities,
 )
+from simplified_vehicle_models.controls.brakes import (
+    BrakeResult,
+    PedalRatioCurve,
+    brake_torques,
+    maximum_brake_torques,
+)
+from simplified_vehicle_models.controls.steering import (
+    AckermannTable,
+    SteeringResult,
+    rack_travel,
+    steering_angles,
+)
+from simplified_vehicle_models.drivetrain.controller import (
+    BrakePedalCommand,
+    PedalControllerParameters,
+)
+from simplified_vehicle_models.drivetrain.fixed_split import (
+    TorqueSplitResult,
+    allocate_brake,
+    allocate_controls,
+    allocate_fixed_split,
+    is_within_limits,
+    wheel_shares,
+)
+from simplified_vehicle_models.formulations.planar_7dof import (
+    PlanarControls,
+    PlanarEvaluation,
+    PlanarState,
+    body_lateral_acceleration,
+    contact_velocities,
+    evaluate_normal_loads,
+    evaluate_planar_dynamics,
+    rotate_tire_forces_to_body,
+    slip_quantities,
+    wheel_positions,
+    yaw_moment_of,
+)
 from simplified_vehicle_models.parameters.aero import AeroParameters
 from simplified_vehicle_models.parameters.drivetrain import DrivetrainParameters
-from simplified_vehicle_models.parameters.tire import TireEnvelopeParameters
-from simplified_vehicle_models.parameters.vehicle import PointMassVehicleParameters
+from simplified_vehicle_models.parameters.tire import (
+    TireEnvelopeParameters,
+    UniTireSimpleParameters,
+)
+from simplified_vehicle_models.parameters.vehicle import (
+    PlanarVehicleParameters,
+    PointMassVehicleParameters,
+)
 from simplified_vehicle_models.results.traces import LapMode, LapResult
 from simplified_vehicle_models.solvers.forward_backward import solve_lap
+from simplified_vehicle_models.tires.unitire_simple import evaluate_unitire
+from simplified_vehicle_models.tracks.path_coordinates import evaluate_path
 from simplified_vehicle_models.tracks.profile import load_track
-from simplified_vehicle_models.tracks.types import TrackProfile
+from simplified_vehicle_models.tracks.types import PathCoordinates, TrackProfile
 from simplified_vehicle_models.xml.loader import load_point_mass_vehicle
+from simplified_vehicle_models.powertrain.motor_envelope import (
+    MotorEnvelopeParameters,
+    bus_power,
+    motor_speed_limit,
+    motor_torque_bounds,
+    motor_torque_limit,
+    shaft_power,
+    total_bus_power,
+    wheel_speed_limit,
+    wheel_torque_limit,
+)
+from simplified_vehicle_models.powertrain.wheel_drive import (
+    DriveLimitResult,
+    evaluate_drive_limits,
+)
 from simplified_vehicle_models.powertrain.power_plant import (
     TorqueLimits,
     TorqueSolveResult,
@@ -50,23 +110,69 @@ __all__ = [
     "LEFT_TURN_CURVATURE_SIGN",
     "LapMode",
     "LapResult",
+    "DriveLimitResult",
+    "MotorEnvelopeParameters",
+    "PlanarControls",
+    "PlanarOcpOptions",
+    "PlanarOcpResult",
+    "PlanarEvaluation",
+    "PlanarState",
+    "PlanarVehicleParameters",
     "PointMassVehicleParameters",
     "RIGHT_TURN_CURVATURE_SIGN",
     "TireEnvelopeParameters",
+    "PathCoordinates",
     "TrackProfile",
+    "UniTireSimpleParameters",
     "VEHICLE_AXIS_CONVENTION",
     "WHEEL_ORDER",
+    "AckermannTable",
+    "BrakeResult",
+    "BrakePedalCommand",
+    "PedalControllerParameters",
+    "PedalRatioCurve",
+    "SteeringResult",
+    "TorqueSplitResult",
     "acceleration_limits",
+    "allocate_brake",
+    "allocate_controls",
+    "allocate_fixed_split",
+    "body_lateral_acceleration",
+    "bus_power",
+    "brake_torques",
+    "contact_velocities",
     "compile_formulation",
     "evaluate_equilibrium",
+    "evaluate_drive_limits",
+    "evaluate_normal_loads",
+    "evaluate_planar_dynamics",
+    "evaluate_path",
+    "evaluate_unitire",
+    "is_within_limits",
     "lateral_transfer_loads",
     "load_point_mass_vehicle",
     "load_track",
+    "maximum_brake_torques",
+    "motor_speed_limit",
+    "motor_torque_bounds",
+    "motor_torque_limit",
     "maximum_corner_speed",
     "maximum_vehicle_speed",
     "normal_loads",
+    "rack_travel",
+    "rotate_tire_forces_to_body",
+    "slip_quantities",
+    "shaft_power",
     "solve_lap",
+    "solve_planar_hot_lap",
+    "steering_angles",
     "tire_force_capacities",
+    "total_bus_power",
+    "wheel_positions",
+    "wheel_speed_limit",
+    "wheel_torque_limit",
+    "wheel_shares",
+    "yaw_moment_of",
     "TorqueLimits",
     "TorqueSolveResult",
     "evaluate_motor",

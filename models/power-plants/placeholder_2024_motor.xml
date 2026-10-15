@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<model schema-version="1.0" id="placeholder-2024-motor" type="power-plant" subtype="torque-speed-envelope">
+    <!-- Placeholder smooth motor envelope. Every sheet-derived value is rounded to two significant figures and skewed.-->
+    <!-- The envelope is smooth, so a nonlinear program can differentiate it. The fitted map in the older power plant is not.-->
+    <parameters>
+        <parameter name="unit_count" value="4.0" unit="1" />
+        <parameter name="gear_ratio" value="11.589" unit="1" />
+        <parameter name="motor_efficiency" value="0.95" unit="1" />
+        <parameter name="peak_motor_torque" value="20.0762" unit="N*m" />
+        <parameter name="continuous_motor_torque" value="9.8677" unit="N*m" />
+        <parameter name="peak_power" value="33361.666" unit="W" />
+        <parameter name="continuous_power" value="11387.5989" unit="W" />
+        <parameter name="maximum_motor_speed" value="19889.7658" unit="rpm" />
+        <parameter name="nominal_bus_voltage" value="600.0" unit="V" />
+        <parameter name="maximum_bus_voltage" value="600.0" unit="V" />
+        <parameter name="regeneration_torque_fraction" value="0.5" unit="1" />
+        <parameter name="inverter_efficiency" value="0.95" unit="1" />
+    </parameters>
+</model>

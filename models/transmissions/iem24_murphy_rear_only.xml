@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<model schema-version="1.0" id="iem24-murphy-rear-only-transmission" type="transmission" subtype="fixed-gear">
+    <parameters>
+        <parameter name="gear_ratio" value="10.9" unit="1" />
+        <parameter name="gear_efficiency" value="0.95" unit="1" />
+        <parameter name="front_torque_fraction" value="0.0" unit="1" />
+    </parameters>
+    <configuration>
+        <driven-wheel position="rl" />
+        <driven-wheel position="rr" />
+    </configuration>
+</model>

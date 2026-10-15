@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<model schema-version="1.0" id="iem24-murphy-real-drivetrain" type="drivetrain-assembly" subtype="electric-four-wheel">
+    <components>
+        <component role="transmission" ref="../transmissions/iem24_murphy_rear_only.xml" />
+        <component role="controller" ref="../controllers/iem24_murphy_real.xml" />
+    </components>
+</model>

@@ -21,7 +21,12 @@ from simplified_vehicle_models.formulations.point_mass import (
 from simplified_vehicle_models.parameters.vehicle import PointMassVehicleParameters
 from simplified_vehicle_models.results.traces import LapMode, LapResult, EnergyLapResult, EnergyReport, SolverProgress, StintReport
 from simplified_vehicle_models.powertrain.energy_storage import StorageState, evaluate_storage, integrate_storage
-from simplified_vehicle_models.powertrain.assembly import FullDrivetrainRuntime, resolve_braking
+from simplified_vehicle_models.powertrain.motor_envelope import MotorEnvelopeParameters
+from simplified_vehicle_models.powertrain.assembly import (
+    FullDrivetrainRuntime,
+    _default_motor_shares,
+    resolve_braking,
+)
 from simplified_vehicle_models.powertrain.power_plant import evaluate_shaft_power, motor_lut_counters, reset_motor_lut_counters
 from simplified_vehicle_models.tracks.types import TrackProfile
 
@@ -689,23 +694,46 @@ def _energy_trace(vehicle, track, lap, trace, regen_enabled):
         if isinstance(vehicle.drivetrain, FullDrivetrainRuntime):
             motor = vehicle.drivetrain.powertrain.power_plant
             transmission = vehicle.drivetrain.drivetrain.transmission
-            motor_speed = transmission.motor_speed(speed / vehicle.tire.effective_radius) * 60.0 / (2.0 * math.pi)
+            gear_ratio = (
+                motor.gear_ratio
+                if isinstance(motor, MotorEnvelopeParameters)
+                else transmission.gear_ratio
+            )
+            motor_speed_rad_s = gear_ratio * speed / vehicle.tire.effective_radius
             if wheel_force >= 0.0:
                 motor_torque = wheel_force * vehicle.tire.effective_radius / (
-                    motor.unit_count * transmission.gear_ratio * transmission.gear_efficiency
+                    motor.unit_count * gear_ratio * transmission.gear_efficiency
                 )
-                operating = evaluate_shaft_power(
-                    motor,
-                    motor_speed,
-                    motor_torque,
-                    evaluate_storage(storage, state).bus_voltage,
-                )
-                # Shaft power is mechanical motor output, never inverter bus power.
-                shaft[i] = motor_torque * motor_speed * 2.0 * math.pi / 60.0 * motor.unit_count
-                bus[i] = operating.bus_power * motor.unit_count
+                if isinstance(motor, MotorEnvelopeParameters):
+                    # The smooth envelope has no shaft-loss map: apply its
+                    # combined motor/inverter efficiency to the summed motor
+                    # shaft power, consistent with its point-mass drive limit.
+                    shaft[i] = (
+                        motor_torque * motor_speed_rad_s * motor.unit_count
+                    )
+                    bus[i] = shaft[i] / motor.drive_efficiency
+                else:
+                    motor_speed_rpm = motor_speed_rad_s * 60.0 / (2.0 * math.pi)
+                    operating = evaluate_shaft_power(
+                        motor,
+                        motor_speed_rpm,
+                        motor_torque,
+                        evaluate_storage(storage, state).bus_voltage,
+                    )
+                    # Shaft power is mechanical motor output, never inverter bus power.
+                    shaft[i] = (
+                        motor_torque * motor_speed_rpm * 2.0 * math.pi / 60.0
+                        * motor.unit_count
+                    )
+                    bus[i] = operating.bus_power * motor.unit_count
             elif regen_enabled:
                 # Friction absorbs the remainder; only the force actually
                 # allocated to regen contributes motor shaft/recovered power.
+                regen_shares = (
+                    _default_motor_shares(motor, transmission)
+                    if isinstance(motor, MotorEnvelopeParameters)
+                    else None
+                )
                 br = resolve_braking(
                     vehicle.drivetrain.powertrain,
                     vehicle.drivetrain.drivetrain,
@@ -714,11 +742,21 @@ def _energy_trace(vehicle, track, lap, trace, regen_enabled):
                     -wheel_force,
                     -wheel_force,
                     vehicle.tire.effective_radius,
+                    wheel_shares=regen_shares,
                 )
-                motor_torque = -br.regen_force_used * vehicle.tire.effective_radius * transmission.gear_efficiency / (
-                    motor.unit_count * transmission.gear_ratio
-                )
-                shaft[i] = motor_torque * motor_speed * 2.0 * math.pi / 60.0 * motor.unit_count
+                if isinstance(motor, MotorEnvelopeParameters):
+                    total_motor_torque = (
+                        br.regen_force_used
+                        * vehicle.tire.effective_radius
+                        * transmission.gear_efficiency
+                        / gear_ratio
+                    )
+                    shaft[i] = -total_motor_torque * motor_speed_rad_s
+                else:
+                    motor_torque = -br.regen_force_used * vehicle.tire.effective_radius * transmission.gear_efficiency / (
+                        motor.unit_count * transmission.gear_ratio
+                    )
+                    shaft[i] = motor_torque * motor_speed_rad_s * motor.unit_count
                 bus[i] = -br.recovered_bus_power
             else:
                 # With regen disabled all braking is friction braking.

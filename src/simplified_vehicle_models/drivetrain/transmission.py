@@ -113,9 +113,14 @@ def compile_fixed_gear_transmission(model: Model) -> FixedGearParameters:
     require_open_closed_unit_interval(model, values, "gear_efficiency")
     require_closed_unit_interval(model, values, "front_torque_fraction")
     driven_wheels = model.driven_wheels
-    if len(driven_wheels) != 4 or set(driven_wheels) != set(_WHEEL_POSITIONS):
+    if (
+        not driven_wheels
+        or len(set(driven_wheels)) != len(driven_wheels)
+        or not set(driven_wheels).issubset(_WHEEL_POSITIONS)
+    ):
         raise ValueError(
-            f"{model.path}: driven wheels must contain fl, fr, rl, and rr exactly once"
+            f"{model.path}: driven wheels must be a nonempty, unique subset of "
+            "fl, fr, rl, and rr"
         )
     return FixedGearParameters(driven_wheels=driven_wheels, **values)
 

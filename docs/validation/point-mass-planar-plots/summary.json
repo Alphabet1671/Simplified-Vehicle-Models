@@ -1,0 +1,26 @@
+{
+  "verification_status": "historical_unverified",
+  "ocp_note": "Planar OCP API retired and unsupported; paired point-mass/OCP summary retained for provenance only because saved coarse OCP geometry is invalid.",
+  "lap_length_m": 1016.70064959,
+  "mesh_spacing_m": 1.0,
+  "nodes": 1018,
+  "point_mass_lap_s": 45.739836684642285,
+  "planar_lap_s": 43.906623128917936,
+  "point_mass_final_soc": 0.9107316138411639,
+  "planar_final_soc": 0.9096013044644736,
+  "point_mass_net_bus_energy_kwh": 0.38130896918067475,
+  "planar_net_bus_energy_kwh": 0.40147077290315386,
+  "point_mass_peak_segment_bus_power_kw": 118.38490290967748,
+  "planar_peak_segment_bus_power_kw": 76.57570599089257,
+  "point_mass_converged": true,
+  "planar_converged": true,
+  "planar_status": "Solve_Succeeded",
+  "elapsed_wall_s": 237.97782433312386,
+  "outputs": [
+    "docs/validation/point-mass-planar-plots/point-mass-planar-energy.png",
+    "docs/validation/point-mass-planar-plots/point-mass-planar-velocity.png",
+    "docs/validation/point-mass-planar-plots/point-mass-planar-power.png",
+    "docs/validation/point-mass-planar-plots/point-mass-planar-curves.npz",
+    "docs/validation/point-mass-planar-plots/summary.json"
+  ]
+}

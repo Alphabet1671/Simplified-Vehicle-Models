@@ -773,6 +773,40 @@ The 14-DOF solve may require additional continuation:
 5. enable transient tire states;
 6. refine the mesh.
 
+### 9.7 Forward virtual-driver simulation (experimental alternative)
+
+Full-lap optimization is not required for every correlation or parameter-study run.
+A second workflow may use a prescribed-path speed planner, a preview driver, and
+forward integration of the selected vehicle. The driver consumes physical signals
+and supplies throttle, brake and steering commands; it does not own model-specific
+wheel, suspension, body-attitude or tire-relaxation states.
+
+The shared plant boundary must accept nonsingular mass-matrix systems and provide
+an extension point for implicit residual/contact backends. Model 3 retains
+suspension inertance in its effective mass matrix. Model 4 retains unsprung motion,
+camber and transient tire states. Singular DAEs require a suitable backend and
+consistent initialization; they must not be silently replaced with explicit or
+pseudoinverse dynamics. The same driver signals can serve all three models, but
+controller settings, initialization and validation remain model-specific.
+
+The speed planner may propagate scalar bounds backward. All vehicle and component
+states advance forward in time; Section 8's prohibition on literal backward
+integration remains in force. The supplied path is unchanged: racing-line
+optimization remains out of scope.
+
+A forward result is a driven trajectory, not a minimum-time stationary solution.
+Report physical/integration validity, path constraints, full-state periodicity,
+accuracy refinement and total runtime separately. A completed initial-value lap
+alone does not satisfy a periodic hot-lap acceptance gate. The existing optimal
+control framework remains available for offline optimality studies.
+
+An initial transient planar prototype and the compatibility analysis are documented
+in [the forward-driver design](<validation/iem24-murphy/forward-driver-design.md>).
+It preserves four wheel-speed states and the requested wheel inertia. Its first
+planner is a conservative kinematic request, not the production live-limit planner.
+Body 10DoF and full 14DoF plant implementations are still future milestones;
+synthetic mass-matrix interface tests do not establish their physical validation.
+
 ## 10\. Control, allocation, and torque-distribution role
 
 Torque vectoring is a composed control and allocation path used inside local QSS solves and dynamic optimal-control evaluations:

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<model schema-version="1.0" id="iem24-murphy-real-aero" type="aero-model" subtype="fixed-aero">
+    <parameters>
+        <parameter name="air_density" value="1.22" unit="kg/m^3" />
+        <parameter name="downforce_area" value="3.5" unit="m^2" />
+        <parameter name="drag_area" value="1.55" unit="m^2" />
+        <parameter name="aero_balance" value="0.5" unit="1" />
+    </parameters>
+</model>

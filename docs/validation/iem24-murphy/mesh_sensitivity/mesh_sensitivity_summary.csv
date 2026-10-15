@@ -1,0 +1,7 @@
+spacing_m,node_count,converged,usable,runtime_s,status,iterations,lap_time_s,solver_objective_lap_time_s,lap_time_delta_vs_0p5m_s,maximum_dynamics_residual,maximum_algebraic_residual,maximum_inequality_violation,maximum_control_overlap,maximum_power_mismatch_w,return_code
+0.05,,False,False,300.044896958163,Timed_Out,,,,,,,,,,124
+0.1,,False,False,300.0708404581528,Timed_Out,,,,,,,,,,124
+0.5,,False,False,300.04280354199,Timed_Out,,,,,,,,,,124
+1.0,1018,False,False,,Maximum_Iterations_Exceeded,8000,,35.18548143849976,,23.862520924187056,515.3269243823361,0.5225694761730965,0.5235694761730965,2.0464696717681363e-05,0
+2.0,509,False,False,,Maximum_Iterations_Exceeded,8000,,168.57620387849192,,0.4426559020307019,747.6574570247067,0.05712000341449652,0.052436245288513046,747.6574570247067,0
+5.0,204,False,False,,Infeasible_Problem_Detected,5557,,197.27986903465984,,5.044002326926034e-08,2.5713626428114367e-06,0.04307112496985472,0.04407112496985472,9.005543688545004e-07,0

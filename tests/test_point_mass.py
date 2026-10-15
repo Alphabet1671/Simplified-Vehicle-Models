@@ -15,8 +15,17 @@ from simplified_vehicle_models.core.conventions import (
     VEHICLE_AXIS_CONVENTION,
     WHEEL_ORDER,
 )
-from simplified_vehicle_models.powertrain.assembly import FullDrivetrainRuntime, maximum_drive_force
+from simplified_vehicle_models.drivetrain.fixed_split import (
+    DRIVE_FRONT_FRACTION,
+    wheel_shares,
+)
+from simplified_vehicle_models.powertrain.assembly import (
+    FullDrivetrainRuntime,
+    compile_powertrain_drivetrain,
+    maximum_drive_force,
+)
 from simplified_vehicle_models.powertrain.energy_storage import StorageState
+from simplified_vehicle_models.parameters.tire import UniTirePeakEnvelope
 from simplified_vehicle_models.formulations.point_mass import (
     acceleration_limits,
     aerodynamic_forces,
@@ -49,6 +58,22 @@ class PointMassTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.vehicle = load_point_mass_vehicle(FORMULATION_PATH)
+
+    def test_unitire_peak_lookup_drives_point_mass_tire_capacity(self) -> None:
+        tire = UniTirePeakEnvelope(
+            vertical_loads=np.array([0.0, 1000.0, 2000.0]),
+            longitudinal_peak_force=np.array([0.0, 2100.0, 4000.0]),
+            lateral_peak_force=np.array([0.0, 2200.0, 4200.0]),
+            effective_radius=0.2,
+            reference_speed=15.0,
+        )
+        vehicle = replace(self.vehicle, tire=tire)
+        loads = np.array([500.0, 1000.0, 1500.0])
+
+        longitudinal, lateral = tire_force_capacities(vehicle, loads)
+
+        np.testing.assert_allclose(longitudinal, [1050.0, 2100.0, 3050.0])
+        np.testing.assert_allclose(lateral, [1100.0, 2200.0, 3200.0])
 
     def test_static_loads_sum_to_vehicle_weight(self) -> None:
         loads = normal_loads(self.vehicle, 0.0, 0.0, 0.0)
@@ -255,6 +280,33 @@ class PointMassTests(unittest.TestCase):
             policy.speed_resolution = 1.0
         with self.assertRaises(ValueError):
             DriveCachePolicy(speed_resolution=-1.0)
+
+    def test_smooth_motor_equilibrium_holds_rear_only_drive_split(self) -> None:
+        runtime = compile_powertrain_drivetrain(
+            load_model(REPOSITORY_ROOT / "models/vehicles/iem24_murphy_real_planar.xml")
+        )
+        vehicle = replace(self.vehicle, drivetrain=runtime)
+        state = evaluate_equilibrium(vehicle, 5.0, 0.0, 1.0)
+
+        self.assertTrue(state.is_feasible)
+        actual_shares = state.longitudinal_forces / np.sum(state.longitudinal_forces)
+        np.testing.assert_allclose(
+            actual_shares,
+            np.array([0.0, 0.0, 0.5, 0.5]),
+            rtol=0.0,
+            atol=1.0e-12,
+        )
+
+    def test_smooth_motor_speed_cap_tracks_storage_state_of_charge(self) -> None:
+        runtime = compile_powertrain_drivetrain(
+            load_model(REPOSITORY_ROOT / "models/vehicles/iem24_murphy_real_planar.xml")
+        )
+        vehicle = replace(self.vehicle, drivetrain=runtime)
+
+        high_soc_cap = maximum_vehicle_speed(vehicle, StorageState(0.99))
+        low_soc_cap = maximum_vehicle_speed(vehicle, StorageState(0.80))
+
+        self.assertGreater(high_soc_cap, low_soc_cap)
 
     def test_assembled_dispatch_matches_compiled_drive_capability(self) -> None:
         self.assertIsInstance(self.vehicle.drivetrain, FullDrivetrainRuntime)

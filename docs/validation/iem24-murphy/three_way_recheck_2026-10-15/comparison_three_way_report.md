@@ -1,5 +1,7 @@
 # IEM24 Murphy three-way comparison — nonvalidated historical run
 
+> **Input provenance:** This regenerated comparison uses copies of the existing measured, point-mass, and saved 7DoF CSVs. Their SHA-256 hashes match the verified baseline inputs; this confirms file identity, not solver validity or independent reproduction. See `task-4-report.md` for hashes. The 7DoF input is unconverged and its metrics remain invalid.
+
 > **Not validation evidence:** This archived recheck includes an unconverged
 > planar OCP iterate. The 35.185 s value and all OCP-derived traces/metrics are
 > illustrative only, not a valid lap-time claim. The OCP API is retired and

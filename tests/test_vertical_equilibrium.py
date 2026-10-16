@@ -38,6 +38,8 @@ class VerticalEquilibriumOracleTests(unittest.TestCase):
     def test_speed_equilibrium_includes_static_aero_load(self):
         vehicle = self.vehicle
         speed = 12.0
+        # Nonzero-speed downforce compresses the preloaded springs; the zero-
+        # jounce oracle applies only at the default (zero-speed) design point.
         state = solve_static_equilibrium(vehicle, speed=speed)
         q = state.as_vector()
         positions = wheel_positions(vehicle.planar)

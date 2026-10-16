@@ -99,7 +99,7 @@ def solve_static_equilibrium(
         wheel_balance = wheel_load - spring - unsprung * gravity
         return np.r_[body_vertical, roll_moment, pitch_moment, wheel_balance]
 
-    # Eight coordinates: body heave/roll/pitch and four jounces. Newton steps
+    # Seven coordinates: body heave/roll/pitch and four jounces. Newton steps
     # use a scaled finite-difference Jacobian and backtracking for robustness.
     q = np.zeros(7)  # heave, roll, pitch, and four jounces
     for _ in range(80):

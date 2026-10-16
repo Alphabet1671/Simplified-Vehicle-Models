@@ -13,7 +13,7 @@ class RetiredOcpEvidenceTests(unittest.TestCase):
             "compare_planar_point_mass",
             "plot_point_mass_planar_comparison",
         ):
-            path = ROOT / "tools" / f"{name}.py"
+            path = ROOT / "tools" / "reports" / f"{name}.py"
             spec = importlib.util.spec_from_file_location(name, path)
             self.assertIsNotNone(spec)
             self.assertIsNotNone(spec.loader)

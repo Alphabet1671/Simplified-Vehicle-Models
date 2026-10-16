@@ -1,5 +1,7 @@
 # Provenance of the legacy powertrain data
 
+> **Tools layout migration note.** `tools/` was reorganised into category subpackages (`data`, `tracks`, `model_data`, `run`, `gates`, `reports`, `diagnostics`). Commands in this document use the current locations. The committed CSV headers under `models/data/` still cite the pre-migration path `tools/identify_motor_parameters.py` because they are hash-pinned. See [tools layout](../dev/tools-layout.md) for the old-to-new mapping.
+
 ## Deterministic motor operating map
 
 Current model: approved Fix 1 (`dq-inequality-conservative-v1`). The d-axis
@@ -30,8 +32,8 @@ Historical grid measurements below predate this physics and start-charge fix.
 | SHA-256 | `79a615bb836054818aecc45cd6c7a7d5bdb02967c9dea8d16a0eb26a93559448` |
 | Axes | voltage 25, speed 129, signed normalized load 65 |
 | Arrays | drive_torque (25,129), regen_torque (25,129), bus_power (25,129,65), loss_power (25,129,65), regen_feasible (25,129,65) |
-| Generator | `tools/generate_motor_lut.py`, motor-lut-v5 |
-| Command | `PYTHONPATH=src /Users/alphabet1671/.dsh/dsh-runtimes/dsh-primary-runtime/dependencies/python/bin/python3 tools/generate_motor_lut.py models/power-plants/amk_dd5_100c.xml models/data/amk_dd5_100c_operating_map.npz --voltage-points 25 --speed-points 129 --load-points 65 --voltage-min 400 --voltage-max 600` |
+| Generator | `tools/model_data/generate_motor_lut.py`, motor-lut-v5 |
+| Command | `PYTHONPATH=src /Users/alphabet1671/.dsh/dsh-runtimes/dsh-primary-runtime/dependencies/python/bin/python3 tools/model_data/generate_motor_lut.py models/power-plants/amk_dd5_100c.xml models/data/amk_dd5_100c_operating_map.npz --voltage-points 25 --speed-points 129 --load-points 65 --voltage-min 400 --voltage-max 600` |
 | Maximum drive monotonic violation | 0 W (generation fails above 1e-9 W; no repair is applied) |
 | Source digests | XML `61ef7c7b5e9f2a9b7437cc471289a6ce4922ff03669cec520f7cc13bcb43d5ba` (reproduction with the current declaration; XML digest is printed provenance, not included in the artifact, avoiding a self-referential digest); machine parameters `122fda775bda425b6ec66e895db1017fac662abac476faf9fce508b901349dce`; torque map `1ccf1500764e5c5203919d2968ee6a626a1ba86dc117755f0e0974c00a24798d`; loss map `f79f651c13494373e638929556f9efcdf8220c6558dfdd007b706a8832ec6651`; identification `9078970586f7e0500b302ba70dfa960e23b6364a83d88535fca257f3e5fc5be8` |
 | Grid choice | 25x129x65 is the chosen canonical grid. Task 9 (generator motor-lut-v4): the voltage axis was 530-600 V. `maximum_bus_voltage` (600 V, regulatory DC bus limit, XML parameter of the power plant, distinct from the 600 V motor identification `reference_bus_voltage`) clamps the bus voltage seen by the motor and inverter to `min(terminal, 600)`, so voltages above 600 V are never evaluated and nodes there would only duplicate the 600 V node; the generator refuses `--voltage-max` above `maximum_bus_voltage`. For W4 the floor was extended to 400 V based on measured minimum bus voltage (SOC 0.5: 488.0 V, SOC 0.3: 474.9 V, SOC 0.2: 469.8 V, SOC 0.1: 452.4 V, SOC 0.05: 392.9 V, SOC 0.02: 333.6 V). The 400 V floor is at least 20 V and >10% below the observed minimum at SOC 0.2 (469.8 V), and stays above the pack OCV at SOC 0 (448.8 V). The 26 near-zero (~1e-10 Nm) drive nodes of the 530-620 V map (601-620 V, 0-581 rpm) are gone; the SHA-256 changed from `0fe463ea...1eeb9` to `166bf1346d263267224f77fe7396ab15180e0c2f54391652fee28f8575fcfc5b`; two regenerations are byte-identical. Earlier history: voltage axis extended from 448.848-608.688 V to 530-620 V to cover the observed loaded terminal voltage range (553.20-608.69 V) with margin. Refining the grid to 33x257x65 or 41x257x65 changes the assembled lap-time displacement by less than 0.04 ms and the maximum pointwise speed displacement by less than 0.001 m/s, so the finer grids buy no gate margin at 3x-10x the file size. The generator defaults are 9x129x65 for cheap test fixtures; pass `--voltage-points 25 --speed-points 129 --load-points 65` to reproduce the canonical map. Regenerating twice is byte-identical (same SHA-256). Task 8 (generator motor-lut-v3): the drive and regen envelopes are capped at the voltage-scaled map envelope `maximum_motor_torque(V/sqrt(3))` (zero once the scaled speed passes 20,000 rpm), the same cap the analytical path bisects inside; the SHA-256 changed from `31cfadc8...5fe9` to `0fe463ea...1eeb9`. Cells straddling the zero/non-zero cap corner (14 of 3,072) are answered by the exact oracle at run time rather than interpolated. After Task 8 the compare benchmark gives lap delta -0.714 ms and max speed displacement 0.004999 m/s (the figures quoted earlier in this row, +9.797 ms / 0.134642 m/s, are superseded). The voltage-axis extension was justified by the measurement at commit bd861e4: with the 530-620 V axis the LUT mode achieves 4.394 s median wall vs 8.253 s analytical (1.878x speedup) with zero fallback queries (was 360,611 before the extension), both converged, lap delta +9.797 ms (FAIL <=1 ms), max speed displacement 0.134642 m/s (FAIL <=0.05 m/s). |
@@ -305,7 +307,7 @@ Task P6 must decide which value the transmission model uses.
 
 Export date: 2026-10-11
 
-The tool `tools/identify_motor_parameters.py` fits the four machine parameters.
+The tool `tools/model_data/identify_motor_parameters.py` fits the four machine parameters.
 The tool reads `amk_dd5_100c_identification.csv`.
 The tool writes `amk_dd5_100c_machine_parameters.csv`.
 The tool is an offline tool. It is not part of the installed package.

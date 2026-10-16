@@ -9,7 +9,7 @@ from pathlib import Path
 
 import numpy as np
 
-_ROOT = Path(__file__).resolve().parents[1]
+_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_ROOT / "src"))
 
 from simplified_vehicle_models.powertrain.power_plant import (  # noqa: E402
@@ -24,7 +24,7 @@ from simplified_vehicle_models.xml.loader import load_model  # noqa: E402
 GENERATOR_VERSION = "motor-lut-v5"
 
 # Default grid resolution.  These values are also the documented canonical
-# command in ``models/data/provenance.md``; changing them changes the artifact
+# command in ``docs/model-data/provenance.md``; changing them changes the artifact
 # digest and therefore the XML declaration.
 DEFAULT_VOLTAGE_POINTS = 9
 DEFAULT_SPEED_POINTS = 129

@@ -18,7 +18,7 @@ capability from the envelope.
 | Parameters | `~/Dev/FSAE-VD-Personal-Scripts/Yaw Dynamics/Tire Model/Hoosier_R20_Combined_Simple.mat` | `ed46ac5c5eb19ceeca359a10a5c4b279b26e468dec00bec229df3033848f1500` |
 
 The Python artifact is `models/tires/hoosier-43075-r20-simple.xml`. It carries
-both hashes in its header comments. `tools/export_unitire_simple_tire.py`
+both hashes in its header comments. `tools/model_data/export_unitire_simple_tire.py`
 regenerates it, so the export is reproducible and not hand copied.
 
 The fitted source is labelled `43075 R20` at 12 psi on an 8 inch rim, fitted
@@ -142,14 +142,14 @@ PYTHONPATH=src python -m unittest tests.test_unitire_simple -v
 Regenerate the parameter artifact after a refit:
 
 ```bash
-python3 tools/export_unitire_simple_tire.py \
+python3 tools/model_data/export_unitire_simple_tire.py \
   --output models/tires/hoosier-43075-r20-simple.xml
 ```
 
 Regenerate the reference fixture with the committed MATLAB driver:
 
 ```matlab
-addpath('tools');
+addpath('tools/model_data');
 generate_unitire_reference( ...
     'tests/fixtures/hoosier_43075_r20_reference.csv', ...
     '/path/to/FSAE-VD-Personal-Scripts/Yaw Dynamics/Tire Model');

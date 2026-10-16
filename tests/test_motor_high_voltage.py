@@ -6,7 +6,7 @@ import unittest
 
 import numpy as np
 
-from tools.generate_motor_lut import generate
+from tools.model_data.generate_motor_lut import generate
 from simplified_vehicle_models.powertrain.power_plant import (
     compile_electric_motor, evaluate_motor, evaluate_shaft_power_exact,
     motor_torque_limits, torque_for_bus_power,

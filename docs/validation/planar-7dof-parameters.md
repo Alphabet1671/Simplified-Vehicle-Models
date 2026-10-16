@@ -15,7 +15,7 @@ use, and the obfuscation policy for the source design spec sheet.
 ## Placeholder data policy
 
 The source spreadsheet describes one real car. **The repository must not carry
-that car's numbers.** `tools/import_vehicle_spec_sheet.py` reads the sheet and
+that car's numbers.** `tools/data/import_vehicle_spec_sheet.py` reads the sheet and
 emits two XML models:
 
 - `models/vehicles/placeholder_2024_formula.xml`
@@ -198,7 +198,7 @@ roll rates but not a load transfer distribution.
 ## Reproduction
 
 ```bash
-python3 tools/import_vehicle_spec_sheet.py \
+python3 tools/data/import_vehicle_spec_sheet.py \
   --source /path/to/design-spec-sheet.xlsx \
   --output-vehicle models/vehicles/placeholder_2024_formula.xml \
   --output-aero models/aero/placeholder_2024_aero.xml

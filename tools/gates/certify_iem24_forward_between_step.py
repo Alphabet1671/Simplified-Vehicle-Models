@@ -63,7 +63,7 @@ def _certify_chunk(arguments):
 
 def load_closure(vehicle, attempt: Path, workers: int, depth: int = 16):
     from concurrent.futures import ProcessPoolExecutor
-    from tools.run_iem24_forward_driver import FORMULATION
+    from tools.run.run_iem24_forward_driver import FORMULATION
     data = np.load(attempt / "dense_polynomials.npz")
     trace = np.loadtxt(attempt / "trace.csv", delimiter=",", skiprows=1)[:, 1:]
     n = data["t_end"].size
@@ -126,7 +126,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     sys.path.insert(0, ".")
     from simplified_vehicle_models.compiler.compile import compile_formulation
-    from tools.run_iem24_forward_driver import FORMULATION, acceptance_gate
+    from tools.run.run_iem24_forward_driver import FORMULATION, acceptance_gate
     summary_path = args.fine / "summary.json"
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
     vehicle = compile_formulation(str(FORMULATION)).model

@@ -3,7 +3,7 @@ import unittest
 
 import numpy as np
 
-from tools.plot_iem24_forward_driver_comparison import trace_channels
+from tools.reports.plot_iem24_forward_driver_comparison import trace_channels
 
 
 class ForwardDriverPlotTests(unittest.TestCase):

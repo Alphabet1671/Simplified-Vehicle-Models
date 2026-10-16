@@ -15,8 +15,8 @@ from pathlib import Path
 import numpy as np
 from scipy.ndimage import gaussian_filter1d
 
-from tools.build_closed_track import arc_length, resample, signed_geometry, write_csv
-from tools.compare_iem24_murphy_stint import (
+from tools.tracks.build_closed_track import arc_length, resample, signed_geometry, write_csv
+from tools.reports.compare_iem24_murphy_stint import (
     fit_position_offset, flying_lap_indices, load_table, project_onto_track,
 )
 from simplified_vehicle_models.tracks.profile import load_track

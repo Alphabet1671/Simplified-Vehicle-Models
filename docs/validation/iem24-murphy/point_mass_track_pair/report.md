@@ -83,9 +83,9 @@ The requested single-axis overlay maps the experimental track's model nodes to t
 ```bash
 # Run from the repository root with Python, SciPy, NumPy and matplotlib installed.
 # The source MAT must be available at ~/Desktop/0615CompEndurance.mat.
-PYTHONPATH=src:. python3 tools/build_iem24_multilap_track.py
-PYTHONPATH=src:/tmp/casadi_pkgs python3 tools/run_iem24_point_mass_track_pair.py
-PYTHONPATH=src:. MPLCONFIGDIR=/tmp/matplotlib-config python3 tools/report_iem24_point_mass_track_pair.py
+PYTHONPATH=src:. python3 tools/tracks/build_iem24_multilap_track.py
+PYTHONPATH=src:/tmp/casadi_pkgs python3 tools/run/run_iem24_point_mass_track_pair.py
+PYTHONPATH=src:. MPLCONFIGDIR=/tmp/matplotlib-config python3 tools/reports/report_iem24_point_mass_track_pair.py
 ```
 
-Report generator: `tools/report_iem24_point_mass_track_pair.py`, paired solver: `tools/run_iem24_point_mass_track_pair.py`; follows the [MIS 2024 report standard](../../../standards/mis-2024-report-standard.md). The measured input files `measured_stint.csv` and `telemetry_extraction.json` were produced by `tools/extract_iem24_telemetry.py` and are not rewritten here.
+Report generator: `tools/reports/report_iem24_point_mass_track_pair.py`, paired solver: `tools/run/run_iem24_point_mass_track_pair.py`; follows the [MIS 2024 report standard](../../../standards/mis-2024-report-standard.md). The measured input files `measured_stint.csv` and `telemetry_extraction.json` were produced by `tools/data/extract_iem24_telemetry.py` and are not rewritten here.

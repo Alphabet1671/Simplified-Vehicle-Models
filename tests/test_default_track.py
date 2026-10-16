@@ -3,8 +3,8 @@ import ast
 from pathlib import Path
 import unittest
 
-from tools import plot_iem24_endurance_correlation as endurance_plot
-from tools.run_iem24_forward_driver import DEFAULT_TRACK, LEGACY_TRACK
+from tools.reports import plot_iem24_endurance_correlation as endurance_plot
+from tools.run.run_iem24_forward_driver import DEFAULT_TRACK, LEGACY_TRACK
 
 ROOT = Path(__file__).resolve().parents[1]
 CANONICAL = "models/tracks/2024_michigan_endurance_multilap_closed.xml"
@@ -12,7 +12,8 @@ ORIGINAL = "models/tracks/2024_michigan_endurance_closed.xml"
 
 
 def source(name):
-    return (ROOT / "tools" / name).read_text(encoding="utf-8")
+    (path,) = (ROOT / "tools").glob(f"*/{name}")
+    return path.read_text(encoding="utf-8")
 
 
 def track_option_defaults(name):
@@ -59,7 +60,7 @@ class DefaultTrackTests(unittest.TestCase):
             self.assertNotIn(CANONICAL, text, name)
 
     def test_trace_analysis_follows_attempt_track(self):
-        from tools.analyze_trace_commands import LEGACY_TRACK as legacy, attempt_track
+        from tools.diagnostics.analyze_trace_commands import LEGACY_TRACK as legacy, attempt_track
         import json, tempfile
         self.assertEqual(legacy, ORIGINAL)
         with tempfile.TemporaryDirectory() as directory:

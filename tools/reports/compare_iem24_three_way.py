@@ -10,9 +10,9 @@ from pathlib import Path
 import numpy as np
 
 if __package__ in (None, ""):
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from tools.compare_iem24_murphy_stint import (
+from tools.reports.compare_iem24_murphy_stint import (
     _median_lap_time,
     COMPARISON_CHANNELS,
     SIMULATED_COLUMNS,
@@ -26,7 +26,7 @@ from tools.compare_iem24_murphy_stint import (
 )
 from simplified_vehicle_models.tracks.profile import load_track
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def _zero_each_lap_voltage(measured: dict[str, np.ndarray], laps: np.ndarray) -> dict[str, np.ndarray]:

@@ -15,14 +15,14 @@ from pathlib import Path
 
 import numpy as np
 
-from tools.compare_iem24_murphy_stint import (
+from tools.reports.compare_iem24_murphy_stint import (
     _periodic_interp, fit_position_offset, flying_lap_indices, load_table,
     project_onto_track,
 )
-from tools.iem24_telemetry import load_nav_channels, zero_phase_lowpass
+from tools.data.iem24_telemetry import load_nav_channels, zero_phase_lowpass
 from simplified_vehicle_models.tracks.profile import load_track
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_OUTPUT = ROOT / "docs/validation/iem24-murphy"
 #: Canonical ten-lap MIS track (repository default).
 DEFAULT_TRACK = Path("models/tracks/2024_michigan_endurance_multilap_closed.xml")

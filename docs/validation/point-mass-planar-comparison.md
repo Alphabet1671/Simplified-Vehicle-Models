@@ -62,7 +62,7 @@ The power comparison shows segment-average electrical bus power versus distance.
 
 ![Segment-average bus power profiles and difference](docs/validation/point-mass-planar-plots/point-mass-planar-power.png)
 
-The plotted node/segment traces and integrated energy arrays are saved in [`point-mass-planar-curves.npz`](docs/validation/point-mass-planar-plots/point-mass-planar-curves.npz), with a short numerical summary in [`summary.json`](docs/validation/point-mass-planar-plots/summary.json). Recreate the figures by running `tools/plot_point_mass_planar_comparison.py`.
+The plotted node/segment traces and integrated energy arrays are saved in [`point-mass-planar-curves.npz`](docs/validation/point-mass-planar-plots/point-mass-planar-curves.npz), with a short numerical summary in [`summary.json`](docs/validation/point-mass-planar-plots/summary.json). Recreate the figures by running `tools/reports/plot_point_mass_planar_comparison.py`.
 
 ## Warm-start experiment
 
@@ -79,7 +79,7 @@ Mapped the point-mass speed/time trajectory to the planar mesh; retained the pla
 Reproduce the lap-time and warm-start run with:
 
 ```bash
-PYTHONPATH=src:/tmp/casadi_pkgs python3 tools/compare_planar_point_mass.py --spacing 1 --iterations 500 --output /tmp/point-mass-planar.json
+PYTHONPATH=src:/tmp/casadi_pkgs python3 tools/reports/compare_planar_point_mass.py --spacing 1 --iterations 500 --output /tmp/point-mass-planar.json
 ```
 
-The machine-readable summary is in [`point-mass-planar-comparison.json`](point-mass-planar-comparison.json). The UniTire adapter remains in `src/simplified_vehicle_models/tires/unitire_envelope.py`. The planar OCP and point-mass seed APIs were retired; the legacy `tools/compare_planar_point_mass.py` entrypoint now emits a point-mass-only result with an explicit unavailable-planar field, and `tools/plot_point_mass_planar_comparison.py` no longer recreates retired OCP plots.
+The machine-readable summary is in [`point-mass-planar-comparison.json`](point-mass-planar-comparison.json). The UniTire adapter remains in `src/simplified_vehicle_models/tires/unitire_envelope.py`. The planar OCP and point-mass seed APIs were retired; the legacy `tools/reports/compare_planar_point_mass.py` entrypoint now emits a point-mass-only result with an explicit unavailable-planar field, and `tools/reports/plot_point_mass_planar_comparison.py` no longer recreates retired OCP plots.

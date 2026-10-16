@@ -132,15 +132,15 @@ Supplementary logged-power rows (exploratory, not part of the six required chann
 ```bash
 # Run from the repository root. Two fresh 7DoF attempts with identical settings, differing only by --track.
 OUT=docs/validation/iem24-murphy/seven_dof_track_pair
-PYTHONPATH=src:. python3 tools/run_iem24_forward_driver.py --track models/tracks/2024_michigan_endurance_closed.xml --planner live --maximum-speed 60.0 --pedal-travel-time 0.175 --maximum-step 0.02 --rtol 1e-05 --method BDF --spacing 0.5 --duration 300.0 --timeout-seconds 300.0 --output-root "$OUT/original"
-PYTHONPATH=src:. python3 tools/run_iem24_forward_driver.py --track models/tracks/2024_michigan_endurance_multilap_closed.xml --planner live --maximum-speed 60.0 --pedal-travel-time 0.175 --maximum-step 0.02 --rtol 1e-05 --method BDF --spacing 0.5 --duration 300.0 --timeout-seconds 300.0 --output-root "$OUT/new"
+PYTHONPATH=src:. python3 tools/run/run_iem24_forward_driver.py --track models/tracks/2024_michigan_endurance_closed.xml --planner live --maximum-speed 60.0 --pedal-travel-time 0.175 --maximum-step 0.02 --rtol 1e-05 --method BDF --spacing 0.5 --duration 300.0 --timeout-seconds 300.0 --output-root "$OUT/original"
+PYTHONPATH=src:. python3 tools/run/run_iem24_forward_driver.py --track models/tracks/2024_michigan_endurance_multilap_closed.xml --planner live --maximum-speed 60.0 --pedal-travel-time 0.175 --maximum-step 0.02 --rtol 1e-05 --method BDF --spacing 0.5 --duration 300.0 --timeout-seconds 300.0 --output-root "$OUT/new"
 # Select the newest attempt of each run (the runner names attempts by timestamp), then export and report.
 ORIG=$(ls -dt "$OUT"/original/attempt_* | head -1)
 NEW=$(ls -dt "$OUT"/new/attempt_* | head -1)
-PYTHONPATH=src:. python3 tools/export_iem24_forward_correlation.py "$ORIG"
-PYTHONPATH=src:. python3 tools/export_iem24_forward_correlation.py "$NEW"
-PYTHONPATH=src:. MPLCONFIGDIR=/tmp/matplotlib-config python3 tools/report_iem24_seven_dof_track_pair.py \
+PYTHONPATH=src:. python3 tools/reports/export_iem24_forward_correlation.py "$ORIG"
+PYTHONPATH=src:. python3 tools/reports/export_iem24_forward_correlation.py "$NEW"
+PYTHONPATH=src:. MPLCONFIGDIR=/tmp/matplotlib-config python3 tools/reports/report_iem24_seven_dof_track_pair.py \
     --original-attempt "$ORIG" --new-attempt "$NEW"
 ```
 
-This report was generated from the attempts `docs/validation/iem24-murphy/seven_dof_track_pair/original/attempt_1792091044461992000` and `docs/validation/iem24-murphy/seven_dof_track_pair/new/attempt_1792091049300790000`; a fresh two-run reproduction creates new attempt directories and therefore new timings. To re-render only, pass those two directories to the generator. Report generator: `tools/report_iem24_seven_dof_track_pair.py`; exporter: `tools/export_iem24_forward_correlation.py`; follows the [MIS 2024 report standard](../../../standards/mis-2024-report-standard.md). The measured input files `measured_stint.csv` and `telemetry_extraction.json` were produced by `tools/extract_iem24_telemetry.py` and are not rewritten here; the source MAT must be at `~/Desktop/0615CompEndurance.mat`.
+This report was generated from the attempts `docs/validation/iem24-murphy/seven_dof_track_pair/original/attempt_1792091044461992000` and `docs/validation/iem24-murphy/seven_dof_track_pair/new/attempt_1792091049300790000`; a fresh two-run reproduction creates new attempt directories and therefore new timings. To re-render only, pass those two directories to the generator. Report generator: `tools/reports/report_iem24_seven_dof_track_pair.py`; exporter: `tools/reports/export_iem24_forward_correlation.py`; follows the [MIS 2024 report standard](../../../standards/mis-2024-report-standard.md). The measured input files `measured_stint.csv` and `telemetry_extraction.json` were produced by `tools/data/extract_iem24_telemetry.py` and are not rewritten here; the source MAT must be at `~/Desktop/0615CompEndurance.mat`.

@@ -6,7 +6,7 @@ The source is the reviewed MATLAB fit and the reviewed solver:
 - ``unitire_simple_solve.m`` defines how every field is used.
 
 Run this tool only when the fit changes. Record the reported source hash in
-``models/data/provenance.md``.
+``docs/model-data/provenance.md``.
 
 The XML schema stores one scalar in each ``parameter`` element. This tool
 therefore flattens each MATLAB ``polyval`` coefficient vector into one

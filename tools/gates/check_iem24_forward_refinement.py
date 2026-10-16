@@ -86,12 +86,12 @@ if __name__ == "__main__":
     summary["midpoint_sample_validation_complete"] = bool(
         summary.get("midpoint_sample_validation_complete",
                     summary.get("between_step_validation_complete", False)))
-    # Only tools/certify_iem24_forward_between_step.py may set this flag, and
+    # Only tools/gates/certify_iem24_forward_between_step.py may set this flag, and
     # only when every between-step certificate passes. Never raise it here.
     summary["between_step_validation_complete"] = bool(
         summary.get("between_step_validation_complete", False))
     summary["refinement_evidence"] = destination.name
-    from tools.run_iem24_forward_driver import acceptance_gate
+    from tools.run.run_iem24_forward_driver import acceptance_gate
     summary["usable"] = acceptance_gate(summary)
     summary_path.write_text(json.dumps(summary, indent=2, allow_nan=False) + "\n",
                             encoding="utf-8")

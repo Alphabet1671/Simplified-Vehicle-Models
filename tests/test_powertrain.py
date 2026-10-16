@@ -8,7 +8,7 @@ import hashlib
 from types import SimpleNamespace
 from unittest import mock
 
-from tools import generate_motor_lut
+from tools.model_data import generate_motor_lut
 
 import numpy as np
 

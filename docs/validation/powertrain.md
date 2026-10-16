@@ -172,13 +172,13 @@ The canonical map is the regenerated 25x129x65 NPZ with SHA-256
 generator `motor-lut-v4` (drive/regen envelopes capped at the voltage-scaled map envelope, Task 8; voltage axis 530-600 V because bus voltage is clamped to `maximum_bus_voltage` = 600 V, Task 9; the Task 8 map was `0fe463ea...1eeb9` on 530-620 V). It is reproducible byte-for-byte from:
 
 ```text
-PYTHONPATH=src <bundled python3> tools/generate_motor_lut.py \
+PYTHONPATH=src <bundled python3> tools/model_data/generate_motor_lut.py \
   models/power-plants/amk_dd5_100c.xml \
   models/data/amk_dd5_100c_operating_map.npz \
   --voltage-points 25 --speed-points 129 --load-points 65 --voltage-min 530 --voltage-max 600
 ```
 
-`models/data/provenance.md` records the chosen grid and digest. Refining the
+`docs/model-data/provenance.md` records the chosen grid and digest. Refining the
 grid to 33x257x65 or 41x257x65 changes the assembled lap-time displacement by at
 most 0.04 ms and the maximum pointwise speed displacement by at most
 0.001 m/s, so the finer grids buy no gate margin at 3x-10x the file size.
@@ -240,7 +240,7 @@ The +9.797 ms lap displacement is systematic, not a grid-resolution problem
 (48 bisection steps with properly converged voltage coupling) was computed at a
 representative sweep of 7 speeds x 5 SOC values (35 points). The error of each
 mode against this reference was reported in
-`.superpowers/sdd/2026-10-12-motor-lut/task-4-report.md` under the Task 7
+`docs/superpowers/sdd/2026-10-12-motor-lut/task-4-report.md` under the Task 7
 attribution section. Key findings:
 
 - The analytical default's drive limit bisects only 8 steps from
@@ -512,7 +512,7 @@ than assuming a full pack. Reproduction commands:
 ```text
 PYTHONPATH=src python3 -m unittest discover -s tests -q
 PYTHONPATH=src python3 examples/benchmark_soc_solver.py --mode compare --runs 3
-PYTHONPATH=src python3 tools/generate_motor_lut.py models/power-plants/amk_dd5_100c.xml /tmp/fix1-repro.npz --voltage-points 25 --speed-points 129 --load-points 65 --voltage-min 530 --voltage-max 600
+PYTHONPATH=src python3 tools/model_data/generate_motor_lut.py models/power-plants/amk_dd5_100c.xml /tmp/fix1-repro.npz --voltage-points 25 --speed-points 129 --load-points 65 --voltage-min 530 --voltage-max 600
 cmp models/data/amk_dd5_100c_operating_map.npz /tmp/fix1-repro.npz
 ```
 

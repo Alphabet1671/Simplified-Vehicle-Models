@@ -1,5 +1,7 @@
 # IEM24 Murphy real-model MIS lap
 
+> **Tools layout migration note.** `tools/` was reorganised into category subpackages (`data`, `tracks`, `model_data`, `run`, `gates`, `reports`, `diagnostics`). Commands and paths in this document use the current locations; `tools/run_iem24_murphy_lap.py` named in the reproduce block is not present in the current tree (it was not part of the migration) and cannot be run as written. See [docs/dev/tools-layout.md](../../dev/tools-layout.md) for the old-to-new mapping. Recorded hashes, attempt directories and frozen artifacts are unchanged.
+
 This is the separate real-IEM24 model run on the 2024 Michigan Endurance V11 track. The point-mass solver completed one flying lap with regen disabled and mechanical braking only.
 
 | Run metric | Result |
@@ -28,9 +30,9 @@ The measured comparison is in [the stint report](report.md). Reproduce the run w
 ```bash
 PYTHONPATH=src:/tmp/casadi_pkgs MPLCONFIGDIR=/tmp/matplotlib-config \
   python3 tools/run_iem24_murphy_lap.py
-PYTHONPATH=src:/tmp/casadi_pkgs python3 tools/extract_iem24_telemetry.py
+PYTHONPATH=src:/tmp/casadi_pkgs python3 tools/data/extract_iem24_telemetry.py
 PYTHONPATH=src:/tmp/casadi_pkgs MPLCONFIGDIR=/tmp/matplotlib-config \
-  python3 tools/compare_iem24_murphy_stint.py
+  python3 tools/reports/compare_iem24_murphy_stint.py
 ```
 
 The first command runs the lap, the second conditions the logged telemetry (navigation-unit skew correction, lap segmentation, 1 Hz low-pass), and the third projects the measured path onto the centreline and writes the comparison.

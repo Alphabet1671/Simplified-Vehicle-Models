@@ -11,7 +11,7 @@ from pathlib import Path
 
 import numpy as np
 
-from tools import check_iem24_forward_tube_v2 as v2
+from tools.gates import check_iem24_forward_tube_v2 as v2
 
 N = len(v2.NAMES)
 
@@ -570,11 +570,11 @@ class IsolationTests(unittest.TestCase):
                              ["dense_polynomials.npz", "summary.json"])
 
     def test_v1_tool_is_unmodified_and_not_imported(self):
-        digest = hashlib.sha256((ROOT / "tools" / "check_iem24_forward_tube.py").read_bytes()).hexdigest()
+        digest = hashlib.sha256((ROOT / "tools" / "gates" / "check_iem24_forward_tube.py").read_bytes()).hexdigest()
         self.assertEqual(digest, V1_SHA256)
-        source = (ROOT / "tools" / "check_iem24_forward_tube_v2.py").read_text()
+        source = (ROOT / "tools" / "gates" / "check_iem24_forward_tube_v2.py").read_text()
         self.assertNotIn("import check_iem24_forward_tube\n", source)
-        self.assertNotIn("from tools.check_iem24_forward_tube import", source)
+        self.assertNotIn("from tools.gates.check_iem24_forward_tube import", source)
         self.assertNotIn("acceptance_gate", source.replace("never touches", ""))  # no gate use
         self.assertNotIn('"usable"]', source)
 

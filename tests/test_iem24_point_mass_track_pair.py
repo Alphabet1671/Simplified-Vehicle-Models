@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 from scipy.signal import butter, sosfiltfilt
 
-from tools.report_iem24_point_mass_track_pair import filter_model
+from tools.reports.report_iem24_point_mass_track_pair import filter_model
 
 ROOT = Path(__file__).resolve().parents[1]
 PAIR = ROOT / 'docs/validation/iem24-murphy/point_mass_track_pair'

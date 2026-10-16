@@ -790,6 +790,50 @@ class PlantMetadataValidationTests(unittest.TestCase):
         np.testing.assert_array_equal(validated_periodic_tolerances(FakePlanarPlant()),
                                       PLANAR_PERIODIC_TOLERANCES)
 
+    def test_vertical_periodic_tolerances_follow_the_plan_tiers_by_name(self):
+        """Every one of the 36 periodic states has the plan's tolerance for its tier.
+
+        The plan's Task 9 row fixes three vertical magnitudes (0.5 mm, 0.005 rad,
+        0.01 m/s) and three tire-state magnitudes (0.002, 0.2 mm, 0.002 rad). This
+        pins each *name* to its tier, so a tolerance cannot drift between states
+        of the same kind, and all 36 names must be classified.
+        """
+        plant = VerticalPlantLayout
+        names = tuple(plant.state_names)
+        indices = tuple(plant.periodic_indices)
+        tolerances = validated_periodic_tolerances(plant)
+        self.assertEqual(len(indices), 36)
+        expected = {}
+        for name in names:
+            if name in ("s", "soc"):
+                continue  # not periodic: distance resets, charge is consumed
+            if name.startswith("jounce_rate"):
+                expected[name] = 1.0e-2          # m/s
+            elif name in ("n", "heave") or name.startswith("jounce_"):
+                expected[name] = 5.0e-4          # 0.5 mm
+            elif name.startswith("kappa_eff"):
+                expected[name] = 2.0e-3
+            elif name.startswith("lateral_deformation"):
+                expected[name] = 2.0e-4          # 0.2 mm
+            elif name.startswith("trail_angle"):
+                expected[name] = 2.0e-3          # rad
+            elif name in ("heading_error", "roll", "pitch", "steering",
+                          "roll_rate", "pitch_rate", "yaw_rate"):
+                expected[name] = 5.0e-3          # rad or rad/s
+            elif name in ("v_x", "v_y", "v_z") or name.startswith("wheel_speed"):
+                expected[name] = 1.0e-2          # m/s or rad/s
+            else:
+                self.fail(f"unclassified periodic state {name!r}")
+        self.assertEqual(len(expected), 36)
+        self.assertEqual(set(expected), {names[index] for index in indices})
+        np.testing.assert_array_equal(
+            tolerances, np.array([expected[names[index]] for index in indices]))
+        # The tire states the plan names explicitly, in the layout's own order.
+        for wheel in ("fl", "fr", "rl", "rr"):
+            self.assertEqual(expected[f"kappa_eff_{wheel}"], 2.0e-3)
+            self.assertEqual(expected[f"lateral_deformation_{wheel}"], 2.0e-4)
+            self.assertEqual(expected[f"trail_angle_{wheel}"], 2.0e-3)
+
     def test_periodic_indices_must_lie_inside_the_state_layout(self):
         class OutOfRange:
             state_size = 4

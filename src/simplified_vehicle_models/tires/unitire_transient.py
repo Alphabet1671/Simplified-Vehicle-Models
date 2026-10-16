@@ -2,9 +2,11 @@
 
 Reference: Ma et al., "The Unsteady-State Response of Tires to Slip Angle and
 Vertical Load Variations", Machines 2022, 10(7), 527,
-DOI 10.3390/machines10070527. The plan cites equations 52-55, 60-61, 64 and
-69-70. The paper text was not available while this module was written, so the
-equation numbers come from the project plan and are not re-verified here.
+DOI 10.3390/machines10070527. The project plan cites equations 52-55, 60-61,
+64 and 69-70. The paper text was not available while this module was written.
+Neither the equation numbers nor the statements about the paper's content
+(secant stiffness, trail pole and zero, tire-specific m and n) are verified
+against the paper; they come from the project plan.
 
 This module is a reduced specialization, not a fitted or validated transient
 tire. It keeps three first-order states per wheel:
@@ -14,16 +16,19 @@ tire. It keeps three first-order states per wheel:
     ``sigma_y(Fz) = lateral_length_scale * k_y(Fz) / k_cy`` the effective slip
     angle is ``alpha_effective = lateral_deformation / sigma_y(Fz)``, and
     ``d(lateral_deformation)/dt = max(|Vx|, 0.1) * (alpha_command - alpha_effective)``.
-    This is equation (61) with the secant stiffness replaced by the steady
-    ``k_y`` polynomial, so no ``dFz/dt`` or nested root is evaluated.
+    This is a reduced specialization motivated by the load-coupled relaxation
+    of equation (61), with the steady ``k_y`` polynomial used for the length
+    instead of a secant stiffness, so no ``dFz/dt`` or nested root is
+    evaluated. It is not a verbatim implementation of the paper.
 ``trail_angle`` (rad)
     A delayed slip angle for the pneumatic trail:
     ``d(trail_angle)/dt = max(|Vx|, 0.1) * (alpha_effective - trail_angle) / sigma_trail``
     with ``sigma_trail = sigma_y / trail_pole_ratio``, and ``|Vx|`` floored at
     0.1 m/s in all three rates. The effective trail is
     ``t_eff = t(trail_angle) + trail_lead_ratio * (t(alpha_effective) - t(trail_angle))``,
-    a bounded lead approximation to equation (64). The lead correction is zero
-    at steady state.
+    a bounded lead term intended to mimic the zero of equation (64) and the
+    trail pole of equations (69)-(70). It is a project approximation, not the
+    paper's expression. The lead correction is zero at steady state.
 ``longitudinal_slip`` (1)
     PROPOSED extension, not from the paper:
     ``d(longitudinal_slip)/dt = max(|Vx|, 0.1) * (kappa_command - longitudinal_slip) / sigma_x``
@@ -35,8 +40,7 @@ model are reused, including the aligning moment formula.
 
 Contact. One smoothstep window ``w(Fz)`` is 0 at ``Fz <= 0.5 N`` and 1 at
 ``Fz >= 2 N``. It multiplies Fx, Fy, Mz and the overturning moment (Mz uses the windowed
-forces), and it blends
-the state rates: ``rate = w * slip_law_rate + (1 - w) * (-state / 0.01 s)``.
+forces), and it blends the state rates: ``rate = w * slip_law_rate + (1 - w) * (-state / 0.01 s)``.
 Forces, state rates and their first derivatives therefore have no jump at any
 load. Below 0.5 N the forces are zero and the states relax toward zero with a
 0.01 s time constant. The rolling-resistance moment is not windowed (it is
@@ -240,7 +244,7 @@ def evaluate_transient_unitire(
         mu_x=main.mu_x,
         mu_y=main.mu_y,
         pneumatic_trail=t_effective,
-        relaxation_length=main.relaxation_length,
+        relaxation_length=sigma_y,
         s_x=main.s_x,
         s_y=main.s_y,
         phi=main.phi,

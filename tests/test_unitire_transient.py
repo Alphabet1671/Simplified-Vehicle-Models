@@ -291,7 +291,6 @@ class TransientTireTests(unittest.TestCase):
             self.assertEqual(float(got.longitudinal_force), float(ref.longitudinal_force))
 
     def test_trail_pole_ratio_scales_trail_rate(self) -> None:
-        state = TransientTireState(0.0, 0.0, 0.0)
         # Command angle with alpha_effective = 0 so the trail has a non-zero input.
         state = TransientTireState(0.0, 0.05 * self._sigma_y(660.0), 0.0)
         _, base = self._evaluate(state, 0.05, 0.0, 660.0)
@@ -477,6 +476,47 @@ class TransientTireTests(unittest.TestCase):
             rates.trail_angle,
             RATE_SPEED_FLOOR * (alpha_effective - 0.01) / sigma_y,
             12,
+        )
+
+    def test_overturning_moment_is_windowed(self) -> None:
+        state = steady_rolling_state(self.steady, self.transient, 0.08, 0.0, 600.0)
+        for fz in (0.3, 0.5, 1.25, 2.0, 5.0):
+            with self.subTest(fz=fz):
+                forces, _ = self._evaluate(state, 0.08, 0.0, fz)
+                ref = evaluate_unitire(
+                    self.steady,
+                    state.lateral_deformation / self._sigma_y(fz),
+                    0.0,
+                    fz,
+                    OMEGA,
+                )
+                expected = contact_force_window(fz) * float(ref.overturning_moment)
+                self.assertAlmostEqual(
+                    float(forces.overturning_moment), expected, 12
+                )
+        mid, _ = self._evaluate(state, 0.08, 0.0, 1.25)
+        self.assertNotEqual(float(mid.overturning_moment), 0.0)
+        low, _ = self._evaluate(state, 0.08, 0.0, 0.5)
+        self.assertEqual(float(low.overturning_moment), 0.0)
+
+    def test_vertical_force_is_untouched_by_the_window(self) -> None:
+        state = TransientTireState(0.02, 0.003, 0.02)
+        for fz in (-5.0, 0.0, 0.4, 0.5, 1.0, 1.25, 2.0, 5.0, 800.0):
+            forces, _ = self._evaluate(state, 0.05, 0.02, fz)
+            self.assertEqual(float(forces.vertical_force), max(fz, 0.0))
+
+    def test_relaxation_length_reports_scaled_sigma_y(self) -> None:
+        tire = replace(self.transient, lateral_length_scale=1.7)
+        state = steady_rolling_state(self.steady, tire, 0.03, 0.0, 600.0)
+        forces, _ = evaluate_transient_unitire(
+            self.steady, tire, state, 0.03, 0.0, 600.0, OMEGA, 10.0
+        )
+        self.assertEqual(
+            float(forces.relaxation_length),
+            relaxation_lengths(self.steady, tire, 600.0)[1],
+        )
+        self.assertAlmostEqual(
+            float(forces.relaxation_length), 1.7 * self._sigma_y(600.0), 12
         )
 
     def test_rolling_resistance_is_not_windowed(self) -> None:

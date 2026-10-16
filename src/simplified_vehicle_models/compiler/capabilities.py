@@ -32,6 +32,7 @@ TORQUE_TRANSMISSION = "torque-transmission"
 DAMPER_FORCE = "damper-force"
 FRONT_DAMPER_FORCE = "front-damper-force"
 REAR_DAMPER_FORCE = "rear-damper-force"
+SUSPENSION_CORNER = "suspension-corner"
 
 
 @runtime_checkable
@@ -109,3 +110,17 @@ class DamperForceSource(Protocol):
 
     def force(self, velocity):
         """Return the damper force, slope, and out-of-range flag at ``velocity`` (m/s)."""
+
+
+@runtime_checkable
+class SuspensionCornerSource(Protocol):
+    """Provide the front and rear corner suspension of a vertical vehicle model.
+
+    ``front`` and ``rear`` are axle suspensions (spring, ARB, damper motion ratio,
+    roll centre, anti, toe, and jounce steer). Zero jounce is the static
+    equilibrium at the design ride height, named by ``preload_reference``.
+    """
+
+    front: object
+    rear: object
+    preload_reference: str

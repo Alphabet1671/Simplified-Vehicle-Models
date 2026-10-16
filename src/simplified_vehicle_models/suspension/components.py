@@ -1,9 +1,13 @@
-"""Register the suspension model components: the table-based damper.
+"""Register the suspension model components: the table-based damper and the corner suspension.
 
 A damper XML names one damper-table NPZ (sha256 pinned) and one integer click
 per valve. A 2-valve damper (Multimatic DSSV VC01) uses ``click_compression``
 and ``click_rebound``. A damper with more valves uses ``click_<valve_name>``.
 The compiled value is a ``CompiledDamper`` that evaluates ``force(velocity)``.
+
+A corner-table suspension XML names one corner-table NPZ (sha256 pinned) and the
+scalar ARB rates, inertances, and static toe of both axles. The compiled value is
+a ``SuspensionModel``.
 """
 
 from __future__ import annotations
@@ -13,8 +17,14 @@ from dataclasses import dataclass
 from simplified_vehicle_models.compiler.capabilities import (
     FRONT_DAMPER_FORCE,
     REAR_DAMPER_FORCE,
+    SUSPENSION_CORNER,
 )
 from simplified_vehicle_models.compiler.registry import register_component
+from simplified_vehicle_models.suspension.corner import (
+    SuspensionModel,
+    axle_from_arrays,
+    load_corner_arrays,
+)
 from simplified_vehicle_models.suspension.damper_table import (
     DamperForce,
     DamperSetting,
@@ -23,10 +33,23 @@ from simplified_vehicle_models.suspension.damper_table import (
     load_damper_npz,
 )
 from simplified_vehicle_models.xml.model import Model
-from simplified_vehicle_models.xml.schema import require_no_references
+from simplified_vehicle_models.xml.schema import (
+    closed_parameters,
+    require_no_references,
+    require_nonnegative,
+)
 
 DAMPER_TABLE_ROLE = "damper-table"
+CORNER_TABLE_ROLE = "corner-table"
 _CLICK_PREFIX = "click_"
+_CORNER_UNITS = {
+    "arb_wheel_rate_front": "N/m",
+    "arb_wheel_rate_rear": "N/m",
+    "inertance_front": "kg",
+    "inertance_rear": "kg",
+    "static_toe_front": "rad",
+    "static_toe_rear": "rad",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,6 +97,47 @@ def compile_damper(model: Model) -> CompiledDamper:
     return CompiledDamper(table=table, setting=setting)
 
 
+def compile_suspension_corner(model: Model) -> SuspensionModel:
+    """Compile a corner-table suspension: load the pinned NPZ and bind the XML scalars."""
+
+    require_no_references(model)
+    references = [item for item in model.data if item.role == CORNER_TABLE_ROLE]
+    if len(references) != 1 or len(model.data) != 1 or references[0].format != "npz":
+        raise ValueError(f"{model.path}: suspension requires one corner-table NPZ declaration")
+    reference = references[0]
+    if not reference.sha256:
+        raise ValueError(f"{model.path}: corner-table declaration requires sha256")
+    values = closed_parameters(model, _CORNER_UNITS)
+    require_nonnegative(
+        model, values,
+        "arb_wheel_rate_front", "arb_wheel_rate_rear", "inertance_front", "inertance_rear",
+    )
+    arrays = load_corner_arrays(reference.path, reference.sha256)
+    try:
+        return SuspensionModel(
+            front=axle_from_arrays(
+                arrays, "front",
+                arb_wheel_rate=values["arb_wheel_rate_front"],
+                inertance=values["inertance_front"],
+                static_toe=values["static_toe_front"],
+            ),
+            rear=axle_from_arrays(
+                arrays, "rear",
+                arb_wheel_rate=values["arb_wheel_rate_rear"],
+                inertance=values["inertance_rear"],
+                static_toe=values["static_toe_rear"],
+            ),
+        )
+    except ValueError as error:
+        raise ValueError(f"{model.path}: {error}") from error
+
+
+register_component(
+    "suspension-model",
+    "corner-table",
+    capability=SUSPENSION_CORNER,
+    compile_function=compile_suspension_corner,
+)
 register_component(
     "damper-model",
     "table-front",

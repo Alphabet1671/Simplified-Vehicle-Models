@@ -59,6 +59,26 @@ Historical grid measurements below predate this physics and start-charge fix.
 | XML | `models/dampers/multimatic_dssv_vc01_front.xml` (`damper-model/table-front`) and `..._rear.xml` (`damper-model/table-rear`) pin the same NPZ digest. Baseline `click_compression` = 5, `click_rebound` = 7. Spot checks: +0.1 m/s at click 5 gives 215 N, -0.1 m/s at click 7 gives -267 N |
 
 
+## IEM24 corner suspension table (14DoF)
+
+| Field | Value |
+|---|---|
+| File | `models/data/iem24_murphy_real_corners.npz` (schema `suspension-corner-v1`), `models/suspensions/iem24_murphy_real_suspension.xml` (`suspension-model/corner-table`) |
+| SHA-256 | `04bb06c93b7f52de2e9bc4fcd4e934532d89a9442e75e79ab5886afadb38f0f0` |
+| Source | `/Users/alphabet1671/Desktop/IEM_24_DSS.xlsx`, sheet `FSAE_Specs_EV`, read by fixed cell address |
+| Source SHA-256 | `e436c2f61d46f23614515e34cbce381e45a5e508b9840012c88511f59afac5d8` (the generator exits with an error when `--dss-sha256` does not match) |
+| Cells read | Travel D17/E17 (front compression/rebound) and G17/H17 (rear), 31.8 mm each. Heave motion ratio C23/F23: the first `<ratio>:1 heave` value, 1.05 front and 1.10 rear (the roll ratios 1.2 and 1.3 are ignored). Camber gain C24/F24 (25.1, 45.3 deg/m). Static toe C26/F26, text `0` converted to a number (0 deg). Anti C29/F29: first value brake, second drive: front 54.2/32.0 %, rear 57.4/55.0 %. RC static C30/F30: 41.275 and 57.15 mm. RC at 1 g D31/E31 and G31/H31: height 45.5 / 65.3 mm, lateral -6.0 / -8.0 mm. The sheet stores some of these as text; the generator converts them and fails on a non-numeric value |
+| Wheel rates (override) | DSS rows 18-19 (43.4315 and 47.6345 N/mm, roll rates) are intentionally **not** used. The selected rates are 450 lbf/in front and 350 lbf/in rear (78 807.08 and 61 294.39 N/m); the rear ARB is 120 lbf/in (21 015.22 N/m); the front ARB is 0 |
+| Spring curve | Wheel force against jounce; spring, bump stop, and droop stop in one curve. Zero jounce is the static equilibrium: the curve holds the **sprung** static corner load (505.778 N front, 646.503 N rear, from 287 kg total, 45 % front static load, 13 kg unsprung per corner, PROPOSED) at jounce 0. PROPOSED bump and droop stops: the wheel rate rises to 10x with a C1 smoothstep over 27.8-29.8 mm and stays 10x to the 31.8 mm design travel, in both directions. The DSS 31.8 mm travel remains a hard limit: a query beyond it raises a domain error |
+| Roll-centre table | The 1 g DSS point is placed at roll = 0.289 deg/g x 1 g (reference rigid-tire roll gradient). Table: roll magnitude 0, 0.289 deg, 5 deg to height. Above the 1 g point, height and lateral position are held constant (no DSS data beyond 1 g); this is recorded in the NPZ `metadata` key. Lateral is odd in roll (Task 6 multiplies by the sign of the roll angle), height is even |
+| Jounce steer | **User-selected baseline placeholder.** Front and rear knots at -31.8, 0, +31.8 mm with 0 deg toe change. Source: "baseline, no measured jounce-steer data" (also in the NPZ `metadata` and the XML comment). The schema accepts measured nonzero knots later; the generator enforces strictly rising jounce, finite values, an explicit 0 mm / 0 deg reference, and knots at both travel limits |
+| XML scalars | `arb_wheel_rate_front` 0, `arb_wheel_rate_rear` 21 015.22 N/m, `inertance_front/rear` 0 kg (PROPOSED), `static_toe_front/rear` 0 rad (from DSS C26/F26) |
+| Generator | `tools/model_data/generate_suspension_lut.py`, `suspension-lut-v1` |
+| Command | `python3 tools/model_data/generate_suspension_lut.py --dss /Users/alphabet1671/Desktop/IEM_24_DSS.xlsx --dss-sha256 e436c2f61d46f23614515e34cbce381e45a5e508b9840012c88511f59afac5d8 --wheel-rate-front-lbf-in 450 --wheel-rate-rear-lbf-in 350 --arb-rear-lbf-in 120 --output-npz models/data/iem24_murphy_real_corners.npz --output-xml models/suspensions/iem24_murphy_real_suspension.xml` |
+| CI fixture | `tests/fixtures/iem24_dss_suspension_rows.csv` is a raw copy of DSS rows 17-31, columns A-J. A test compares the cells with the workbook when it is present (skipped otherwise) and checks that generation from the fixture reproduces the committed NPZ byte for byte |
+| Determinism | Stored zip entries with fixed 1980-01-01 timestamps; no path or time in the bytes. Two runs give the same SHA-256 |
+
+
 Export date: 2026-10-11
 
 This file records the source of every exported data file.

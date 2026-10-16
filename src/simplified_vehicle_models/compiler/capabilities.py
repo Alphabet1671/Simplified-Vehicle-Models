@@ -29,6 +29,9 @@ SUSPENSION_LOAD_TRANSFER = "suspension-load-transfer"
 ENERGY_BUFFER = "energy-buffer"
 TORQUE_SOURCE = "torque-source"
 TORQUE_TRANSMISSION = "torque-transmission"
+DAMPER_FORCE = "damper-force"
+FRONT_DAMPER_FORCE = "front-damper-force"
+REAR_DAMPER_FORCE = "rear-damper-force"
 
 
 @runtime_checkable
@@ -92,3 +95,17 @@ class DriveForceLimit(Protocol):
     power_limit: float
     efficiency: float
     maximum_motor_speed: float
+
+
+@runtime_checkable
+class DamperForceSource(Protocol):
+    """Provide the force of one damper as a function of its velocity.
+
+    Positive velocity is compression and positive force is compression force.
+    DAMPER_FORCE is the generic contract. A formulation that needs the front
+    and the rear damper requests FRONT_DAMPER_FORCE and REAR_DAMPER_FORCE, so
+    that two providers of one capability cannot be confused.
+    """
+
+    def force(self, velocity):
+        """Return the damper force, slope, and out-of-range flag at ``velocity`` (m/s)."""

@@ -40,6 +40,25 @@ Historical grid measurements below predate this physics and start-charge fix.
 | Regen convention | The complete feasible negative-torque curve is retained without sign coercion or truncation. `regen_feasible` marks exactly the productive samples whose analytical bus power is below -1e-9 W; positive bus draw remains in the curve with a false mask. Regen bus power is not assumed monotone. Load zero is the physical zero-torque anchor. |
 
 
+## Multimatic DSSV VC01 damper table
+
+| Field | Value |
+|---|---|
+| File | `models/data/multimatic_dssv_vc01.npz` (schema `damper-table-v1`) |
+| SHA-256 | `e4504e26385b697018db7b05a39822e8aea731a49e07c3d945927787a0e95ccf` |
+| Source | `/Users/alphabet1671/Dev/FSAE-VD-Personal-Scripts/Vertical Dynamics/DamperTable.xlsx`, sheet `Multimatic_DSSV_VC01`, range A1:Z13 |
+| Source SHA-256 | `1b6322caaeaf83f507a5d2256ca4652932c1b1bf05e06d8212f60e6114011d32` |
+| Layout | A2:A13 clicks 0..11; B1:Z1 damper velocity in mm/s (-500..+500, 25 knots); cells hold force in N. Negative velocity is rebound with negative force |
+| Arrays | `velocity_compression` (13), `velocity_rebound` (13), `force_compression` (13, 12), `force_rebound` (13, 12), one `full`-band valve per half (`compression`, `rebound`), 12 clicks each. Axes in m/s, force in N |
+| Generator | `tools/model_data/generate_damper_lut.py`, `damper-lut-v1` |
+| Command | `python3 tools/model_data/generate_damper_lut.py '/Users/alphabet1671/Dev/FSAE-VD-Personal-Scripts/Vertical Dynamics/DamperTable.xlsx' --sheet Multimatic_DSSV_VC01 --velocity-unit mm/s --force-unit N --rebound-sign negative --correct "8,300,761" --output-npz models/data/multimatic_dssv_vc01.npz --output-xml-front models/dampers/multimatic_dssv_vc01_front.xml --output-xml-rear models/dampers/multimatic_dssv_vc01_rear.xml` |
+| Source defect corrected | Sheet cell **V10** (click 8, +300 mm/s) holds 671 N. Neighbours at +300 mm/s: click 7 = 725 N, click 9 = 799 N; click 8 at +250 mm/s = 656 N and at +350 mm/s = 863 N. The correction supplied on the command line is 761 N. It is recorded in the NPZ `corrections` key as `{"cell":"V10","click":8,"from_N":671.0,"to_N":761.0,"velocity_m_s":0.3}`. Without `--correct` the generator fails and names the cell |
+| Monotonicity checks | Force magnitude is non-decreasing with click at every velocity. It is strictly increasing with click wherever \|v\| >= 25 mm/s. The source has click ties at 0 and +-10 mm/s (for example 17 N at +10 mm/s for clicks 0-2), which are kept. Force magnitude is strictly increasing with \|v\| for every click. Force at v = 0 is zero |
+| CI fixture | `tests/fixtures/damper_vc01.csv` holds the raw, uncorrected 12 x 25 table with provenance comments. A test checks that the fixture equals the workbook when the workbook is present, and that generation from the fixture reproduces the committed NPZ byte for byte |
+| Determinism | The NPZ is written as stored (uncompressed) zip entries with a fixed 1980-01-01 timestamp, no path or time in the bytes. The write goes through an explicit temp file and `os.replace` (no suffix appended by NumPy). Two runs give the same SHA-256 |
+| XML | `models/dampers/multimatic_dssv_vc01_front.xml` (`damper-model/table-front`) and `..._rear.xml` (`damper-model/table-rear`) pin the same NPZ digest. Baseline `click_compression` = 5, `click_rebound` = 7. Spot checks: +0.1 m/s at click 5 gives 215 N, -0.1 m/s at click 7 gives -267 N |
+
+
 Export date: 2026-10-11
 
 This file records the source of every exported data file.

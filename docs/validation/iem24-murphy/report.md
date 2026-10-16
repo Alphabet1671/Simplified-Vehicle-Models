@@ -1,5 +1,9 @@
 # IEM24 Murphy: simulated MIS lap vs measured endurance stint
 
+> **Superseded 2026-10-16:** generated with track 1.016 m and 55 % front mass. Values do not apply to the current vehicle.
+>
+> The Configuration below records the geometry that was simulated (CGx 45 % of wheelbase from the front axle). The current vehicle has CG 55 % behind the front axle. The data and figures are unchanged.
+
 ## Configuration
 
 - Vehicle: 287 kg (209 kg car + 78 kg driver), LLTD 42 %, CGx 45 % of wheelbase

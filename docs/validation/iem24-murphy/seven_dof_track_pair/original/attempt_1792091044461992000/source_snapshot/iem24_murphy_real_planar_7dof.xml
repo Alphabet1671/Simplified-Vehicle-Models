@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Planar 7-DOF formulation using the dedicated measured IEM24 Murphy assembly. -->
+<model schema-version="1.0" id="iem24-murphy-real-planar-7dof" type="vehicle-formulation" subtype="planar-7dof">
+    <source ref="../vehicles/iem24_murphy_real_planar.xml" />
+    <requires capability="steady-combined-slip" />
+    <requires capability="aero-loads" />
+    <requires capability="drive-force-limit" />
+</model>

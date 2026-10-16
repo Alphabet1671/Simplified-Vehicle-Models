@@ -87,6 +87,55 @@ class DriverTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             build_speed_plan(np.array([0., 1.]), np.zeros(2), -1., 3., 2., 2.)
 
+    def test_every_accepted_state_is_revalidated(self):
+        class Plant:
+            state_size = 1
+            def __init__(self):
+                self.seen = []
+            def observe(self, state):
+                return DriverObservation(state[0], 0., 0., 1., 0., 0.)
+            def evaluate(self, time, state, command):
+                self.seen.append(float(time))
+                return RateSystem(np.array([1.]))
+        plant = Plant()
+        result = solve_forward(plant, self.driver, np.array([0.]),
+                               duration=2., maximum_step=.005, method="BDF")
+        # Every accepted result sample must be rechecked *after* integration.
+        np.testing.assert_allclose(
+            plant.seen[-(2 * len(result.time) - 1):-(len(result.time) - 1)],
+            result.time,
+        )
+
+    def test_initial_pedal_state_is_preserved_for_warm_start(self):
+        class Plant:
+            state_size = 1
+            def observe(self, state):
+                return DriverObservation(state[0], 0., 0., 1., 0., 0.)
+            def evaluate(self, time, state, command):
+                return RateSystem(np.array([1.]))
+        driver = PreviewDriver(self.plan, 1.5, 0.5, 2., 1000.,
+                               pedal_travel_time=.175)
+        result = solve_forward(Plant(), driver, np.array([0.]), duration=.01,
+                               initial_pedal=-.25)
+        self.assertAlmostEqual(result.pedal[0], -.25)
+
+    def test_dense_midpoints_are_checked(self):
+        class Plant:
+            state_size = 1
+            def __init__(self):
+                self.seen = []
+            def observe(self, state):
+                return DriverObservation(state[0], 0., 0., 1., 0., 0.)
+            def evaluate(self, time, state, command):
+                self.seen.append(float(time))
+                return RateSystem(np.array([1.]))
+        plant = Plant()
+        result = solve_forward(plant, self.driver, np.array([0.]),
+                               duration=.1, maximum_step=.01, method="BDF")
+        for midpoint in (result.time[1:] + result.time[:-1]) / 2.:
+            self.assertTrue(any(abs(midpoint - sampled) < 1.e-12 for sampled in plant.seen))
+        self.assertTrue(result.midpoint_sample_validation_complete)
+
     def test_extra_states_and_mass_matrix_survive_integration(self):
         class Plant:
             state_size = 32

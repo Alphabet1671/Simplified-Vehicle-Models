@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<model schema-version="1.0" id="2024-michigan-endurance-closed" type="track-model" subtype="closed-xy-profile">
+    <!-- Closed signed centerline rebuilt from a measured velocity trace. World frame X north, Y east, Z down, so x is north, y is east, and z is down. A right turn has positive curvature.-->
+    <!-- Source 0615CompEndurance.mat sha256=091e4745a5ff6ccf7d48729154033bb555edd028f0e3e2ed2f3f270e14f6e5b7 rows 7032 nodes 2033 spacing 0.5 m smoothing 2.0 m length 1016.700551 m closure gap 3.4483 m winding -6.284926 rad minimum radius 6.1842 m minimum self distance 15.933 m The source radius is a magnitude only, so this rebuild is the first signed geometry for this track.-->
+    <!-- The point-mass limit solver consumes radius_magnitude. The planar model consumes signed curvature. Wheel order is fl, fr, rl, rr.-->
+    <metadata>
+        <title>2024 Michigan Endurance Closed</title>
+        <source sha256="091e4745a5ff6ccf7d48729154033bb555edd028f0e3e2ed2f3f270e14f6e5b7">0615CompEndurance.mat</source>
+    </metadata>
+    <data ref="2024_michigan_endurance_closed.csv" />
+    <parameters>
+        <parameter name="is_closed" value="true" />
+        <parameter name="terminal_segment_is_duplicate" value="true" />
+        <parameter name="node_spacing" value="0.5" unit="m" />
+        <parameter name="smoothing_length" value="2" unit="m" />
+        <parameter name="maximum_radius" value="300" unit="m" />
+    </parameters>
+</model>

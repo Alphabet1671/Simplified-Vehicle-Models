@@ -30,6 +30,11 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 
+#: Attempts that predate --track record no settings["track"]; they ran on this
+#: original track, so replaying them must not silently use the new default.
+LEGACY_TRACK = "models/tracks/2024_michigan_endurance_closed.xml"
+
+
 def _recompute_accelerations(trace_path: Path, attempt_dir: Path) -> np.ndarray:
     """Replay the saved states and pedals through the currently installed plant.
 
@@ -47,7 +52,7 @@ def _recompute_accelerations(trace_path: Path, attempt_dir: Path) -> np.ndarray:
     settings = summary["settings"]
 
     vehicle = compile_formulation("models/formulations/iem24_murphy_real_planar_7dof.xml").model
-    track = load_track("models/tracks/2024_michigan_endurance_closed.xml")
+    track = load_track(settings.get("track") or LEGACY_TRACK)
     spacing = float(settings["spacing"])
     count = int(np.ceil(track.lap_length / spacing))
     distance = np.linspace(0., track.lap_length, count + 1)

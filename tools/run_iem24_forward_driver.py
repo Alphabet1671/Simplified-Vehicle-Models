@@ -9,6 +9,71 @@ from pathlib import Path
 import subprocess
 import sys
 import time
+import xml.etree.ElementTree as ElementTree
+
+#: Canonical ten-lap MIS endurance track: the active default for new runs.
+DEFAULT_TRACK = Path("models/tracks/2024_michigan_endurance_multilap_closed.xml")
+#: Track of every attempt that predates --track (no settings["track"] recorded).
+#: Historical warm-start matching must keep resolving to this, not DEFAULT_TRACK.
+LEGACY_TRACK = Path("models/tracks/2024_michigan_endurance_closed.xml")
+FORMULATION = Path("models/formulations/iem24_murphy_real_planar_7dof.xml")
+VEHICLE = Path("models/vehicles/iem24_murphy_real_planar.xml")
+
+
+def canonical_path(path):
+    """Cwd-relative POSIX-style path when inside the cwd, else absolute."""
+    resolved = Path(path).expanduser().resolve()
+    try:
+        return resolved.relative_to(Path.cwd().resolve())
+    except ValueError:
+        return resolved
+
+
+def track_files(track_xml):
+    """Return (track XML, referenced CSV) paths; raise ValueError if unusable.
+
+    Only a signed ``closed-xy-profile`` track is accepted; a legacy
+    distance-radius profile has no turn direction and cannot drive the 7DoF.
+    """
+    track_xml = Path(track_xml)
+    try:
+        root = ElementTree.parse(track_xml).getroot()
+    except (OSError, ElementTree.ParseError) as error:
+        raise ValueError(f"cannot read track XML {track_xml}: {error}") from error
+    if root.get("type") != "track-model" or root.get("subtype") != "closed-xy-profile":
+        raise ValueError(f"{track_xml}: track must be a signed closed-xy-profile track-model")
+    data = root.find("./data")
+    if data is None or not data.get("ref"):
+        raise ValueError(f"{track_xml}: missing track data reference")
+    csv_path = (track_xml.parent / data.get("ref")).resolve()
+    if not csv_path.is_file():
+        raise ValueError(f"{track_xml}: referenced track CSV {csv_path} not found")
+    return track_xml, canonical_path(csv_path)
+
+
+def tire_xml_path(vehicle_xml=VEHICLE):
+    """Tire component XML referenced by the vehicle model."""
+    root = ElementTree.parse(vehicle_xml).getroot()
+    for component in root.findall("./components/component"):
+        if component.get("role") == "tire":
+            return canonical_path(Path(vehicle_xml).parent / component.get("ref"))
+    raise ValueError(f"{vehicle_xml}: no tire component")
+
+
+def warm_start_matches(previous, source_hashes, args):
+    """True when a previous attempt may seed this run (same plan, track and sources).
+
+    Source hashes include the track XML/CSV, tire XML and formulation, so a
+    historical attempt without them cannot warm-start a track-aware run.
+    """
+    settings = previous.get("settings", {})
+    return bool(previous.get("status") == "Completed" and previous.get("lap_completed")
+                and previous.get("source_hashes") == source_hashes
+                and all(settings.get(key) == getattr(args, key)
+                        for key in ("planner", "maximum_speed", "lateral_acceleration",
+                                    "pedal_travel_time", "spacing"))
+                and canonical_path(settings.get("track") or LEGACY_TRACK)
+                == canonical_path(args.track))
 
 
 def parse_args(argv=None):
@@ -29,6 +94,11 @@ def parse_args(argv=None):
     parser.add_argument("--spacing", type=float, default=.5)
     parser.add_argument("--planner", choices=("conservative", "live"), default="conservative",
                         help="Speed planner: conservative (constant limits) or live (point-mass)")
+    parser.add_argument("--track", type=Path, default=DEFAULT_TRACK,
+                        help="Signed closed-xy-profile track XML (default: the canonical "
+                             f"ten-lap MIS track {DEFAULT_TRACK})")
+    parser.add_argument("--warm-start", type=Path,
+                        help="Completed previous attempt whose final physical/pedal state starts this lap")
     parser.add_argument("--child-attempt", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     import math
@@ -39,6 +109,13 @@ def parse_args(argv=None):
             continue
         if not math.isfinite(value) or value <= 0:
             parser.error(f"{name} must be finite and positive")
+    try:
+        track_files(args.track)
+    except ValueError as error:
+        parser.error(f"--track: {error}")
+    args.track = canonical_path(args.track)
+    if args.warm_start is not None and args.pedal_travel_time is None:
+        parser.error("warm start requires pedal dynamics")
     if args.timeout_seconds > 300 or args.spacing > .5:
         parser.error("timeout must be <=300 s and path spacing must be <=0.5 m")
     return args
@@ -95,19 +172,33 @@ def child(args):
         sources = [Path(__file__),
                    Path("src/simplified_vehicle_models/solvers/forward_driver.py"),
                    Path("src/simplified_vehicle_models/solvers/planar_forward.py"),
+                   Path("src/simplified_vehicle_models/solvers/dense_domain.py"),
+                   Path("src/simplified_vehicle_models/solvers/planar_dense_certificate.py"),
+                   Path("src/simplified_vehicle_models/solvers/load_interval.py"),
                    Path("src/simplified_vehicle_models/formulations/planar_7dof.py"),
                    Path("src/simplified_vehicle_models/tires/unitire_simple.py"),
-                   Path("models/vehicles/iem24_murphy_real_planar.xml")]
+                   VEHICLE]
+        # Track, referenced CSV, tire XML and formulation define the run's
+        # physical inputs; they are hashed and snapshotted with the code.
+        track_xml, track_csv = track_files(args.track)
+        model_inputs = {"track_xml": track_xml, "track_csv": track_csv,
+                        "tire_xml": tire_xml_path(), "formulation_xml": FORMULATION,
+                        "vehicle_xml": VEHICLE}
+        sources += [path for path in model_inputs.values() if path not in sources]
+        names = [path.name for path in sources]
+        if len(set(names)) != len(names):
+            raise ValueError("source snapshot file names must be unique")
         summary["source_hashes"] = {str(path): hashlib.sha256(path.read_bytes()).hexdigest()
                                     for path in sources}
+        summary["model_inputs"] = {key: str(path) for key, path in model_inputs.items()}
         snapshot = root / "source_snapshot"
         snapshot.mkdir()
         for path in sources:
             (snapshot / path.name).write_bytes(path.read_bytes())
         summary["environment"] = {"python": sys.version, "numpy": np.__version__,
                                   "scipy": scipy.__version__, "platform": platform.platform()}
-        vehicle = compile_formulation("models/formulations/iem24_murphy_real_planar_7dof.xml").model
-        track = load_track("models/tracks/2024_michigan_endurance_closed.xml")
+        vehicle = compile_formulation(str(FORMULATION)).model
+        track = load_track(args.track)
         count = int(np.ceil(track.lap_length / args.spacing))
         distance = np.linspace(0., track.lap_length, count + 1)
         _, _, _, curvature = evaluate_path(track.path_coordinates, distance)
@@ -139,6 +230,23 @@ def child(args):
                                live_limit=live_limit,
                                pedal_travel_time=args.pedal_travel_time)
         initial = plant.initial_state(float(plan.speed[0]))
+        initial_pedal = None
+        if args.warm_start is not None:
+            previous = json.loads((args.warm_start / "summary.json").read_text())
+            previous_settings = previous.get("settings", {})
+            if not warm_start_matches(previous, summary["source_hashes"], args):
+                raise ValueError("warm start requires a completed lap with matching planner, speed cap, track and source hashes")
+            trace = np.loadtxt(args.warm_start / "trace.csv", delimiter=",", skiprows=1)
+            pedals = np.loadtxt(args.warm_start / "pedal.csv", delimiter=",", skiprows=1)
+            if (trace.ndim != 2 or trace.shape[1] != 13 or pedals.shape != (len(trace), 2)
+                    or not np.array_equal(trace[:, 0], pedals[:, 0])):
+                raise ValueError("warm-start trace and pedal samples must match")
+            initial = np.array(trace[-1, 1:], copy=True)
+            initial[0] = 0.
+            initial_pedal = float(pedals[-1, 1])
+            if not np.all(np.isfinite(initial)):
+                raise ValueError("warm-start final state must be finite")
+            summary["warm_start_source"] = str(args.warm_start)
         summary.update(wheel_inertia=vehicle.wheel_inertia, state_size=plant.state_size,
                        track_length=track.lap_length, setup_seconds=time.perf_counter() - started)
         print(json.dumps(summary), flush=True)
@@ -147,7 +255,8 @@ def child(args):
             raise TimeoutError("setup exhausted the wall budget")
         result = solve_forward(plant, driver, initial, duration=args.duration,
                                wall_seconds=remaining, maximum_step=args.maximum_step,
-                               rtol=args.rtol, atol=args.rtol * .01, method=args.method)
+                               rtol=args.rtol, atol=args.rtol * .01, method=args.method,
+                                initial_pedal=initial_pedal)
         np.savetxt(root / "trace.csv", np.column_stack((result.time, result.state.T)),
                    delimiter=",", comments="",
                    header="time,s,n,heading_error,v_x,v_y,yaw_rate,omega_fl,omega_fr,omega_rl,omega_rr,soc,steering")
@@ -172,7 +281,8 @@ def child(args):
                        periodicity_valid=periodic, periodic_state_delta=closure.tolist(),
                        periodic_state_tolerances=tolerances.tolist(),
                        integration_completed=True, checked_rhs_physics_valid=True,
-                       between_step_validation_complete=False, refinement_validated=False,
+                       midpoint_sample_validation_complete=result.midpoint_sample_validation_complete,
+                        between_step_validation_complete=False, refinement_validated=False,
                        steering_peak=float(np.max(np.abs(result.state[11]))),
                        minimum_wheel_speed=float(np.min(result.state[6:10])),
                        final_soc=float(result.state[10, -1]),
@@ -182,6 +292,39 @@ def child(args):
                            plan.speed**2 * np.abs(plan.curvature))))
         # A completed transient is not usable unless every independent acceptance
         # gate (including periodicity and between-step/refinement checks) passes.
+        # Every accepted state has been checked by solve_forward. Zero contact
+        # load is permitted (wheel lift); negative loads are rejected by plant.
+        summary["minimum_contact_load_n"] = plant.minimum_contact_load
+        summary["contact_valid"] = bool(result.lap_completed
+            and math.isfinite(plant.minimum_contact_load)
+            and plant.minimum_contact_load >= 0.)
+        # Interval-wide evidence that is narrower than between-step validation:
+        # it bounds the BDF dense interpolant (not the true trajectory) for the
+        # explicit state domain, and checks parameter-dependent contact
+        # conditions. Load-closure and powertrain closure between nodes stay
+        # uncertified, so these flags never set between_step_validation_complete.
+        from simplified_vehicle_models.solvers.planar_dense_certificate import (
+            certify_planar_dense_domain, contact_nonnegativity_conditions)
+        if result.dense_bounds is not None:
+            dense = certify_planar_dense_domain(vehicle, plan, result.dense_bounds, True)
+        else:
+            dense = {"certified": False, "reason": "no verifiable dense interpolant"}
+        contact = contact_nonnegativity_conditions(vehicle)
+        # Save the exact interpolant so independent refinements can be compared
+        # continuously (see tools/check_iem24_forward_tube.py).
+        if result.dense_polynomials is not None:
+            poly = result.dense_polynomials
+            np.savez_compressed(root / "dense_polynomials.npz", times=poly.times, t_end=poly.t_end,
+                                step=poly.step, s_lower=poly.s_lower, s_upper=poly.s_upper,
+                                order=poly.order, coefficients=poly.coefficients,
+                                bounds=result.dense_bounds)
+            summary["dense_polynomials_file"] = "dense_polynomials.npz"
+        summary["dense_midpoint_samples"] = int(result.dense_samples)
+        summary["dense_defect_scaled_max"] = float(result.dense_defect_scaled_max)
+        summary["dense_polynomial_domain_certified"] = bool(dense["certified"])
+        summary["dense_polynomial_domain"] = dense
+        summary["contact_nonnegativity_conditions_hold"] = bool(contact["holds"])
+        summary["contact_nonnegativity_conditions"] = contact
         summary["usable"] = acceptance_gate(summary)
     except Exception as error:
         import traceback
@@ -195,6 +338,10 @@ def child(args):
                            maximum_load_residual=plant.maximum_load_residual,
                            maximum_power_residual=plant.maximum_power_residual,
                            maximum_load_iterations=plant.maximum_load_iterations,
+                           load_method_counts=plant.load_method_counts,
+                           minimum_load_jacobian_determinant=(
+                               plant.minimum_load_jacobian_determinant
+                               if np.isfinite(plant.minimum_load_jacobian_determinant) else None),
                            lifted_wheel_evaluations=plant.lifted_wheel_evaluations,
                            speed_regulated_evaluations=plant.speed_regulated_evaluations,
                            maximum_motor_speed_ratio=plant.maximum_motor_speed_ratio)

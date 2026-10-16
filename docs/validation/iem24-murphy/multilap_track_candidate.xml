@@ -1,0 +1,14 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<model schema-version="1.0" id="iem24-multilap-driven-line-candidate" type="track-model" subtype="closed-xy-profile">
+    <metadata>
+        <title>IEM24 median driven line (experimental)</title>
+    </metadata>
+    <data ref="multilap_track_candidate.csv" />
+    <parameters>
+        <parameter name="is_closed" value="true" />
+        <parameter name="terminal_segment_is_duplicate" value="true" />
+        <parameter name="maximum_radius" value="300" />
+        <parameter name="node_spacing" value=".5" />
+        <parameter name="smoothing_length" value="3.0" />
+    </parameters>
+</model>

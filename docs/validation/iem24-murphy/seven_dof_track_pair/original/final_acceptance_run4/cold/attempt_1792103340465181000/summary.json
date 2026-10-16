@@ -1,0 +1,72 @@
+{
+  "status": "Timed_Out",
+  "lap_completed": false,
+  "usable": false,
+  "method": "transient_forward_driver",
+  "minimum_time_optimum": false,
+  "planner": "live_live_acceleration_envelope",
+  "settings": {
+    "output_root": "docs/validation/iem24-murphy/seven_dof_track_pair/original/final_acceptance_run4/cold",
+    "timeout_seconds": 300.0,
+    "duration": 300.0,
+    "maximum_speed": 60.0,
+    "lateral_acceleration": null,
+    "pedal_travel_time": 0.175,
+    "maximum_step": 0.02,
+    "rtol": 1e-05,
+    "method": "BDF",
+    "spacing": 0.5,
+    "planner": "live",
+    "track": "models/tracks/2024_michigan_endurance_closed.xml",
+    "warm_start": null,
+    "child_attempt": "docs/validation/iem24-murphy/seven_dof_track_pair/original/final_acceptance_run4/cold/attempt_1792103340465181000"
+  },
+  "source_hashes": {
+    "/Users/alphabet1671/Dev/Simplified-Vehicle-Models/tools/run_iem24_forward_driver.py": "6520a4f224f2dce9f0ad371155ab87d5954ae8aa084c27758ffc1021e402a46f",
+    "src/simplified_vehicle_models/solvers/forward_driver.py": "d184e21202be8f1683fc4110527764b94e5bce894596e61a374657578679d971",
+    "src/simplified_vehicle_models/solvers/planar_forward.py": "54d0aac5ee647ebcaa9c414893f715f617051bf81815a1eeb02dd9a2ad461330",
+    "src/simplified_vehicle_models/solvers/dense_domain.py": "02c3057ab86946b3cabeee6f85b15cee7845f10a340986832a11fd4b545fd336",
+    "src/simplified_vehicle_models/solvers/planar_dense_certificate.py": "0b9c7f5309f367c1674f776d176d109bff20cc2c264496bf858682a604a7f5bc",
+    "src/simplified_vehicle_models/solvers/load_interval.py": "8c5c13c8a78bc0616e33405aa6592be38ec1bbd0efa13d233daf23f91c3018dc",
+    "src/simplified_vehicle_models/formulations/planar_7dof.py": "2add724a62149814f24262b5f201d77490f6b2eb16ff0d15f4484f050fd49ad1",
+    "src/simplified_vehicle_models/tires/unitire_simple.py": "b1e4df85b08f771bc6b2a3e590c2a8d255d60eeb39186422adf2314372ee71f7",
+    "models/vehicles/iem24_murphy_real_planar.xml": "46d3d342457c2f0fb55b864fc592f54d15b4d94a3dff4d7ba8004f07ca923a2e",
+    "models/tracks/2024_michigan_endurance_closed.xml": "2880418d148b763e1360d25eb4b7a8a4144bb16e6e56017facf7f36bddc47180",
+    "models/tracks/2024_michigan_endurance_closed.csv": "ff8dcdc715eaff07eeb1d7a9e0a0739072480150577622ec8854000a0a44dbd4",
+    "models/tires/iem24_murphy_real_unitire.xml": "301c55c8213fd9a4149bdec39a8c6fbc6a756e750bd6bd92e80b6567bcbd917b",
+    "models/formulations/iem24_murphy_real_planar_7dof.xml": "8420c2d4e929f629c52fb9a21e1b1e5d047bf2356615d3edfc0a8e95bf6878d8"
+  },
+  "model_inputs": {
+    "track_xml": "models/tracks/2024_michigan_endurance_closed.xml",
+    "track_csv": "models/tracks/2024_michigan_endurance_closed.csv",
+    "tire_xml": "models/tires/iem24_murphy_real_unitire.xml",
+    "formulation_xml": "models/formulations/iem24_murphy_real_planar_7dof.xml",
+    "vehicle_xml": "models/vehicles/iem24_murphy_real_planar.xml"
+  },
+  "environment": {
+    "python": "3.13.13 (v3.13.13:01104ce1beb, Apr  7 2026, 14:43:30) [Clang 16.0.0 (clang-1600.0.26.6)]",
+    "numpy": "2.4.4",
+    "scipy": "1.17.1",
+    "platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O"
+  },
+  "wheel_inertia": 0.2064512,
+  "state_size": 12,
+  "track_length": 1016.70064959,
+  "setup_seconds": 10.643318000016734,
+  "error": "TimeoutError: forward integration exceeded its wall budget",
+  "last_rhs_time": 72.88016273988427,
+  "last_rhs_distance": 1010.4324293768556,
+  "plant_evaluations": 37987,
+  "maximum_load_residual": 9.99549776281583e-10,
+  "maximum_power_residual": 7.821654435247183e-11,
+  "maximum_load_iterations": 9,
+  "load_method_counts": {
+    "newton": 37987,
+    "fixed-point": 0
+  },
+  "minimum_load_jacobian_determinant": 0.5652032630239912,
+  "lifted_wheel_evaluations": 0,
+  "speed_regulated_evaluations": 0,
+  "maximum_motor_speed_ratio": 0.6717298632846004,
+  "child_wall_seconds": 295.24297479214147
+}

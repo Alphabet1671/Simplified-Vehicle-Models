@@ -1,0 +1,25 @@
+{
+  "status": "Child_Rejected",
+  "return_code": 2,
+  "total_wall_seconds": 295.17556691681966,
+  "within_wall_limit": true,
+  "timeout_seconds": 300.0,
+  "command": [
+    "/Library/Frameworks/Python.framework/Versions/3.13/bin/python3",
+    "-u",
+    "/Users/alphabet1671/Dev/Simplified-Vehicle-Models/tools/run_iem24_forward_driver.py",
+    "--planner",
+    "live",
+    "--maximum-speed",
+    "60",
+    "--method",
+    "BDF",
+    "--maximum-step",
+    "0.05",
+    "--output-root",
+    "docs/validation/iem24-murphy/midpoint_gate_trials",
+    "--child-attempt",
+    "docs/validation/iem24-murphy/midpoint_gate_trials/attempt_1792055209418766000"
+  ],
+  "attempt": "docs/validation/iem24-murphy/midpoint_gate_trials/attempt_1792055209418766000"
+}

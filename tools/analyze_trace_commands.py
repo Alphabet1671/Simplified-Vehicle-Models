@@ -2,6 +2,8 @@
 """Reconstruct driver commands from a forward driver trace."""
 from __future__ import annotations
 
+import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -20,12 +22,36 @@ from simplified_vehicle_models.tracks.profile import load_track
 from simplified_vehicle_models.tracks.path_coordinates import evaluate_path
 
 
-def main():
-    trace_path = Path("docs/validation/iem24-murphy/forward_driver_trials/attempt_1792006853120683000/trace.csv")
+#: Historical trace this diagnostic was written for.
+DEFAULT_TRACE = Path("docs/validation/iem24-murphy/forward_driver_trials/attempt_1792006853120683000/trace.csv")
+#: Attempts that predate --track record no settings["track"]; they ran on this
+#: original track, so the analysis must not silently use the new default.
+LEGACY_TRACK = "models/tracks/2024_michigan_endurance_closed.xml"
+
+
+def attempt_track(trace_path, override=None):
+    """Track the trace's attempt ran on: override, else its summary.json, else legacy."""
+    if override is not None:
+        return str(override)
+    summary_path = Path(trace_path).with_name("summary.json")
+    if summary_path.is_file():
+        settings = json.loads(summary_path.read_text()).get("settings", {})
+        return settings.get("track") or LEGACY_TRACK
+    return LEGACY_TRACK
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--trace", type=Path, default=DEFAULT_TRACE,
+                        help="Forward-driver trace.csv; its attempt's track is used")
+    parser.add_argument("--track", type=Path,
+                        help="Override the attempt's recorded track XML")
+    args = parser.parse_args(argv)
+    trace_path = args.trace
     trace = np.loadtxt(trace_path, delimiter=",", skiprows=1)
 
     vehicle = compile_formulation("models/formulations/iem24_murphy_real_planar_7dof.xml").model
-    track = load_track("models/tracks/2024_michigan_endurance_closed.xml")
+    track = load_track(attempt_track(trace_path, args.track))
     count = int(np.ceil(track.lap_length / 0.5))
     distance = np.linspace(0.0, track.lap_length, count + 1)
     _, _, _, curvature = evaluate_path(track.path_coordinates, distance)

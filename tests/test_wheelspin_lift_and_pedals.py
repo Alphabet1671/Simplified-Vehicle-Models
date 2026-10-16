@@ -164,7 +164,7 @@ class UniTirePlannerTests(unittest.TestCase):
         self.assertIs(view.drivetrain, self.vehicle.drivetrain)
         _, lateral = point_mass.tire_force_capacities(view, np.array([400., 1000.]))
         # The simplified UniTire peaks at mu_y * Fz with no load sensitivity.
-        np.testing.assert_allclose(lateral / [400., 1000.], 1.5, rtol=1.e-3)
+        np.testing.assert_allclose(lateral / [400., 1000.], self.vehicle.tire.mu_0_y, rtol=1.e-3)
         self.assertIs(point_mass.point_mass_view_of_planar(self.vehicle), view)
 
     def test_live_plan_has_no_default_lateral_cap(self):

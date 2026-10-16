@@ -1,0 +1,20 @@
+{
+  "source_attempt": "docs/validation/iem24-murphy/seven_dof_track_pair/new/attempt_1792091049300790000",
+  "track": "models/tracks/2024_michigan_endurance_multilap_closed.xml",
+  "track_source_hashes": {
+    "track_xml": "ffc367c0286ba698f3706ae8baf34946c641c01ad4f71935d3ec14a3a326f2c3",
+    "track_csv": "2db5a981f12d0c055afa3b167a9e6efa07cd09b1f6e7b2c51afea44f00e73d77",
+    "tire_xml": "301c55c8213fd9a4149bdec39a8c6fbc6a756e750bd6bd92e80b6567bcbd917b",
+    "formulation_xml": "8420c2d4e929f629c52fb9a21e1b1e5d047bf2356615d3edfc0a8e95bf6878d8",
+    "vehicle_xml": "46d3d342457c2f0fb55b864fc592f54d15b4d94a3dff4d7ba8004f07ca923a2e"
+  },
+  "method": "transient_forward_driver",
+  "status": "Completed",
+  "lap_completed": true,
+  "usable": false,
+  "minimum_time_optimum": false,
+  "lap_time_s": 71.90682142994301,
+  "accepted_steps": 12029,
+  "power_source": "replayed per-wheel motor torque and wheel speed, with drivetrain and motor efficiency",
+  "validation_warning": "Driven non-optimal transient; not usable as validated lap until all acceptance gates pass."
+}

@@ -1,0 +1,119 @@
+{
+  "passed": true,
+  "levels": {
+    "coarse": "docs/validation/iem24-murphy/seven_dof_track_pair/new/final_acceptance_run6/refined/attempt_1792113820710598000",
+    "medium": "docs/validation/iem24-murphy/seven_dof_track_pair/new/final_acceptance_run6/finer/attempt_1792113956706252000",
+    "fine": "docs/validation/iem24-murphy/seven_dof_track_pair/new/final_acceptance_run6/fourth/attempt_1792118214994730000"
+  },
+  "maximum_step": [
+    0.01,
+    0.005,
+    0.0025
+  ],
+  "rtol": [
+    5e-06,
+    2.5e-06,
+    1.25e-06
+  ],
+  "shared_time_span_s": 71.9054024710885,
+  "sup_difference_coarse_medium": {
+    "s": 5.55382232505508e-05,
+    "n": 6.936198308507557e-06,
+    "heading": 8.7080792703087e-06,
+    "v_x": 7.039658453322772e-05,
+    "v_y": 1.9561422094360736e-05,
+    "yaw_rate": 5.1699932419602135e-05,
+    "w_fl": 0.003003840285828119,
+    "w_fr": 0.0027575272208721913,
+    "w_rl": 0.0034695079096422887,
+    "w_rr": 0.0036389011540478577,
+    "soc": 1.2560218087820374e-08,
+    "steering": 1.483711392250009e-05,
+    "pedal": 8.307360300863209e-05
+  },
+  "sup_difference_medium_fine": {
+    "s": 5.139043818758182e-05,
+    "n": 5.7230108168881966e-06,
+    "heading": 3.824761441534319e-06,
+    "v_x": 5.053105245877987e-05,
+    "v_y": 1.0366287094332183e-05,
+    "yaw_rate": 1.4043335794022838e-05,
+    "w_fl": 0.0014538509642818553,
+    "w_fr": 0.0014211033123245898,
+    "w_rl": 0.0030545096127951865,
+    "w_rr": 0.0019263027943878797,
+    "soc": 5.605795161400806e-09,
+    "steering": 6.402424310131272e-06,
+    "pedal": 3.942548631319376e-05
+  },
+  "sup_difference_coarse_fine": {
+    "s": 4.76028988600774e-05,
+    "n": 8.900425629357334e-06,
+    "heading": 8.386352683076304e-06,
+    "v_x": 9.26746311513682e-05,
+    "v_y": 2.2874554627683175e-05,
+    "yaw_rate": 6.066520537451048e-05,
+    "w_fl": 0.003014610771472803,
+    "w_fr": 0.0027216115998669466,
+    "w_rl": 0.003936322929533276,
+    "w_rr": 0.0036179271983201033,
+    "soc": 8.249177008146091e-09,
+    "steering": 1.9056380279186547e-05,
+    "pedal": 8.316125785701178e-05
+  },
+  "observed_ratio": {
+    "s": 0.925316569018476,
+    "n": 0.8250933093808273,
+    "heading": 0.439219869595736,
+    "v_x": 0.7178054559582905,
+    "v_y": 0.5299352493048359,
+    "yaw_rate": 0.2716316083364604,
+    "w_fl": 0.48399742527624035,
+    "w_fr": 0.5153542280808754,
+    "w_rl": 0.8803869863810487,
+    "w_rr": 0.5293638691573389,
+    "soc": 0.44631352116702,
+    "steering": 0.4315141302798899,
+    "pedal": 0.4745850051682133
+  },
+  "all_components_shrink": true,
+  "tube": {
+    "s": 0.0005139043818758184,
+    "n": 3.272036533667545e-05,
+    "heading": 6.820429673171667e-06,
+    "v_x": 0.0001790645975469716,
+    "v_y": 2.2052891817567272e-05,
+    "yaw_rate": 1.9280539840490464e-05,
+    "w_fl": 0.0028175265696303354,
+    "w_fr": 0.0029322515426003486,
+    "w_rl": 0.02553659940820382,
+    "w_rr": 0.004092976862908692,
+    "soc": 1.0124493509786065e-08,
+    "steering": 1.1262240015364778e-05,
+    "pedal": 7.503685030119087e-05
+  },
+  "domain_margins_plain": {
+    "soc_floor": 0.7894450154896748,
+    "soc_ceiling": 0.19067182386833625,
+    "speed_over_minimum": 7.3586314263242185,
+    "wheel_speed_floor": 29.923919985781644,
+    "steering_headroom": 0.26243233858794895,
+    "wheel_speed_below_rolling_pole": 999882.7786990375,
+    "path_denominator_over_minimum": 0.4663411226802672,
+    "path_progress_over_minimum": 7.59361140351023,
+    "pedal_overshoot_beyond_travel": -0.18677408572366416
+  },
+  "domain_margins_widened_by_twice_tube": {
+    "soc_floor": 0.7894449952406878,
+    "soc_ceiling": 0.1906718036193492,
+    "speed_over_minimum": 7.3582732971291245,
+    "wheel_speed_floor": 29.872846786965237,
+    "steering_headroom": 0.26240981410791825,
+    "wheel_speed_below_rolling_pole": 999882.7276258386,
+    "path_denominator_over_minimum": 0.4663272929925353,
+    "path_progress_over_minimum": 7.593118392487137,
+    "pedal_overshoot_beyond_travel": -0.18662401202306178
+  },
+  "domain_widened_certified": true,
+  "scope": "empirical, from three refinement levels under an assumed geometric convergence; not a proof about the true ODE solution"
+}

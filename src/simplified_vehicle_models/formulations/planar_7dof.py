@@ -574,6 +574,12 @@ class PlanarEvaluation:
     load_iterations: int
     load_residual: float
     load_converged: bool
+    #: How the load closure ended: "newton", "fixed-point" or "unconverged".
+    load_method: str = "fixed-point"
+    #: ``|det(I - J)|`` of the load map's finite-difference Jacobian at the
+    #: returned acceleration (``nan`` when no Jacobian was formed). A value away
+    #: from zero means the closure is locally a smooth, unique solve.
+    load_jacobian_determinant: float = float("nan")
 
     @property
     def is_feasible(self) -> bool:
@@ -711,6 +717,8 @@ def _load_step(
 
 #: Damping applied when the load fixed point stops contracting.
 _LOAD_DAMPING = 0.5
+#: Forward-difference increment for the load map's Jacobian (m/s^2).
+_LOAD_JACOBIAN_STEP = 1.0e-6
 
 
 def evaluate_planar_dynamics(
@@ -733,15 +741,18 @@ def evaluate_planar_dynamics(
     ``steering`` is the road-wheel angle in radians and turns the front wheels.
 
     The vertical load depends on the body acceleration, and the tire force
-    depends on the vertical load. Solve that loop with a bounded fixed point.
-    Apply the undamped update while the residual contracts, and halve the step
-    while it does not. Then evaluate once more at the converged acceleration,
-    so every returned quantity belongs to the same state.
+    depends on the vertical load. Solve that two-unknown loop with a damped
+    Newton iteration (finite-difference Jacobian, backtracking line search).
+    If Newton stalls at a kink of the map, continue with the bounded fixed
+    point that applies the undamped update while the residual contracts and
+    halves the step while it does not. Then evaluate once more at the
+    converged acceleration, so every returned quantity belongs to the same
+    state.
 
     A large slip can make the loop non-contractive. The guard keeps the loop
-    bounded, and the returned ``load_converged`` and ``load_residual`` report
-    whether it actually converged. Never treat an unconverged answer as a
-    converged one.
+    bounded, and the returned ``load_converged``, ``load_residual`` and
+    ``load_method`` report whether and how it converged. Never treat an
+    unconverged answer as a converged one.
     """
 
     torques = parse_wheel_torques(wheel_torques)
@@ -779,41 +790,99 @@ def evaluate_planar_dynamics(
             speed_floor,
         )
 
-    longitudinal_acceleration = 0.0
-    lateral_acceleration = 0.0
+    def residual_of(evaluation: _LoadStep, guess: FloatArray) -> FloatArray:
+        return np.array([
+            evaluation.implied_longitudinal_acceleration - guess[0],
+            evaluation.implied_lateral_acceleration - guess[1],
+        ])
+
+    guess = np.zeros(2)
     evaluation = step(0.0, 0.0)
-    residual = float("inf")
-    previous_residual = float("inf")
-    load_converged = False
+    residual_vector = residual_of(evaluation, guess)
+    residual = float(np.max(np.abs(residual_vector)))
     iteration = 0
-    for iteration in range(1, load_maximum_iterations + 1):
-        residual = max(
-            abs(
-                evaluation.implied_longitudinal_acceleration
-                - longitudinal_acceleration
-            ),
-            abs(evaluation.implied_lateral_acceleration - lateral_acceleration),
-        )
+    load_converged = residual <= load_tolerance
+    method = "newton" if load_converged else "unconverged"
+    determinant = float("nan")
+
+    # Newton on F(a) = g(a) - a with a forward-difference Jacobian and a
+    # backtracking line search on the residual norm. The load map has kinks (a
+    # lifted wheel, the tire's small-slip branch), so the line search keeps the
+    # iteration monotone rather than trusting a full step.
+    newton_budget = max(1, load_maximum_iterations // 2)
+    # One finite-difference Jacobian per solve; afterwards a Broyden rank-one
+    # update from each accepted step (no extra load evaluations). If a stale
+    # Broyden matrix cannot produce a descent step, rebuild it once and retry.
+    jacobian = None
+    rebuilt = False
+    while not load_converged and iteration < newton_budget:
+        iteration += 1
+        if not np.all(np.isfinite(residual_vector)):
+            break
+        if jacobian is None:
+            jacobian = np.empty((2, 2))
+            for column in range(2):
+                increment = _LOAD_JACOBIAN_STEP * max(1.0, abs(guess[column]))
+                probe = guess.copy()
+                probe[column] += increment
+                probed = step(probe[0], probe[1])
+                jacobian[:, column] = (residual_of(probed, probe) - residual_vector) / increment
+            determinant = abs(float(np.linalg.det(jacobian)))
+            fresh = True
+        else:
+            fresh = False
+        if not np.isfinite(determinant) or determinant < 1.0e-12:
+            break
+        direction = -np.linalg.solve(jacobian, residual_vector)
+        factor = 1.0
+        accepted = False
+        for _ in range(8):
+            trial = guess + factor * direction
+            trial_evaluation = step(trial[0], trial[1])
+            trial_vector = residual_of(trial_evaluation, trial)
+            trial_residual = float(np.max(np.abs(trial_vector)))
+            if np.isfinite(trial_residual) and trial_residual < residual:
+                accepted = True
+                break
+            factor *= 0.5
+        if not accepted:
+            if fresh or rebuilt:
+                break
+            jacobian, rebuilt = None, True
+            continue
+        move = trial - guess
+        change = trial_vector - residual_vector
+        jacobian = jacobian + np.outer(change - jacobian @ move, move) / float(move @ move)
+        determinant = abs(float(np.linalg.det(jacobian)))
+        guess, evaluation = trial, trial_evaluation
+        residual_vector, residual = trial_vector, trial_residual
         if residual <= load_tolerance:
             load_converged = True
-            break
-        if iteration > 1 and residual >= previous_residual:
-            # The map stopped contracting. Take half a step.
-            longitudinal_acceleration += _LOAD_DAMPING * (
-                evaluation.implied_longitudinal_acceleration
-                - longitudinal_acceleration
-            )
-            lateral_acceleration += _LOAD_DAMPING * (
-                evaluation.implied_lateral_acceleration - lateral_acceleration
-            )
-        else:
-            longitudinal_acceleration = (
-                evaluation.implied_longitudinal_acceleration
-            )
-            lateral_acceleration = evaluation.implied_lateral_acceleration
-        previous_residual = residual
-        evaluation = step(longitudinal_acceleration, lateral_acceleration)
+            method = "newton"
 
+    if not load_converged:
+        # Fallback: the original bounded fixed point, continued from the best
+        # Newton iterate. Apply the undamped update while the residual
+        # contracts, and halve the step while it does not.
+        previous_residual = float("inf")
+        remaining = max(1, load_maximum_iterations - iteration)
+        for local in range(1, remaining + 1):
+            iteration += 1
+            residual_vector = residual_of(evaluation, guess)
+            residual = float(np.max(np.abs(residual_vector)))
+            if residual <= load_tolerance:
+                load_converged = True
+                method = "fixed-point"
+                break
+            if local > 1 and residual >= previous_residual:
+                guess = guess + _LOAD_DAMPING * residual_vector
+            else:
+                guess = np.array([evaluation.implied_longitudinal_acceleration,
+                                  evaluation.implied_lateral_acceleration])
+            previous_residual = residual
+            evaluation = step(guess[0], guess[1])
+
+    longitudinal_acceleration, lateral_acceleration = float(guess[0]), float(guess[1])
     # Evaluate once more at the returned acceleration, so the loads, the slip,
     # and the forces all describe the same state.
     evaluation = step(longitudinal_acceleration, lateral_acceleration)
@@ -826,6 +895,8 @@ def evaluate_planar_dynamics(
     )
     load_residual = max(residual, final_residual)
     load_converged = load_converged and final_residual <= load_tolerance
+    if not load_converged:
+        method = "unconverged"
 
     moment = yaw_moment_of(
         positions,
@@ -865,4 +936,6 @@ def evaluate_planar_dynamics(
         load_iterations=iteration,
         load_residual=load_residual,
         load_converged=load_converged,
+        load_method=method,
+        load_jacobian_determinant=determinant,
     )

@@ -398,11 +398,27 @@ class ForwardResult:
     #: Integrated signed pedal position (+1 full throttle, -1 full brake) at
     #: each output time, or ``None`` when the driver has instantaneous pedals.
     pedal: np.ndarray | None = None
+    #: Physical checks at the dense-output midpoint of each accepted interval.
+    #: Sampling one interior point does not certify the continuous interval.
+    midpoint_sample_validation_complete: bool = False
+    #: Conservative ``[min, max]`` of every state component (and the pedal
+    #: coordinate) over each accepted interval, from the exact BDF dense-output
+    #: polynomial. ``None`` for a method without a verifiable interpolant. It
+    #: bounds the reported interpolant, not the true ODE trajectory.
+    dense_bounds: np.ndarray | None = None
+    #: Exact per-interval BDF dense polynomials (``DensePolynomials``) or ``None``.
+    dense_polynomials: object | None = None
+    #: Midpoint samples taken, and the largest scaled defect
+    #: ``|dy/dt - f(t, y)| * step / (atol + rtol * |y|)`` among them. The defect
+    #: is informational evidence about the interpolant, not a bound on it.
+    dense_samples: int = 0
+    dense_defect_scaled_max: float = float("nan")
 
 
 def solve_forward(plant: ForwardPlant, driver: PreviewDriver, initial_state,
                   duration=300., wall_seconds=290., maximum_step=0.02,
-                  rtol=1.e-6, atol=1.e-8, method="Radau") -> ForwardResult:
+                  rtol=1.e-6, atol=1.e-8, method="Radau",
+                   initial_pedal: float | None = None) -> ForwardResult:
     """Integrate all states with a stiff method and stop at the path end.
 
     The caller must also apply a parent-process timeout to include setup.
@@ -420,11 +436,15 @@ def solve_forward(plant: ForwardPlant, driver: PreviewDriver, initial_state,
     if plant_initial.shape != (plant_size,) or not np.all(np.isfinite(plant_initial)):
         raise ValueError("initial state must match the complete plant layout")
     pedal_dynamics = bool(getattr(driver, "has_pedal_dynamics", False))
+    if initial_pedal is not None and (not pedal_dynamics or not np.isfinite(initial_pedal)
+                                      or not -1. <= initial_pedal <= 1.):
+        raise ValueError("initial pedal requires enabled pedal dynamics and position in [-1, 1]")
     if pedal_dynamics:
         # The foot starts where the driver wants it, so the run does not open
         # with a pedal transient.
         requested = driver.command(plant.observe(plant_initial))
-        initial = np.r_[plant_initial, driver.pedal_target(requested)]
+        initial = np.r_[plant_initial, driver.pedal_target(requested)
+                        if initial_pedal is None else initial_pedal]
     else:
         initial = plant_initial
     start = perf_counter()
@@ -495,20 +515,50 @@ def solve_forward(plant: ForwardPlant, driver: PreviewDriver, initial_state,
         return matrix
 
     result = solve_ivp(rhs, (0., duration), initial, method=method, jac=jacobian,
-                       rtol=rtol, atol=atol, max_step=maximum_step, events=finish)
+                       rtol=rtol, atol=atol, max_step=maximum_step, events=finish, dense_output=True)
     if not result.success:
         raise RuntimeError(result.message)
-    # Check accepted states without the Newton-trial rejection path.
-    # For speed, only validate every Nth step and the final step.
-    n_validate = max(1, len(result.t) // 100)  # ~100 validations
-    for i, (time_value, state) in enumerate(zip(result.t, result.y.T)):
+    # Bound every component of the dense polynomial over each accepted interval
+    # before the replay loops, so a later timeout cannot hide this result.
+    dense_bounds = None
+    dense_polynomials = None
+    if method == "BDF":
+        from simplified_vehicle_models.solvers.dense_domain import (
+            UnsupportedDenseOutputError, dense_component_bounds, dense_polynomial_coefficients)
+        try:
+            dense_bounds = dense_component_bounds(result.sol)
+            dense_polynomials = dense_polynomial_coefficients(result.sol)
+        except UnsupportedDenseOutputError:
+            dense_bounds = None
+            dense_polynomials = None
+    # Recheck every accepted state without the Newton-trial rejection path.
+    # Checking a sparse subset cannot certify contact across the lap.
+    for time_value, state in zip(result.t, result.y.T):
         if perf_counter() - start >= wall_seconds:
             raise TimeoutError("accepted-state validation exceeded its wall budget")
-        if i % n_validate == 0 or i == len(result.t) - 1:
-            state_rates(time_value, state)
+        state_rates(time_value, state)
+    # Endpoints are not enough: reconstruct each interval's interior state
+    # from the integrator's dense solution, including its pedal coordinate.
+    defect_max = 0.
+    samples = 0
+    for left, right in zip(result.t[:-1], result.t[1:]):
+        if perf_counter() - start >= wall_seconds:
+            raise TimeoutError("between-step validation exceeded its wall budget")
+        midpoint = (left + right) / 2.
+        dense_state = result.sol(midpoint)
+        rates = state_rates(midpoint, dense_state)
+        # The BDF interpolant is a polynomial, so a small central difference
+        # recovers its slope to rounding. Compare it with the model slope.
+        width = right - left
+        probe = 1.e-3 * width
+        slope = (result.sol(midpoint + probe) - result.sol(midpoint - probe)) / (2. * probe)
+        scaled = np.abs(slope - rates) * abs(width) / (atol + rtol * np.abs(dense_state))
+        defect_max = max(defect_max, float(np.max(scaled)))
+        samples += 1
     elapsed = perf_counter() - start
     if elapsed >= wall_seconds:
         raise TimeoutError("forward integration exceeded its wall budget")
     pedal = np.clip(result.y[plant_size], -1., 1.) if pedal_dynamics else None
     return ForwardResult(result.t, result.y[:plant_size], bool(result.t_events[0].size),
-                         elapsed, evaluations, result.message, rejected_domain_trials, pedal)
+                         elapsed, evaluations, result.message, rejected_domain_trials, pedal, True,
+                         dense_bounds, dense_polynomials, samples, defect_max)

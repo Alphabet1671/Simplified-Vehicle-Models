@@ -1,0 +1,18 @@
+file: docs/validation/iem24-murphy/seven_dof_track_pair/tube_v2_protocol.md
+sha256: cf45fb1b6bfcfe997a10bdedce48e777b0847965c3ab6d8d33a0d7317c8ee4ef
+frozen_utc: 2026-10-16T02:34:16Z
+no git commit made; v2 code/test hashes to be appended below when written (append-only).
+v1 tools/check_iem24_forward_tube.py sha256: 57b92964f3cc13057a230f7c72e866e2df6a7742d6c4931e27aaec511ee200ab
+
+REVISION 1 sha256 cf45fb1b6bfcfe997a10bdedce48e777b0847965c3ab6d8d33a0d7317c8ee4ef (frozen 2026-10-16T02:34:16Z): SUPERSEDED before any g run (omitted pedal-zero event).
+REVISION 2 (CURRENT)
+file: docs/validation/iem24-murphy/seven_dof_track_pair/tube_v2_protocol.md
+sha256: b0b499b2933048028f0c1b6196f26c5b01d725fb1ce172a65572454e486788f7
+frozen_utc: 2026-10-16T02:36:42Z
+change: + pedal-zero crossing event; preview-knot/feedforward-kink declared unmodeled (v2-B may fail); zero out-of-window samples -> null. No g data used; g not yet run.
+
+FINAL v2 CODE HASHES (appended 2026-10-16T02:52:09Z; AFTER g completed, so code postdates g; protocol file unchanged since Rev2):
+19f8ab4efefadc2784c2677d336c388b4153f977d4379749f6a25bea6e8a27a8  tools/check_iem24_forward_tube_v2.py
+76e29597335d80fb7b7c54a18009d58977ffef5ef308efb69bec8ee807158d78  tests/test_forward_tube_v2.py
+57b92964f3cc13057a230f7c72e866e2df6a7742d6c4931e27aaec511ee200ab  tools/check_iem24_forward_tube.py
+b0b499b2933048028f0c1b6196f26c5b01d725fb1ce172a65572454e486788f7  docs/validation/iem24-murphy/seven_dof_track_pair/tube_v2_protocol.md

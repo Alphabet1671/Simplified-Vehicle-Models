@@ -222,7 +222,7 @@ def main() -> None:
     parser.add_argument(
         "--track",
         type=Path,
-        default=Path("models/tracks/2024_michigan_endurance_closed.xml"),
+        default=Path("models/tracks/2024_michigan_endurance_multilap_closed.xml"),
     )
     parser.add_argument("--bins", type=int, default=PHASE_BINS)
     args = parser.parse_args()

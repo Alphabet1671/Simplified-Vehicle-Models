@@ -141,6 +141,11 @@ class ComparisonIntegrationTests(unittest.TestCase):
                     str(output_dir),
                     "--bins",
                     "120",
+                    # The copied committed simulated_lap.csv was built on the
+                    # original track (its summary records it), so reproduce it there;
+                    # the tool's own default is now the canonical multilap track.
+                    "--track",
+                    "models/tracks/2024_michigan_endurance_closed.xml",
                 ],
             ), redirect_stdout(io.StringIO()):
                 compare_main()

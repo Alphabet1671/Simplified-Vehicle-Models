@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<model schema-version="1.0" id="2024-michigan-endurance-multilap-closed" type="track-model" subtype="closed-xy-profile">
+    <!-- Closed signed driven line: the median of ten individually aligned flying laps from 0615CompEndurance.mat, offset along the normal of the legacy single-lap path, smoothed at 3 m, and resampled as an independent closed path. It is a representative driven line, not a surveyed circuit centerline. -->
+    <!-- World frame X north, Y east, Z down, so x is north, y is east, and z is down. A right turn has positive curvature. The lap winds counterclockwise viewed from above (negative heading change, net left turn) with a net turn of -6.285968 rad. Wheel order is fl, fr, rl, rr. -->
+    <!-- Nodes 2034 (last repeats first) spacing 0.4964 m smoothing 3 m length 1009.195015 m closure gap 0.000 m minimum radius 5.7648 m end tangent mismatch 0.0054 rad. The point-mass limit solver consumes radius_magnitude. The planar model consumes signed curvature. -->
+    <!-- Not comparable with 2024_michigan_endurance_closed at equal distance: this path is 7.5056 m (0.74 percent) shorter, so compare by physical position rather than stretching phase. The legacy track is retained unchanged. -->
+    <!-- Provenance: 2db5a981f12d0c055afa3b167a9e6efa07cd09b1f6e7b2c51afea44f00e73d77 is the sha256 of 2024_michigan_endurance_multilap_closed.csv, a byte copy of docs/validation/iem24-murphy/multilap_track_candidate.csv. Diagnostics docs/validation/iem24-murphy/multilap_track_candidate_diagnostics.json sha256=c75baa6ae92ea192c4b1522097d4cdd6e5701d33f81455e987f60283651e67a4. Built by tools/build_iem24_multilap_track.py with inputs docs/validation/iem24-murphy/measured_stint.csv sha256=795d37a904302f712bab1fa1809dbd838c4cb9c0db3e60c9215561487d6c3d2b and models/tracks/2024_michigan_endurance_closed.xml sha256=2880418d148b763e1360d25eb4b7a8a4144bb16e6e56017facf7f36bddc47180 (CSV sha256=ff8dcdc715eaff07eeb1d7a9e0a0739072480150577622ec8854000a0a44dbd4). Command: PYTHONPATH=src:. python3 tools/build_iem24_multilap_track.py with default arguments, which write docs/validation/iem24-murphy/multilap_track_candidate (.csv/.xml/_diagnostics.json); verified 2026-10-15 to regenerate the CSV byte for byte. -->
+    <metadata>
+        <title>2024 Michigan Endurance Multilap Closed</title>
+        <source sha256="091e4745a5ff6ccf7d48729154033bb555edd028f0e3e2ed2f3f270e14f6e5b7">0615CompEndurance.mat</source>
+    </metadata>
+    <data ref="2024_michigan_endurance_multilap_closed.csv" />
+    <parameters>
+        <parameter name="is_closed" value="true" />
+        <parameter name="terminal_segment_is_duplicate" value="true" />
+        <parameter name="node_spacing" value="0.4964" unit="m" />
+        <parameter name="smoothing_length" value="3" unit="m" />
+        <parameter name="maximum_radius" value="300" unit="m" />
+    </parameters>
+</model>

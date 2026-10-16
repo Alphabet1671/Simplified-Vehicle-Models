@@ -27,6 +27,11 @@ from pathlib import Path
 import numpy as np
 
 
+#: Attempts that predate --track record no settings["track"]; they ran on this
+#: original track, so replaying them must not silently use the new default.
+LEGACY_TRACK = "models/tracks/2024_michigan_endurance_closed.xml"
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--attempt", type=Path, required=True,
@@ -45,7 +50,7 @@ def main() -> None:
     from simplified_vehicle_models.solvers.planar_forward import PlanarForwardPlant, body_accelerations
 
     vehicle = compile_formulation("models/formulations/iem24_murphy_real_planar_7dof.xml").model
-    track = load_track("models/tracks/2024_michigan_endurance_closed.xml")
+    track = load_track(settings.get("track") or LEGACY_TRACK)
     spacing = float(settings["spacing"])
     count = int(np.ceil(track.lap_length / spacing))
     distance = np.linspace(0., track.lap_length, count + 1)

@@ -1,0 +1,226 @@
+{
+  "measured_laps": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10
+  ],
+  "median_measured_lap_s": 71.68501281738281,
+  "median_measured_distance_m": 1022.4002900589808,
+  "source_sha256": "091e4745a5ff6ccf7d48729154033bb555edd028f0e3e2ed2f3f270e14f6e5b7",
+  "source_bytes": 334513192,
+  "comparisons": {
+    "Original track": {
+      "run": {
+        "track": "models/tracks/2024_michigan_endurance_closed.xml",
+        "track_sha256": "2880418d148b763e1360d25eb4b7a8a4144bb16e6e56017facf7f36bddc47180",
+        "geometry_sha256": "ff8dcdc715eaff07eeb1d7a9e0a0739072480150577622ec8854000a0a44dbd4",
+        "formulation": "models/formulations/iem24_murphy_real_planar_7dof.xml",
+        "track_length_m": 1016.70064959,
+        "nodes": 2035,
+        "spacing_m": 0.5,
+        "lap_time_s": 73.59135030897536,
+        "converged": true,
+        "iterations": 3,
+        "energy_converged": true,
+        "energy_iterations": 2,
+        "initial_state_of_charge": 0.8290853425250001,
+        "final_state_of_charge": 0.8135776085571766,
+        "initial_terminal_voltage_v": 574.4885372584492,
+        "final_terminal_voltage_v": 572.2061992580718,
+        "regen_enabled": false,
+        "motor_count": 2,
+        "gear_ratio_used": 10.9,
+        "maximum_motor_torque_request_nm": 7.885866457963114,
+        "solve_wall_seconds": 51.717514833202586,
+        "method": "energy-coupled minimum-time point-mass flying lap",
+        "motor_torque_note": "positive traction wheel force reconstructed per motor, clipped at 10.5 Nm; braking request = 0"
+      },
+      "metrics": {
+        "speed_mps": {
+          "rmse": 1.1540100910598676,
+          "mae": 0.9546569768444642,
+          "bias": -0.513190795972528,
+          "correlation": 0.9404898752534151,
+          "normalised_rmse": 0.3803671245411475
+        },
+        "longitudinal_acceleration_mps2": {
+          "rmse": 1.1408503349485026,
+          "mae": 0.7905310623867234,
+          "bias": -0.10427717433869016,
+          "correlation": 0.8035381025791642,
+          "normalised_rmse": 0.6325370115961045
+        },
+        "lateral_acceleration_mps2": {
+          "rmse": 2.107846073491578,
+          "mae": 1.6828907824121966,
+          "bias": 0.822118583155666,
+          "correlation": 0.9709635507371586,
+          "normalised_rmse": 0.2772641505932721
+        },
+        "yaw_rate_rad_s": {
+          "rmse": 0.14644406216673717,
+          "mae": 0.10763629332396177,
+          "bias": 0.0034115778218274154,
+          "correlation": 0.969912241627469,
+          "normalised_rmse": 0.2502487771152362
+        },
+        "motor_torque_request_nm": {
+          "rmse": 2.7382509533255286,
+          "mae": 2.2533863825318443,
+          "bias": -1.5372504016708188,
+          "correlation": 0.6019513213592091,
+          "normalised_rmse": 1.0298110227823787
+        },
+        "pack_voltage_v": {
+          "rmse": 27.00126543183648,
+          "mae": 26.73659431893856,
+          "bias": 26.73659431893856,
+          "correlation": 0.5680705680349727,
+          "normalised_rmse": 6.230261029491632
+        },
+        "rl_power_kw": {
+          "rmse": 2.8007958007786513,
+          "mae": 2.3209236544946457,
+          "bias": -1.6035649376366554,
+          "correlation": 0.6973758514158156,
+          "normalised_rmse": 0.9096121606007324
+        },
+        "rr_power_kw": {
+          "rmse": 2.7561825312994697,
+          "mae": 2.279043770463512,
+          "bias": -1.540348938733241,
+          "correlation": 0.6951918790795215,
+          "normalised_rmse": 0.9064442412066742
+        }
+      },
+      "per_lap_speed_rmse": [
+        2.0147311458490784,
+        1.1198280469857294,
+        1.7613918983524863,
+        1.28577274429468,
+        1.6474002133494219,
+        1.3941082395792637,
+        1.5971807240200837,
+        1.4776629585834922,
+        1.209235386408744,
+        1.5435686030301852
+      ],
+      "position_offset_north_east_m": [
+        9.96825882715748,
+        3.431597778528189
+      ],
+      "position_fit_rmse_m": 1.4888021220493057,
+      "position_residual_p95_m": 2.4539401297459573
+    },
+    "Experimental track": {
+      "run": {
+        "track": "docs/validation/iem24-murphy/multilap_track_candidate.xml",
+        "track_sha256": "78d1ec4b3c5d7a6c9b31263e94ad9fa49d7fadb36a926e46ae3208ac7ccc742c",
+        "geometry_sha256": "2db5a981f12d0c055afa3b167a9e6efa07cd09b1f6e7b2c51afea44f00e73d77",
+        "formulation": "models/formulations/iem24_murphy_real_planar_7dof.xml",
+        "track_length_m": 1009.19501535,
+        "nodes": 2020,
+        "spacing_m": 0.5,
+        "lap_time_s": 71.95843431536265,
+        "converged": true,
+        "iterations": 3,
+        "energy_converged": true,
+        "energy_iterations": 3,
+        "initial_state_of_charge": 0.8290853425250001,
+        "final_state_of_charge": 0.8133039066018172,
+        "initial_terminal_voltage_v": 575.7,
+        "final_terminal_voltage_v": 573.2257864749472,
+        "regen_enabled": false,
+        "motor_count": 2,
+        "gear_ratio_used": 10.9,
+        "maximum_motor_torque_request_nm": 7.915731171283133,
+        "solve_wall_seconds": 75.51889908290468,
+        "method": "energy-coupled minimum-time point-mass flying lap",
+        "motor_torque_note": "positive traction wheel force reconstructed per motor, clipped at 10.5 Nm; braking request = 0"
+      },
+      "metrics": {
+        "speed_mps": {
+          "rmse": 1.2585938127653498,
+          "mae": 1.057991033546281,
+          "bias": -0.320655710304176,
+          "correlation": 0.9169576057913588,
+          "normalised_rmse": 0.4155354122955066
+        },
+        "longitudinal_acceleration_mps2": {
+          "rmse": 1.2336569667012887,
+          "mae": 0.8517892297699918,
+          "bias": -0.10682434289671958,
+          "correlation": 0.7727836307648162,
+          "normalised_rmse": 0.6815292471885306
+        },
+        "lateral_acceleration_mps2": {
+          "rmse": 2.307369642982225,
+          "mae": 1.8714729975352458,
+          "bias": 0.7617475186312016,
+          "correlation": 0.9625285021153757,
+          "normalised_rmse": 0.30440207450411405
+        },
+        "yaw_rate_rad_s": {
+          "rmse": 0.17379397701948995,
+          "mae": 0.1276753619866772,
+          "bias": -0.00013857573415543083,
+          "correlation": 0.9571508671574959,
+          "normalised_rmse": 0.2984228958749545
+        },
+        "motor_torque_request_nm": {
+          "rmse": 2.743092491888245,
+          "mae": 2.2402597899585874,
+          "bias": -1.4638759490697597,
+          "correlation": 0.5863792645521008,
+          "normalised_rmse": 1.029833141517579
+        },
+        "pack_voltage_v": {
+          "rmse": 26.87695964378361,
+          "mae": 26.61058748544322,
+          "bias": 26.61058748544322,
+          "correlation": 0.5705010254672307,
+          "normalised_rmse": 6.197358040412524
+        },
+        "rl_power_kw": {
+          "rmse": 2.797275322687892,
+          "mae": 2.3032209679172095,
+          "bias": -1.514457242924198,
+          "correlation": 0.6844434622743389,
+          "normalised_rmse": 0.9066609242452351
+        },
+        "rr_power_kw": {
+          "rmse": 2.7553849119035787,
+          "mae": 2.2604783577578385,
+          "bias": -1.4508405895013354,
+          "correlation": 0.6819285580594917,
+          "normalised_rmse": 0.9041400144450642
+        }
+      },
+      "per_lap_speed_rmse": [
+        2.210878333652752,
+        1.2794530717597672,
+        1.7856157772155916,
+        1.3522797600769885,
+        1.6714904506155202,
+        1.589499436873551,
+        1.6797504625212838,
+        1.5974366144859165,
+        1.3354209615656656,
+        1.630064269650308
+      ],
+      "position_offset_north_east_m": [
+        9.793977285275902,
+        3.354079200614217
+      ],
+      "position_fit_rmse_m": 1.4747590852793624,
+      "position_residual_p95_m": 2.276003165822202
+    }
+  }
+}

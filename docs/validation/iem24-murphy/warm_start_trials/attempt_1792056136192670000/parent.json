@@ -1,0 +1,27 @@
+{
+  "status": "Child_Completed",
+  "return_code": 0,
+  "total_wall_seconds": 235.18504470796324,
+  "within_wall_limit": true,
+  "timeout_seconds": 300.0,
+  "command": [
+    "/Library/Frameworks/Python.framework/Versions/3.13/bin/python3",
+    "-u",
+    "/Users/alphabet1671/Dev/Simplified-Vehicle-Models/tools/run_iem24_forward_driver.py",
+    "--planner",
+    "live",
+    "--maximum-speed",
+    "60",
+    "--method",
+    "BDF",
+    "--rtol",
+    "1e-5",
+    "--warm-start",
+    "docs/validation/iem24-murphy/midpoint_gate_trials/attempt_1792055898199900000",
+    "--output-root",
+    "docs/validation/iem24-murphy/warm_start_trials",
+    "--child-attempt",
+    "docs/validation/iem24-murphy/warm_start_trials/attempt_1792056136192670000"
+  ],
+  "attempt": "docs/validation/iem24-murphy/warm_start_trials/attempt_1792056136192670000"
+}

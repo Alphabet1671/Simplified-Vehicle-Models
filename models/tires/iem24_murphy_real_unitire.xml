@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <model schema-version="1.0" id="iem24-murphy-real-unitire" type="tire-model" subtype="unitire-simple">
-    <!-- Tester-fitted combined-slip curves with provisional surface-mu scaling; values are approximate proxies informed by measured peak deceleration/cornering, not a tire re-fit. -->
+    <!-- PROPOSED road-grip baseline, not a measured or validated road coefficient. Slip stiffness, shape, and trail terms are the lab fit of models/tires/hoosier-43075-r20-simple.xml unchanged. mu_0_x, mu_s_x, mu_0_y and mu_s_y are each exactly 2/3 of that lab fit (2.3361624600071096, 2.0159412226800204, 2.3803804777987394, 2.053563821658717). The 2/3 factor is a TTC Round 9 team-reported road prior (belt smoother than track; https://www.millikenresearch.com/Contents_Round9.pdf), not inferred from the 120-grit belt label and not validated by the vehicle. Major proxy: the lab x data (B2356 run 72) belong to a 43100 R20 tire, not the 43075 of run 8. Longitudinal ratio is unidentifiable on the current lap; the lateral value is optimistic against the ~0.60 lab ratio estimated from measured |ay|. See docs/validation/iem24-murphy/road_grip_calibration.md. -->
     <parameters>
         <parameter name="f_z_rated" value="660.0" unit="N" />
         <parameter name="k_cx" value="300000.0" unit="N/m" />
@@ -20,12 +20,12 @@
         <parameter name="d_2_1" value="0.06468408760663874" unit="1" />
         <parameter name="d_2_0" value="0.03685184791816076" unit="1" />
         <parameter name="e_1" value="-0.01547791924434061" unit="1" />
-        <parameter name="mu_0_x" value="0.80" unit="1" />
-        <parameter name="mu_s_x" value="0.80" unit="1" />
+        <parameter name="mu_0_x" value="1.5574416400047397" unit="1" />
+        <parameter name="mu_s_x" value="1.3439608151200135" unit="1" />
         <parameter name="h_x" value="2.2955432513388416" unit="1" />
         <parameter name="v_m_x" value="3.0" unit="m/s" />
-        <parameter name="mu_0_y" value="1.50" unit="1" />
-        <parameter name="mu_s_y" value="1.50" unit="1" />
+        <parameter name="mu_0_y" value="1.586920318532493" unit="1" />
+        <parameter name="mu_s_y" value="1.3690425477724781" unit="1" />
         <parameter name="h_y" value="0.020000000000250366" unit="1" />
         <parameter name="v_m_y" value="2.999207661856495" unit="m/s" />
         <parameter name="k_11" value="0.0" unit="N*m" />

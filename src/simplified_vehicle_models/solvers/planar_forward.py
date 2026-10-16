@@ -75,8 +75,13 @@ class PlanarForwardPlant:
         self.gear_efficiency = transmission.gear_efficiency
         self.gearing = vehicle.motor.gear_ratio * self.gear_efficiency
         self.maximum_load_residual = 0.
+        self.minimum_contact_load = float("inf")
         self.maximum_power_residual = 0.
         self.maximum_load_iterations = 0
+        #: Load-closure diagnostics: solves finished by each method and the
+        #: smallest ``|det(I - J)|`` of the load map seen at a Newton solve.
+        self.load_method_counts = {"newton": 0, "fixed-point": 0}
+        self.minimum_load_jacobian_determinant = float("inf")
         #: Diagnostics: evaluations with a lifted (zero-load) wheel, with a
         #: driven motor inside its inverter speed-regulation band, and the
         #: largest motor speed as a fraction of its voltage-scaled limit.
@@ -268,6 +273,7 @@ class PlanarForwardPlant:
         # state, is outside the plant domain.
         if np.any(dynamics.normal_loads < 0.):
             raise TrialStateError("planar contact load is negative: both inside wheels lifted (rollover)")
+        self.minimum_contact_load = min(self.minimum_contact_load, float(np.min(dynamics.normal_loads)))
         _, curvature, _ = self.plan.sample(state[0])
         denominator = 1. - curvature * state[1]
         if denominator < 0.5:
@@ -287,6 +293,10 @@ class PlanarForwardPlant:
         self.maximum_load_residual = max(self.maximum_load_residual, dynamics.load_residual)
         self.maximum_power_residual = max(self.maximum_power_residual, point.power_residual)
         self.maximum_load_iterations = max(self.maximum_load_iterations, dynamics.load_iterations)
+        self.load_method_counts[dynamics.load_method] += 1
+        if np.isfinite(dynamics.load_jacobian_determinant):
+            self.minimum_load_jacobian_determinant = min(
+                self.minimum_load_jacobian_determinant, dynamics.load_jacobian_determinant)
         if np.any(dynamics.normal_loads == 0.):
             self.lifted_wheel_evaluations += 1
         speed_ratio = float(np.max(self.vehicle.motor.gear_ratio * state[6:10][self.driven])

@@ -21,9 +21,12 @@ The Python artifact is `models/tires/hoosier-43075-r20-simple.xml`. It carries
 both hashes in its header comments. `tools/export_unitire_simple_tire.py`
 regenerates it, so the export is reproducible and not hand copied.
 
-The fitted source is the `43075 R20` tire at 12 psi on an 8 inch rim, fitted
-against TTC `B2356` runs 8 and 72, as the MATLAB fit script records. The
-comparison script `TireModelComparison.m` selects this same parameter file as
+The fitted source is labelled `43075 R20` at 12 psi on an 8 inch rim, fitted
+against TTC `B2356` runs 8 and 72, as the MATLAB fit script records. Identity
+correction: only run 8 is the `43075` tire. The longitudinal (x) data of run 72
+belong to a `43100 R20` tire, so the longitudinal coefficients of this fit are a
+cross-tire proxy and the single `43075 R20` label overstates their provenance.
+The comparison script `TireModelComparison.m` selects this same parameter file as
 its simplified UniTire source. The other file `unitire_simple_fit.mat` is a
 different fit and is not used.
 
@@ -121,9 +124,11 @@ zero. Both must be resolved before a fit that uses them is accepted.
 - The fit accuracy against the TTC measurements. This report checks the port
   against the fitted model. It does not re-derive the fit, and it does not claim
   an agreement with the raw tire test data.
-- The upstream `43075` provenance of the TTC runs. The fit script and the
-  comparison script both name the tire as `43075 R20`, and this report repeats
-  that name; it does not independently confirm the run identity.
+- The upstream provenance of the TTC runs. The fit script and the comparison
+  script both name the tire as `43075 R20`, and this report repeats that name
+  for the lateral data of run 8. Run 72, the longitudinal data, is a `43100 R20`
+  tire (see Sources); this report does not independently confirm either run
+  identity.
 - Camber, inclination, transient relaxation, and combined-slip behavior outside
   the fitted load range.
 - Any vehicle-level result. The tire is not yet connected to a vehicle model.

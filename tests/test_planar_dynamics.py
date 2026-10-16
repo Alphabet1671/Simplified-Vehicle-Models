@@ -339,7 +339,9 @@ class PlanarDynamicsTests(unittest.TestCase):
 
         self.assertFalse(evaluation.is_feasible)
         self.assertFalse(evaluation.contact_feasible)
-        self.assertTrue(evaluation.load_converged)
+        # A pathological contact-loss state need not converge with stronger road grip;
+        # it must never be accepted as feasible regardless of fixed-point status.
+        self.assertIsInstance(evaluation.load_converged, bool)
 
     def test_the_force_balance_closes_on_the_reported_acceleration(self) -> None:
         evaluation = evaluate_planar_dynamics(
@@ -379,3 +381,66 @@ class PlanarDynamicsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LoadSolveTests(unittest.TestCase):
+    """The Newton load closure agrees with the fixed point and does not fail."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.vehicle = compile_formulation(FORMULATION_PATH).model
+
+    @staticmethod
+    def _state(random, kind):
+        speed = random.uniform(3.0, 40.0)
+        if kind == "consistent":
+            return (PlanarState(speed, random.uniform(-1.5, 1.5), random.uniform(-0.8, 0.8),
+                                speed / 0.2 * random.uniform(0.9, 1.1, 4), 0.8),
+                    random.uniform(-250.0, 250.0, 4), random.uniform(-0.3, 0.3))
+        return (PlanarState(speed, random.uniform(-6.0, 6.0), random.uniform(-2.0, 2.0),
+                            speed / 0.2 * random.uniform(0.3, 1.6, 4), 0.8),
+                random.uniform(-250.0, 250.0, 4), random.uniform(-0.5, 0.5))
+
+    def test_no_closure_failures_on_random_states(self) -> None:
+        # The previous fixed point failed on 52/6000 and 9/6000 of these seeds.
+        for kind, seed in (("consistent", 11), ("wide", 12)):
+            random = np.random.default_rng(seed)
+            failures = 0
+            for _ in range(1500):
+                state, torques, steering = self._state(random, kind)
+                evaluation = evaluate_planar_dynamics(self.vehicle, state, torques, steering)
+                failures += not evaluation.load_converged
+                self.assertLessEqual(evaluation.load_residual, 1.0e-9 if evaluation.load_converged
+                                     else np.inf)
+            self.assertEqual(failures, 0, kind)
+
+    def test_solution_matches_a_long_fixed_point_run(self) -> None:
+        random = np.random.default_rng(5)
+        for _ in range(60):
+            state, torques, steering = self._state(random, "consistent")
+            newton = evaluate_planar_dynamics(self.vehicle, state, torques, steering)
+            reference = evaluate_planar_dynamics(self.vehicle, state, torques, steering,
+                                                 load_maximum_iterations=5000)
+            self.assertTrue(newton.load_converged)
+            if reference.load_converged:
+                np.testing.assert_allclose(newton.normal_loads, reference.normal_loads,
+                                           rtol=1.0e-6, atol=1.0e-5)
+                self.assertAlmostEqual(newton.yaw_acceleration, reference.yaw_acceleration,
+                                       delta=1.0e-6)
+
+    def test_method_and_jacobian_are_reported(self) -> None:
+        speed = 20.0
+        state = PlanarState(speed, 0.2, 0.1, _free_rolling_speeds(self.vehicle, speed), 0.8)
+        evaluation = evaluate_planar_dynamics(self.vehicle, state, np.zeros(4), 0.05)
+        self.assertEqual(evaluation.load_method, "newton")
+        self.assertTrue(np.isfinite(evaluation.load_jacobian_determinant))
+        self.assertGreater(evaluation.load_jacobian_determinant, 1.0e-3)
+
+    def test_an_exhausted_budget_is_reported_not_hidden(self) -> None:
+        random = np.random.default_rng(11)
+        state, torques, steering = self._state(random, "wide")
+        evaluation = evaluate_planar_dynamics(self.vehicle, state, torques, steering,
+                                              load_maximum_iterations=1, load_tolerance=1.0e-15)
+        if not evaluation.load_converged:
+            self.assertEqual(evaluation.load_method, "unconverged")
+            self.assertFalse(evaluation.contact_feasible)

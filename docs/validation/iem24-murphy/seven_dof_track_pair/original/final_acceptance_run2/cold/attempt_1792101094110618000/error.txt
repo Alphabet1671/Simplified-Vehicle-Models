@@ -1,0 +1,32 @@
+Traceback (most recent call last):
+  File "/Users/alphabet1671/Dev/Simplified-Vehicle-Models/tools/run_iem24_forward_driver.py", line 256, in child
+    result = solve_forward(plant, driver, initial, duration=args.duration,
+                           wall_seconds=remaining, maximum_step=args.maximum_step,
+                           rtol=args.rtol, atol=args.rtol * .01, method=args.method,
+                            initial_pedal=initial_pedal)
+  File "/Users/alphabet1671/Dev/Simplified-Vehicle-Models/src/simplified_vehicle_models/solvers/forward_driver.py", line 517, in solve_forward
+    result = solve_ivp(rhs, (0., duration), initial, method=method, jac=jacobian,
+                       rtol=rtol, atol=atol, max_step=maximum_step, events=finish, dense_output=True)
+  File "/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/site-packages/scipy/integrate/_ivp/ivp.py", line 657, in solve_ivp
+    message = solver.step()
+  File "/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/site-packages/scipy/integrate/_ivp/base.py", line 201, in step
+    success, message = self._step_impl()
+                       ~~~~~~~~~~~~~~~^^
+  File "/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/site-packages/scipy/integrate/_ivp/bdf.py", line 366, in _step_impl
+    converged, n_iter, y_new, d = solve_bdf_system(
+                                  ~~~~~~~~~~~~~~~~^
+        self.fun, t_new, y_predict, c, psi, LU, self.solve_lu,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        scale, self.newton_tol)
+        ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/site-packages/scipy/integrate/_ivp/bdf.py", line 43, in solve_bdf_system
+    f = fun(t_new, y)
+  File "/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/site-packages/scipy/integrate/_ivp/base.py", line 158, in fun
+    return self.fun_single(t, y)
+           ~~~~~~~~~~~~~~~^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/site-packages/scipy/integrate/_ivp/base.py", line 24, in fun_wrapped
+    return np.asarray(fun(t, y), dtype=dtype)
+                      ~~~^^^^^^
+  File "/Users/alphabet1671/Dev/Simplified-Vehicle-Models/src/simplified_vehicle_models/solvers/forward_driver.py", line 470, in rhs
+    raise TimeoutError("forward integration exceeded its wall budget")
+TimeoutError: forward integration exceeded its wall budget

@@ -23,6 +23,10 @@ from simplified_vehicle_models.powertrain.energy_storage import StorageState
 from simplified_vehicle_models.solvers.forward_driver import _build_live_limit_speed_plan
 
 
+#: Canonical ten-lap MIS track (repository default).
+TRACK = "models/tracks/2024_michigan_endurance_multilap_closed.xml"
+
+
 def main():
     assembly = compile_formulation("models/formulations/murphy_point_mass.xml")
     vehicle = assembly.model
@@ -122,7 +126,7 @@ def main():
     print("=" * 70)
     from simplified_vehicle_models.tracks.profile import load_track
     from simplified_vehicle_models.tracks.path_coordinates import evaluate_path
-    track = load_track("models/tracks/2024_michigan_endurance_closed.xml")
+    track = load_track(TRACK)
     spacing = 0.5
     count = int(np.ceil(track.lap_length / spacing))
     distance_grid = np.linspace(0.0, track.lap_length, count + 1)

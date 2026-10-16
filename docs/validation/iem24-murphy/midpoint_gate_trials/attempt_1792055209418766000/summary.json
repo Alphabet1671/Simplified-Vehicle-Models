@@ -1,0 +1,51 @@
+{
+  "status": "Timed_Out",
+  "lap_completed": false,
+  "usable": false,
+  "method": "transient_forward_driver",
+  "minimum_time_optimum": false,
+  "planner": "live_live_acceleration_envelope",
+  "settings": {
+    "output_root": "docs/validation/iem24-murphy/midpoint_gate_trials",
+    "timeout_seconds": 300.0,
+    "duration": 300.0,
+    "maximum_speed": 60.0,
+    "lateral_acceleration": null,
+    "pedal_travel_time": 0.175,
+    "maximum_step": 0.05,
+    "rtol": 1e-06,
+    "method": "BDF",
+    "spacing": 0.5,
+    "planner": "live",
+    "child_attempt": "docs/validation/iem24-murphy/midpoint_gate_trials/attempt_1792055209418766000"
+  },
+  "source_hashes": {
+    "/Users/alphabet1671/Dev/Simplified-Vehicle-Models/tools/run_iem24_forward_driver.py": "ff90780755ddbf49ccfdaa4fd8797e0fa7a38c11ba2853912b0ea1c66ae808ad",
+    "src/simplified_vehicle_models/solvers/forward_driver.py": "0bdd90765d04b50cf2ca8f5990763a22ecf6d06e6769dee4c8e606b77629f6fe",
+    "src/simplified_vehicle_models/solvers/planar_forward.py": "76eaf64149ae63c5ad5a0fc3a5f44e97dbcba877300bbb63d558444d7c41dc5d",
+    "src/simplified_vehicle_models/formulations/planar_7dof.py": "c4666aaa3bd3409dd05342c028b30b264a47307bb294dddcc28418880db99287",
+    "src/simplified_vehicle_models/tires/unitire_simple.py": "b1e4df85b08f771bc6b2a3e590c2a8d255d60eeb39186422adf2314372ee71f7",
+    "models/vehicles/iem24_murphy_real_planar.xml": "46d3d342457c2f0fb55b864fc592f54d15b4d94a3dff4d7ba8004f07ca923a2e"
+  },
+  "environment": {
+    "python": "3.13.13 (v3.13.13:01104ce1beb, Apr  7 2026, 14:43:30) [Clang 16.0.0 (clang-1600.0.26.6)]",
+    "numpy": "2.5.4",
+    "scipy": "1.17.1",
+    "platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O"
+  },
+  "wheel_inertia": 0.2064512,
+  "state_size": 12,
+  "track_length": 1016.70064959,
+  "setup_seconds": 11.88988716690801,
+  "error": "TimeoutError: accepted-state validation exceeded its wall budget",
+  "last_rhs_time": 61.98588874993139,
+  "last_rhs_distance": 837.5324192041758,
+  "plant_evaluations": 105092,
+  "maximum_load_residual": 9.99984983707236e-10,
+  "maximum_power_residual": 7.912603905424476e-11,
+  "maximum_load_iterations": 25,
+  "lifted_wheel_evaluations": 0,
+  "speed_regulated_evaluations": 0,
+  "maximum_motor_speed_ratio": 0.6178378035486123,
+  "child_wall_seconds": 295.0456062920857
+}

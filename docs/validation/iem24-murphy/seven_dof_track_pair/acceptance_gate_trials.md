@@ -1,5 +1,7 @@
 # Exploratory 7DoF acceptance-gate trials — original and canonical MIS lines
 
+> **Superseded 2026-10-16:** generated with track 1.016 m and 55 % front mass. Values do not apply to the current vehicle.
+
 > **Tools layout migration note.** `tools/` was reorganised into category subpackages (`data`, `tracks`, `model_data`, `run`, `gates`, `reports`, `diagnostics`). Commands and paths in this document use the current locations; commands recorded inside the saved `attempt_*` directories, and the frozen `tube_v2_protocol.md` / `tube_v2_protocol.freeze.txt`, use the pre-migration flat paths (e.g. `tools/check_iem24_forward_tube_v2.py`) and are intentionally not rewritten. See [docs/dev/tools-layout.md](../../../dev/tools-layout.md) for the old-to-new mapping. Recorded hashes, attempt directories and frozen artifacts are unchanged.
 
 > **Provisional numerical acceptance record, not a simulated-vs-measured MIS report or a validated lap claim.** The existing [paired comparison](report.md) describes the cold-start traces and their measured-data comparison; this note records subsequent warm-start and refinement experiments. Neither run is a minimum-time optimum. **For the latest certified results, see the chronological verdict at the end of this record; earlier provisional verdicts are retained as historical results.**

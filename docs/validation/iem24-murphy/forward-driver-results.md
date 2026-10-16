@@ -1,5 +1,7 @@
 # Forward-driver prototype — trial record and results
 
+> **Superseded 2026-10-16:** generated with track 1.016 m and 55 % front mass. Values do not apply to the current vehicle.
+
 > **Tools layout migration note.** `tools/` was reorganised into category subpackages (`data`, `tracks`, `model_data`, `run`, `gates`, `reports`, `diagnostics`). Commands and paths in this document use the current locations; any command recorded inside an `attempt_*` directory (for example `command.txt`, `parent.json`) was run with the pre-migration flat paths such as `tools/run_iem24_forward_driver.py` and is preserved verbatim. See [docs/dev/tools-layout.md](../../dev/tools-layout.md) for the old-to-new mapping. Recorded hashes, attempt directories and frozen artifacts are unchanged.
 
 ## Executive outcome

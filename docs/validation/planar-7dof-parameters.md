@@ -151,9 +151,9 @@ Two properties are worth stating because they are easy to get wrong:
 | `mass_without_driver` | kg | Obfuscated |
 | `driver_mass` | kg | Estimate |
 | `wheelbase` | m | Obfuscated |
-| `track_width` | m | Obfuscated |
+| `track_width` | m | User-confirmed 2026-10-16 (1.240 m; the earlier 1.016 m was an error) |
 | `cg_height` | m | Obfuscated |
-| `front_mass_fraction` | 1 | Obfuscated |
+| `front_mass_fraction` | 1 | User-confirmed 2026-10-16 (0.45; 45 % of the mass on the front axle) |
 | `lateral_load_transfer_distribution` | 1 | Derived from the front and rear roll rates, then obfuscated |
 | `yaw_radius_of_gyration` | m | Estimate |
 | `wheel_inertia` | kg·m² | Estimate |
@@ -332,7 +332,8 @@ tau = J * v / (Re^2 * Kx)
 ```
 
 The following historical measurements use the former 12 kg cylinder inertia,
-not the corrected 10 kg value. Holding other quantities fixed, the corrected
+not the corrected 10 kg value, and the superseded geometry (track 1.016 m, 55 %
+front mass). Holding other quantities fixed, the corrected
 inertia reduces the estimated time constant by a factor of 10/12.
 
 At 8 m/s with the placeholder inertia and the fitted longitudinal slip

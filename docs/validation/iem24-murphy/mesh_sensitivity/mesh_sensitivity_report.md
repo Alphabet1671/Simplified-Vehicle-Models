@@ -1,5 +1,7 @@
 # IEM24 planar 7DoF mesh sensitivity
 
+> **Superseded 2026-10-16:** generated with track 1.016 m and 55 % front mass. Values do not apply to the current vehicle.
+
 All runs use the same real-parameter IEM24 formulation and solver settings; only distance mesh spacing varies. A lap time is valid only when `converged` is true. Only converged runs at spacing <=0.5 m and runtime <=300 s are usable. No usable 0.5 m reference run was found; coarser results are diagnostic only.
 
 | Mesh (m) | Nodes | Runtime (s) | Usable | Status | Iterations | Lap time (s) | Δ vs 0.5 m (s) | Max dynamics residual | Max inequality violation |

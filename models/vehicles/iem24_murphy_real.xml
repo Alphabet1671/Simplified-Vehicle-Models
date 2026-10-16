@@ -1,14 +1,15 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <model schema-version="1.0" id="iem24-murphy-real" type="vehicle-assembly" subtype="four-wheel">
-    <!-- Real IEM24 Murphy run. CGx=.45 is measured forward from the front axle; front_mass_fraction is the rearward static-load fraction. -->
+    <!-- Real IEM24 Murphy run. front_mass_fraction is the static load fraction on the front axle. -->
+    <!-- Geometry source: User-confirmed 2026-10-16; 1.016 m was an error. Track width 1.240 m; 45 % of the mass on the front axle (front_mass_fraction 0.45). -->
     <parameters>
         <parameter name="total_mass" value="287.0" unit="kg" />
         <parameter name="mass_without_driver" value="209.0" unit="kg" />
         <parameter name="driver_mass" value="78.0" unit="kg" />
         <parameter name="wheelbase" value="1.535" unit="m" />
-        <parameter name="track_width" value="1.016" unit="m" />
+        <parameter name="track_width" value="1.240" unit="m" />
         <parameter name="cg_height" value="0.300" unit="m" />
-        <parameter name="front_mass_fraction" value="0.55" unit="1" />
+        <parameter name="front_mass_fraction" value="0.45" unit="1" />
         <parameter name="lateral_load_transfer_distribution" value="0.42" unit="1" />
         <parameter name="brake_bias" value="0.65" unit="1" />
     </parameters>

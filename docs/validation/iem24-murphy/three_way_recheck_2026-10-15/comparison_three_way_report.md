@@ -1,5 +1,7 @@
 # IEM24 Murphy three-way comparison — nonvalidated historical run
 
+> **Superseded 2026-10-16:** generated with track 1.016 m and 55 % front mass. Values do not apply to the current vehicle.
+
 > **Input provenance:** This regenerated comparison uses copies of the existing measured, point-mass, and saved 7DoF CSVs. Their SHA-256 hashes match the verified baseline inputs; this confirms file identity, not solver validity or independent reproduction. See `task-4-report.md` for hashes. The 7DoF input is unconverged and its metrics remain invalid.
 
 > **Not validation evidence:** This archived recheck includes an unconverged

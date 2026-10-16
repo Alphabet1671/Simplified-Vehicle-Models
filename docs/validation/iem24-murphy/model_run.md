@@ -21,7 +21,7 @@ The lap runs on the **signed closed centreline**, not the legacy V11 radius prof
 
 The pack starts from the measured resting voltage: the logged `VPack` channel reads a median 575.70 V (standard deviation 0.048 V) over the 12 s the car sits still before launch, and `models/energy-storages/iem24_murphy_real_battery.xml` compiles that to an initial state of charge of 0.8291. The exported `pack_voltage_v` is the terminal voltage (`V_oc − I·R`), because the logged channel is a terminal measurement.
 
-Wheelbase, track width, tire model, battery, gear ratio, air density, and mechanical brake bias remain copied from the existing Murphy model because no replacement measurements were provided for them. The 45%-from-front CGx interpretation is represented as `front_mass_fraction = 0.55` in this model's convention.
+Wheelbase, tire model, battery, gear ratio, air density, and mechanical brake bias remain copied from the existing Murphy model because no replacement measurements were provided for them. Since 2026-10-16 the model uses a user-confirmed track width of 1.240 m (1.016 m was an error) and `front_mass_fraction = 0.45`, meaning 45 % of the mass on the front axle. The lap results below were generated with track 1.016 m and `front_mass_fraction = 0.55`; they are superseded and do not apply to the current vehicle.
 
 ![IEM24 Murphy simulated MIS velocity, acceleration, yaw-rate, and pack-voltage traces](simulated_lap.png)
 

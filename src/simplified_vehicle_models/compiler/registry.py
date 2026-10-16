@@ -197,4 +197,9 @@ def register_builtin_components() -> None:
         "planar-7dof",
         kind=FORMULATION_KIND,
     )
+    register_component(
+        "vehicle-formulation",
+        "14dof-simple",
+        kind=FORMULATION_KIND,
+    )
     _BOOTSTRAPPED = True

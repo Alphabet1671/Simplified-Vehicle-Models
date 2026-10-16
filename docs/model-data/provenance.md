@@ -95,10 +95,43 @@ It also records the unit conversions and two open data questions.
 | Lateral (reduced form motivated by eq. 61) | `sigma_y(Fz) = lateral_length_scale * k_y(Fz)/k_cy`, `alpha_eff = y/sigma_y(Fz)`, `dy/dt = max(\|Vx\|, 0.1) (alpha_cmd - alpha_eff)` (m/s). `k_y` is the normalized-load polynomial of the steady tire (`Fz/f_z_rated`, descending coefficients). Load coupling comes from `sigma_y(Fz)` changing at fixed `y`; no `dFz/dt` and no nested root |
 | Trail (project approximation motivated by eq. 64, 69-70) | `d alpha_t/dt = max(\|Vx\|, 0.1) (alpha_eff - alpha_t)/sigma_trail`, `sigma_trail = sigma_y/trail_pole_ratio`. `t_eff = t(alpha_t) + n (t(alpha_eff) - t(alpha_t))`, `n` = `trail_lead_ratio`, lead correction zero at steady state. `Mz = -(Fy (t_eff + Fx/k_cx) - Fx Fy/k_cy)` using the delayed and windowed Fx, Fy (the steady formula at `unitire_simple.py:353-358` with `t_eff`). Equals the steady `Mz` when `alpha_t = alpha_eff` |
 | Longitudinal (**PROPOSED extension, not in the paper**) | `sigma_x(Fz) = longitudinal_length_scale * k_x(Fz)/k_cx`, `d kappa_d/dt = max(\|Vx\|, 0.1) (kappa_cmd - kappa_d)/sigma_x` |
-| Forces | Fx, Fy, rolling-resistance moment from `evaluate_unitire(steady, alpha_eff, kappa_d, Fz, \|omega\|)`, unchanged. The steady tire's own rolling-speed floor `vroll_min` is kept as is (0.1 m/s in this XML; the brief called it a 1 m/s floor, which does not match the XML). Separately, the new rate speed floor `max(\|Vx\|, 0.1)` m/s applies to all three state rates. `relaxation_length` of the returned forces is the scaled `sigma_y`. No camber effect is claimed (zero inclination); the overturning moment is the steady value scaled by the window |
+| Forces | Fx, Fy, rolling-resistance moment from `evaluate_unitire(steady, alpha_eff, kappa_d, Fz, \|omega\|)`, unchanged. The tire's internal rolling-speed floor `vroll_min` is 0.1 m/s in this XML. Separately, the caller's 1 m/s `speed_floor` computes slip ratio and slip angle and is unchanged, outside this transient layer. The new rate speed floor `max(\|Vx\|, 0.1)` m/s applies only to the three state rates. `relaxation_length` of the returned forces is the scaled `sigma_y`. No camber effect is claimed (zero inclination); the overturning moment is the steady value scaled by the window |
 | Proposed values | `longitudinal_length_scale` 1.0, `lateral_length_scale` 1.0, `trail_pole_ratio` m = 1.0, `trail_lead_ratio` n = 0.25. All PROPOSED; the published m, n are tire-specific. At rated load 660 N: `sigma_y` = 0.1533 m (`k_y/k_cy`, the steady `relaxation_length`), `sigma_x` = 0.1195 m. Both are positive over the operating-load domain (`check_relaxation_lengths`) |
 | Contact | One smoothstep window `w(Fz) = 3s^2 - 2s^3`, `s = clip((Fz - 0.5)/1.5, 0, 1)`: 0 at `Fz <= 0.5 N`, 1 at `Fz >= 2 N`, C1 at both edges. It multiplies Fx, Fy, Mz (computed from the windowed Fx, Fy; above 2 N it equals the steady `Mz` identity) and the overturning moment. The rolling-resistance moment is **not** windowed (it is proportional to Fz; zero in the current fit). It also blends the state rates: `rate = w * (slip law) + (1 - w) * (-state/0.01 s)`, so rates have no jump at any load and below 0.5 N the three states relax with a 0.01 s time constant. At re-contact the integration continues from the current state with these bounded rates. The vertical force is returned as the non-negative input load and is not windowed or invented here. The 1 N threshold of the earlier brief is replaced by this window (plan/ledger ruling). |
 | Reduced-model limits | (1) The paper uses secant stiffness; this layer uses the steady `k_y/k_cy` length, so the carcass response does not slow down near force saturation. (2) No nonlinear inverse and no `dFz/dt` term. (3) Longitudinal law, contact window, 0.01 s relaxation and the four coefficients are unfitted and not validated against this Hoosier. (4) Trail pole and lead are a first-order approximation. (5) Low speed: all three rates use `max(\|Vx\|, 0.1)`, so below 0.1 m/s the carcass lag is frozen at the 0.1 m/s rate rather than physical. (6) States are not initialised from a standing start; use `steady_rolling_state`. (7) A transient tire fitting tool is required before any measured-vehicle accuracy claim |
+
+## IEM24 vertical 14DoF vehicle parameters and tire vertical law
+
+Introduced with `14dof-simple` (`models/formulations/iem24_murphy_real_14dof_simple.xml`). The shared assembly `models/vehicles/iem24_murphy_real_planar.xml` gains five scalars and four component roles. The planar 7DoF formulation ignores them: it lists the roles `suspension`, `damper-front`, `damper-rear`, `tire-transient` as unused components and the five scalars as unconsumed parameters.
+
+| Quantity | Value | Source |
+|---|---|---|
+| `unsprung_mass_front`, `unsprung_mass_rear` | 13 kg per corner (52 kg in total) | PROPOSED, not weighed |
+| `roll_radius_of_gyration` | 0.193 m | User estimate |
+| `pitch_radius_of_gyration` | 0.386 m | User-reported measurement |
+| `tire_vertical_damping` | 400 N*s/m, one value for all four tires | User estimate |
+| `wheel_inertia` | unchanged | Existing assembly value |
+| Sprung mass | 287 - 52 = 235 kg | Derived |
+| Sprung CG height | `(287*0.300 - 52*r_1)/235` = 0.3211 m, with the unsprung CG at the free tire radius `r_1` = 0.2045 m | Derived; reproduces the 0.3211 m reference |
+| Sprung front fraction | `(287*0.45 - 26)/235` = 0.4389 | Derived |
+| Roll and pitch inertia | `235*0.193^2` = 8.754 kg*m^2; `235*0.386^2` = 35.01 kg*m^2 | Derived |
+
+Direct component roles: `suspension` (corner table), `damper-front` and `damper-rear` (Multimatic DSSV VC01 XMLs, distinct `front-damper-force` and `rear-damper-force` capabilities, clicks 5 / 7), and `tire-transient`. The steady `tire` role is unchanged. The yaw radius of gyration stays the 7DoF measured value; the sprung yaw inertia is not derived in this task.
+
+### Tire vertical law (`tires/vertical.py`)
+
+| Item | Statement |
+|---|---|
+| Deflection | `delta = r_free - r_loaded`, `r_free = loaded_radius(tire, 0) = r_1`; positive in compression |
+| Elastic load, `delta >= delta1 = 0.5 mm` | Exact closed-form root of the loaded-radius quadratic `r_1 + r_2 x + r_3 x^2`, `x = Fz/f_z_rated`; the residual against `loaded_radius` is below 1e-9 m up to 3000 N. Valid only when the lateral-shift and `k_rl` loaded-radius coefficients are zero; the compile rejects a tire with any of them nonzero, or a radius law that stops decreasing below 10 kN |
+| Low-load ramp, `delta0 < delta < delta1` | `F1 * ((delta - delta0)/(delta1 - delta0))^2`, with `F1` = 39.70 N, `k1` = 79.43 N/mm, `delta0 = delta1 - 2 F1/k1` = -0.4996 mm. Value and slope are continuous at both knots; C1 but not C2. Zero at and below `delta0` (exactly zero at -1 mm) |
+| Ghost load | The ramp carries 9.92 N at zero deflection. This is a numerical device, not physics; it makes the load differentiable through lift-off. Accepted and disclosed |
+| Static stiffness | 80.4 N/mm at the front static corner load (633 N, 45 % of 287 kg per axle) and 80.7 N/mm at the rear (774 N) |
+| Damping | `F = Fs (1 + psi(c * delta_rate/(Fs + 1 N)))`, `psi(u) = u` for `u >= 0` and `tanh(u)` otherwise; positive rate is compression. The load is nonnegative, there is no damping where `Fs = 0`, and the law is C1 in the rate. At compression the damping force is `c * delta_rate * Fs/(Fs + 1 N)`, about `c * delta_rate` for loaded tires. `contact` means `Fs > 0`; a violent extension can drive the total load to zero while contact stays true |
+| Returned stiffness | The elastic `dFs/d(delta)` only. It omits the damping term and the dependence of the damping on `Fs`. An implicit solver (Task 6) must treat the damping stiffness separately; with `c` = 400 N*s/m and the 80 N/mm tire the wheel-hop mode is lightly damped and the load law is stiff near lift-off |
+| Transient tire carry-over | `check_relaxation_lengths` runs at compile time over 0 to 3000 N, so a transient tire whose relaxation lengths become nonpositive is rejected at compile, not at run time |
+
+All of these values are PROPOSED or user estimates except the radius law, which comes from the tester-fitted UniTire. No tire vertical test data exists; the vertical damping and unsprung masses should be measured before any accuracy claim for hop-mode behavior.
 
 ## Source files
 

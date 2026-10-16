@@ -16,3 +16,16 @@ FINAL v2 CODE HASHES (appended 2026-10-16T02:52:09Z; AFTER g completed, so code 
 76e29597335d80fb7b7c54a18009d58977ffef5ef308efb69bec8ee807158d78  tests/test_forward_tube_v2.py
 57b92964f3cc13057a230f7c72e866e2df6a7742d6c4931e27aaec511ee200ab  tools/check_iem24_forward_tube.py
 b0b499b2933048028f0c1b6196f26c5b01d725fb1ce172a65572454e486788f7  docs/validation/iem24-murphy/seven_dof_track_pair/tube_v2_protocol.md
+
+REVISION 3 (Task 8, appended 2026-10-16T22:25:07Z; append-only: no bytes above were rewritten or removed): the
+forward runner and this diagnostic were generalized to be plant-metadata driven (--model {planar-7dof,14dof-simple},
+vertical 14DoF rung). The frozen protocol content and the certificate output are unchanged, verified by recomputation:
+docs/validation/iem24-murphy/seven_dof_track_pair/tube_v2_protocol.md sha256 is still
+b0b499b2933048028f0c1b6196f26c5b01d725fb1ce172a65572454e486788f7 (Rev2), the v1 tool hash is still
+57b92964f3cc13057a230f7c72e866e2df6a7742d6c4931e27aaec511ee200ab, and this tool's build() output is byte-identical
+to the pre-Task-8 module (loaded from HEAD) on the synthetic three-level and four-level (held-out) fixtures - the
+display names and the derived indices [(6,7,8,9), 11, 12] are unchanged. New hashes (current paths; the entries above
+keep their pre-migration paths):
+66249fc4d12ab85c8d7eb3d97af98961fe2f15fe4b6f02c33248915422f53744  tools/gates/check_iem24_forward_tube_v2.py
+fb8783dbb57ac1d3702bf1cb0d9e0807211be84987de007528aa3ff0821465b8  tests/test_forward_tube_v2.py
+df8ada309d05ebf0f1d94d70c78f413354e854d3d6920a1b51134a873a7bccc8  tools/run/run_iem24_forward_driver.py

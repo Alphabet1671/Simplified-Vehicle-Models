@@ -83,8 +83,9 @@ def export(attempt: Path) -> Path:
         live_limit=live, pedal_travel_time=settings.get("pedal_travel_time"),
     )
     trace = np.loadtxt(attempt / "trace.csv", delimiter=",", skiprows=1)
-    if trace.ndim != 2 or trace.shape[1] != 13:
-        raise ValueError("expected time and 12 forward-driver states")
+    if trace.ndim != 2 or trace.shape[1] != 1 + plant.state_size:
+        raise ValueError(
+            f"expected time and {plant.state_size} forward-driver states")
     pedal_path = attempt / "pedal.csv"
     if driver.has_pedal_dynamics:
         if not pedal_path.is_file():
@@ -95,6 +96,9 @@ def export(attempt: Path) -> Path:
     else:
         pedal = None
     states = trace[:, 1:]
+    # Column indices come from the plant's published layout, not literals.
+    names = tuple(plant.state_names)
+    wheel_speeds = slice(names.index("omega_fl"), names.index("omega_rr") + 1)
     rates = np.empty_like(states)
     powers = np.empty((len(trace), 2))
     throttle = np.empty(len(trace))
@@ -106,7 +110,8 @@ def export(attempt: Path) -> Path:
         operating = plant.powertrain(state, command)
         # Motor-wheel torque includes gear efficiency; shaft electrical input
         # reverses the gear and drive losses for each driven wheel.
-        shaft_power = operating.motor_wheel_torques[plant.driven] * state[6:10][plant.driven]
+        shaft_power = (operating.motor_wheel_torques[plant.driven]
+                       * state[wheel_speeds][plant.driven])
         powers[i] = np.where(
             shaft_power >= 0.,
             shaft_power / (plant.gear_efficiency * vehicle.motor.drive_efficiency),
@@ -117,7 +122,8 @@ def export(attempt: Path) -> Path:
     output = attempt / "simulated_lap_7dof.csv"
     np.savetxt(
         output,
-        np.column_stack((states[:, 0], trace[:, 0], np.hypot(states[:, 3], states[:, 4]),
+        np.column_stack((states[:, names.index("s")], trace[:, 0],
+                         np.hypot(states[:, names.index("v_x")], states[:, names.index("v_y")]),
                          ax, ay, powers[:, 0], powers[:, 1], throttle)),
         delimiter=",", comments="",
         header="distance_m,elapsed_time_s,velocity_mps,longitudinal_acceleration_mps2,lateral_acceleration_mps2,rl_power_kw,rr_power_kw,apps_fraction",

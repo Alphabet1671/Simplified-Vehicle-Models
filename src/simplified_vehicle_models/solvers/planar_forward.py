@@ -49,7 +49,21 @@ class PlanarForwardPlant:
     """
 
     state_size = 12
+    #: Published state layout of this plant. Callers (the forward runner, the
+    #: gate tools) read their column indices from here instead of repeating
+    #: literals, so a layout change cannot silently mislabel a trace.
+    state_names: tuple[str, ...] = (
+        "s", "n", "heading_error", "v_x", "v_y", "yaw_rate",
+        "omega_fl", "omega_fr", "omega_rl", "omega_rr", "soc", "steering",
+    )
     periodic_indices = (1, 2, 3, 4, 5, 6, 7, 8, 9, 11)
+    #: One tolerance per ``periodic_indices`` entry, in the same order. These are
+    #: the values the forward runner recorded before the plant published its
+    #: metadata: 1 mm for ``n``, 1 mrad for ``heading_error`` and ``steering``,
+    #: 1 cm/s for ``v_x``/``v_y``, 1 mrad/s for ``yaw_rate`` and 0.01 rad/s for
+    #: each wheel speed.
+    periodic_tolerances: np.ndarray = np.array(
+        [.001, .001, .01, .01, .001, .01, .01, .01, .01, .001])
 
     def __init__(self, vehicle, plan: SpeedPlan):
         self.vehicle = vehicle

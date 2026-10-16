@@ -7,7 +7,7 @@ repositories.
 
 Run the tool from the repository root:
 
-    python tools/export_legacy_powertrain_data.py
+    python tools/model_data/export_legacy_powertrain_data.py
 
 The tool reads only. It never writes to a legacy repository.
 """
@@ -75,14 +75,14 @@ MAT_VERSION_OFFSET = 124
 MAT_VERSION = 256
 FIRST_ELEMENT_OFFSET = 128
 
-REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 DATA_DIRECTORY = REPOSITORY_ROOT / "models" / "data"
 
 TORQUE_MAP_PATH = DATA_DIRECTORY / "amk_dd5_100c_torque_map.csv"
 LOSS_MAP_PATH = DATA_DIRECTORY / "amk_dd5_100c_loss_map.csv"
 IDENTIFICATION_PATH = DATA_DIRECTORY / "amk_dd5_100c_identification.csv"
 CELL_CURVE_PATH = DATA_DIRECTORY / "cosmx_cell_curves.csv"
-PROVENANCE_PATH = DATA_DIRECTORY / "provenance.md"
+PROVENANCE_PATH = REPOSITORY_ROOT / "docs" / "model-data" / "provenance.md"
 
 
 # --------------------------------------------------------------------------
@@ -815,6 +815,7 @@ def export_all(
     cell_path: Path = CELL_SOURCE,
     output_directory: Path = DATA_DIRECTORY,
     export_date: str | None = None,
+    provenance_path: Path | None = None,
 ) -> None:
     """Export every data file from the legacy sources."""
     export_date = export_date or datetime.date.today().isoformat()
@@ -826,7 +827,14 @@ def export_all(
     export_identification(output_directory / IDENTIFICATION_PATH.name, fields)
     export_cell_curve(output_directory / CELL_CURVE_PATH.name, cell_rows)
     provenance = build_provenance(fields, cell_rows, export_date)
-    (output_directory / PROVENANCE_PATH.name).write_text(provenance, encoding="utf-8")
+    if provenance_path is None:
+        provenance_path = (
+            PROVENANCE_PATH
+            if output_directory == DATA_DIRECTORY
+            else output_directory / PROVENANCE_PATH.name
+        )
+    provenance_path.parent.mkdir(parents=True, exist_ok=True)
+    provenance_path.write_text(provenance, encoding="utf-8")
 
 
 def main() -> None:

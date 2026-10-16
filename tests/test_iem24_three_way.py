@@ -4,7 +4,7 @@ import unittest
 
 import numpy as np
 
-from tools.compare_iem24_three_way import _zero_each_lap_voltage
+from tools.reports.compare_iem24_three_way import _zero_each_lap_voltage
 
 
 class ThreeWayVoltageReferenceTests(unittest.TestCase):

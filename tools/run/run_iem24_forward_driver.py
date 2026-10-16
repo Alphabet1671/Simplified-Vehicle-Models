@@ -311,7 +311,7 @@ def child(args):
             dense = {"certified": False, "reason": "no verifiable dense interpolant"}
         contact = contact_nonnegativity_conditions(vehicle)
         # Save the exact interpolant so independent refinements can be compared
-        # continuously (see tools/check_iem24_forward_tube.py).
+        # continuously (see tools/gates/check_iem24_forward_tube.py).
         if result.dense_polynomials is not None:
             poly = result.dense_polynomials
             np.savez_compressed(root / "dense_polynomials.npz", times=poly.times, t_end=poly.t_end,

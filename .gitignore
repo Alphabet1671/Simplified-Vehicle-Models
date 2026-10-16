@@ -1,3 +1,33 @@
 __pycache__/
 *.py[cod]
 .venv/
+
+# Agent workspaces and scratch (tracked SDD logs live in docs/superpowers/sdd/)
+.superpowers/
+.worktrees/
+.claude/
+.codex/
+.cursor/
+.gemini/
+.opencode/
+.aider*
+.agents/
+.omx/
+.serena/
+
+# Tool caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+.DS_Store
+
+# Heavy per-attempt run artifacts. Ignoring only affects untracked files: already
+# tracked attempt files stay tracked, and summary.json, parent.json, *certificate*.json
+# and *_summary.json are deliberately not matched.
+docs/validation/**/attempt_*/source_snapshot/
+docs/validation/**/attempt_*/*.npz
+docs/validation/**/attempt_*/trace.csv
+docs/validation/**/attempt_*/pedal.csv
+docs/validation/**/attempt_*/run.log
+docs/validation/**/attempt_*/simulated_lap_7dof.csv

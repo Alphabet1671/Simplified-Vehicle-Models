@@ -17,9 +17,9 @@ from pathlib import Path
 import numpy as np
 
 if __package__ in (None, ""):
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from tools.iem24_telemetry import (
+from tools.data.iem24_telemetry import (
     LapBoundary,
     NavChannels,
     estimate_nav_skew_deg,

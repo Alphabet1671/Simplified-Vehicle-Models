@@ -10,7 +10,7 @@ from unittest.mock import patch
 import numpy as np
 
 from simplified_vehicle_models.tracks.profile import load_track
-from tools.compare_iem24_murphy_stint import (
+from tools.reports.compare_iem24_murphy_stint import (
     _periodic_interp,
     fit_position_offset,
     flying_lap_indices,

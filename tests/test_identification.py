@@ -32,7 +32,7 @@ import numpy as np
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPOSITORY_ROOT / "src"))
 
-TOOL_PATH = REPOSITORY_ROOT / "tools" / "identify_motor_parameters.py"
+TOOL_PATH = REPOSITORY_ROOT / "tools" / "model_data" / "identify_motor_parameters.py"
 DATA_DIRECTORY = REPOSITORY_ROOT / "models" / "data"
 IDENTIFICATION_PATH = DATA_DIRECTORY / "amk_dd5_100c_identification.csv"
 PARAMETER_PATH = DATA_DIRECTORY / "amk_dd5_100c_machine_parameters.csv"
@@ -88,7 +88,7 @@ def read_parameter_rows(path: Path = PARAMETER_PATH) -> dict[str, dict[str, str]
     return {row["name"]: row for row in rows}
 
 
-PROVENANCE_PATH = DATA_DIRECTORY / "provenance.md"
+PROVENANCE_PATH = REPOSITORY_ROOT / "docs" / "model-data" / "provenance.md"
 RECORDED_NAMES = (
     "Copper loss",
     "Phase voltage",
@@ -481,7 +481,7 @@ class OnsetDiagnosticTests(unittest.TestCase):
         self.assertLess(onset, 2.0 * MEASURED_ONSET_SPEED_RPM)
 
     def test_onset_matches_the_recorded_diagnostic(self) -> None:
-        provenance = (DATA_DIRECTORY / "provenance.md").read_text(encoding="utf-8")
+        provenance = (PROVENANCE_PATH).read_text(encoding="utf-8")
         recorded = f"{self.result.onset_speed_rpm:,.3f}".replace(",", " ")
         self.assertIn(recorded, provenance)
 

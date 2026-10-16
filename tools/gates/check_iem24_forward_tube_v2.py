@@ -6,7 +6,7 @@ Inputs are completed attempts of one lap ordered coarse, medium, fine (and
 optionally a held-out, finer fourth attempt ``g``), each holding
 ``dense_polynomials.npz``. This tool is *diagnostic only*: it never edits any
 ``summary.json``, never touches ``usable`` or the acceptance gate, and does
-not import or modify ``tools/check_iem24_forward_tube.py`` (v1). It writes only
+not import or modify ``tools/gates/check_iem24_forward_tube.py`` (v1). It writes only
 ``tube_v2_certificate.json`` beside the fine attempt.
 
 * ``T = 10 * max(d_cm, d_mf)`` componentwise, from c, m, f only. No ratio, no
@@ -346,7 +346,7 @@ def main(argv=None):
     from simplified_vehicle_models.solvers.planar_dense_certificate import certify_planar_dense_domain
     from simplified_vehicle_models.tracks.path_coordinates import evaluate_path
     from simplified_vehicle_models.tracks.profile import load_track
-    from tools.run_iem24_forward_driver import FORMULATION
+    from tools.run.run_iem24_forward_driver import FORMULATION
     settings = json.loads((args.fine / "summary.json").read_text())["settings"]
     vehicle = compile_formulation(str(FORMULATION)).model
     track = load_track(settings["track"])

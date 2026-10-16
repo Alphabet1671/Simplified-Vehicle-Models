@@ -3,7 +3,7 @@ import unittest
 
 import numpy as np
 
-from tools.plot_iem24_endurance_correlation import fold_measured, model_channels
+from tools.reports.plot_iem24_endurance_correlation import fold_measured, model_channels
 
 
 class CorrelationFigureTests(unittest.TestCase):

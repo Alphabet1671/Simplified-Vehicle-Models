@@ -24,7 +24,7 @@ The telemetry holds `xtime`, `VNorth`, and `VEast` as structures with `Time`,
 is 628.61 s to 698.94 s, as the legacy path-generation script selects. The
 window holds 7032 samples.
 
-`tools/build_closed_track.py` rebuilds the path. It needs SciPy for the MAT
+`tools/tracks/build_closed_track.py` rebuilds the path. It needs SciPy for the MAT
 file. The runtime loader needs only NumPy.
 
 ## World frame
@@ -167,7 +167,7 @@ advances the unwrapped heading by exactly one turn.
 ## Reproduction
 
 ```bash
-PYTHONPATH=src python3 tools/build_closed_track.py \
+PYTHONPATH=src python3 tools/tracks/build_closed_track.py \
   --output-csv models/tracks/2024_michigan_endurance_closed.csv \
   --output-xml models/tracks/2024_michigan_endurance_closed.xml
 PYTHONPATH=src python -m unittest tests.test_closed_track -v

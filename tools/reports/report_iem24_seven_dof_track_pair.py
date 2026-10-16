@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """MIS 2024 correlation report for two fresh 7DoF forward-driver laps on two tracks.
 
-Inputs are two *completed* attempts of ``tools/run_iem24_forward_driver.py`` that were
-exported with ``tools/export_iem24_forward_correlation.py``: the original (legacy)
+Inputs are two *completed* attempts of ``tools/run/run_iem24_forward_driver.py`` that were
+exported with ``tools/reports/export_iem24_forward_correlation.py``: the original (legacy)
 track and the canonical ten-lap-median track. The report follows
 ``docs/standards/mis-2024-report-standard.md``.
 
@@ -33,16 +33,16 @@ from pathlib import Path
 import sys
 import xml.etree.ElementTree as ElementTree
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / 'src'))
 import numpy as np
 from scipy.signal import butter, sosfiltfilt
 from scipy.spatial import cKDTree
 
-from tools.compare_iem24_murphy_stint import (COMPARISON_CHANNELS, _metrics,
+from tools.reports.compare_iem24_murphy_stint import (COMPARISON_CHANNELS, _metrics,
     fit_position_offset, fold_laps, flying_lap_indices, load_table, project_onto_track)
-from tools.iem24_telemetry import load_nav_channels, zero_phase_lowpass
+from tools.data.iem24_telemetry import load_nav_channels, zero_phase_lowpass
 from simplified_vehicle_models.tracks.profile import load_track
 
 BASE = ROOT / 'docs/validation/iem24-murphy'
@@ -123,7 +123,7 @@ def verify_attempt(attempt: Path, role: str, expected_track: str, *, root: Path 
     inputs = summary.get('model_inputs')
     if not isinstance(inputs, dict):
         raise ReportBlocker(f'{where}: records no model_inputs hashes (historical attempt); '
-                            'rerun it with a track-aware tools/run_iem24_forward_driver.py --track ...')
+                            'rerun it with a track-aware tools/run/run_iem24_forward_driver.py --track ...')
     hashes = summary.get('source_hashes', {})
     recorded = {}
     for key in MODEL_ROLES:
@@ -190,7 +190,7 @@ def load_export(attempt: Path, info: dict, *, root: Path = ROOT) -> tuple[dict, 
     summary_path = attempt / 'simulated_lap_7dof_summary.json'
     if not csv_path.is_file() or not summary_path.is_file():
         raise ReportBlocker(f'{where}: missing simulated_lap_7dof.csv/summary; run '
-                            f'python3 tools/export_iem24_forward_correlation.py {display(attempt, root)}')
+                            f'python3 tools/reports/export_iem24_forward_correlation.py {display(attempt, root)}')
     export_summary = json.loads(summary_path.read_text(encoding='utf-8'))
     summary = info['summary']
     if resolve(export_summary.get('source_attempt', ''), root).resolve() != resolve(attempt, root).resolve():
@@ -712,18 +712,18 @@ Each 7DoF lap is compared with the median of the same 10 flying laps reprojected
 ```bash
 # Run from the repository root. Two fresh 7DoF attempts with identical settings, differing only by --track.
 OUT={out_root}
-PYTHONPATH=src:. python3 tools/run_iem24_forward_driver.py --track {LEGACY_TRACK} {commands} --output-root "$OUT/original"
-PYTHONPATH=src:. python3 tools/run_iem24_forward_driver.py --track {CANONICAL_TRACK} {commands} --output-root "$OUT/new"
+PYTHONPATH=src:. python3 tools/run/run_iem24_forward_driver.py --track {LEGACY_TRACK} {commands} --output-root "$OUT/original"
+PYTHONPATH=src:. python3 tools/run/run_iem24_forward_driver.py --track {CANONICAL_TRACK} {commands} --output-root "$OUT/new"
 # Select the newest attempt of each run (the runner names attempts by timestamp), then export and report.
 ORIG=$(ls -dt "$OUT"/original/attempt_* | head -1)
 NEW=$(ls -dt "$OUT"/new/attempt_* | head -1)
-PYTHONPATH=src:. python3 tools/export_iem24_forward_correlation.py "$ORIG"
-PYTHONPATH=src:. python3 tools/export_iem24_forward_correlation.py "$NEW"
-PYTHONPATH=src:. MPLCONFIGDIR=/tmp/matplotlib-config python3 tools/report_iem24_seven_dof_track_pair.py \\
+PYTHONPATH=src:. python3 tools/reports/export_iem24_forward_correlation.py "$ORIG"
+PYTHONPATH=src:. python3 tools/reports/export_iem24_forward_correlation.py "$NEW"
+PYTHONPATH=src:. MPLCONFIGDIR=/tmp/matplotlib-config python3 tools/reports/report_iem24_seven_dof_track_pair.py \\
     --original-attempt "$ORIG" --new-attempt "$NEW"{'' if summary['power_channels_included'] else ' --skip-power'}
 ```
 
-This report was generated from the attempts `{old_run['attempt']}` and `{new_run['attempt']}`; a fresh two-run reproduction creates new attempt directories and therefore new timings. To re-render only, pass those two directories to the generator. Report generator: `tools/report_iem24_seven_dof_track_pair.py`; exporter: `tools/export_iem24_forward_correlation.py`; follows the [MIS 2024 report standard]({standard}). The measured input files `measured_stint.csv` and `telemetry_extraction.json` were produced by `tools/extract_iem24_telemetry.py` and are not rewritten here; the source MAT must be at `~/Desktop/0615CompEndurance.mat`.
+This report was generated from the attempts `{old_run['attempt']}` and `{new_run['attempt']}`; a fresh two-run reproduction creates new attempt directories and therefore new timings. To re-render only, pass those two directories to the generator. Report generator: `tools/reports/report_iem24_seven_dof_track_pair.py`; exporter: `tools/reports/export_iem24_forward_correlation.py`; follows the [MIS 2024 report standard]({standard}). The measured input files `measured_stint.csv` and `telemetry_extraction.json` were produced by `tools/data/extract_iem24_telemetry.py` and are not rewritten here; the source MAT must be at `~/Desktop/0615CompEndurance.mat`.
 '''
     (output / 'report.md').write_text(text)
 

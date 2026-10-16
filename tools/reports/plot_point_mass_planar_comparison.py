@@ -7,9 +7,9 @@ from pathlib import Path
 import sys
 
 if __package__ in (None, ""):
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from compare_planar_point_mass import main as point_mass_main
+from tools.reports.compare_planar_point_mass import main as point_mass_main
 
 
 def main() -> None:

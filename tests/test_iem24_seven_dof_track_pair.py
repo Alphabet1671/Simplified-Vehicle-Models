@@ -7,8 +7,8 @@ from pathlib import Path
 
 import numpy as np
 
-from tools import report_iem24_seven_dof_track_pair as report
-from tools.report_iem24_seven_dof_track_pair import ReportBlocker
+from tools.reports import report_iem24_seven_dof_track_pair as report
+from tools.reports.report_iem24_seven_dof_track_pair import ReportBlocker
 
 ROOT = Path(__file__).resolve().parents[1]
 SETTINGS = {'planner': 'live', 'maximum_speed': 60., 'lateral_acceleration': None,

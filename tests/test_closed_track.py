@@ -11,7 +11,7 @@ from simplified_vehicle_models.tracks.path_coordinates import (
 )
 from simplified_vehicle_models.tracks.profile import load_track
 from simplified_vehicle_models.tracks.types import PathCoordinates, TrackProfile
-from tools.build_closed_track import (
+from tools.tracks.build_closed_track import (
     arc_length,
     close_by_linear_correction,
     integrate_rates,

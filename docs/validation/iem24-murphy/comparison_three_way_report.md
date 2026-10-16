@@ -1,5 +1,7 @@
 # IEM24 Murphy comparison (historical OCP claim unverified)
 
+> **Tools layout migration note.** `tools/` was reorganised into category subpackages (`data`, `tracks`, `model_data`, `run`, `gates`, `reports`, `diagnostics`). Commands and paths in this document use the current locations; See [docs/dev/tools-layout.md](../../dev/tools-layout.md) for the old-to-new mapping. Recorded hashes, attempt directories and frozen artifacts are unchanged.
+
 > **Verification status:** The planar 7-DOF OCP API has been retired from the
 > current tree and is not supported. The saved 20 m / 52-node `Solve_Succeeded`
 > result (53.967 s) is historical only, not a validated prediction. Its coarse
@@ -64,14 +66,14 @@ hashes and raw state/pedal traces are in
 Reproduce these panels from the repository root with:
 
 ```bash
-PYTHONPATH=src:/tmp/casadi_pkgs python3 tools/run_iem24_forward_driver.py \
+PYTHONPATH=src:/tmp/casadi_pkgs python3 tools/run/run_iem24_forward_driver.py \
   --planner live --maximum-speed 60 --method BDF \
   --output-root docs/validation/iem24-murphy/current_7dof_live_trials
 # Replace the attempt id below with the newly printed id if rerunning.
-PYTHONPATH=src:/tmp/casadi_pkgs python3 tools/export_iem24_forward_correlation.py \
+PYTHONPATH=src:/tmp/casadi_pkgs python3 tools/reports/export_iem24_forward_correlation.py \
   docs/validation/iem24-murphy/current_7dof_live_trials/attempt_1792053802530251000
 PYTHONPATH=src:. MPLCONFIGDIR=/tmp/matplotlib-config \
-  python3 tools/plot_iem24_endurance_correlation.py \
+  python3 tools/reports/plot_iem24_endurance_correlation.py \
   --seven-dof docs/validation/iem24-murphy/current_7dof_live_trials/attempt_1792053802530251000/simulated_lap_7dof.csv
 ```
 

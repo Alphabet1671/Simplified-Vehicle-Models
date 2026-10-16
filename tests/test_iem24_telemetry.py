@@ -2,7 +2,7 @@ import unittest
 
 import numpy as np
 
-from tools.iem24_telemetry import (
+from tools.data.iem24_telemetry import (
     LOGGED_CHANNELS,
     SCALAR_CHANNELS,
     NavChannels,

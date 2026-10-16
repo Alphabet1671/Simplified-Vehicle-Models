@@ -8,17 +8,17 @@ import os
 from pathlib import Path
 import sys
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import numpy as np
 from scipy.signal import butter, sosfiltfilt
 from scipy.spatial import cKDTree
 
-from tools.compare_iem24_murphy_stint import (COMPARISON_CHANNELS, _metrics,
+from tools.reports.compare_iem24_murphy_stint import (COMPARISON_CHANNELS, _metrics,
     fit_position_offset, fold_laps, flying_lap_indices, load_table, project_onto_track)
-from tools.iem24_telemetry import load_nav_channels, zero_phase_lowpass
+from tools.data.iem24_telemetry import load_nav_channels, zero_phase_lowpass
 from simplified_vehicle_models.tracks.profile import load_track
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 BASE = ROOT / 'docs/validation/iem24-murphy'
 MAT = Path.home() / 'Desktop/0615CompEndurance.mat'
 LABELS = ('Original track', 'Experimental track')
@@ -272,12 +272,12 @@ The requested single-axis overlay maps the experimental track's model nodes to t
 ```bash
 # Run from the repository root with Python, SciPy, NumPy and matplotlib installed.
 # The source MAT must be available at ~/Desktop/0615CompEndurance.mat.
-PYTHONPATH=src:. python3 tools/build_iem24_multilap_track.py
-PYTHONPATH=src:/tmp/casadi_pkgs python3 tools/run_iem24_point_mass_track_pair.py
-PYTHONPATH=src:. MPLCONFIGDIR=/tmp/matplotlib-config python3 tools/report_iem24_point_mass_track_pair.py
+PYTHONPATH=src:. python3 tools/tracks/build_iem24_multilap_track.py
+PYTHONPATH=src:/tmp/casadi_pkgs python3 tools/run/run_iem24_point_mass_track_pair.py
+PYTHONPATH=src:. MPLCONFIGDIR=/tmp/matplotlib-config python3 tools/reports/report_iem24_point_mass_track_pair.py
 ```
 
-Report generator: `tools/report_iem24_point_mass_track_pair.py`, paired solver: `tools/run_iem24_point_mass_track_pair.py`; follows the [MIS 2024 report standard]({standard}). The measured input files `measured_stint.csv` and `telemetry_extraction.json` were produced by `tools/extract_iem24_telemetry.py` and are not rewritten here.
+Report generator: `tools/reports/report_iem24_point_mass_track_pair.py`, paired solver: `tools/run/run_iem24_point_mass_track_pair.py`; follows the [MIS 2024 report standard]({standard}). The measured input files `measured_stint.csv` and `telemetry_extraction.json` were produced by `tools/data/extract_iem24_telemetry.py` and are not rewritten here.
 '''
     (output/'report.md').write_text(excerpt)
 

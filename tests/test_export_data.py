@@ -27,7 +27,7 @@ TORQUE_MAP_PATH = DATA_DIRECTORY / "amk_dd5_100c_torque_map.csv"
 LOSS_MAP_PATH = DATA_DIRECTORY / "amk_dd5_100c_loss_map.csv"
 IDENTIFICATION_PATH = DATA_DIRECTORY / "amk_dd5_100c_identification.csv"
 CELL_CURVE_PATH = DATA_DIRECTORY / "cosmx_cell_curves.csv"
-PROVENANCE_PATH = DATA_DIRECTORY / "provenance.md"
+PROVENANCE_PATH = REPOSITORY_ROOT / "docs" / "model-data" / "provenance.md"
 
 # The legacy sources are read-only. The digest test reads them when they
 # are present, and skips when they are absent.
@@ -420,7 +420,7 @@ def load_exporter_module() -> Any:
     """Load the exporter module from the tools directory."""
     specification = importlib.util.spec_from_file_location(
         "export_legacy_powertrain_data",
-        REPOSITORY_ROOT / "tools" / "export_legacy_powertrain_data.py",
+        REPOSITORY_ROOT / "tools" / "model_data" / "export_legacy_powertrain_data.py",
     )
     module = importlib.util.module_from_spec(specification)
     specification.loader.exec_module(module)

@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 
 from simplified_vehicle_models.tracks.profile import load_track
-from tools.build_iem24_multilap_track import periodic_lap_offset, robust_lap_selection
+from tools.tracks.build_iem24_multilap_track import periodic_lap_offset, robust_lap_selection
 
 CANONICAL_CSV_SHA256 = "2db5a981f12d0c055afa3b167a9e6efa07cd09b1f6e7b2c51afea44f00e73d77"
 ROOT = Path(__file__).resolve().parents[1]
@@ -72,6 +72,8 @@ class CanonicalMultiLapTrackTests(unittest.TestCase):
         text = CANONICAL_XML.read_text(encoding="utf-8")
         self.assertIn(CANONICAL_CSV_SHA256, text)
         self.assertIn("795d37a904302f712bab1fa1809dbd838c4cb9c0db3e60c9215561487d6c3d2b", text)
+        # The XML comment is part of the hash-pinned track record, so it keeps
+        # the pre-reorganization generator path (now tools/tracks/...).
         self.assertIn("tools/build_iem24_multilap_track.py", text)
         self.assertIn("counterclockwise", text)
         self.assertNotIn("clockwise from above", text)

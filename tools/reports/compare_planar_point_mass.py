@@ -30,7 +30,7 @@ from simplified_vehicle_models.tracks.types import TrackProfile
 from simplified_vehicle_models.xml.loader import load_model
 
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 FORMULATION = ROOT / "models/formulations/iem24_murphy_real_planar_7dof.xml"
 ASSEMBLY = ROOT / "models/vehicles/iem24_murphy_real_planar.xml"
 TRACK = ROOT / "models/tracks/2024_michigan_endurance_multilap_closed.xml"
@@ -160,7 +160,7 @@ def run(spacing: float, maximum_iterations: int = 200) -> dict[str, object]:
         "planar_comparison": {
             "available": False,
             "reason": "the planar OCP and point-mass-seed APIs are retired",
-            "supported_alternative": "tools/run_iem24_forward_driver.py",
+            "supported_alternative": "tools/run/run_iem24_forward_driver.py",
         },
         "compute_time_seconds": {
             "input_compilation_and_lookup_setup": setup_seconds,

@@ -1,5 +1,7 @@
 # Forward-driver prototype — trial record and results
 
+> **Tools layout migration note.** `tools/` was reorganised into category subpackages (`data`, `tracks`, `model_data`, `run`, `gates`, `reports`, `diagnostics`). Commands and paths in this document use the current locations; any command recorded inside an `attempt_*` directory (for example `command.txt`, `parent.json`) was run with the pre-migration flat paths such as `tools/run_iem24_forward_driver.py` and is preserved verbatim. See [docs/dev/tools-layout.md](../../dev/tools-layout.md) for the old-to-new mapping. Recorded hashes, attempt directories and frozen artifacts are unchanged.
+
 ## Executive outcome
 
 A complete transient 7DoF lap was simulated in **230.7 s of wall time, inside the 300 s cap**, where the full-lap OCP path could not converge at any mesh ≤5 m. The lap preserves the four wheel-speed states with the user-requested wheel inertia (`0.2064512 kg*m^2`, 10 kg solid cylinder, 16 in diameter). Physics checks passed at every accepted state. The result is a **conservative driven lap, not a minimum-time optimum and not yet a periodic hot lap**; three acceptance gates remain open and are flagged `usable: false` in the machine-readable summary.
@@ -23,7 +25,7 @@ Reference run: the BDF 230.7 s trial is retained under `forward_driver_trials/at
 
 - `src/simplified_vehicle_models/solvers/forward_driver.py` — model-independent driver stack: `RateSystem` (nonsingular mass-matrix contract, singular systems rejected), `SpeedPlan`/`build_speed_plan` (closed-track forward-acceleration / backward-braking envelope passes), `PreviewDriver` (course-error steering feedback including body sideslip, speed feedforward + feedback, exclusive throttle/brake), `solve_forward` (stiff integration with deadline, trial-domain rejection, scaled finite-difference Jacobian, accepted-state re-validation, Radau/BDF).
 - `src/simplified_vehicle_models/solvers/planar_forward.py` — transient planar adapter: 12 states (`s, n, heading error, v_x, v_y, yaw rate, 4 wheel speeds, SOC, steering`), original NumPy tire/load physics, pedal-controller motor mapping, battery voltage/current closure, hydraulic brake mapping, physical rejections (load non-convergence, nonpositive contact, reverse rolling, SOC bounds, steering bound, path-denominator fold).
-- `tools/run_iem24_forward_driver.py` — parent-capped runner: ≤300 s enforced, per-attempt output isolation, flushed progress logs, source hashes + environment snapshot, full gate reporting with `usable` locked to `false` until all gates close.
+- `tools/run/run_iem24_forward_driver.py` — parent-capped runner: ≤300 s enforced, per-attempt output isolation, flushed progress logs, source hashes + environment snapshot, full gate reporting with `usable` locked to `false` until all gates close.
 - Tests: `tests/test_forward_driver.py`, `tests/test_planar_forward.py`, `tests/test_forward_driver_runner.py` (28 new tests; 109 fast-module tests pass).
 
 ## Trial log (chronological, all preserved)

@@ -351,7 +351,7 @@ class UndampedFullTrackAcceptanceTests(unittest.TestCase):
     """Acceptance tests on the full Michigan endurance track.
 
     Numerical equivalence to W0-damped reference values.
-    See .superpowers/sdd/2026-10-12-energy-coupling/w0-report.md.
+    See docs/superpowers/sdd/2026-10-12-energy-coupling/w0-report.md.
     """
 
     @classmethod

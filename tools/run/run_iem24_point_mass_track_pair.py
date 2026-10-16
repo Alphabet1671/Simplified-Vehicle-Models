@@ -8,7 +8,7 @@ from pathlib import Path
 import time
 import sys
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import numpy as np
 from simplified_vehicle_models.compiler.compile import compile_formulation
 from simplified_vehicle_models.results.traces import LapMode
@@ -16,9 +16,9 @@ from simplified_vehicle_models.powertrain.energy_storage import (StorageState,
     solve_current, terminal_voltage)
 from simplified_vehicle_models.solvers.forward_backward import solve_lap_with_energy
 from simplified_vehicle_models.tracks.profile import load_track
-from tools.compare_planar_point_mass import FORMULATION, _point_mass_track, _point_mass_vehicle
+from tools.reports.compare_planar_point_mass import FORMULATION, _point_mass_track, _point_mass_vehicle
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_TRACKS = (Path('models/tracks/2024_michigan_endurance_closed.xml'),
                   Path('docs/validation/iem24-murphy/multilap_track_candidate.xml'))
 

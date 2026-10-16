@@ -21,7 +21,7 @@ from simplified_vehicle_models.formulations.planar_7dof import (
 from simplified_vehicle_models.parameters.tire import UniTireSimpleParameters
 from simplified_vehicle_models.parameters.vehicle import PlanarVehicleParameters
 from simplified_vehicle_models.xml.loader import load_model
-from tools.import_vehicle_spec_sheet import (
+from tools.data.import_vehicle_spec_sheet import (
     SKEW,
     obfuscate,
     round_significant,

@@ -11,8 +11,8 @@ from unittest.mock import patch
 import hashlib
 from types import SimpleNamespace
 
-from tools.export_iem24_forward_correlation import verify_track_provenance
-from tools.run_iem24_forward_driver import (
+from tools.reports.export_iem24_forward_correlation import verify_track_provenance
+from tools.run.run_iem24_forward_driver import (
     DEFAULT_TRACK, LEGACY_TRACK, acceptance_gate, main, parse_args, tire_xml_path, track_files,
     warm_start_matches,
 )
@@ -76,7 +76,7 @@ class RunnerTests(unittest.TestCase):
 
     def test_timeout_retains_parent_record_and_log(self):
         with tempfile.TemporaryDirectory() as temporary:
-            with patch("tools.run_iem24_forward_driver.subprocess.run",
+            with patch("tools.run.run_iem24_forward_driver.subprocess.run",
                        side_effect=subprocess.TimeoutExpired("child", 1.)) as run:
                 with contextlib.redirect_stdout(io.StringIO()):
                     result = main(["--output-root", temporary, "--timeout-seconds", "1"])
@@ -90,7 +90,7 @@ class RunnerTests(unittest.TestCase):
 
     def test_attempts_do_not_overwrite_each_other(self):
         with tempfile.TemporaryDirectory() as temporary:
-            with patch("tools.run_iem24_forward_driver.subprocess.run",
+            with patch("tools.run.run_iem24_forward_driver.subprocess.run",
                        return_value=subprocess.CompletedProcess([], 0)):
                 with contextlib.redirect_stdout(io.StringIO()):
                     main(["--output-root", temporary])
@@ -120,7 +120,7 @@ class RunnerTests(unittest.TestCase):
 
     def test_track_is_forwarded_to_child_command(self):
         with tempfile.TemporaryDirectory() as temporary:
-            with patch("tools.run_iem24_forward_driver.subprocess.run",
+            with patch("tools.run.run_iem24_forward_driver.subprocess.run",
                        return_value=subprocess.CompletedProcess([], 0)) as run:
                 with contextlib.redirect_stdout(io.StringIO()):
                     main(["--output-root", temporary, "--track", CANONICAL_TRACK])

@@ -935,3 +935,6 @@ scale legends printed on the frames.
   readouts, bar names and values remain. The footer still names hidden windows and
   warnings. The APPROXIMATE label of quasi-static attitude is now in the window title. The
   arrow and bar full scales moved to the command-line output (`full scales (run maxima ...)`).
+- **Measured cost of the final layout.** The full 14DoF lap re-rendered at 6.19x real time
+  (411.8 s, 51.6 ms per frame, 14.1 MB). The 9.68x figures quoted earlier in this plan are
+  the first layout.

@@ -12,7 +12,7 @@ from dataclasses import dataclass
 __all__ = ["WindowVisibility", "window_visibility", "window_grid", "Layout", "WINDOWS"]
 
 #: Window names in drawing order.
-WINDOWS = ("track", "rear", "right", "top")
+WINDOWS = ("gg", "track", "rear", "right", "top")
 
 #: Outer margin, gap between windows and the footer strip, as figure fractions.
 MARGIN = 0.012
@@ -20,6 +20,8 @@ GAP = 0.012
 FOOTER = 0.05
 #: Share of the right half given to the top view when the attitude row exists.
 TOP_SHARE = 0.62
+#: Width share of the GG column, which sits to the left of everything else.
+GG_SHARE = 0.2
 #: Width share of the track window when it sits beside two attitude columns.
 TRACK_SHARE_THREE = 0.5
 
@@ -38,6 +40,7 @@ class WindowVisibility:
     fz_bars: bool
     attitude_is_dynamic: bool
     attitude_is_approximate: bool = False
+    gg: bool = True
     notes: tuple[str, ...] = ()
 
     @property
@@ -93,10 +96,13 @@ def window_visibility(record, *, allow_quasi_static: bool = False,
         notes.append(f"tire arrows hidden: {model} has no tire force channels")
     if top and not fz_bars:
         notes.append(f"Fz bars hidden: {model} has no tire-vertical-force channel")
+    gg = has("acceleration-longitudinal") and has("acceleration-lateral")
+    if not gg:
+        notes.append(f"gg hidden: {model} has no longitudinal and lateral acceleration channels")
     return WindowVisibility(
         track=True, rear=show_attitude, right=show_attitude, top=top,
         tire_arrows=tire_arrows, fz_bars=fz_bars, attitude_is_dynamic=dynamic,
-        attitude_is_approximate=approximate, notes=tuple(notes))
+        attitude_is_approximate=approximate, gg=gg, notes=tuple(notes))
 
 
 @dataclass(frozen=True)
@@ -118,6 +124,8 @@ class Layout:
 def window_grid(visibility: WindowVisibility, style=None) -> Layout:
     """Return the rectangles for the visible windows.
 
+    * gg: a column of ``GG_SHARE`` of the width at the far left, over the full height,
+      whenever the acceleration channels exist; the windows below share the rest.
     * track, rear, right, top: track on the left over the full height; on the right
       the larger top view above, then rear (left) and right (right) below it.
     * track, rear, right: three columns, so the attitude windows take the full height.
@@ -137,6 +145,12 @@ def window_grid(visibility: WindowVisibility, style=None) -> Layout:
     width, height = right_edge - left, top_edge - bottom
     footer = (left, 0.0, width, FOOTER)
     attitude = visibility.rear and visibility.right
+    gg_rect = None
+    if visibility.gg:
+        gg_width = width * GG_SHARE
+        gg_rect = (left, bottom, gg_width, height)
+        left += gg_width + GAP
+        width -= gg_width + GAP
 
     def column(x0: float, share: float, y0: float = bottom, h: float = height):
         return (x0, y0, share, h)
@@ -171,4 +185,7 @@ def window_grid(visibility: WindowVisibility, style=None) -> Layout:
     else:
         rects = {"track": (left, bottom, width, height)}
         text = "1x1: track"
+    if gg_rect is not None:
+        rects = {"gg": gg_rect, **rects}
+        text += " + gg column at the left"
     return Layout(rects, footer, text)

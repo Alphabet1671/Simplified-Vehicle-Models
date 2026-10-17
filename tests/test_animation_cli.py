@@ -93,24 +93,31 @@ class DryRunTest(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(out.count("roll/pitch: not available"), 1)
         self.assertIn("hidden windows: rear, right", out)
-        self.assertIn("visible windows: track, top", out)
+        self.assertIn("visible windows: gg, track, top", out)
 
     def test_quasi_static_flag_shows_both_windows_labelled_approximate(self):
         code, out, _ = self.dry(BASE + WHEEL + QUASI, "--quasi-static-attitude")
         self.assertEqual(code, 0)
-        self.assertIn("visible windows: track, rear, right, top", out)
+        self.assertIn("visible windows: gg, track, rear, right, top", out)
         self.assertIn("hidden windows: none", out)
         self.assertIn("APPROXIMATE", out)
         self.assertEqual(out.count("roll/pitch: not available"), 1)
 
     def test_point_mass_hides_three_windows_and_force_top_view_restores_one(self):
         code, out, _ = self.dry(BASE)
-        self.assertIn("visible windows: track\n", out)
+        self.assertIn("visible windows: gg, track\n", out)
         self.assertIn("hidden windows: rear, right, top", out)
         self.assertIn("top hidden", out)
         code, out, _ = self.dry(BASE, "--force-top-view")
-        self.assertIn("visible windows: track, top\n", out)
+        self.assertIn("visible windows: gg, track, top\n", out)
         self.assertIn("hidden windows: rear, right", out)
+
+    def test_the_dry_run_prints_the_full_scales_the_picture_no_longer_carries(self):
+        _, out, _ = self.dry(BASE + WHEEL + DYNAMIC)
+        self.assertIn("full scales (run maxima, fixed for every frame):", out)
+        for text in ("velocity arrow = 20 m/s", "tire Fx/Fy arrows =", "Fz bar (full height) = 1300 N",
+                     "steer bar (half width) = 0.2 rad", "acceleration arrow ="):
+            self.assertIn(text, out)
 
     def test_quasi_static_flag_changes_nothing_on_a_point_mass_record(self):
         _, plain, _ = self.dry(BASE)

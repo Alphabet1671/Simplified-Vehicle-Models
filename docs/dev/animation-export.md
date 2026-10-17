@@ -48,22 +48,24 @@ The video is written to `<output>.partial.mp4` and renamed when ffmpeg exits cle
 
 A window exists only when the record holds the channels it draws. A window that cannot be drawn is hidden, not drawn empty, and the other windows grow into the space. The footer of every frame says which windows are hidden and why, and the dry run prints the same text.
 
-| Model | Track | Rear (roll) | Right (pitch) | Top |
-|---|---|---|---|---|
-| Point mass | shown | hidden | hidden | hidden; `--force-top-view` shows speed, body line, inputs |
-| Planar 7-DoF | shown | hidden; `--quasi-static-attitude` shows an estimate labelled APPROXIMATE | same | shown |
-| Body 10-DoF | shown | shown | shown | shown |
-| 14-DoF | shown | shown, plus a heave readout | shown | shown |
+| Model | GG | Track | Rear (roll) | Right (pitch) | Top |
+|---|---|---|---|---|---|
+| Point mass | shown | shown | hidden | hidden | hidden; `--force-top-view` shows speed, body line, inputs |
+| Planar 7-DoF | shown | shown | hidden; `--quasi-static-attitude` shows an estimate labelled APPROXIMATE | same | shown |
+| Body 10-DoF | shown | shown | shown | shown | shown |
+| 14-DoF | shown | shown | shown, plus a heave readout | shown | shown |
 
-Layouts: all four windows use a 2 x 3 grid (track on the left over the full height; top view above; rear and right below it). Without the attitude windows the top view takes the full height on the right. Without the top view the rear and right views take the full height. A point-mass record is the track alone. Sub-features follow the same rule: no tire force channels removes the arrows, no vertical force channel removes the Fz bars, and the legend names what is missing.
+Layouts: the GG diagram is a column at the far left. It needs only the two acceleration channels, so every model with them has it. To its right, all four other windows use a 2 x 3 grid (track on the left over the full height; top view above; rear and right below it). Without the attitude windows the top view takes the full height on the right. Without the top view the rear and right views take the full height. A point-mass record is the track alone. Sub-features follow the same rule: no tire force channels removes the arrows, no vertical force channel removes the Fz bars, and the footer names what is missing.
 
 ## Reading a frame
 
 All vectors use the SAE J670 body axes: +x forward, +y right, +z down. The world frame has X north and Y east. Yaw is positive clockwise from above. Roll is positive right-side-down. Pitch is positive nose up. Heave is positive down.
 
-**Track window.** The grey line is the centre line of the track. The white line from the CG marker is the body +x axis (heading). The green arrow is the velocity, which points at heading plus body slip angle. The orange arrow is the body acceleration rotated into the world. The violet arc is the yaw acceleration, clockwise positive. Arrow lengths are scaled once per run from the run maxima, and the full-scale values are printed in the window.
+**Track window.** The grey line is the centre line of the track. The white line from the CG marker is the body +x axis (heading). The green arrow is the velocity, which points at heading plus body slip angle. The orange arrow is the body acceleration rotated into the world. The violet arc is the yaw acceleration, clockwise positive. Arrow lengths are scaled once per run from the run maxima. The picture carries no legend text: the full-scale values are printed by `--dry-run` and after a render.
 
-**Top window.** The body is rotated so the velocity is always up. The angle between the vertical and the white body line is the body slip angle. At each wheel the red arrow is Fx and the blue arrow is Fy, in the tire frame (the body axes rotated by the wheel steer angle). The violet arc is Mz, clockwise positive. The four bars on the right are Fz. The bars below are throttle, brake and steer (centre zero). Full scales in N, N*m and rad are printed in the corner.
+**GG window.** Lateral acceleration to the right (body +y is right) and longitudinal acceleration up, both in m/s^2, with rings at round values that contain the run maximum. The dot is the current sample; the line behind it is the last 1.0 s (120 frames at 120 fps) and fades from transparent at its oldest end to opaque at the dot. In the first second of the run the oldest end repeats the first sample.
+
+**Top window.** The body is rotated so the velocity is always up. The angle between the vertical and the white body line is the body slip angle. At each wheel the red arrow is Fx and the blue arrow is Fy, in the tire frame (the body axes rotated by the wheel steer angle). The violet arc is Mz, clockwise positive. The four Fz bars on the right are a 2 x 2 grid that mirrors the car: front-left and front-right on the top row, rear-left and rear-right below. Each prints its instant value in N under the bar. The bars below are throttle, brake and steer (centre zero).
 
 **Rear and right windows.** The dashed line is the horizon. The body outline is rotated by the recorded roll (rear) or pitch (right), and the green line is the body y axis (rear) or x axis (right), so the angle you see is the recorded angle.
 

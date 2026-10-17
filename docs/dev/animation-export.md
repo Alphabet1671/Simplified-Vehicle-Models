@@ -79,7 +79,7 @@ The body is a placeholder block (length = wheelbase + 0.9 m, width = track - whe
 
 Rendering is by matplotlib Agg with artist updates, so no axes are rebuilt per frame. The CLI prints the render time and the render-to-real-time ratio after each run.
 
-Measured on an Apple M2 for a full 14-DoF lap at 1920 x 1080: **9.68x real time** (80.6 ms per frame, 644 s for a 66.57 s lap), producing a 15.6 MB file. Most of the time is Agg drawing the axes; the data updates take under 2 ms per frame. Details and the caveats are in [the validation note](../validation/iem24-murphy/animation-export.md). The dry run prints only a rough size estimate, marked "not measured"; on that lap it overestimated the size by 2.7x.
+Measured on an Apple M2 for a full 14-DoF lap at 1920 x 1080: **6.19x real time** (51.6 ms per frame, 412 s for a 66.57 s lap), producing a 14.1 MB file. The first layout measured 9.68x. Most of the time is Agg drawing the axes; the data updates take under 2 ms per frame. Details and the caveats are in [the validation note](../validation/iem24-murphy/animation-export.md). The dry run prints only a rough size estimate, marked "not measured"; on that lap it overestimated the size by 2.7x.
 
 To go faster: lower `--width`/`--height`, use `--time-range`, or render with `--png-sequence`. Multiprocess chunking (`--frame-chunk`) is not implemented, because the measured ratio is under the 12x threshold set in the plan.
 

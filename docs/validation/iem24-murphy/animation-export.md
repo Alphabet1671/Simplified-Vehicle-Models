@@ -1,6 +1,6 @@
 # IEM24 Murphy lap animation export
 
-This note records one real export of a 14-DoF lap of the IEM24 endurance track, made on 2026-10-16 with `tools/anim/export_animation.py`. It states what was measured, what was only estimated, and what the video can and cannot be used for.
+This note records one real export of a 14-DoF lap of the IEM24 endurance track, made on 2026-10-16 (re-rendered the same day with the final layout) with `tools/anim/export_animation.py`. It states what was measured, what was only estimated, and what the video can and cannot be used for.
 
 ## Result
 
@@ -13,26 +13,33 @@ This note records one real export of a 14-DoF lap of the IEM24 endurance track, 
 | Frames | 7 988 at 120 fps | `ffprobe -count_frames` |
 | Video duration | 66.567 s | `ffprobe` |
 | Codec, pixel format | H.264 `yuv420p`, 1920 x 1080, `r_frame_rate=120/1` | `ffprobe` |
-| File size | 15.6 MB (15 606 104 bytes) | measured |
-| **Render wall time** | **644.2 s** | measured by the CLI |
-| **Render / real-time ratio** | **9.68x** (644.2 s / 66.57 s) | measured |
-| Per-frame time | 80.6 ms | measured |
-| Rendered frames per wall second | 12.4 | measured |
+| File size | 14.1 MB (14 050 939 bytes) | measured |
+| **Render wall time** | **411.8 s** | measured by the CLI |
+| **Render / real-time ratio** | **6.19x** (411.8 s / 66.57 s) | measured |
+| Per-frame time | 51.6 ms | measured |
+| Rendered frames per wall second | 19.4 | measured |
 | Machine | Apple M2, 8 cores, 24 GB, macOS, Python 3.13, matplotlib 3.11.2, ffmpeg 8.1.2 | `sysctl`, `ffmpeg -version` |
 
-The frame count equals the dry-run count (`floor(66.563 * 120) + 1 = 7 988`), and the video duration equals frames / 120 to well within 0.01 s. All four windows were shown, and the export printed no warning.
+The frame count equals the dry-run count (`floor(66.563 * 120) + 1 = 7 988`), and the video duration equals frames / 120 to well within 0.01 s. All five windows (GG, track, rear, right, top) were shown, and the export printed no warning.
 
-The size estimate in the dry run was 41.4 MB. It is a rough model (0.02 bit per pixel per frame) and it was **wrong by a factor of 2.7**: the measured size is 15.6 MB. The estimate should be treated as an upper bound until the constant is refitted.
+The size estimate in the dry run was 41.4 MB. It is a rough model (0.02 bit per pixel per frame) and it was **wrong by a factor of 2.9**: the measured size is 14.1 MB. The estimate should be treated as an upper bound until the constant is refitted.
 
-## Layout change after this export
+## Layout history
 
-The export above was rendered with the first layout. A later change added the GG diagram, arranged the Fz bars as a 2 x 2 grid with a value under each bar, and removed the small explanatory text (full scales moved to the command-line output). The 9.68x ratio and the stills belong to the first layout. A 0.5 s excerpt of the new layout (61 frames) rendered at 6.72x (56 ms per frame) including start-up, which is a short sample and not a replacement for a full-lap measurement; the full lap has not been re-rendered.
+This export has been rendered twice from the same record (`run_record.npz`, same 7 988 frames).
+
+| Render | Layout | Wall time | Ratio | Per frame | File size |
+|---|---|---|---|---|---|
+| First | track, rear, right, top; grey legend text; Fz bars in one row | 644.2 s | 9.68x | 80.6 ms | 15.6 MB |
+| **Final (this note's table)** | GG column added at the left; Fz bars as a 2 x 2 grid with a value under each; legend text removed (full scales are printed by the CLI) | 411.8 s | 6.19x | 51.6 ms | 14.1 MB |
+
+Both are single measurements on one machine, taken at different times, so run-to-run variation is included in the difference. The final render is faster although it draws one more window; this note does not claim a cause, because the cause was not measured. The stills below were regenerated from the final video.
 
 ## Render cost
 
-The earlier plan predicted 4.30x from a 60-frame prototype and expected 4.3-6x for a full export. The real export is **9.68x**, so the plan figure was optimistic by a factor of 2.3. It is below the 12x threshold at which the plan calls for a `--frame-chunk` multiprocessing follow-up, so no follow-up was started. A full lap of about 66 s of simulated time takes about 10.7 minutes on this machine.
+The earlier plan predicted 4.30x from a 60-frame prototype and expected 4.3-6x for a full export. The first real export was 9.68x and the final layout is **6.19x**, inside the plan's expected range. Both are below the 12x threshold at which the plan calls for a `--frame-chunk` multiprocessing follow-up, so no follow-up was started. A full lap of about 66 s of simulated time takes about 6.9 minutes on this machine with the final layout.
 
-Where the 80.6 ms per frame goes, measured on a 2 s excerpt of a 20 s record with `perf_counter` (a separate profile, not the full lap, and the split is approximate):
+Where the time went in the **first layout** (80.6 ms per frame), measured on a 2 s excerpt of a 20 s record with `perf_counter`. This profile was not repeated for the final layout, so it does not describe the 51.6 ms figure; it is a separate profile, not the full lap, and the split is approximate:
 
 | Part | Time per frame |
 |---|---|
@@ -58,7 +65,7 @@ Each still is a frame decoded from the encoded video, so it shows what a viewer 
 | [Peak lateral acceleration](animation-export/still_peak_ay.png) | 2 413 | 20.108 s | largest \|a_y\|, 17.20 m/s^2 |
 | [Lap end](animation-export/still_lap_end.png) | 7 987 | 66.558 s | last frame |
 
-These frames were checked numerically (size, and the share of non-background pixels in each half of the image). **The author of this note could not view the images**, so no claim is made here about how they look. Open them before using the video in a report.
+These frames were checked numerically (size 1920 x 1080, and a non-background pixel share of 1.4-5.8 % in each fifth of the image width, so no region is empty). Separately, on a frame of the same layout the text boxes were checked for overlap and for crossing by drawn lines at 1920 x 1080 and 1280 x 720, with none found. **The author of this note could not view the images**, so no claim is made here about how they look. Open them before using the video in a report.
 
 ## Caveats
 
@@ -68,7 +75,7 @@ These frames were checked numerically (size, and the share of non-background pix
 4. **The body is a placeholder block.** Length 2.435 m, width 1.060 m, height 0.250 m, with four cylinder wheels. It is a display asset and carries no information about the real car. An STL file changes the picture only and never a simulation number.
 5. **Wheel spin is a display effect**, integrated from the recorded wheel speeds.
 6. **Float32 record.** Values are rounded to float32, and the readouts show two decimals.
-7. **The encoded file is not bit-reproducible across machines.** The artist data is deterministic, but matplotlib text rendering and x264 builds can differ. The video is not committed (`videos/` is git-ignored; it was saved as `videos/iem24_14dof_lap.mp4`); its SHA-256 begins `5ce623bd804df2d9` for this machine and build.
+7. **The encoded file is not bit-reproducible across machines.** The artist data is deterministic, but matplotlib text rendering and x264 builds can differ. The video is not committed (`videos/` is git-ignored; it was saved as `videos/iem24_14dof_lap.mp4`); its SHA-256 begins `f6e96b6babb57ebf` for this machine and build.
 
 ## Reproduce
 

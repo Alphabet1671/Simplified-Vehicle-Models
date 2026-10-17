@@ -31,11 +31,16 @@ QUASI = ("roll-quasi-static", "pitch-quasi-static")
 SLIP, STEER, ROLL, PITCH = 0.1, 0.2, 0.05, -0.03
 
 
-def make_source(directory, channels, *, model="synthetic", quasi=False, steps=61, **keywords):
-    """A 0.6 s record: constant slip, steering, roll and pitch, heading 0.5 rad."""
-    recorder = RunRecorder(Path(directory) / f"{model}.npz", state_names=STATES,
+def make_source(directory, channels, *, model="synthetic", quasi=False, steps=61,
+                state_names=STATES, duration=0.6, **keywords):
+    """A record: constant slip, steering, roll and pitch, heading 0.5 rad.
+
+    ``state_names`` sets the state layout (first two are distance and speed, the rest
+    are held at 60); ``duration`` is the record length in seconds.
+    """
+    recorder = RunRecorder(Path(directory) / f"{model}.npz", state_names=state_names,
                            control_names=CONTROLS, channel_names=channels, precision="float64")
-    for index, t in enumerate(np.linspace(0.0, 0.6, steps)):
+    for index, t in enumerate(np.linspace(0.0, duration, steps)):
         v = 20.0
         values = {
             "speed": [v], "body-slip-angle": [SLIP], "heading-world": [0.5 + t],
@@ -49,8 +54,11 @@ def make_source(directory, channels, *, model="synthetic", quasi=False, steps=61
             "throttle": [0.5], "brake-force": [50.0], "brake-fraction": [0.1],
             "steering": [STEER], "roll": [ROLL], "pitch": [PITCH], "heave": [0.01],
             "roll-quasi-static": [0.01], "pitch-quasi-static": [-0.02],
+            "roll-rate": [0.0], "pitch-rate": [0.0],
         }
-        recorder.append(t, index, [v * t, v, 60, 60, 60, 60], [v, 0, 0, 0, 0, 0], [0.5, 50.0],
+        rest = len(state_names) - 2
+        recorder.append(t, index, [v * t, v] + [60.0] * rest, [v] + [0.0] * (rest + 1),
+                        [0.5, 50.0],
                         {name: values[name] for name in channels})
     record = load_run_record(recorder.close(
         {"model": {"model": model}, "vehicle_geometry": GEOMETRY}))

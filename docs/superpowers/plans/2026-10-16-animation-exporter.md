@@ -151,9 +151,9 @@ specification. §6 of that specification defines every channel.
 |---|---|---|
 | Track polyline | `track.path_coordinates` from the record's track XML | `X` north, `Y` east, equal aspect |
 | CG marker | `ch:position-x`, `ch:position-y` | one point on the line |
-| Body forward axis | unit vector `(cos psi_b, sin psi_b)` where `psi_b = ch:heading-world - ch:body-slip-angle` | body `+x` in world |
+| Body forward axis | unit vector `(cos psi_b, sin psi_b)` where `psi_b = ch:heading-world` (the body heading: path heading plus heading error) | body `+x` in world |
 | Traveled path | the CG position over `[0, t]` | shows progress along the lap |
-| Velocity vector | `speed * (cos psi_v, sin psi_v)` with `psi_v = ch:heading-world` | body velocity in world |
+| Velocity vector | `speed * (cos psi_v, sin psi_v)` with `psi_v = ch:heading-world + ch:body-slip-angle` | body velocity in world |
 | Acceleration vector (planar) | `(ch:acceleration-longitudinal, ch:acceleration-lateral)` rotated by `psi_b` | body acceleration in world |
 | Z-rotation indicator | `ch:yaw-acceleration` | a labelled circular arrow at the CG with a numeric readout. A rotational vector is out of the view plane, so it is not drawn as an arrow. Positive is a right turn. |
 
@@ -554,9 +554,12 @@ class VehicleScene:
 
 - [ ] **Step 1: Write failing tests.** Use a recorded real lap, not synthetic
   data, for the channel mapping.
-  - `build_track_panel` places the CG marker at `position-x`, `position-y` and
-    the body forward axis at `heading - slip`, so a synthetic frame with
-    `slip = 0.1 rad` rotates the axis by exactly `-0.1 rad` on screen.
+  - `build_track_panel` places the CG marker at `position-x`, `position-y`, the
+    body forward axis at `heading-world`, and the velocity vector at
+    `heading-world + slip`, so a synthetic frame with `slip = 0.1 rad` puts the
+    velocity exactly `0.1 rad` clockwise of the body axis on the map. On a
+    recorded lap the velocity direction matches the finite-difference course of
+    the CG to within the differencing error.
   - The rear panel's two line directions match §3.2 for `roll = 0`,
     `roll = +0.05`, and `roll = -0.05` radians, to `1e-12`.
   - The right panel's two line directions match §3.3 for the same three pitch
@@ -612,8 +615,9 @@ class VehicleScene:
   - `rear` and `right` are true for a dynamic attitude channel (`roll` and
     `pitch`). They are false when only the quasi-static pair exists, unless the
     caller passes `allow_quasi_static=True`;
-  - `top` is true whenever the record carries any wheel, tire, or control
-    channel; it is false only for a pure scalar point-mass record;
+  - `top` is true whenever the record carries any `wheel-*` or `tire-*` channel,
+    or the caller passes `force_top_view=True`; it is false for a point-mass
+    record, which has no wheel data (control channels alone do not qualify);
   - `tire_arrows` requires `tire-longitudinal-force` and `tire-lateral-force`;
   - `fz_bars` requires `tire-vertical-force`;
   - `attitude_is_dynamic` is true only when `roll` is a state-derived channel.
@@ -785,7 +789,7 @@ today, hides the top view for the same reason the point mass does.
 
 | Visible windows | Layout | The top view |
 |---|---|---|
-| `track`, `rear`, `right`, `top` | 2 rows × 3 columns: track spans both rows in column 0; rear and right occupy row 0 in columns 1 and 2; top drains both columns in row 1 | bottom right block |
+| `track`, `rear`, `right`, `top` | 2 rows × 3 columns: track spans both rows in column 0; the larger top view spans columns 1 and 2 in row 0 (above); rear and right occupy row 1 in columns 1 and 2 (bottom-left and bottom-right) | upper right block, 62 % of the right half's height |
 | `track`, `rear`, `right` | 1 row × 3 columns: track in column 0, rear in column 1, right in column 2 | absent, so the attitude blocks take the full figure height |
 | `track`, `top` | 1 row × 2 columns: track on the left, top on the right | full figure height |
 | `track` only | 1 row × 1 column | absent |

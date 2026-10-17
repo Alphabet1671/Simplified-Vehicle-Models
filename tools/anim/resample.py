@@ -30,6 +30,8 @@ _SCALE_CHANNELS = {
     "tire_vertical_force": ("tire-vertical-force",),
     "tire_force": ("tire-longitudinal-force", "tire-lateral-force"),
     "tire_moment": ("tire-aligning-moment",),
+    "yaw_acceleration": ("yaw-acceleration",),
+    "brake_force": ("brake-force",),
 }
 
 
@@ -133,6 +135,27 @@ class FrameSource:
         if not self.channel_valid(name, index):
             return np.ma.masked_all(width)
         return np.array(self.frames.channel[index, self._columns[name]], dtype=float)
+
+    def series(self, name: str) -> np.ndarray | None:
+        """The whole channel on the frame grid: ``(frames, width)`` floats, ``NaN``
+        wherever the sample is invalid, ``None`` when the channel is absent."""
+
+        if name not in self.channel_names:
+            return None
+        values = np.array(self.frames.channel[:, self._columns[name]], dtype=float)
+        valid = self._valid[:, self.record.manifest.channel_names.index(name)]
+        values[~valid] = np.nan
+        return values
+
+    def attitude_series(self) -> np.ndarray | None:
+        """``(frames, 2)`` of ``(roll, pitch)`` with ``NaN`` where invalid, or ``None``."""
+
+        source = self.attitude_source
+        if source == "none":
+            return None
+        names = ("roll", "pitch") if source == "dynamic" else (
+            "roll-quasi-static", "pitch-quasi-static")
+        return np.column_stack([self.series(name)[:, 0] for name in names])
 
     def scalar_at(self, name: str, index: int) -> float | None:
         """A width-1 channel as a float; ``None`` when absent or invalid."""

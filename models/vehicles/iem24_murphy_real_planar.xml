@@ -1,14 +1,15 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- 7-DOF-only assembly: measured IEM24 vehicle parameters with tester-fitted UniTire. -->
+<!-- Shared IEM24 assembly: measured vehicle parameters with tester-fitted UniTire. The planar 7DoF formulation uses the planar roles; the 14DoF-simple formulation also uses the suspension, damper-front, damper-rear and tire-transient roles and the vertical parameters. -->
 <model schema-version="1.0" id="iem24-murphy-real-planar" type="vehicle-assembly" subtype="four-wheel">
     <parameters>
+        <!-- Geometry source: User-confirmed 2026-10-16; 1.016 m was an error. Track width 1.240 m; 45 % of the mass on the front axle (front_mass_fraction 0.45). -->
         <parameter name="total_mass" value="287.0" unit="kg" />
         <parameter name="mass_without_driver" value="209.0" unit="kg" />
         <parameter name="driver_mass" value="78.0" unit="kg" />
         <parameter name="wheelbase" value="1.535" unit="m" />
-        <parameter name="track_width" value="1.016" unit="m" />
+        <parameter name="track_width" value="1.240" unit="m" />
         <parameter name="cg_height" value="0.300" unit="m" />
-        <parameter name="front_mass_fraction" value="0.55" unit="1" />
+        <parameter name="front_mass_fraction" value="0.45" unit="1" />
         <parameter name="lateral_load_transfer_distribution" value="0.42" unit="1" />
         <parameter name="brake_bias" value="0.65" unit="1" />
         <!-- Parallel steering, 3.5 in/rev Narco rack, and 65% front brake bias are user-confirmed; steering-arm/rate and hydraulic details remain provisional. -->
@@ -30,6 +31,14 @@
         <parameter name="pad_mu_rear" value="0.35" unit="1" />
         <parameter name="brake_effective_radius_front" value="0.077622" unit="m" />
         <parameter name="brake_effective_radius_rear" value="0.075184" unit="m" />
+        <!-- Vertical 14DoF parameters (ignored by the planar 7DoF formulation). Unsprung mass is per corner; front and rear: PROPOSED, not weighed. -->
+        <parameter name="unsprung_mass_front" value="13.0" unit="kg" />
+        <parameter name="unsprung_mass_rear" value="13.0" unit="kg" />
+        <!-- Radii of gyration of the sprung mass: roll 0.193 m is a user estimate; pitch 0.386 m is user-reported measurement. -->
+        <parameter name="roll_radius_of_gyration" value="0.193" unit="m" />
+        <parameter name="pitch_radius_of_gyration" value="0.386" unit="m" />
+        <!-- Tire vertical damping: user estimate, one value for all four tires. -->
+        <parameter name="tire_vertical_damping" value="400.0" unit="N*s/m" />
     </parameters>
     <data role="ackermann" path="../data/iem24_murphy_parallel_steering.csv" format="csv" />
     <data role="pedal-ratio" path="../data/placeholder_pedal_ratio.csv" format="csv" />
@@ -38,5 +47,9 @@
         <component role="aero" ref="../aero/iem24_murphy_real_aero.xml" />
         <component role="powertrain" ref="../powertrains/iem24_murphy_real_planar.xml" />
         <component role="drivetrain" ref="../drivetrains/iem24_murphy_real.xml" />
+        <component role="suspension" ref="../suspensions/iem24_murphy_real_suspension.xml" />
+        <component role="damper-front" ref="../dampers/multimatic_dssv_vc01_front.xml" />
+        <component role="damper-rear" ref="../dampers/multimatic_dssv_vc01_rear.xml" />
+        <component role="tire-transient" ref="../tires/iem24_murphy_real_unitire_transient.xml" />
     </components>
 </model>

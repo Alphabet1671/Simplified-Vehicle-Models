@@ -50,7 +50,8 @@ class WheelLiftTests(unittest.TestCase):
 
     def test_planar_loads_use_wheel_lift(self):
         vehicle = compile_formulation(PLANAR).model
-        loads = evaluate_normal_loads(vehicle, 15., 0., -17.)
+        # -22.5 m/s^2 lifts the rear inner wheel at the 1.240 m track.
+        loads = evaluate_normal_loads(vehicle, 15., 0., -22.5)
         self.assertEqual(loads[2], 0.)
         self.assertGreaterEqual(loads.min(), 0.)
 

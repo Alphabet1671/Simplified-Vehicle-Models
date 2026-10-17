@@ -1,0 +1,331 @@
+{
+  "result_status": "three simulations of one canonical MIS lap against the median of 10 measured flying laps; no result is validated",
+  "track": "models/tracks/2024_michigan_endurance_multilap_closed.xml",
+  "track_length_m": 1009.19501535,
+  "measured_laps": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10
+  ],
+  "measured_median_lap_time_s": 71.68501281738281,
+  "measured_median_distance_m": 1022.4002900589808,
+  "position_fit_rmse_m": 1.4747590852793624,
+  "position_residual_p95_m": 2.276003165822202,
+  "position_offset_north_east_m": [
+    9.793977285275902,
+    3.354079200614217
+  ],
+  "grid_points": 1009,
+  "filter_cutoff_hz": 1.0,
+  "simulation_filter_clock_hz": 100.0,
+  "source_file": {
+    "path": "/Users/alphabet1671/Desktop/0615CompEndurance.mat",
+    "present": true,
+    "sha256": "091e4745a5ff6ccf7d48729154033bb555edd028f0e3e2ed2f3f270e14f6e5b7",
+    "bytes": 334513192,
+    "recorded_sha256": "091e4745a5ff6ccf7d48729154033bb555edd028f0e3e2ed2f3f270e14f6e5b7",
+    "recorded_bytes": 334513192
+  },
+  "point_mass_soc_reconstruction_relative_error": 0.001381654046527337,
+  "models": {
+    "point_mass": {
+      "attempt": "docs/validation/iem24-murphy/four_way_latest_model/runs/point_mass",
+      "track": "models/tracks/2024_michigan_endurance_multilap_closed.xml",
+      "lap_time_s": 59.62045630216931,
+      "metrics": {
+        "speed_mps": {
+          "rmse": 3.0191310115220507,
+          "mae": 2.6908741170855373,
+          "bias": 2.6908741170855373,
+          "correlation": 0.9132928174391051,
+          "normalised_rmse": 0.9968976289222768
+        },
+        "longitudinal_acceleration_mps2": {
+          "rmse": 1.753835624175306,
+          "mae": 1.1623364593078462,
+          "bias": -0.1012645035669331,
+          "correlation": 0.710128946124568,
+          "normalised_rmse": 0.9688024538928356
+        },
+        "lateral_acceleration_mps2": {
+          "rmse": 2.9165833029106816,
+          "mae": 2.47124204263278,
+          "bias": 0.3584659178100953,
+          "correlation": 0.9594112849983915,
+          "normalised_rmse": 0.3848717414153571
+        },
+        "yaw_rate_rad_s": {
+          "rmse": 0.18102961551871583,
+          "mae": 0.1412586837713685,
+          "bias": -0.015522016324662326,
+          "correlation": 0.9534982160563162,
+          "normalised_rmse": 0.31098400881578064
+        },
+        "motor_torque_request_nm": {
+          "rmse": 2.452606160829564,
+          "mae": 1.81757106408491,
+          "bias": 0.23094010019908148,
+          "correlation": 0.6053376494038377,
+          "normalised_rmse": 0.9206263094633275
+        },
+        "pack_voltage_v": {
+          "rmse": 23.01013579937703,
+          "mae": 22.5316684948795,
+          "bias": 22.5316684948795,
+          "correlation": 0.48585621644717497,
+          "normalised_rmse": 5.304919326832106
+        }
+      },
+      "per_lap_speed_rmse": [
+        4.567451441112325,
+        3.3272996010245772,
+        3.8296341173791704,
+        2.988824649272864,
+        2.791392397507555,
+        3.758496681710409,
+        2.6440478251160484,
+        2.9187502711683027,
+        3.1117865848731765,
+        2.7837851281613393
+      ],
+      "per_lap_lateral_acceleration_rmse": [
+        4.554984803169588,
+        3.754578389027323,
+        3.692764185702952,
+        3.455346672433116,
+        3.1869168572516324,
+        3.497348211646657,
+        2.950627421676115,
+        3.334493461501708,
+        3.1454405057176076,
+        3.2932813359876656
+      ],
+      "time_gap_final_s": -12.080347464721264,
+      "hashes": {
+        "track_xml": "ffc367c0286ba698f3706ae8baf34946c641c01ad4f71935d3ec14a3a326f2c3",
+        "track_csv": "2db5a981f12d0c055afa3b167a9e6efa07cd09b1f6e7b2c51afea44f00e73d77",
+        "formulation_xml": "8420c2d4e929f629c52fb9a21e1b1e5d047bf2356615d3edfc0a8e95bf6878d8",
+        "tire_xml": "301c55c8213fd9a4149bdec39a8c6fbc6a756e750bd6bd92e80b6567bcbd917b",
+        "vehicle_xml": "f7e75a7b0b8a59cb7acd17060d021d73de88e7e8cce8cad1cb8c3400715bd03f"
+      },
+      "gates": {
+        "converged": true,
+        "energy_converged": true
+      },
+      "usable": "not applicable (optimum of a reduced problem)"
+    },
+    "planar_7dof": {
+      "attempt": "docs/validation/iem24-murphy/four_way_latest_model/runs/seven_dof/attempt_1792196348296421000",
+      "track": "models/tracks/2024_michigan_endurance_multilap_closed.xml",
+      "lap_time_s": 64.99312756253617,
+      "metrics": {
+        "speed_mps": {
+          "rmse": 1.812745172272232,
+          "mae": 1.36936774776218,
+          "bias": 1.2969671407026093,
+          "correlation": 0.9216007258850064,
+          "normalised_rmse": 0.5985567890833127
+        },
+        "longitudinal_acceleration_mps2": {
+          "rmse": 1.816911901384754,
+          "mae": 1.1317231672326353,
+          "bias": -0.10478699492664956,
+          "correlation": 0.6985236634442936,
+          "normalised_rmse": 1.003645201582872
+        },
+        "lateral_acceleration_mps2": {
+          "rmse": 2.728624420534015,
+          "mae": 2.175936056490627,
+          "bias": 0.5426548192731449,
+          "correlation": 0.9384292086595608,
+          "normalised_rmse": 0.3600687253991171
+        },
+        "yaw_rate_rad_s": {
+          "rmse": 0.2109691518390397,
+          "mae": 0.15617054931654825,
+          "bias": -0.010152704851738152,
+          "correlation": 0.9322347788561957,
+          "normalised_rmse": 0.3624160189888199
+        },
+        "motor_torque_request_nm": {
+          "rmse": 2.0123770607927036,
+          "mae": 1.5116797039337313,
+          "bias": 0.24114600680933948,
+          "correlation": 0.6983350825776754,
+          "normalised_rmse": 0.75537903162553
+        },
+        "pack_voltage_v": {
+          "rmse": 23.505256774162763,
+          "mae": 23.052397612778506,
+          "bias": 23.052397612778506,
+          "correlation": 0.3944229441828309,
+          "normalised_rmse": 5.419068015530063
+        }
+      },
+      "per_lap_speed_rmse": [
+        3.399523374762865,
+        2.0995644726211764,
+        2.671173902417182,
+        1.8210748022874337,
+        1.7613057321724093,
+        2.526906142718861,
+        1.6109190836919796,
+        1.8262371564651438,
+        1.9247226765982748,
+        1.718011352612665
+      ],
+      "per_lap_lateral_acceleration_rmse": [
+        4.110765910075143,
+        3.5510592891397574,
+        3.5812761337848324,
+        3.332122739642645,
+        3.133547420493906,
+        3.1919183252206227,
+        2.9739933479889125,
+        3.2100914911276925,
+        2.914589729096375,
+        3.00366869059637
+      ],
+      "time_gap_final_s": -6.7095174439894265,
+      "hashes": {
+        "track_xml": "ffc367c0286ba698f3706ae8baf34946c641c01ad4f71935d3ec14a3a326f2c3",
+        "track_csv": "2db5a981f12d0c055afa3b167a9e6efa07cd09b1f6e7b2c51afea44f00e73d77",
+        "tire_xml": "301c55c8213fd9a4149bdec39a8c6fbc6a756e750bd6bd92e80b6567bcbd917b",
+        "formulation_xml": "8420c2d4e929f629c52fb9a21e1b1e5d047bf2356615d3edfc0a8e95bf6878d8",
+        "vehicle_xml": "f7e75a7b0b8a59cb7acd17060d021d73de88e7e8cce8cad1cb8c3400715bd03f"
+      },
+      "gates": {
+        "lap_completed": true,
+        "integration_completed": true,
+        "periodicity_valid": false,
+        "path_tracking_valid": false,
+        "resolution_valid": true,
+        "checked_rhs_physics_valid": true,
+        "between_step_validation_complete": false,
+        "refinement_validated": false,
+        "contact_valid": true
+      },
+      "usable": false
+    },
+    "vertical_14dof": {
+      "attempt": "docs/validation/iem24-murphy/four_way_latest_model/runs/vertical_14dof/attempt_1792196233966416000",
+      "track": "models/tracks/2024_michigan_endurance_multilap_closed.xml",
+      "lap_time_s": 65.06285326492237,
+      "metrics": {
+        "speed_mps": {
+          "rmse": 1.8012245880052968,
+          "mae": 1.3638315974137778,
+          "bias": 1.2872709759091554,
+          "correlation": 0.9225776951683584,
+          "normalised_rmse": 0.5947527663046797
+        },
+        "longitudinal_acceleration_mps2": {
+          "rmse": 1.8348661859021997,
+          "mae": 1.1383361419150095,
+          "bias": -0.1135021829772847,
+          "correlation": 0.6978782788143999,
+          "normalised_rmse": 1.0135629810250424
+        },
+        "lateral_acceleration_mps2": {
+          "rmse": 2.7689823259595245,
+          "mae": 2.2097773749670218,
+          "bias": 0.5470439121930908,
+          "correlation": 0.9365856902159991,
+          "normalised_rmse": 0.36539434641789303
+        },
+        "yaw_rate_rad_s": {
+          "rmse": 0.21472854471162495,
+          "mae": 0.15999362061357336,
+          "bias": -0.009891838740952449,
+          "correlation": 0.9296899847412087,
+          "normalised_rmse": 0.3688741394619818
+        },
+        "motor_torque_request_nm": {
+          "rmse": 2.0147399004394746,
+          "mae": 1.5139775012163306,
+          "bias": 0.25502023980205196,
+          "correlation": 0.6971073087679521,
+          "normalised_rmse": 0.7562659625884387
+        },
+        "pack_voltage_v": {
+          "rmse": 23.478472812772083,
+          "mae": 23.02415207113869,
+          "bias": 23.02415207113869,
+          "correlation": 0.3919777322145161,
+          "normalised_rmse": 5.412893051780636
+        }
+      },
+      "per_lap_speed_rmse": [
+        3.3928971939699384,
+        2.0888746344594544,
+        2.6639849673312272,
+        1.8105818235325262,
+        1.751686228362011,
+        2.515639545231948,
+        1.598714312308727,
+        1.8160268864832416,
+        1.9139810866294762,
+        1.7053984228356562
+      ],
+      "per_lap_lateral_acceleration_rmse": [
+        4.142172181990902,
+        3.588570777705725,
+        3.61599264914673,
+        3.369518122615764,
+        3.1735732243642003,
+        3.2264907190567453,
+        3.008355664782354,
+        3.2438612650883156,
+        2.939522772147468,
+        3.0186673785412994
+      ],
+      "time_gap_final_s": -6.639858694451036,
+      "hashes": {
+        "track_xml": "ffc367c0286ba698f3706ae8baf34946c641c01ad4f71935d3ec14a3a326f2c3",
+        "track_csv": "2db5a981f12d0c055afa3b167a9e6efa07cd09b1f6e7b2c51afea44f00e73d77",
+        "tire_xml": "301c55c8213fd9a4149bdec39a8c6fbc6a756e750bd6bd92e80b6567bcbd917b",
+        "formulation_xml": "6e6bbb00601845781ccc679845cc4fd95f42770fdd5eb7456dd73d52f26b8bda",
+        "vehicle_xml": "f7e75a7b0b8a59cb7acd17060d021d73de88e7e8cce8cad1cb8c3400715bd03f"
+      },
+      "gates": {
+        "lap_completed": true,
+        "integration_completed": true,
+        "periodicity_valid": false,
+        "path_tracking_valid": false,
+        "resolution_valid": true,
+        "checked_rhs_physics_valid": true,
+        "between_step_validation_complete": false,
+        "refinement_validated": false,
+        "contact_valid": true
+      },
+      "usable": false
+    }
+  },
+  "model_to_model_speed": {
+    "point_mass_vs_planar_7dof": {
+      "speed_rmse_mps": 1.4417602801145806,
+      "speed_mae_mps": 1.393906976382928,
+      "speed_bias_mps": 1.393906976382928,
+      "coefficient_of_determination": 0.9872506212252299
+    },
+    "point_mass_vs_vertical_14dof": {
+      "speed_rmse_mps": 1.4578912851595243,
+      "speed_mae_mps": 1.4036031411763819,
+      "speed_bias_mps": 1.4036031411763819,
+      "coefficient_of_determination": 0.9854304145916353
+    },
+    "planar_7dof_vs_vertical_14dof": {
+      "speed_rmse_mps": 0.034550593447169924,
+      "speed_mae_mps": 0.013000162795418184,
+      "speed_bias_mps": 0.009696164793453905,
+      "coefficient_of_determination": 0.999896858240262
+    }
+  }
+}

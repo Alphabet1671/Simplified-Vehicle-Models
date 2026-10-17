@@ -83,7 +83,9 @@ def _recompute_accelerations(trace_path: Path, attempt_dir: Path) -> np.ndarray:
                               not np.array_equal(pedal[:, 0], trace[:, 0])):
         raise ValueError("pedal.csv must match trace.csv row count and time exactly")
     time = trace[:, 0]
-    states = trace[:, 1:13]
+    # The replay plant publishes its layout; the trace width follows it.
+    states = trace[:, 1:1 + plant.state_size]
+    yaw_rate_index = tuple(plant.state_names).index("yaw_rate")
 
     n = states.shape[0]
     rates = np.empty((n, plant.state_size), dtype=float)
@@ -95,7 +97,7 @@ def _recompute_accelerations(trace_path: Path, attempt_dir: Path) -> np.ndarray:
             command = driver.realized_command(float(np.interp(time[i], pedal[:, 0], pedal[:, 1])), command)
         rates[i] = plant.evaluate(time[i], state, command).solve()
     ax_body, ay_body = body_accelerations(states, rates)
-    return np.column_stack((ax_body, ay_body, rates[:, 5]))
+    return np.column_stack((ax_body, ay_body, rates[:, yaw_rate_index]))
 
 
 def trace_channels(trace: np.ndarray, accelerations: np.ndarray) -> dict[str, np.ndarray]:

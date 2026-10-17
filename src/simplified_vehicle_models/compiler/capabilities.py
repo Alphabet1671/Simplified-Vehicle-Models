@@ -29,6 +29,10 @@ SUSPENSION_LOAD_TRANSFER = "suspension-load-transfer"
 ENERGY_BUFFER = "energy-buffer"
 TORQUE_SOURCE = "torque-source"
 TORQUE_TRANSMISSION = "torque-transmission"
+DAMPER_FORCE = "damper-force"
+FRONT_DAMPER_FORCE = "front-damper-force"
+REAR_DAMPER_FORCE = "rear-damper-force"
+SUSPENSION_CORNER = "suspension-corner"
 
 
 @runtime_checkable
@@ -57,6 +61,21 @@ class SteadyCombinedSlip(Protocol):
     k_y: tuple[float, ...]
     mu_0_x: float
     mu_0_y: float
+
+
+@runtime_checkable
+class TransientCombinedSlip(Protocol):
+    """Provide the scalar coefficients of a transient layer over a steady tire.
+
+    The value holds only PROPOSED dimensionless coefficients and carries no
+    state. Pass the value, a steady tire value, and a state to the evaluation
+    function of its subtype. The state is held by the solver, not here.
+    """
+
+    longitudinal_length_scale: float
+    lateral_length_scale: float
+    trail_pole_ratio: float
+    trail_lead_ratio: float
 
 
 @runtime_checkable
@@ -92,3 +111,31 @@ class DriveForceLimit(Protocol):
     power_limit: float
     efficiency: float
     maximum_motor_speed: float
+
+
+@runtime_checkable
+class DamperForceSource(Protocol):
+    """Provide the force of one damper as a function of its velocity.
+
+    Positive velocity is compression and positive force is compression force.
+    DAMPER_FORCE is the generic contract. A formulation that needs the front
+    and the rear damper requests FRONT_DAMPER_FORCE and REAR_DAMPER_FORCE, so
+    that two providers of one capability cannot be confused.
+    """
+
+    def force(self, velocity):
+        """Return the damper force, slope, and out-of-range flag at ``velocity`` (m/s)."""
+
+
+@runtime_checkable
+class SuspensionCornerSource(Protocol):
+    """Provide the front and rear corner suspension of a vertical vehicle model.
+
+    ``front`` and ``rear`` are axle suspensions (spring, ARB, damper motion ratio,
+    roll centre, anti, toe, and jounce steer). Zero jounce is the static
+    equilibrium at the design ride height, named by ``preload_reference``.
+    """
+
+    front: object
+    rear: object
+    preload_reference: str

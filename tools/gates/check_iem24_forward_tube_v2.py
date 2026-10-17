@@ -40,6 +40,10 @@ from pathlib import Path
 
 import numpy as np
 
+#: The tube v2 protocol is a planar-7dof diagnostic: its component indices come
+#: from the planar plant's published state layout, not from literals.
+from simplified_vehicle_models.solvers.planar_forward import PlanarForwardPlant
+
 PROTOCOL = "tube_v2_protocol.md"
 VERSION = "tube_v2"
 SAMPLES_PER_INTERVAL = 9
@@ -47,10 +51,25 @@ TUBE_FACTOR = 10.
 DOMAIN_WIDENING = 2.
 WINDOW_STEPS = 3.
 CROSSING_TOLERANCE = 1.e-9
-NAMES = ["s", "n", "heading", "v_x", "v_y", "yaw_rate", "w_fl", "w_fr", "w_rl", "w_rr",
-         "soc", "steering", "pedal"]
-WHEELS = (6, 7, 8, 9)
-STEERING, PEDAL = 11, 12
+#: Component names of the frozen protocol. They are the certificate's output
+#: labels, so they must not change; the *indices* behind them are read from the
+#: planar plant's published state layout instead of being repeated as literals.
+_DISPLAY_NAMES = ("s", "n", "heading", "v_x", "v_y", "yaw_rate",
+                  "w_fl", "w_fr", "w_rl", "w_rr", "soc", "steering")
+#: Protocol label -> planar-plant state name where the two differ.
+ALIASES = {"heading": "heading_error",
+           "w_fl": "omega_fl", "w_fr": "omega_fr", "w_rl": "omega_rl", "w_rr": "omega_rr"}
+
+_PLANT_STATE_NAMES = tuple(PlanarForwardPlant.state_names)
+STATE_INDEX = {display: _PLANT_STATE_NAMES.index(ALIASES.get(display, display))
+               for display in _DISPLAY_NAMES}
+if sorted(STATE_INDEX.values()) != list(range(len(_PLANT_STATE_NAMES))):
+    raise AssertionError("tube_v2 display names no longer cover the planar plant layout")
+#: State components plus the integrated pedal coordinate, which the trace stores
+#: after the plant states.
+NAMES = [*_DISPLAY_NAMES, "pedal"]
+WHEELS = tuple(STATE_INDEX[display] for display in ("w_fl", "w_fr", "w_rl", "w_rr"))
+STEERING, PEDAL = STATE_INDEX["steering"], len(_PLANT_STATE_NAMES)
 SAME_SETTINGS = ("track", "planner", "spacing", "maximum_speed", "lateral_acceleration",
                  "pedal_travel_time", "method", "warm_start")
 ACCEPTANCE_CLAIM = "none; diagnostic only; requires reviewed standard"

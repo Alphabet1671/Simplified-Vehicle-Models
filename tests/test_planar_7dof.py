@@ -98,8 +98,21 @@ class PlanarCompileTests(unittest.TestCase):
             capabilities,
             {STEADY_COMBINED_SLIP, AERO_LOADS, DRIVE_FORCE_LIMIT},
         )
-        self.assertEqual(self.compiled.manifest.unused_components, ())
-        self.assertEqual(self.compiled.manifest.unconsumed_parameters, ())
+        # The shared assembly also holds the 14DoF-only roles and parameters.
+        self.assertEqual(
+            self.compiled.manifest.unused_roles(),
+            ("suspension", "damper-front", "damper-rear", "tire-transient"),
+        )
+        self.assertEqual(
+            self.compiled.manifest.unconsumed_names(),
+            (
+                "pitch_radius_of_gyration",
+                "roll_radius_of_gyration",
+                "tire_vertical_damping",
+                "unsprung_mass_front",
+                "unsprung_mass_rear",
+            ),
+        )
 
     def test_consumes_every_required_parameter(self) -> None:
         expected = set(PLANAR_7DOF_VEHICLE_PARAMETER_UNITS)

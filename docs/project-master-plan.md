@@ -491,6 +491,15 @@ These tire states do not rename the model as 22 DOF. The vehicle remains a 14-me
 
 Vertical tire stiffness and damping generate road-contact normal force. Suspension and tire forces couple the body and four unsprung masses. Inertance contributes to the coupled effective mass matrix.
 
+**The two 14-DOF rungs.** Model 4 is delivered in two steps, `14dof-simple` and `14dof-complete`; both keep the same 14 mechanical DOFs.
+
+- `14dof-simple` — **delivered** (`models/formulations/iem24_murphy_real_14dof_simple.xml`). It adds the four unsprung vertical dynamics, vertical tire contact from the existing loaded-radius fit, a corner suspension LUT (spring and bump/droop stops, N-valve damper tables, rear ARB, motion ratio, roll-centre and anti geometry, static toe, a configurable jounce-steer curve with a zero baseline because no measured curve exists), table transients and coupled body/suspension/contact dynamics with an implicit mass matrix. Its tire layer keeps the **unchanged steady UniTire force law** and adds three *provisional* transient states per corner — delayed longitudinal slip, load-coupled lateral carcass deformation, and trail angle — that is 12 tire states and a **38-state plant** (39 with the driver pedal state). The transient tire states are not mechanical DOFs and do not rename the model. All transient coefficients are PROPOSED and unfitted.
+- `14dof-complete` — **next, not delivered**. It replaces the provisional transient layer with fitted coefficients (longitudinal length, lateral carcass response, trail pole and lead, contact transitions) and adds camber-dependent full UniTire steady-state forces and full moments, using the camber gain the corner LUT already stores. Camber does not yet change a tire force in `14dof-simple`; static toe and jounce steer do.
+
+A **transient tire model fitting tool is required** before either rung can support a measured-vehicle accuracy claim. It is not part of this plan.
+
+The 10-DOF massless-corner milestone stays an independent future model. It is **not** safely obtained by setting the unsprung mass to zero in the nonsingular 14-DOF mass matrix.
+
 ## 4\. Tire-model boundaries
 
 ### 4.1 Tire force envelope and friction ellipse
@@ -550,6 +559,8 @@ The suspension input should be a coherent per-corner dataset indexed primarily b
 - metadata: sign convention, zero-jounce definition, units, valid range, and extrapolation policy.
 
 Optimal-control solvers require useful derivatives. Raw piecewise-linear tables have discontinuous derivatives, so optimization-facing LUTs should use validated differentiable interpolation, such as shape-preserving or constrained smooth splines. Extrapolation beyond physical jounce limits should normally be prohibited by constraints rather than silently continued.
+
+**Implemented for `14dof-simple`.** The per-corner dataset is one NPZ (`suspension-corner-v1`) plus a component XML: C1 monotone (Fritsch–Carlson) splines for the spring/bump-stop/droop-stop curve, the damper motion ratio, the roll-centre height and lateral maps, and the front/rear jounce-steer curves; scalar ARB rates, anti fractions, static toe and inertance. The damper is a separate `damper-table-v1` NPZ with one valve row per half (the Multimatic DSSV VC01 uses one `full`-band valve per half, 12 clicks, ±0.5 m/s) and linear extension outside the table with a counted out-of-range flag. Roll-centre height and lateral position are held constant above the 1 g measured point and the queried roll is clipped at the 5° table maximum. Jounce steer has a zero baseline (no measured data) and static toe is the measured 0° at both axles. Bump-stop onset and every unsprung/transient-tire coefficient are PROPOSED, not measured; see [14dof-simple-parameters.md](validation/14dof-simple-parameters.md).
 
 ## 6\. Track model
 
@@ -1144,14 +1155,22 @@ The project should be delivered as a model-compilation foundation, four model mi
 - implicit mass-matrix dynamics;
 - reuse of simplified UniTire and controls.
 
-### Milestone 4 — Full 14-DOF
+### Milestone 4 — 14-DOF: `14dof-simple` (delivered), then `14dof-complete`
 
-- four unsprung vertical dynamics;
-- vertical tire contact;
-- full suspension kinematics including camber and toe;
-- full UniTire steady-state target;
-- transient tire states and initialization;
-- coupled body/suspension/contact dynamics.
+`14dof-simple` — **delivered** (`models/formulations/iem24_murphy_real_14dof_simple.xml`, forward plant `solvers/vertical_forward.py`):
+
+- four unsprung vertical dynamics and vertical tire contact from the loaded-radius law;
+- corner suspension LUT (spring/bump stop, N-valve damper tables, rear ARB, motion ratio, roll-centre and anti geometry, static toe, jounce steer);
+- coupled body/suspension/contact dynamics with an implicit mass matrix;
+- **provisional** transient tire states and initialization: delayed longitudinal slip, load-coupled lateral carcass deformation and trail angle, three per corner around the unchanged steady UniTire force law (12 tire states, 38-state plant).
+
+`14dof-complete` — **next, not delivered**:
+
+- fitted transient tire coefficients (longitudinal length, lateral carcass response, trail pole and lead, contact transitions) from a transient tire fitting tool;
+- full UniTire steady-state target with camber-dependent forces and full moments;
+- jounce-dependent camber effect on tire forces, using the camber gain the corner LUT already stores.
+
+Laps, forward transients and the Task 9 gate evidence for the delivered rung are recorded in [14dof-simple-parameters.md](validation/14dof-simple-parameters.md). The delivered lap is a driven transient and is not an accepted or measured-data-validated result.
 
 ### Shared optimal-control milestone
 

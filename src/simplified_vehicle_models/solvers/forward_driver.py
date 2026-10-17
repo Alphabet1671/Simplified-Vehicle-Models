@@ -418,17 +418,26 @@ class ForwardResult:
 def solve_forward(plant: ForwardPlant, driver: PreviewDriver, initial_state,
                   duration=300., wall_seconds=290., maximum_step=0.02,
                   rtol=1.e-6, atol=1.e-8, method="Radau",
-                   initial_pedal: float | None = None) -> ForwardResult:
+                   initial_pedal: float | None = None,
+                   maximum_wall_seconds: float = 300.) -> ForwardResult:
     """Integrate all states with a stiff method and stop at the path end.
 
-    The caller must also apply a parent-process timeout to include setup.
-    Completion does not assert physical validity or hot-lap periodicity.
+    ``wall_seconds`` is this call's wall budget and ``maximum_wall_seconds`` is
+    the ceiling that budget may not exceed. The ceiling defaults to 300 s so the
+    7DoF acceptance limit is preserved; a rung that may run longer (the vertical
+    14DoF solver entry point) must raise it explicitly. Both are wall-clock
+    seconds of the caller's process. The caller must also apply a
+    parent-process timeout to include setup. Completion does not assert physical
+    validity or hot-lap periodicity.
     """
     from scipy.integrate import solve_ivp
 
-    limits = np.asarray([duration, wall_seconds, maximum_step, rtol, atol], dtype=float)
-    if not np.all(np.isfinite(limits)) or np.any(limits <= 0) or wall_seconds > 300.:
-        raise ValueError("positive finite limits and wall_seconds <= 300 are required")
+    limits = np.asarray([duration, wall_seconds, maximum_step, rtol, atol,
+                         maximum_wall_seconds], dtype=float)
+    if not np.all(np.isfinite(limits)) or np.any(limits <= 0):
+        raise ValueError("positive finite limits including maximum_wall_seconds are required")
+    if wall_seconds > maximum_wall_seconds:
+        raise ValueError("wall_seconds must not exceed maximum_wall_seconds")
     if method not in ("Radau", "BDF"):
         raise ValueError("forward method must be Radau or BDF")
     plant_initial = np.array(initial_state, dtype=float, copy=True)

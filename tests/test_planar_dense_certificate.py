@@ -113,7 +113,9 @@ class ContactConditionTests(unittest.TestCase):
     def test_review_counterexamples_fail_the_checker(self):
         vehicle = self.vehicle
         cases = {
-            "drag": replace(vehicle, aero=replace(vehicle.aero, drag_area=10.)),
+            # 15 m^2: with 45 % front mass the rear axle carries more load, so the
+            # former 10 m^2 no longer unloads it.
+            "drag": replace(vehicle, aero=replace(vehicle.aero, drag_area=15.)),
             "geometry": replace(vehicle, track_width=3.0, wheelbase=0.9),
             "linear branch": replace(vehicle, tire=replace(vehicle.tire, slip_eps=1.e9)),
             "tall cg": replace(vehicle, cg_height=0.5),
@@ -126,7 +128,8 @@ class ContactConditionTests(unittest.TestCase):
 
     def test_counterexample_vehicles_really_lose_contact(self):
         """Ground the rejection: the flagged vehicles do produce negative loads."""
-        drag = replace(self.vehicle, aero=replace(self.vehicle.aero, drag_area=10.))
+        # Same 15 m^2 as the checker counterexample (rear load about -296 N at 30 m/s).
+        drag = replace(self.vehicle, aero=replace(self.vehicle.aero, drag_area=15.))
         state = PlanarState(30., 0., 0., np.full(4, 150.), 0.)
         loads = evaluate_planar_dynamics(drag, state, np.zeros(4), 0.).normal_loads
         self.assertLess(float(np.min(loads)), 0.)

@@ -40,10 +40,119 @@ Historical grid measurements below predate this physics and start-charge fix.
 | Regen convention | The complete feasible negative-torque curve is retained without sign coercion or truncation. `regen_feasible` marks exactly the productive samples whose analytical bus power is below -1e-9 W; positive bus draw remains in the curve with a false mask. Regen bus power is not assumed monotone. Load zero is the physical zero-torque anchor. |
 
 
+## Multimatic DSSV VC01 damper table
+
+| Field | Value |
+|---|---|
+| File | `models/data/multimatic_dssv_vc01.npz` (schema `damper-table-v1`) |
+| SHA-256 | `e4504e26385b697018db7b05a39822e8aea731a49e07c3d945927787a0e95ccf` |
+| Source | `/Users/alphabet1671/Dev/FSAE-VD-Personal-Scripts/Vertical Dynamics/DamperTable.xlsx`, sheet `Multimatic_DSSV_VC01`, range A1:Z13 |
+| Source SHA-256 | `1b6322caaeaf83f507a5d2256ca4652932c1b1bf05e06d8212f60e6114011d32` |
+| Layout | A2:A13 clicks 0..11; B1:Z1 damper velocity in mm/s (-500..+500, 25 knots); cells hold force in N. Negative velocity is rebound with negative force |
+| Arrays | `velocity_compression` (13), `velocity_rebound` (13), `force_compression` (13, 12), `force_rebound` (13, 12), one `full`-band valve per half (`compression`, `rebound`), 12 clicks each. Axes in m/s, force in N |
+| Generator | `tools/model_data/generate_damper_lut.py`, `damper-lut-v1` |
+| Command | `python3 tools/model_data/generate_damper_lut.py '/Users/alphabet1671/Dev/FSAE-VD-Personal-Scripts/Vertical Dynamics/DamperTable.xlsx' --sheet Multimatic_DSSV_VC01 --velocity-unit mm/s --force-unit N --rebound-sign negative --correct "8,300,761" --output-npz models/data/multimatic_dssv_vc01.npz --output-xml-front models/dampers/multimatic_dssv_vc01_front.xml --output-xml-rear models/dampers/multimatic_dssv_vc01_rear.xml` |
+| Source defect corrected | Sheet cell **V10** (click 8, +300 mm/s) holds 671 N. Neighbours at +300 mm/s: click 7 = 725 N, click 9 = 799 N; click 8 at +250 mm/s = 656 N and at +350 mm/s = 863 N. The correction supplied on the command line is 761 N. It is recorded in the NPZ `corrections` key as `{"cell":"V10","click":8,"from_N":671.0,"to_N":761.0,"velocity_m_s":0.3}`. Without `--correct` the generator fails and names the cell |
+| Monotonicity checks | Force magnitude is non-decreasing with click at every velocity. It is strictly increasing with click wherever \|v\| >= 25 mm/s. The source has click ties at 0 and +-10 mm/s (for example 17 N at +10 mm/s for clicks 0-2), which are kept. Force magnitude is strictly increasing with \|v\| for every click. Force at v = 0 is zero |
+| CI fixture | `tests/fixtures/damper_vc01.csv` holds the raw, uncorrected 12 x 25 table with provenance comments. A test checks that the fixture equals the workbook when the workbook is present, and that generation from the fixture reproduces the committed NPZ byte for byte |
+| Determinism | The NPZ is written as stored (uncompressed) zip entries with a fixed 1980-01-01 timestamp, no path or time in the bytes. The write goes through an explicit temp file and `os.replace` (no suffix appended by NumPy). Two runs give the same SHA-256 |
+| XML | `models/dampers/multimatic_dssv_vc01_front.xml` (`damper-model/table-front`) and `..._rear.xml` (`damper-model/table-rear`) pin the same NPZ digest. Baseline `click_compression` = 5, `click_rebound` = 7. Spot checks: +0.1 m/s at click 5 gives 215 N, -0.1 m/s at click 7 gives -267 N |
+
+
+## IEM24 corner suspension table (14DoF)
+
+| Field | Value |
+|---|---|
+| File | `models/data/iem24_murphy_real_corners.npz` (schema `suspension-corner-v1`), `models/suspensions/iem24_murphy_real_suspension.xml` (`suspension-model/corner-table`) |
+| SHA-256 | `04bb06c93b7f52de2e9bc4fcd4e934532d89a9442e75e79ab5886afadb38f0f0` |
+| Source | `/Users/alphabet1671/Desktop/IEM_24_DSS.xlsx`, sheet `FSAE_Specs_EV`, read by fixed cell address |
+| Source SHA-256 | `e436c2f61d46f23614515e34cbce381e45a5e508b9840012c88511f59afac5d8` (the generator exits with an error when `--dss-sha256` does not match) |
+| Cells read | Travel D17/E17 (front compression/rebound) and G17/H17 (rear), 31.8 mm each. Heave motion ratio C23/F23: the first `<ratio>:1 heave` value, 1.05 front and 1.10 rear (the roll ratios 1.2 and 1.3 are ignored). Camber gain C24/F24 (25.1, 45.3 deg/m). Static toe C26/F26, text `0` converted to a number (0 deg). Anti C29/F29: first value brake, second drive: front 54.2/32.0 %, rear 57.4/55.0 %. RC static C30/F30: 41.275 and 57.15 mm. RC at 1 g D31/E31 and G31/H31: height 45.5 / 65.3 mm, lateral -6.0 / -8.0 mm. The sheet stores some of these as text; the generator converts them and fails on a non-numeric value |
+| Wheel rates (override) | DSS rows 18-19 (43.4315 and 47.6345 N/mm, roll rates) are intentionally **not** used. The selected rates are 450 lbf/in front and 350 lbf/in rear (78 807.08 and 61 294.39 N/m); the rear ARB is 120 lbf/in (21 015.22 N/m); the front ARB is 0 |
+| Spring curve | Wheel force against jounce; spring, bump stop, and droop stop in one curve. Zero jounce is the static equilibrium: the curve holds the **sprung** static corner load (505.778 N front, 646.503 N rear, from 287 kg total, 45 % front static load, 13 kg unsprung per corner, PROPOSED) at jounce 0. PROPOSED bump and droop stops: the wheel rate rises to 10x with a C1 smoothstep over 27.8-29.8 mm and stays 10x to the 31.8 mm design travel, in both directions. The DSS 31.8 mm travel remains a hard limit: a query beyond it raises a domain error |
+| Roll-centre table | The 1 g DSS point is placed at roll = 0.289 deg/g x 1 g (reference rigid-tire roll gradient). Table: roll magnitude 0, 0.289 deg, 5 deg to height. Above the 1 g point, height and lateral position are held constant (no DSS data beyond 1 g); this is recorded in the NPZ `metadata` key. Lateral is odd in roll (Task 6 multiplies by the sign of the roll angle), height is even |
+| Jounce steer | **User-selected baseline placeholder.** Front and rear knots at -31.8, 0, +31.8 mm with 0 deg toe change. Source: "baseline, no measured jounce-steer data" (also in the NPZ `metadata` and the XML comment). The schema accepts measured nonzero knots later; the generator enforces strictly rising jounce, finite values, an explicit 0 mm / 0 deg reference, and knots at both travel limits |
+| XML scalars | `arb_wheel_rate_front` 0, `arb_wheel_rate_rear` 21 015.22 N/m, `inertance_front/rear` 0 kg (PROPOSED), `static_toe_front/rear` 0 rad (from DSS C26/F26) |
+| Generator | `tools/model_data/generate_suspension_lut.py`, `suspension-lut-v1` |
+| Command | `python3 tools/model_data/generate_suspension_lut.py --dss /Users/alphabet1671/Desktop/IEM_24_DSS.xlsx --dss-sha256 e436c2f61d46f23614515e34cbce381e45a5e508b9840012c88511f59afac5d8 --wheel-rate-front-lbf-in 450 --wheel-rate-rear-lbf-in 350 --arb-rear-lbf-in 120 --output-npz models/data/iem24_murphy_real_corners.npz --output-xml models/suspensions/iem24_murphy_real_suspension.xml` |
+| CI fixture | `tests/fixtures/iem24_dss_suspension_rows.csv` is a raw copy of DSS rows 17-31, columns A-J. A test compares the cells with the workbook when it is present (skipped otherwise) and checks that generation from the fixture reproduces the committed NPZ byte for byte |
+| Determinism | Stored zip entries with fixed 1980-01-01 timestamps; no path or time in the bytes. Two runs give the same SHA-256 |
+
+
 Export date: 2026-10-11
 
 This file records the source of every exported data file.
 It also records the unit conversions and two open data questions.
+
+## IEM24 provisional transient UniTire layer (14DoF)
+
+| Field | Value |
+|---|---|
+| Files | `src/simplified_vehicle_models/tires/unitire_transient.py`, `models/tires/iem24_murphy_real_unitire_transient.xml` (`tire-model/unitire-transient-simple`, capability `transient-combined-slip`), tests `tests/test_unitire_transient.py` |
+| Steady law | Unchanged. `evaluate_unitire` and `models/tires/iem24_murphy_real_unitire.xml` are not modified; `tests.test_unitire_simple` (MATLAB fixture) passes unchanged. The transient XML holds only four scalars and no nested tire reference. The shared assembly keeps role `tire` and gains role `tire-transient` in Task 5/6 |
+| Paper | Ma et al., "The Unsteady-State Response of Tires to Slip Angle and Vertical Load Variations", *Machines* 2022, 10(7), 527. DOI **10.3390/machines10070527**. The plan cites equations 52-55, 60-61, 64 and 69-70. **The paper text could not be fetched when this layer was written (publisher returned HTTP 403, no search access). The equation numbers, their roles, and every statement here about the paper's content (secant stiffness, trail pole and zero, tire-specific m and n, absence of longitudinal coefficients) come from the project plan and are not verified against the paper.** The equations below are this project's reduced forms motivated by those equations, not quotations of the paper |
+| State (per wheel) | `longitudinal_slip` kappa_d (1), `lateral_deformation` y (m), `trail_angle` alpha_t (rad). 12 tire states for four wheels, separate from the 14 mechanical DoFs. Normal load is not filtered |
+| Lateral (reduced form motivated by eq. 61) | `sigma_y(Fz) = lateral_length_scale * k_y(Fz)/k_cy`, `alpha_eff = y/sigma_y(Fz)`, `dy/dt = max(\|Vx\|, 0.1) (alpha_cmd - alpha_eff)` (m/s). `k_y` is the normalized-load polynomial of the steady tire (`Fz/f_z_rated`, descending coefficients). Load coupling comes from `sigma_y(Fz)` changing at fixed `y`; no `dFz/dt` and no nested root |
+| Trail (project approximation motivated by eq. 64, 69-70) | `d alpha_t/dt = max(\|Vx\|, 0.1) (alpha_eff - alpha_t)/sigma_trail`, `sigma_trail = sigma_y/trail_pole_ratio`. `t_eff = t(alpha_t) + n (t(alpha_eff) - t(alpha_t))`, `n` = `trail_lead_ratio`, lead correction zero at steady state. `Mz = -(Fy (t_eff + Fx/k_cx) - Fx Fy/k_cy)` using the delayed and windowed Fx, Fy (the steady formula at `unitire_simple.py:353-358` with `t_eff`). Equals the steady `Mz` when `alpha_t = alpha_eff` |
+| Longitudinal (**PROPOSED extension, not in the paper**) | `sigma_x(Fz) = longitudinal_length_scale * k_x(Fz)/k_cx`, `d kappa_d/dt = max(\|Vx\|, 0.1) (kappa_cmd - kappa_d)/sigma_x` |
+| Forces | Fx, Fy, rolling-resistance moment from `evaluate_unitire(steady, alpha_eff, kappa_d, Fz, \|omega\|)`, unchanged. The tire's internal rolling-speed floor `vroll_min` is 0.1 m/s in this XML. Separately, the caller's 1 m/s `speed_floor` computes slip ratio and slip angle and is unchanged, outside this transient layer. The new rate speed floor `max(\|Vx\|, 0.1)` m/s applies only to the three state rates. `relaxation_length` of the returned forces is the scaled `sigma_y`. No camber effect is claimed (zero inclination); the overturning moment is the steady value scaled by the window |
+| Proposed values | `longitudinal_length_scale` 1.0, `lateral_length_scale` 1.0, `trail_pole_ratio` m = 1.0, `trail_lead_ratio` n = 0.25. All PROPOSED; the published m, n are tire-specific. At rated load 660 N: `sigma_y` = 0.1533 m (`k_y/k_cy`, the steady `relaxation_length`), `sigma_x` = 0.1195 m. Both are positive over the operating-load domain (`check_relaxation_lengths`) |
+| Contact | One smoothstep window `w(Fz) = 3s^2 - 2s^3`, `s = clip((Fz - 0.5)/1.5, 0, 1)`: 0 at `Fz <= 0.5 N`, 1 at `Fz >= 2 N`, C1 at both edges. It multiplies Fx, Fy, Mz (computed from the windowed Fx, Fy; above 2 N it equals the steady `Mz` identity) and the overturning moment. The rolling-resistance moment is **not** windowed (it is proportional to Fz; zero in the current fit). It also blends the state rates: `rate = w * (slip law) + (1 - w) * (-state/0.01 s)`, so rates have no jump at any load and below 0.5 N the three states relax with a 0.01 s time constant. At re-contact the integration continues from the current state with these bounded rates. The vertical force is returned as the non-negative input load and is not windowed or invented here. The 1 N threshold of the earlier brief is replaced by this window (plan/ledger ruling). |
+| Reduced-model limits | (1) The paper uses secant stiffness; this layer uses the steady `k_y/k_cy` length, so the carcass response does not slow down near force saturation. (2) No nonlinear inverse and no `dFz/dt` term. (3) Longitudinal law, contact window, 0.01 s relaxation and the four coefficients are unfitted and not validated against this Hoosier. (4) Trail pole and lead are a first-order approximation. (5) Low speed: all three rates use `max(\|Vx\|, 0.1)`, so below 0.1 m/s the carcass lag is frozen at the 0.1 m/s rate rather than physical. (6) States are not initialised from a standing start; use `steady_rolling_state`. (7) A transient tire fitting tool is required before any measured-vehicle accuracy claim |
+
+## IEM24 vertical 14DoF vehicle parameters and tire vertical law
+
+Introduced with `14dof-simple` (`models/formulations/iem24_murphy_real_14dof_simple.xml`). The shared assembly `models/vehicles/iem24_murphy_real_planar.xml` gains five scalars and four component roles. The planar 7DoF formulation ignores them: it lists the roles `suspension`, `damper-front`, `damper-rear`, `tire-transient` as unused components and the five scalars as unconsumed parameters.
+
+| Quantity | Value | Source |
+|---|---|---|
+| `unsprung_mass_front`, `unsprung_mass_rear` | 13 kg per corner (52 kg in total) | PROPOSED, not weighed |
+| `roll_radius_of_gyration` | 0.193 m | User estimate |
+| `pitch_radius_of_gyration` | 0.386 m | User-reported measurement |
+| `tire_vertical_damping` | 400 N*s/m, one value for all four tires | User estimate |
+| `wheel_inertia` | unchanged | Existing assembly value |
+| Sprung mass | 287 - 52 = 235 kg | Derived |
+| Sprung CG height | `(287*0.300 - 52*r_1)/235` = 0.3211 m, with the unsprung CG at the free tire radius `r_1` = 0.2045 m | Derived; reproduces the 0.3211 m reference |
+| Sprung front fraction | `(287*0.45 - 26)/235` = 0.4389 | Derived |
+| Roll and pitch inertia | `235*0.193^2` = 8.754 kg*m^2; `235*0.386^2` = 35.01 kg*m^2 | Derived |
+
+Direct component roles: `suspension` (corner table), `damper-front` and `damper-rear` (Multimatic DSSV VC01 XMLs, distinct `front-damper-force` and `rear-damper-force` capabilities, clicks 5 / 7), and `tire-transient`. The steady `tire` role is unchanged. The yaw radius of gyration stays the 7DoF measured value; the sprung yaw inertia is not derived in this task.
+
+### Tire vertical law (`tires/vertical.py`)
+
+| Item | Statement |
+|---|---|
+| Deflection | `delta = r_free - r_loaded`, `r_free = loaded_radius(tire, 0) = r_1`; positive in compression |
+| Elastic load, `delta >= delta1 = 0.5 mm` | Exact closed-form root of the loaded-radius quadratic `r_1 + r_2 x + r_3 x^2`, `x = Fz/f_z_rated`; the residual against `loaded_radius` is below 1e-9 m up to 3000 N. Valid only when the lateral-shift and `k_rl` loaded-radius coefficients are zero; the compile rejects a tire with any of them nonzero, or a radius law that stops decreasing below 10 kN |
+| Low-load ramp, `delta0 < delta < delta1` | `F1 * ((delta - delta0)/(delta1 - delta0))^2`, with `F1` = 39.70 N, `k1` = 79.43 N/mm, `delta0 = delta1 - 2 F1/k1` = -0.4996 mm. Value and slope are continuous at both knots; C1 but not C2. Zero at and below `delta0` (exactly zero at -1 mm) |
+| Ghost load | The ramp carries 9.92 N at zero deflection. This is a numerical device, not physics; it makes the load differentiable through lift-off. Accepted and disclosed |
+| Static stiffness | 80.4 N/mm at the front static corner load (633 N, 45 % of 287 kg per axle) and 80.7 N/mm at the rear (774 N) |
+| Damping | `F = Fs (1 + psi(c * delta_rate/(Fs + 1 N)))`, `psi(u) = u` for `u >= 0` and `tanh(u)` otherwise; positive rate is compression. The load is nonnegative, there is no damping where `Fs = 0`, and the law is C1 in the rate. At compression the damping force is `c * delta_rate * Fs/(Fs + 1 N)`, about `c * delta_rate` for loaded tires. `contact` means `Fs > 0`; a violent extension can drive the total load to zero while contact stays true |
+| Returned stiffness | The elastic `dFs/d(delta)` only. It omits the damping term and the dependence of the damping on `Fs`. An implicit solver (Task 6) must treat the damping stiffness separately; with `c` = 400 N*s/m and the 80 N/mm tire the wheel-hop mode is lightly damped and the load law is stiff near lift-off |
+| Transient tire carry-over | `check_relaxation_lengths` runs at compile time over 0 to 3000 N, so a transient tire whose relaxation lengths become nonpositive is rejected at compile, not at run time |
+
+All of these values are PROPOSED or user estimates except the radius law, which comes from the tester-fitted UniTire. No tire vertical test data exists; the vertical damping and unsprung masses should be measured before any accuracy claim for hop-mode behavior.
+
+## IEM24 vertical 14DoF-simple lap evidence (Task 9)
+
+Task 9 generated lap evidence for the delivered `14dof-simple` rung. **It changed no data file**: the damper NPZ/XML, the suspension NPZ/XML and the transient tire XML were not regenerated, and their recorded digests above still apply.
+
+| Item | Value |
+|---|---|
+| Acceptance attempt | `docs/validation/iem24-murphy/14dof_simple_trials/attempt_1792190392697144000` (cold lap, `models/tracks/2024_michigan_endurance_closed.xml`, BDF, `rtol` 1e-5, `maximum_step` 0.005 s, live planner, 1800 s user-selected wall budget) |
+| Paired attempts | periodicity baseline `.../14dof_simple_trials/periodicity/attempt_1792190828124776000` (warm start, cold-lap settings); refinement `.../14dof_simple_trials/refinement/attempt_1792190567221803000` (same warm start, `maximum_step` 0.0025 s, `rtol` 1e-6) |
+| Gate table | `.../attempt_1792190392697144000/gates.json`, written by `tools/gates/check_14dof_simple_gates.py`; checked by `tests/test_vertical_14dof_evidence.py` |
+| Measured lap | 66.56339750 s over 1016.70064959 m; 20 075 accepted steps, 74 486 evaluations; solver wall 125.81 s, child wall 138.03 s, peak child RSS 1.65 GB |
+| Plan gates | all seven pass: `completed`, `contact_valid` (minimum load 97.887 N, 0 lifted-wheel evaluations), `travel_valid` (jounce −5.8023 to +7.1369 mm of ±31.8 mm; 0 bump-stop entries), `table_domain_valid` (`out_of_range_evaluations` 0), `refinement_validated` (Δ lap time 7.65e-7 s, max \|Δv\| 9.36e-05 m/s, worst tire-state ratio 0.037), `periodicity_valid` (closure ratio 0.011), `cross_fidelity_reported` |
+| What the lap does **not** establish | Every attempt is `usable = false`: the driven lap misses the 0.25 m path-tracking cap (0.383 m), `between_step_validation_complete` is never certified, and no measured transient tire data exists. The transient coefficients above stay PROPOSED and unfitted |
+| Cross-fidelity reference | corrected 7DoF lap `docs/validation/iem24-murphy/seven_dof_track_pair/original/attempt_1792187768241214000` (66.53234595 s), itself `usable = false` (0.366 m path error, non-periodic) |
+| Fitting tool | A **transient tire model fitting tool is still required** for the longitudinal relaxation length, the lateral carcass response, the trail pole and lead, and the contact transitions. Task 9 did not build it |
+
+Parameter-provenance disclosures carried with this rung: the D5 pitch and roll radii of gyration (0.386 m
+user-reported, 0.193 m user estimate) are unvalidated, and with them the full-vehicle pitch mode is
+7.2989 Hz, **outside** the plan's 3.4–4.7 Hz ride band; the roll mode (9.8955 Hz) is un-gated. The full
+parameter table, the transient tire equations with DOI 10.3390/machines10070527 and the complete list of
+PROPOSED values are in [`docs/validation/14dof-simple-parameters.md`](../validation/14dof-simple-parameters.md).
 
 ## Source files
 

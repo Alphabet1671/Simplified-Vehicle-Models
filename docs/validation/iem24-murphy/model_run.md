@@ -1,5 +1,9 @@
 # IEM24 Murphy real-model MIS lap
 
+> **Superseded 2026-10-16:** generated with track 1.016 m and 55 % front mass. Values do not apply to the current vehicle.
+>
+> The current vehicle has track 1.240 m and 45 % of the mass on the front axle (CG 55 % of the wheelbase behind the front axle). The lap metrics and figure below were not regenerated.
+
 > **Tools layout migration note.** `tools/` was reorganised into category subpackages (`data`, `tracks`, `model_data`, `run`, `gates`, `reports`, `diagnostics`). Commands and paths in this document use the current locations; `tools/run_iem24_murphy_lap.py` named in the reproduce block is not present in the current tree (it was not part of the migration) and cannot be run as written. See [docs/dev/tools-layout.md](../../dev/tools-layout.md) for the old-to-new mapping. Recorded hashes, attempt directories and frozen artifacts are unchanged.
 
 This is the separate real-IEM24 model run on the 2024 Michigan Endurance V11 track. The point-mass solver completed one flying lap with regen disabled and mechanical braking only.
@@ -15,13 +19,13 @@ This is the separate real-IEM24 model run on the 2024 Michigan Endurance V11 tra
 | Pack terminal voltage | 574.4 → 560.7 V over the lap |
 | Solver | Converged; 3 profile iterations, 2 energy iterations |
 
-The model uses 287 kg total mass (209 kg car + 78 kg driver), 42% LLTD, CGx at 45% of wheelbase from the front axle, 0.300 m CG height, CL·A = 3.5 m², CD·A = 1.55 m², and 50% aero balance. The two rear motors are driven; front drive torque share is zero. APPS is capped at 10.5 N·m per motor and regeneration is off.
+The model uses 287 kg total mass (209 kg car + 78 kg driver), 42% LLTD, CG 45% of the wheelbase from the front axle (55% of the mass on the front axle) as simulated in the results below (current vehicle: 45% on the front axle), 0.300 m CG height, CL·A = 3.5 m², CD·A = 1.55 m², and 50% aero balance. The two rear motors are driven; front drive torque share is zero. APPS is capped at 10.5 N·m per motor and regeneration is off.
 
 The lap runs on the **signed closed centreline**, not the legacy V11 radius profile. The legacy profile stores a radius magnitude with no turn direction, so every corner came out as a right-hander and the simulated yaw rate was never negative. The closed centreline was rebuilt in this repository from the same `0615CompEndurance.mat` log, so it carries the real turn directions and coordinates.
 
 The pack starts from the measured resting voltage: the logged `VPack` channel reads a median 575.70 V (standard deviation 0.048 V) over the 12 s the car sits still before launch, and `models/energy-storages/iem24_murphy_real_battery.xml` compiles that to an initial state of charge of 0.8291. The exported `pack_voltage_v` is the terminal voltage (`V_oc − I·R`), because the logged channel is a terminal measurement.
 
-Wheelbase, track width, tire model, battery, gear ratio, air density, and mechanical brake bias remain copied from the existing Murphy model because no replacement measurements were provided for them. The 45%-from-front CGx interpretation is represented as `front_mass_fraction = 0.55` in this model's convention.
+Wheelbase, tire model, battery, gear ratio, air density, and mechanical brake bias remain copied from the existing Murphy model because no replacement measurements were provided for them. Since 2026-10-16 the model uses a user-confirmed track width of 1.240 m (1.016 m was an error) and `front_mass_fraction = 0.45`, meaning 45 % of the mass on the front axle. The lap results below were generated with track 1.016 m and `front_mass_fraction = 0.55`; they are superseded and do not apply to the current vehicle.
 
 ![IEM24 Murphy simulated MIS velocity, acceleration, yaw-rate, and pack-voltage traces](simulated_lap.png)
 

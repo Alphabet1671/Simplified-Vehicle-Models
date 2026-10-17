@@ -1,6 +1,8 @@
 """Audit the monotonicity argument behind the powertrain voltage closure.
 
-``PlanarForwardPlant.powertrain`` solves ``V - terminal(V) = 0`` with a bracketed
+The shared forward powertrain closure (``solvers/forward_powertrain.py``, moved
+there unchanged from ``PlanarForwardPlant.powertrain`` in Task 7) solves
+``V - terminal(V) = 0`` with a bracketed
 root finder. A unique root follows when the residual is strictly increasing:
 
 1. The speed-regulated torque envelope never decreases with bus voltage.
@@ -23,7 +25,7 @@ import numpy as np
 from simplified_vehicle_models.compiler.compile import compile_formulation
 from simplified_vehicle_models.powertrain.energy_storage import StorageState, solve_current
 from simplified_vehicle_models.powertrain.motor_envelope import speed_regulated_torque_limit
-from simplified_vehicle_models.solvers import planar_forward
+from simplified_vehicle_models.solvers import forward_powertrain
 from simplified_vehicle_models.solvers.forward_driver import DriverCommand, SpeedPlan
 from simplified_vehicle_models.solvers.planar_forward import PlanarForwardPlant
 
@@ -54,7 +56,9 @@ class PowertrainClosureAuditTests(unittest.TestCase):
 
     def test_residual_the_solver_brackets_is_increasing(self):
         captured = []
-        real_brentq = planar_forward.brentq
+        # Task 7 moved the powertrain closure to ``forward_powertrain``, so the
+        # bracket spy follows the function to the module that now owns it.
+        real_brentq = forward_powertrain.brentq
 
         def spy(function, lower, upper, *args, **kwargs):
             captured.append((function, lower, upper))
@@ -66,7 +70,7 @@ class PowertrainClosureAuditTests(unittest.TestCase):
         top_wheel_speed = 1.2 * motor.maximum_motor_speed / motor.gear_ratio
         worst = np.inf
         brackets = 0
-        with patch.object(planar_forward, "brentq", spy):
+        with patch.object(forward_powertrain, "brentq", spy):
             for charge in (0.1, 0.5, 0.95):
                 for wheel_speed in (0.5, 30., 0.8 * top_wheel_speed, 0.99 * top_wheel_speed,
                                     top_wheel_speed):

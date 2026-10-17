@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<model schema-version="1.0" id="iem24-murphy-real-unitire-transient" type="tire-model" subtype="unitire-transient-simple">
+    <!-- PROPOSED provisional transient coefficients, not fitted to this Hoosier and not validated. This file holds only scalars; the steady force law stays in iem24_murphy_real_unitire.xml (shared assembly role "tire"; this file is role "tire-transient"). Reduced specialization of Ma et al., Machines 2022, 10(7), 527, DOI 10.3390/machines10070527, motivated by equations 52-55, 60-61, 64 and 69-70 (equation numbers and the paper content stated here come from the project plan; the paper text was not re-verified). A transient tire fitting tool is required before any measured-vehicle accuracy claim. -->
+    <!-- PROPOSED: longitudinal relaxation length = scale * k_x(Fz)/k_cx (extension, not from the paper). Basis: unit scale on the steady slip-stiffness-over-carcass-stiffness ratio, an engineering guess with no longitudinal data. About 0.1195 m at rated load 660 N. -->
+    <!-- PROPOSED: lateral relaxation length = scale * k_y(Fz)/k_cy. Basis: unit scale on the steady relaxation length reported by the steady tire (same k_y/k_cy), not fitted to transient data. About 0.1533 m at rated load. -->
+    <!-- PROPOSED: trail pole ratio m (dimensionless); trail time constant length = sigma_y/m. Basis: neutral value 1.0 (trail lags the effective angle by one lateral relaxation length), chosen without data; the pole of equations 69-70 is tire-specific in the paper. -->
+    <!-- PROPOSED: trail lead ratio n (dimensionless, 0 to 1); Basis: 0.25 is a modest lead chosen without data to approximate the zero of equation 64 (project choice); the published n is tire-specific. -->
+    <parameters>
+        <parameter name="longitudinal_length_scale" value="1.0" unit="1" />
+        <parameter name="lateral_length_scale" value="1.0" unit="1" />
+        <parameter name="trail_pole_ratio" value="1.0" unit="1" />
+        <parameter name="trail_lead_ratio" value="0.25" unit="1" />
+    </parameters>
+</model>

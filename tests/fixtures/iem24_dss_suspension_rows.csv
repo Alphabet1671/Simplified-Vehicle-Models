@@ -1,0 +1,20 @@
+# Raw copy of rows 17-31, columns A-J, of the IEM24 DSS workbook for CI.
+# Source workbook: /Users/alphabet1671/Desktop/IEM_24_DSS.xlsx, sheet FSAE_Specs_EV, range A17:J31
+# Source workbook sha256: e436c2f61d46f23614515e34cbce381e45a5e508b9840012c88511f59afac5d8
+# Layout: first column is the sheet row; later columns are sheet columns A, B, C, ... as stored. Numbers that the sheet stores as text stay text.
+# Rows 18-19 (wheel and roll rates) are present but intentionally unused by the generator.
+17,Suspension design travel,mm,Jounce (col D): Rebound (col E):,31.8,31.8,Jounce (col G): Rebound (col H):,31.8,31.8,,
+18,Wheel rate (chassis to wheel center),N/mm,43.4315,,,47.6345,,,,
+19,Roll rate (chassis to wheel center),NM/deg,332,,,492,,,,
+20,Sprung mass natural frequency,Hz,4,,,4,,,,
+21,Jounce Damping,% critical,"Heave: 0.4, Roll: 1",at __ mm/sec:,40,"Heave: 0.4, Roll: 1",at __ mm/sec:,40,,
+22,Rebound Damping,% critical,"Heave: 0.4, Roll: 1",at __ mm/sec:,40,"Heave: 0.4, Roll: 1",at __ mm/sec:,40,,
+23,Motion ratio,_.__:1,1.05:1 heave / 1.2:1 roll,Type:,Linear,1.1:1 heave / 1.3:1 roll,Type:,Linear,,
+24,Ride Camber  (Rate of Camber Change),deg/m,25.1,,,45.3,,,,
+25,Roll Camber,deg/deg,0.728,,,0.51,,,,
+26,"Static Toe (- out, + in)",deg,0,,,0,,,,
+27,Static camber,deg,-1,,,-1,,,,
+28,Static camber adjustment method,,shimming lower camber bracket on upright,,,shimming lower camber bracket on upright,,,,
+29,Anti dive / Anti Squat,%,54.2/32.0,,,57.4/55.0,,,,
+30,"Roll center height above ground, static",mm,41.275,,,57.15,,,,
+31,Roll center position at 1g lateral acc,mm,Height (col D): Lateral (col E):,45.5,-6.0,Height (col G): Lateral (col H):,65.3,-8.0,,

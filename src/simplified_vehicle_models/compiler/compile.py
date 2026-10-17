@@ -290,6 +290,10 @@ def _build_manifest(
 
 
 def _attach_manifest(model: object, manifest: CompileManifest) -> object:
+    # A composed model attaches the manifest to every layer through this hook.
+    with_manifest = getattr(model, "with_manifest", None)
+    if callable(with_manifest) and dataclasses.is_dataclass(model):
+        return with_manifest(manifest)
     if not dataclasses.is_dataclass(model):
         raise TypeError(
             "the compiled model must be a dataclass to hold the manifest; "
@@ -330,6 +334,19 @@ def _formulation_definition(formulation: Model) -> FormulationDefinition:
             requested_capabilities=PLANAR_7DOF_REQUESTED_CAPABILITIES,
             consumed_parameters=tuple(PLANAR_7DOF_VEHICLE_PARAMETER_UNITS),
             compile_function=compile_planar_7dof_vehicle,
+        )
+    if key == ("vehicle-formulation", "14dof-simple"):
+        from simplified_vehicle_models.formulations.vertical_14dof import (
+            VERTICAL_14DOF_REQUESTED_CAPABILITIES,
+            VERTICAL_14DOF_VEHICLE_PARAMETER_UNITS,
+            compile_vertical_14dof_vehicle,
+        )
+
+        return FormulationDefinition(
+            assembly_type="vehicle-assembly",
+            requested_capabilities=VERTICAL_14DOF_REQUESTED_CAPABILITIES,
+            consumed_parameters=tuple(VERTICAL_14DOF_VEHICLE_PARAMETER_UNITS),
+            compile_function=compile_vertical_14dof_vehicle,
         )
     raise ValueError(
         f"{formulation.path}: unknown formulation type "

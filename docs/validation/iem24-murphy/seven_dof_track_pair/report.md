@@ -1,5 +1,7 @@
 # IEM24 Murphy simulated MIS 2024 laps (7DoF forward driver) vs measured endurance stint — legacy original and canonical tracks
 
+> **Superseded 2026-10-16:** generated with track 1.016 m and 55 % front mass. Values do not apply to the current vehicle.
+
 Michigan International Speedway 2024 endurance circuit, the IEM24 Murphy car, **simulated 7DoF laps compared with the measured endurance stint**. This report follows the [MIS 2024 report standard](../../../standards/mis-2024-report-standard.md) without departure. At least one attempt fails an acceptance gate (table in Configuration): these are **driven, non-optimal transient 7DoF laps and are not validated results**. No claim of validation is made.
 
 ## Configuration

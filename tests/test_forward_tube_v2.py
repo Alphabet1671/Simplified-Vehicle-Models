@@ -557,6 +557,45 @@ class MarginAndStatusTests(unittest.TestCase):
         self.assertIs(result["empirical_convergence_test"]["exploratory_4b_status"]["all_hold"], True)
 
 
+class PlantLayoutTests(unittest.TestCase):
+    """Task 8: the diagnostic schema follows the planar plant's state layout."""
+
+    def test_display_names_are_frozen_by_the_protocol(self):
+        # The certificate's component names are part of the frozen protocol, so
+        # they must not drift when the indices are derived from plant metadata.
+        self.assertEqual(v2.NAMES, ["s", "n", "heading", "v_x", "v_y", "yaw_rate",
+                                    "w_fl", "w_fr", "w_rl", "w_rr", "soc", "steering", "pedal"])
+
+    def test_event_and_statistic_indices_follow_the_plant_metadata(self):
+        from simplified_vehicle_models.solvers.planar_forward import PlanarForwardPlant
+        names = tuple(PlanarForwardPlant.state_names)
+        self.assertEqual(len(v2.NAMES), len(names) + 1)
+        self.assertEqual(v2.PEDAL, len(names))
+        self.assertEqual(v2.STEERING, names.index("steering"))
+        self.assertEqual(v2.STATE_INDEX["soc"], names.index("soc"))
+        self.assertEqual(v2.WHEELS,
+                         tuple(names.index(name) for name in
+                               ("omega_fl", "omega_fr", "omega_rl", "omega_rr")))
+        # Every plant state is addressed exactly once by a displayed name.
+        self.assertEqual(sorted(v2.STATE_INDEX.values()), list(range(len(names))))
+        # The derived indices are exactly the frozen protocol's literals.
+        self.assertEqual(v2.WHEELS, (6, 7, 8, 9))
+        self.assertEqual((v2.STEERING, v2.PEDAL), (11, 12))
+        for display, name in v2.ALIASES.items():
+            self.assertEqual(v2.STATE_INDEX[display], names.index(name))
+
+    def test_event_windows_still_use_the_derived_indices(self):
+        offsets = np.zeros(N)
+        slopes = np.zeros(N)
+        slopes[v2.WHEELS[0]], offsets[v2.WHEELS[0]] = -2., 1.2   # w_fl crosses 0 at .6
+        with tempfile.TemporaryDirectory() as root:
+            levels = [make_attempt(root, n, s, r, offsets, slopes)
+                      for n, s, r in zip("cmf", (.02, .01, .005), (1e-5, 5e-6, 2.5e-6))]
+            result = build(levels, 0.5, accepting_certify())
+        times = {e["component"]: e["time_s"] for e in result["events"]}
+        self.assertAlmostEqual(times["w_fl"], .6, places=6)
+
+
 class IsolationTests(unittest.TestCase):
     def test_build_does_not_modify_summaries_or_gate_flags(self):
         with tempfile.TemporaryDirectory() as root:

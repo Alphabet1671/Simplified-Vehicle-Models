@@ -52,6 +52,8 @@ _PLANAR_SOURCES = _SOLVER_SOURCES + (
 )
 _VERTICAL_SOURCES = _SOLVER_SOURCES + (
     Path("src/simplified_vehicle_models/solvers/vertical_forward.py"),
+    Path("src/simplified_vehicle_models/solvers/vertical_dense_certificate.py"),
+    Path("src/simplified_vehicle_models/solvers/dense_domain.py"),
     Path("src/simplified_vehicle_models/solvers/vertical_equilibrium.py"),
     Path("src/simplified_vehicle_models/formulations/vertical_14dof.py"),
     Path("src/simplified_vehicle_models/tires/unitire_transient.py"),
@@ -768,8 +770,8 @@ def child(args):
         # explicit state domain, and checks parameter-dependent contact
         # conditions. Load-closure and powertrain closure between nodes stay
         # uncertified, so these flags never set between_step_validation_complete.
-        # Both checks are planar-7dof only: the vertical plant has no planar
-        # dense-domain certificate, so its summary records them as None.
+        # The planar and vertical paths certify different, deliberately narrow
+        # interpolant domains. Neither is a full between-step certificate.
         if spec.planar_dense_certificate:
             from simplified_vehicle_models.solvers.planar_dense_certificate import (
                 certify_planar_dense_domain, contact_nonnegativity_conditions)
@@ -779,7 +781,14 @@ def child(args):
                 dense = {"certified": False, "reason": "no verifiable dense interpolant"}
             contact = contact_nonnegativity_conditions(vehicle)
         else:
-            dense = None
+            from simplified_vehicle_models.solvers.vertical_dense_certificate import (
+                certify_vertical_dense_domain)
+            if result.dense_bounds is not None:
+                dense = certify_vertical_dense_domain(vehicle, plan, result.dense_bounds, summary,
+                                                     pedal_dynamics=True)
+            else:
+                dense = {"certified": False, "reason": "no verifiable dense interpolant",
+                         "scope": "vertical dense state-domain only; not full between-step validation"}
             contact = None
         # Save the exact interpolant so independent refinements can be compared
         # continuously (see tools/gates/check_iem24_forward_tube.py).

@@ -479,9 +479,11 @@ class ForwardRunnerModelTests(unittest.TestCase):
         self.assertIn("accepted states only", summary["jounce_gate_scope"])
         self.assertEqual(summary["maximum_damper_velocity"], 0.5)
         self.assertEqual(summary["minimum_contact_load_n"], 812.5)
-        # The planar dense certificate and load-interval conditions are planar-only.
-        self.assertIsNone(summary["dense_polynomial_domain_certified"])
-        self.assertIsNone(summary["dense_polynomial_domain"])
+        # Vertical runs record their narrow dense state-domain result; this is
+        # distinct from planar load-closure and is not full between-step validation.
+        self.assertFalse(summary["dense_polynomial_domain_certified"])
+        self.assertIsInstance(summary["dense_polynomial_domain"], dict)
+        self.assertFalse(summary["between_step_validation_complete"])
         self.assertIsNone(summary["contact_nonnegativity_conditions_hold"])
         self.assertIsNone(summary["contact_nonnegativity_conditions"])
 

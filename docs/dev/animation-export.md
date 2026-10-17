@@ -21,8 +21,10 @@ python3 tools/anim/export_animation.py --record /tmp/runs/14dof/<attempt>/run_re
 
 # 3. Render.
 python3 tools/anim/export_animation.py --record /tmp/runs/14dof/<attempt>/run_record.npz \
-    --output /tmp/runs/14dof/lap.mp4 --progress
+    --output videos/lap.mp4 --progress
 ```
+
+Save videos under `videos/` in the repository root. That directory and every video file type are git-ignored, because the files are large; regenerate a video from its run record instead of committing it.
 
 Use `--maximum-step 0.008` or smaller when recording. A record with a larger step is flagged coarse, and the exporter warns that 120 fps frames are interpolated from sparser data.
 

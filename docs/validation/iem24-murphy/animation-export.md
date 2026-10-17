@@ -64,7 +64,7 @@ These frames were checked numerically (size, and the share of non-background pix
 4. **The body is a placeholder block.** Length 2.435 m, width 1.060 m, height 0.250 m, with four cylinder wheels. It is a display asset and carries no information about the real car. An STL file changes the picture only and never a simulation number.
 5. **Wheel spin is a display effect**, integrated from the recorded wheel speeds.
 6. **Float32 record.** Values are rounded to float32, and the readouts show two decimals.
-7. **The encoded file is not bit-reproducible across machines.** The artist data is deterministic, but matplotlib text rendering and x264 builds can differ. The video was not committed; its SHA-256 begins `5ce623bd804df2d9` for this machine and build.
+7. **The encoded file is not bit-reproducible across machines.** The artist data is deterministic, but matplotlib text rendering and x264 builds can differ. The video is not committed (`videos/` is git-ignored; it was saved as `videos/iem24_14dof_lap.mp4`); its SHA-256 begins `5ce623bd804df2d9` for this machine and build.
 
 ## Reproduce
 
@@ -77,7 +77,7 @@ PYTHONPATH=src:. python3 tools/run/run_iem24_forward_driver.py \
 
 MPLCONFIGDIR=/tmp/mplcfg python3 tools/anim/export_animation.py \
     --record /tmp/animrec/lap14/<attempt>/run_record.npz \
-    --output /tmp/animrec/export/lap14.mp4 --progress
+    --output videos/iem24_14dof_lap.mp4 --progress
 ```
 
 The recording took 144 s of wall time. The run is a continuous 66.56 s lap, so the record holds one segment.

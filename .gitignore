@@ -35,3 +35,12 @@ docs/validation/**/attempt_*/simulated_lap_7dof.csv
 # (the six comparison channels plus bus quantities; ~3-6 MB each). Their
 # *_summary.json sits beside them and stays tracked.
 docs/validation/**/attempt_*/*_channels.csv
+
+# Exported animations are large and regenerate from a run record with
+# tools/anim/export_animation.py (see docs/dev/animation-export.md). Keep them in videos/.
+/videos/
+*.mp4
+*.mov
+*.mkv
+*.webm
+*.partial.*

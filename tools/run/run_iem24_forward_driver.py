@@ -443,6 +443,15 @@ def parse_args(argv=None):
                              f"ten-lap MIS track {DEFAULT_TRACK})")
     parser.add_argument("--warm-start", type=Path,
                         help="Completed previous attempt whose final physical/pedal state starts this lap")
+    parser.add_argument("--record", action="store_true",
+                        help="also write run_record.npz: the full vehicle state, state rate, "
+                             "realized controls and tire/attitude channels at every accepted "
+                             "step (input of tools/anim/export_animation.py)")
+    parser.add_argument("--record-precision", choices=("float32", "float64"),
+                        default="float32", help="payload precision of run_record.npz")
+    parser.add_argument("--quasi-static-attitude", action="store_true",
+                        help="with --record on a planar model, also store the labelled "
+                             "APPROXIMATE roll/pitch estimates (never simulated states)")
     parser.add_argument("--child-attempt", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     import math
@@ -460,12 +469,60 @@ def parse_args(argv=None):
     args.track = canonical_path(args.track)
     if args.warm_start is not None and args.pedal_travel_time is None:
         parser.error("warm start requires pedal dynamics")
+    if args.quasi_static_attitude and not args.record:
+        parser.error("--quasi-static-attitude needs --record")
     if args.spacing > MAXIMUM_PATH_SPACING_METRES:
         parser.error(f"path spacing must be <= {MAXIMUM_PATH_SPACING_METRES} m")
     if args.timeout_seconds > PLANAR_MAXIMUM_WALL_SECONDS and args.model == "planar-7dof":
         parser.error(f"the planar-7dof wall limit must be <= {PLANAR_MAXIMUM_WALL_SECONDS:g} s; "
                      "use --model 14dof-simple for a longer, user-selected wall limit")
     return args
+
+
+#: File name of the optional run record inside an attempt directory.
+RUN_RECORD_FILE = "run_record.npz"
+
+
+def write_run_record(sink, args, summary, physical_inputs, spec, result, initial_pedal):
+    """Close the sink into ``run_record.npz`` and note it in the summary.
+
+    The manifest hashes only the physical inputs (track, tire, formulation,
+    vehicle and component tables). Solver source is deliberately left out: it
+    changes with every commit, and the record's values are already final.
+    """
+    import datetime
+    import platform
+
+    import scipy
+
+    from simplified_vehicle_models.results.plant_channels import source_hashes
+
+    def relative(path):
+        path = Path(path)
+        try:
+            return path.resolve().relative_to(Path.cwd().resolve())
+        except ValueError:
+            return path
+
+    record_path = sink.close({
+        "producer": {"tool": "tools/run/run_iem24_forward_driver.py",
+                     "python": platform.python_version(), "numpy": np.__version__,
+                     "scipy": scipy.__version__},
+        "model": {"model": args.model, "plant_class": spec.plant_class,
+                  "formulation_xml": str(relative(spec.formulation)),
+                  "mechanical_dof": 7 if spec.planar_dense_certificate else 14},
+        "sources": source_hashes(relative(path) for path in physical_inputs.values()),
+        "integrator": {"method": args.method, "rtol": args.rtol, "atol": args.rtol * .01,
+                       "maximum_step": args.maximum_step,
+                       "wall_seconds": float(result.wall_seconds)},
+        "segment": {"duration_s": float(result.time[-1] - result.time[0]),
+                    "lap_completed": bool(result.lap_completed),
+                    "warm_started": args.warm_start is not None,
+                    "initial_pedal": initial_pedal},
+        "track": {"file": str(args.track)},
+    }, created_utc=datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
+    summary["run_record_file"] = record_path.name
+    summary["run_record_rows"] = int(sink.rows)
 
 
 def acceptance_gate(summary):
@@ -605,13 +662,25 @@ def child(args):
         remaining = budget - (time.perf_counter() - started)
         if remaining <= 0:
             raise TimeoutError("setup exhausted the wall budget")
+        # The sink is passed only when recording, so a run without --record calls
+        # solve_forward exactly as before.
+        recording = {}
+        sink = None
+        if args.record:
+            from simplified_vehicle_models.results.plant_channels import RunRecordSink
+            sink = RunRecordSink(plant, track.path_coordinates, root / RUN_RECORD_FILE,
+                                 precision=args.record_precision,
+                                 quasi_static_attitude=args.quasi_static_attitude)
+            recording["step_sink"] = sink
         result = solve_forward(plant, driver, initial, duration=args.duration,
                                wall_seconds=remaining,
                                maximum_wall_seconds=args.timeout_seconds,
                                maximum_step=args.maximum_step,
                                rtol=args.rtol, atol=args.rtol * .01, method=args.method,
-                                initial_pedal=initial_pedal)
+                                initial_pedal=initial_pedal, **recording)
         summary["solver_elapsed_seconds"] = float(result.wall_seconds)
+        if sink is not None:
+            write_run_record(sink, args, summary, physical_inputs, spec, result, initial_pedal)
         np.savetxt(root / "trace.csv", np.column_stack((result.time, result.state.T)),
                    delimiter=",", comments="",
                    header=",".join(header))

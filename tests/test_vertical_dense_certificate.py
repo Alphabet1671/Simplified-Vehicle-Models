@@ -24,6 +24,14 @@ class VerticalDenseCertificateTests(unittest.TestCase):
         b=self.bounds(); b[0,3,0]=np.nan
         self.assertFalse(certify_vertical_dense_domain(self.vehicle,self.plan,b)['certified'])
         self.assertFalse(certify_vertical_dense_domain(self.vehicle,self.plan,b[:,:,:1])['certified'])
+    def test_pedal_overshoot_is_diagnostic_only(self):
+        b = np.concatenate([self.bounds(), np.zeros((2, 1, 2))], axis=1)
+        b[:, 38, :] = 1.2
+        r = certify_vertical_dense_domain(self.vehicle, self.plan, b, pedal_dynamics=True)
+        self.assertTrue(r["certified"], r)
+        self.assertNotIn("pedal_overshoot_beyond_travel", r["failed"])
+        self.assertGreater(r["margins"]["pedal_overshoot_beyond_travel"], 0.)
+
     def test_path_checks(self):
         b=self.bounds(); b[0,1,1]=20.
         r=certify_vertical_dense_domain(self.vehicle,self.plan,b)

@@ -114,8 +114,11 @@ def vertical_dense_domain(vehicle, attempt, summary):
     spacing = float(settings.get("spacing", .5))
     distance = np.linspace(0., track.lap_length, int(np.ceil(track.lap_length / spacing)) + 1)
     _, _, _, curvature = evaluate_path(track.path_coordinates, distance)
-    planner = settings.get("planner", "conservative")
-    live_limit = planner == "live"
+    planner = settings.get("planner")
+    if planner not in ("live", "live_live_acceleration_envelope",
+                        "conservative", "conservative_conservative_acceleration_envelope"):
+        return {"certified": False, "reason": "missing or unknown recorded planner mode"}
+    live_limit = planner in ("live", "live_live_acceleration_envelope")
     lateral_cap = settings.get("lateral_acceleration")
     if lateral_cap in (None, "None") and not live_limit:
         lateral_cap = 2.0
@@ -164,16 +167,24 @@ def main(argv=None):
     from tools.run.run_iem24_forward_driver import FORMULATION, acceptance_gate, VERTICAL_FORMULATION
     summary_path = args.fine / "summary.json"
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
-    model = summary.get("model", "planar-7dof")
+    model = summary.get("model")
     if model not in ("planar-7dof", "14dof-simple"):
-        raise ValueError(f"unsupported forward model {model!r}")
+        report = {"between_step_validation_complete": False,
+                  "checks": {"supported_model": False},
+                  "model": model,
+                  "note": f"unsupported forward model {model!r}; fail closed"}
+        (args.fine / "between_step_certificate.json").write_text(
+            json.dumps(report, indent=2, allow_nan=False) + "\n", encoding="utf-8")
+        summary["between_step_validation_complete"] = False
+        summary["usable"] = False
+        summary_path.write_text(json.dumps(summary, indent=2, allow_nan=False) + "\n", encoding="utf-8")
+        return 1
     formulation = VERTICAL_FORMULATION if model == "14dof-simple" else FORMULATION
     vehicle = compile_formulation(str(formulation)).model
     tube_path = args.fine / "tube_certificate.json"
     tube = json.loads(tube_path.read_text()) if tube_path.exists() else {"passed": False}
-    model = summary.get("model", "planar-7dof")
+    model = summary.get("model")
     hashes = source_hash_check(summary, model)
-    audits = run_audits()
     if model == "14dof-simple":
         dense = vertical_dense_domain(vehicle, args.fine, summary)
         report = {"between_step_validation_complete": False,
@@ -189,6 +200,7 @@ def main(argv=None):
         summary_path.write_text(json.dumps(summary, indent=2, allow_nan=False) + "\n", encoding="utf-8")
         print(args.fine, report["checks"], "between_step: False", "usable:", summary["usable"])
         return 1
+    audits = run_audits()
     started = time.perf_counter()
     closure = load_closure(vehicle, args.fine, args.workers)
     closure["wall_seconds"] = time.perf_counter() - started

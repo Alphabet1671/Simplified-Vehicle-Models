@@ -31,3 +31,7 @@ docs/validation/**/attempt_*/trace.csv
 docs/validation/**/attempt_*/pedal.csv
 docs/validation/**/attempt_*/run.log
 docs/validation/**/attempt_*/simulated_lap_7dof.csv
+# Per-accepted-state channel exports from tools/reports/export_forward_attempt_channels.py
+# (the six comparison channels plus bus quantities; ~3-6 MB each). Their
+# *_summary.json sits beside them and stays tracked.
+docs/validation/**/attempt_*/*_channels.csv

@@ -15,6 +15,7 @@ Run a tool from the repository root by its file path, for example `PYTHONPATH=sr
 | `tools/gates/` | Acceptance, refinement, tube, and between-step checks |
 | `tools/reports/` | Comparison tools, report writers, plots, correlation export |
 | `tools/diagnostics/` | One-off diagnosis of speed caps, trace commands, accelerations |
+| `tools/anim/` | Export a run record as a 120 fps video: frame source, panels, ffmpeg encoder, CLI. See [animation-export.md](animation-export.md) |
 
 ## Old to new paths
 

@@ -92,6 +92,12 @@ class PlanarForwardPlant:
         self.evaluations = 0
         self.last_time = 0.
         self.last_distance = 0.
+        #: The ``PlanarEvaluation`` and ``ForwardPowertrain`` of the latest
+        #: ``evaluate`` call. They are references to values the call already
+        #: computed, kept so a run recorder can read the algebraic outputs of the
+        #: same evaluation as the state instead of re-evaluating the model.
+        self.last_evaluation = None
+        self.last_powertrain = None
 
     def mechanical_state(self, state):
         return PlanarState(float(state[3]), float(state[4]), float(state[5]),
@@ -211,4 +217,6 @@ class PlanarForwardPlant:
             self.speed_regulated_evaluations += 1
         self.maximum_motor_speed_ratio = max(self.maximum_motor_speed_ratio, speed_ratio)
         self.evaluations += 1
+        self.last_evaluation = dynamics
+        self.last_powertrain = point
         return RateSystem(rate)

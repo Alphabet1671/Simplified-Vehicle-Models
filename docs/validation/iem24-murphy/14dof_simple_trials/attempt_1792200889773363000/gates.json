@@ -1,8 +1,8 @@
 {
   "task": "Task 9 - vertical 14DoF lap, validation gates and report",
-  "attempt": "docs/validation/iem24-murphy/14dof_simple_trials/attempt_1792190392697144000",
-  "periodicity_attempt": "docs/validation/iem24-murphy/14dof_simple_trials/periodicity/attempt_1792190828124776000",
-  "refinement_attempt": "docs/validation/iem24-murphy/14dof_simple_trials/refinement/attempt_1792190567221803000",
+  "attempt": "docs/validation/iem24-murphy/14dof_simple_trials/attempt_1792200889773363000",
+  "periodicity_attempt": "docs/validation/iem24-murphy/14dof_simple_trials/periodicity/attempt_1792201049606993000",
+  "refinement_attempt": "docs/validation/iem24-murphy/14dof_simple_trials/refinement/attempt_1792201049616532000",
   "planar_reference_attempt": "docs/validation/iem24-murphy/seven_dof_track_pair/original/attempt_1792187768241214000",
   "plan_gates": {
     "completed": true,
@@ -33,9 +33,9 @@
     "mismatches": [],
     "sources": [
       {
-        "source": "/Users/alphabet1671/Dev/Simplified-Vehicle-Models/.worktrees/14dof-simple/tools/run/run_iem24_forward_driver.py",
-        "recorded_sha256": "df8ada309d05ebf0f1d94d70c78f413354e854d3d6920a1b51134a873a7bccc8",
-        "working_sha256": "df8ada309d05ebf0f1d94d70c78f413354e854d3d6920a1b51134a873a7bccc8",
+        "source": "/Users/alphabet1671/Dev/Simplified-Vehicle-Models/.worktrees/animation-exporter/tools/run/run_iem24_forward_driver.py",
+        "recorded_sha256": "3bf11af062b0a85a8e4b206a7834ccf5a5f92f63a6b28303dc68f0057efac95b",
+        "working_sha256": "3bf11af062b0a85a8e4b206a7834ccf5a5f92f63a6b28303dc68f0057efac95b",
         "matches": true
       },
       {
@@ -112,8 +112,8 @@
       },
       {
         "source": "src/simplified_vehicle_models/solvers/forward_driver.py",
-        "recorded_sha256": "3b82c3c1440e63ceddc72145843c825cbbc010c597a915a435b5cde110f823d6",
-        "working_sha256": "3b82c3c1440e63ceddc72145843c825cbbc010c597a915a435b5cde110f823d6",
+        "recorded_sha256": "0131deea3799ce34856e4d3e030b3d31ab3a61e9caec299ab0125fb81216aaa7",
+        "working_sha256": "0131deea3799ce34856e4d3e030b3d31ab3a61e9caec299ab0125fb81216aaa7",
         "matches": true
       },
       {
@@ -130,8 +130,8 @@
       },
       {
         "source": "src/simplified_vehicle_models/solvers/vertical_forward.py",
-        "recorded_sha256": "de98bb0b7f93e3fafb9021cd6f56edfb214a4273a227e54408f5e83abdf82b0e",
-        "working_sha256": "de98bb0b7f93e3fafb9021cd6f56edfb214a4273a227e54408f5e83abdf82b0e",
+        "recorded_sha256": "5eb5a7b9dca44b6840865945befa4aeeea22b81f169d5aea95e77dd1d3eab1a4",
+        "working_sha256": "5eb5a7b9dca44b6840865945befa4aeeea22b81f169d5aea95e77dd1d3eab1a4",
         "matches": true
       },
       {
@@ -178,6 +178,14 @@
     "mismatches": [
       {
         "source": "/Users/alphabet1671/Dev/Simplified-Vehicle-Models/.worktrees/14dof-simple/tools/run/run_iem24_forward_driver.py",
+        "reason": "sha256 differs"
+      },
+      {
+        "source": "src/simplified_vehicle_models/solvers/forward_driver.py",
+        "reason": "sha256 differs"
+      },
+      {
+        "source": "src/simplified_vehicle_models/solvers/planar_forward.py",
         "reason": "sha256 differs"
       }
     ],
@@ -233,8 +241,8 @@
       {
         "source": "src/simplified_vehicle_models/solvers/forward_driver.py",
         "recorded_sha256": "3b82c3c1440e63ceddc72145843c825cbbc010c597a915a435b5cde110f823d6",
-        "working_sha256": "3b82c3c1440e63ceddc72145843c825cbbc010c597a915a435b5cde110f823d6",
-        "matches": true
+        "working_sha256": "0131deea3799ce34856e4d3e030b3d31ab3a61e9caec299ab0125fb81216aaa7",
+        "matches": false
       },
       {
         "source": "src/simplified_vehicle_models/solvers/forward_powertrain.py",
@@ -257,8 +265,8 @@
       {
         "source": "src/simplified_vehicle_models/solvers/planar_forward.py",
         "recorded_sha256": "6525be426cd1256460c8c88391e7ed3bf6512d4afce863a15471d181832ab1ce",
-        "working_sha256": "6525be426cd1256460c8c88391e7ed3bf6512d4afce863a15471d181832ab1ce",
-        "matches": true
+        "working_sha256": "834a7d60b6bd8baf07c1d744410db06ac54c195e90c68cd18d083a18fdb41434",
+        "matches": false
       },
       {
         "source": "src/simplified_vehicle_models/tires/unitire_simple.py",
@@ -270,7 +278,7 @@
   },
   "traces": {
     "attempt": {
-      "trace": "docs/validation/iem24-murphy/14dof_simple_trials/attempt_1792190392697144000/trace.csv",
+      "trace": "docs/validation/iem24-murphy/14dof_simple_trials/attempt_1792200889773363000/trace.csv",
       "present": true,
       "sha256": "25b2e3d448e148ae7fd1a8e9d2238e2d6de776c0c66548b82c15966b9dec93c7",
       "bytes": 19860702,
@@ -278,7 +286,7 @@
       "columns": 39
     },
     "periodicity_attempt": {
-      "trace": "docs/validation/iem24-murphy/14dof_simple_trials/periodicity/attempt_1792190828124776000/trace.csv",
+      "trace": "docs/validation/iem24-murphy/14dof_simple_trials/periodicity/attempt_1792201049606993000/trace.csv",
       "present": true,
       "sha256": "38bf004f804317291f1949ffebd9718887afbdd6a7598327a0e64e06150015d0",
       "bytes": 19735474,
@@ -286,7 +294,7 @@
       "columns": 39
     },
     "refinement_attempt": {
-      "trace": "docs/validation/iem24-murphy/14dof_simple_trials/refinement/attempt_1792190567221803000/trace.csv",
+      "trace": "docs/validation/iem24-murphy/14dof_simple_trials/refinement/attempt_1792201049616532000/trace.csv",
       "present": true,
       "sha256": "333a160a4de5f9b093fc6f75376dc899ee847a4288d564743c305eb862589e2c",
       "bytes": 38325863,
@@ -306,7 +314,7 @@
     "completed": {
       "pass": true,
       "definition": "Lap completes within the user-selected 14DoF wall budget; there is no 300 s acceptance threshold, and elapsed time is recorded.",
-      "source_attempt": "docs/validation/iem24-murphy/14dof_simple_trials/attempt_1792190392697144000",
+      "source_attempt": "docs/validation/iem24-murphy/14dof_simple_trials/attempt_1792200889773363000",
       "runner_keys": {
         "lap_completed": true,
         "status": "Completed"
@@ -318,9 +326,9 @@
         "distance_completed_m": 1016.70064959,
         "requested_wall_seconds": 1800.0,
         "solver_wall_budget_seconds": 1764.0,
-        "solver_elapsed_seconds": 125.81148345791735,
-        "elapsed_wall_seconds": 138.02528837509453,
-        "peak_memory_bytes": 1651490816.0,
+        "solver_elapsed_seconds": 133.60400504106656,
+        "elapsed_wall_seconds": 145.60246545798145,
+        "peak_memory_bytes": 1651671040.0,
         "accepted_steps": 20075,
         "evaluations": 74486,
         "rejected_domain_trials": 0,
@@ -330,7 +338,7 @@
     "contact_valid": {
       "pass": true,
       "definition": "Every accepted and midpoint state has tire load >= 0; lifted wheels are counted, not failed.",
-      "source_attempt": "docs/validation/iem24-murphy/14dof_simple_trials/attempt_1792190392697144000",
+      "source_attempt": "docs/validation/iem24-murphy/14dof_simple_trials/attempt_1792200889773363000",
       "runner_keys": {
         "contact_valid": true
       },
@@ -346,7 +354,7 @@
     "travel_valid": {
       "pass": true,
       "definition": "All accepted and midpoint states keep jounce inside +/-31.8 mm. Bump-stop entry before the limit is reported, not failed; a state beyond the limit fails.",
-      "source_attempt": "docs/validation/iem24-murphy/14dof_simple_trials/attempt_1792190392697144000",
+      "source_attempt": "docs/validation/iem24-murphy/14dof_simple_trials/attempt_1792200889773363000",
       "runner_keys": {
         "jounce_travel_valid": true
       },
@@ -398,7 +406,7 @@
     "table_domain_valid": {
       "pass": true,
       "definition": "out_of_range_evaluations == 0 for dampers, springs and the roll-centre table.",
-      "source_attempt": "docs/validation/iem24-murphy/14dof_simple_trials/attempt_1792190392697144000",
+      "source_attempt": "docs/validation/iem24-murphy/14dof_simple_trials/attempt_1792200889773363000",
       "runner_keys": {
         "out_of_range_evaluations": 0
       },
@@ -430,13 +438,13 @@
     "refinement_validated": {
       "pass": true,
       "definition": "A second run at maximum_step 0.0025 s and rtol 1e-6 from the same warm start: lap time difference <= 5 ms, max |dv| <= 0.05 m/s at matched s, and every matched tire state within its own periodic tolerance.",
-      "source_attempt": "docs/validation/iem24-murphy/14dof_simple_trials/refinement/attempt_1792190567221803000",
+      "source_attempt": "docs/validation/iem24-murphy/14dof_simple_trials/refinement/attempt_1792201049616532000",
       "runner_keys": {
         "refinement_validated": true
       },
       "evidence": {
-        "reference_attempt": "docs/validation/iem24-murphy/14dof_simple_trials/periodicity/attempt_1792190828124776000",
-        "refined_attempt": "docs/validation/iem24-murphy/14dof_simple_trials/refinement/attempt_1792190567221803000",
+        "reference_attempt": "docs/validation/iem24-murphy/14dof_simple_trials/periodicity/attempt_1792201049606993000",
+        "refined_attempt": "docs/validation/iem24-murphy/14dof_simple_trials/refinement/attempt_1792201049616532000",
         "reference_lap_time_s": 66.58945362318003,
         "refined_lap_time_s": 66.58945438784353,
         "lap_time_difference_s": 7.646634969660226e-07,
@@ -681,7 +689,7 @@
     "periodicity_valid": {
       "pass": true,
       "definition": "The same warm-start protocol as 7DoF (final physical state and pedal of the cold lap, path distance reset) with the plant's own periodic tolerances.",
-      "source_attempt": "docs/validation/iem24-murphy/14dof_simple_trials/periodicity/attempt_1792190828124776000",
+      "source_attempt": "docs/validation/iem24-murphy/14dof_simple_trials/periodicity/attempt_1792201049606993000",
       "runner_keys": {
         "periodicity_valid": true
       },
@@ -710,13 +718,13 @@
           "trail_angle": 0.002
         },
         "recorded_tolerances_match_plant": true,
-        "warm_start_source": "docs/validation/iem24-murphy/14dof_simple_trials/attempt_1792190392697144000"
+        "warm_start_source": "docs/validation/iem24-murphy/14dof_simple_trials/attempt_1792200889773363000"
       }
     },
     "cross_fidelity_reported": {
       "pass": true,
       "definition": "Report item, not a pass/fail gate: lap time and speed trace compared with the corrected 7DoF lap. `pass` means the comparison was computed and recorded.",
-      "source_attempt": "docs/validation/iem24-murphy/14dof_simple_trials/attempt_1792190392697144000",
+      "source_attempt": "docs/validation/iem24-murphy/14dof_simple_trials/attempt_1792200889773363000",
       "runner_keys": {},
       "evidence": {
         "reference_attempt": "docs/validation/iem24-murphy/seven_dof_track_pair/original/attempt_1792187768241214000",

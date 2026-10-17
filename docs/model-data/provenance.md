@@ -139,9 +139,9 @@ Task 9 generated lap evidence for the delivered `14dof-simple` rung. **It change
 
 | Item | Value |
 |---|---|
-| Acceptance attempt | `docs/validation/iem24-murphy/14dof_simple_trials/attempt_1792190392697144000` (cold lap, `models/tracks/2024_michigan_endurance_closed.xml`, BDF, `rtol` 1e-5, `maximum_step` 0.005 s, live planner, 1800 s user-selected wall budget) |
-| Paired attempts | periodicity baseline `.../14dof_simple_trials/periodicity/attempt_1792190828124776000` (warm start, cold-lap settings); refinement `.../14dof_simple_trials/refinement/attempt_1792190567221803000` (same warm start, `maximum_step` 0.0025 s, `rtol` 1e-6) |
-| Gate table | `.../attempt_1792190392697144000/gates.json`, written by `tools/gates/check_14dof_simple_gates.py`; checked by `tests/test_vertical_14dof_evidence.py` |
+| Acceptance attempt | `docs/validation/iem24-murphy/14dof_simple_trials/attempt_1792200889773363000` (cold lap, `models/tracks/2024_michigan_endurance_closed.xml`, BDF, `rtol` 1e-5, `maximum_step` 0.005 s, live planner, 1800 s user-selected wall budget) |
+| Paired attempts | periodicity baseline `.../14dof_simple_trials/periodicity/attempt_1792201049606993000` (warm start, cold-lap settings); refinement `.../14dof_simple_trials/refinement/attempt_1792201049616532000` (same warm start, `maximum_step` 0.0025 s, `rtol` 1e-6) |
+| Gate table | `.../attempt_1792200889773363000/gates.json`, written by `tools/gates/check_14dof_simple_gates.py`; checked by `tests/test_vertical_14dof_evidence.py` |
 | Measured lap | 66.56339750 s over 1016.70064959 m; 20 075 accepted steps, 74 486 evaluations; solver wall 125.81 s, child wall 138.03 s, peak child RSS 1.65 GB |
 | Plan gates | all seven pass: `completed`, `contact_valid` (minimum load 97.887 N, 0 lifted-wheel evaluations), `travel_valid` (jounce −5.8023 to +7.1369 mm of ±31.8 mm; 0 bump-stop entries), `table_domain_valid` (`out_of_range_evaluations` 0), `refinement_validated` (Δ lap time 7.65e-7 s, max \|Δv\| 9.36e-05 m/s, worst tire-state ratio 0.037), `periodicity_valid` (closure ratio 0.011), `cross_fidelity_reported` |
 | What the lap does **not** establish | Every attempt is `usable = false`: the driven lap misses the 0.25 m path-tracking cap (0.383 m), `between_step_validation_complete` is never certified, and no measured transient tire data exists. The transient coefficients above stay PROPOSED and unfitted |

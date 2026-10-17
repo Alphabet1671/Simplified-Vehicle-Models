@@ -409,18 +409,23 @@ class Vertical14DofEvidenceTests(unittest.TestCase):
         agreement = self.table["planar_reference_source_hash_agreement"]
         self.assertEqual(agreement["sources_checked"], 14)
         self.assertFalse(agreement["all_sources_match"])
-        # Exactly one source differs: the reference was produced by the Task 8
-        # runner before its final review fixes. Every shared model file matches.
-        self.assertEqual([entry["source"].rsplit("/", 1)[-1]
-                          for entry in agreement["mismatches"]],
-                         ["run_iem24_forward_driver.py"])
-        self.assertEqual(agreement["mismatches"][0]["reason"], "sha256 differs")
+        # The reference is a historical lap, produced by the Task 8 runner before its
+        # final review fixes. Three recorded sources differ from the working tree: the
+        # runner itself, and forward_driver.py / planar_forward.py, which later gained
+        # the additive run-record hook (a step_sink callback and last_evaluation
+        # attributes; it changes no number). Every shared model file matches.
+        expected = {"run_iem24_forward_driver.py", "forward_driver.py", "planar_forward.py"}
+        self.assertEqual({entry["source"].rsplit("/", 1)[-1]
+                          for entry in agreement["mismatches"]}, expected)
+        self.assertEqual(len(agreement["mismatches"]), len(expected))
+        for entry in agreement["mismatches"]:
+            self.assertEqual(entry["reason"], "sha256 differs")
         mismatched = [entry for entry in agreement["sources"] if not entry["matches"]]
-        self.assertEqual(len(mismatched), 1)
-        self.assertNotEqual(mismatched[0]["recorded_sha256"],
-                            mismatched[0]["working_sha256"])
+        self.assertEqual(len(mismatched), len(expected))
+        for entry in mismatched:
+            self.assertNotEqual(entry["recorded_sha256"], entry["working_sha256"])
         for entry in agreement["sources"]:
-            if entry["source"].endswith("run_iem24_forward_driver.py"):
+            if entry["source"].rsplit("/", 1)[-1] in expected:
                 continue
             with self.subTest(source=entry["source"]):
                 self.assertTrue(entry["matches"])

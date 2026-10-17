@@ -10,7 +10,7 @@ from matplotlib.figure import Figure
 
 from simplified_vehicle_models.results.run_record import RunRecorder, load_run_record
 from tools.anim.layout import WINDOWS, window_grid, window_visibility
-from tools.anim.panels import (TrackGeometry, build_attitude_panel, build_panels,
+from tools.anim.panels import (TrackGeometry, build_attitude_panel, build_gg_panel, build_panels,
                                build_top_panel, build_track_panel)
 from tools.anim.resample import FrameSource, MissingChannelError
 from tools.anim.scene import placeholder_scene
@@ -32,11 +32,12 @@ SLIP, STEER, ROLL, PITCH = 0.1, 0.2, 0.05, -0.03
 
 
 def make_source(directory, channels, *, model="synthetic", quasi=False, steps=61,
-                state_names=STATES, duration=0.6, **keywords):
+                state_names=STATES, duration=0.6, overrides=None, **keywords):
     """A record: constant slip, steering, roll and pitch, heading 0.5 rad.
 
     ``state_names`` sets the state layout (first two are distance and speed, the rest
-    are held at 60); ``duration`` is the record length in seconds.
+    are held at 60); ``duration`` is the record length in seconds; ``overrides`` maps a
+    channel name to a function ``t -> list`` that replaces its constant value.
     """
     recorder = RunRecorder(Path(directory) / f"{model}.npz", state_names=state_names,
                            control_names=CONTROLS, channel_names=channels, precision="float64")
@@ -56,6 +57,8 @@ def make_source(directory, channels, *, model="synthetic", quasi=False, steps=61
             "roll-quasi-static": [0.01], "pitch-quasi-static": [-0.02],
             "roll-rate": [0.0], "pitch-rate": [0.0],
         }
+        for name, function in (overrides or {}).items():
+            values[name] = function(t)
         rest = len(state_names) - 2
         recorder.append(t, index, [v * t, v] + [60.0] * rest, [v] + [0.0] * (rest + 1),
                         [0.5, 50.0],
@@ -96,7 +99,7 @@ class VisibilityTest(unittest.TestCase):
 
     def test_planar_hides_rear_and_right_and_says_why(self):
         v = self.visibility(BASE + WHEEL + QUASI)
-        self.assertEqual(v.visible, ("track", "top"))
+        self.assertEqual(v.visible, ("gg", "track", "top"))
         self.assertFalse(v.attitude_is_dynamic)
         self.assertEqual(len(v.notes), 1)
         self.assertIn("rear/right hidden", v.notes[0])
@@ -113,14 +116,14 @@ class VisibilityTest(unittest.TestCase):
         plain = self.visibility(BASE)
         flagged = self.visibility(BASE, allow_quasi_static=True)
         self.assertEqual(plain.visible, flagged.visible)
-        self.assertEqual(plain.visible, ("track",))
+        self.assertEqual(plain.visible, ("gg", "track"))
 
     def test_point_mass_hides_top_until_forced(self):
         v = self.visibility(BASE)
-        self.assertEqual(v.visible, ("track",))
+        self.assertEqual(v.visible, ("gg", "track"))
         self.assertFalse(v.tire_arrows or v.fz_bars)
         forced = self.visibility(BASE, force_top_view=True)
-        self.assertEqual(forced.visible, ("track", "top"))
+        self.assertEqual(forced.visible, ("gg", "track", "top"))
         self.assertFalse(forced.tire_arrows or forced.fz_bars)
         self.assertTrue(any("tire arrows hidden" in n for n in forced.notes))
 
@@ -130,6 +133,14 @@ class VisibilityTest(unittest.TestCase):
                                       "tire-aligning-moment"))
         v = self.visibility(channels)
         self.assertTrue(v.top and not v.tire_arrows and v.fz_bars)
+
+    def test_gg_needs_both_acceleration_channels(self):
+        for dropped in ("acceleration-lateral", "acceleration-longitudinal"):
+            v = self.visibility(tuple(c for c in BASE + WHEEL + DYNAMIC if c != dropped))
+            self.assertFalse(v.gg, dropped)
+            self.assertNotIn("gg", v.visible)
+            self.assertTrue(any(n.startswith("gg hidden") for n in v.notes))
+        self.assertTrue(self.visibility(BASE).gg)
 
     def test_no_attitude_channel_at_all_hides_both_windows(self):
         v = self.visibility(BASE + WHEEL)
@@ -167,6 +178,10 @@ class LayoutTest(unittest.TestCase):
         layout = self.layout(BASE + WHEEL + DYNAMIC)
         self.check_inside(layout)
         track, top, rear, right = (layout[n] for n in ("track", "top", "rear", "right"))
+        gg = layout["gg"]
+        self.assertLess(gg[0] + gg[2], track[0])      # the GG column is left of the track map
+        self.assertAlmostEqual(gg[1], track[1])
+        self.assertAlmostEqual(gg[3], track[3])
         self.assertAlmostEqual(track[3], top[3] + rear[3] + (top[1] - rear[1] - rear[3]))
         self.assertGreater(top[3], rear[3])           # the top view is the larger window
         self.assertGreater(top[1], rear[1])           # and sits above
@@ -178,7 +193,7 @@ class LayoutTest(unittest.TestCase):
     def test_without_attitude_the_top_view_takes_the_full_height(self):
         layout = self.layout(BASE + WHEEL)
         self.check_inside(layout)
-        self.assertEqual(layout.windows, ("track", "top"))
+        self.assertEqual(layout.windows, ("gg", "track", "top"))
         self.assertAlmostEqual(layout["top"][3], layout["track"][3])
         self.assertAlmostEqual(layout["top"][1], layout["track"][1])
 
@@ -187,7 +202,7 @@ class LayoutTest(unittest.TestCase):
         layout = self.layout(channels)
         # no wheel channels -> the top view is hidden, the attitude windows grow
         self.check_inside(layout)
-        self.assertEqual(layout.windows, ("track", "rear", "right"))
+        self.assertEqual(layout.windows, ("gg", "track", "rear", "right"))
         for name in ("rear", "right"):
             self.assertAlmostEqual(layout[name][3], layout["track"][3])
             self.assertAlmostEqual(layout[name][1], layout["track"][1])
@@ -197,9 +212,19 @@ class LayoutTest(unittest.TestCase):
         layout = self.layout(BASE)
         self.check_inside(layout)
         left, bottom, width, height = layout["track"]
-        self.assertEqual(layout.windows, ("track",))
-        self.assertGreater(width, 0.95)
+        self.assertEqual(layout.windows, ("gg", "track"))
         self.assertGreater(height, 0.9)
+        # the track fills everything the GG column leaves
+        self.assertAlmostEqual(left + width, 1.0 - 0.012)
+        self.assertAlmostEqual(layout["gg"][0], 0.012)
+
+    def test_without_acceleration_channels_the_track_fills_the_figure(self):
+        # the point-mass-style record without the two acceleration channels
+        channels = tuple(c for c in BASE if not c.startswith("acceleration"))
+        layout = self.layout(channels)
+        self.check_inside(layout)
+        self.assertEqual(layout.windows, ("track",))
+        self.assertGreater(layout["track"][2], 0.95)
 
     def test_freed_width_goes_to_the_top_view_first(self):
         full = self.layout(BASE + WHEEL + DYNAMIC)
@@ -349,6 +374,51 @@ class PanelTest(unittest.TestCase):
         np.testing.assert_allclose(heights / heights[-1], np.array([1000, 1100, 1200, 1300]) / 1300)
         self.assertAlmostEqual(heights[-1], top.fz_height)
 
+    def test_fz_bars_are_a_2x2_grid_that_mirrors_the_car(self):
+        top = self.panels["top"]
+        fl, fr, rl, rr = (bar.get_xy() for bar in top.fz_bars)
+        self.assertAlmostEqual(fl[1], fr[1])            # front row
+        self.assertAlmostEqual(rl[1], rr[1])            # rear row
+        self.assertGreater(fl[1], rl[1])                # front row is above the rear row
+        self.assertAlmostEqual(fl[0], rl[0])            # left column
+        self.assertAlmostEqual(fr[0], rr[0])            # right column
+        self.assertLess(fl[0], fr[0])                   # left is to the left
+        labels = {t.get_text(): t.get_position() for t in top.axes.texts
+                  if t.get_text() in ("FL", "FR", "RL", "RR")}
+        self.assertEqual(set(labels), {"FL", "FR", "RL", "RR"})
+        self.assertLess(labels["FL"][0], labels["FR"][0])
+        self.assertGreater(labels["FL"][1], labels["RL"][1])
+
+    def test_each_fz_bar_prints_its_instant_value_with_the_unit_below_it(self):
+        top = self.panels["top"]
+        for index in (3, 15):
+            self.update(index)
+            self.assertEqual([t.get_text() for t in top.fz_values],
+                             ["1000 N", "1100 N", "1200 N", "1300 N"])
+        for bar, text in zip(top.fz_bars, top.fz_values):
+            self.assertLess(text.get_position()[1], bar.get_y())     # below its bar
+            self.assertAlmostEqual(text.get_position()[0], bar.get_x() + 0.5 * bar.get_width())
+
+    def test_the_bars_stay_inside_the_top_window(self):
+        top = self.panels["top"]
+        x0, x1 = top.axes.get_xlim()
+        y0, y1 = top.axes.get_ylim()
+        for bar, outline in zip(top.fz_bars, top.fz_outline):
+            self.assertGreaterEqual(outline.get_x(), x0)
+            self.assertLessEqual(outline.get_x() + outline.get_width(), x1)
+            self.assertLessEqual(outline.get_y() + outline.get_height(), y1)
+        for text in top.fz_values:
+            self.assertGreaterEqual(text.get_position()[1] - 0.45, y0)
+
+    def test_no_panel_prints_explanatory_text(self):
+        # nothing in a panel's axes is a sentence: only the title, readout and values
+        for name, panel in self.panels.items():
+            self.assertFalse(hasattr(panel, "legend_lines"), name)
+            for text in panel.axes.texts:
+                self.assertNotIn("full scale", text.get_text(), name)
+                self.assertNotIn("run maximum", text.get_text(), name)
+                self.assertNotIn("always up", text.get_text(), name)
+
     def test_overlay_bars_show_throttle_brake_and_steer(self):
         self.update(15)
         top = self.panels["top"]
@@ -358,15 +428,6 @@ class PanelTest(unittest.TestCase):
         self.assertAlmostEqual(top.bars["steer"].get_width(), 0.5 * top.overlay_width)
         self.assertAlmostEqual(top.bars["steer"].get_x(),
                                top.overlay_x0 + 0.5 * top.overlay_width)
-
-    def test_legends_print_units_and_full_scales(self):
-        top = " ".join(self.panels["top"].legend_lines())
-        self.assertIn("N,", top)
-        self.assertIn("N*m", top)
-        self.assertIn("full scale = 1300 N", top)
-        track = " ".join(self.panels["track"].legend_lines())
-        self.assertIn("20.0 m/s", track)
-        self.assertIn("m/s^2", track)
 
     def test_rendering_a_five_second_excerpt_twice_gives_identical_artists(self):
         def run():
@@ -388,6 +449,99 @@ class PanelTest(unittest.TestCase):
                                   for name, a in self.axes.items()})
 
 
+class GGPanelTest(unittest.TestCase):
+    """The GG window: lateral right, longitudinal up, a 1 s fading trace."""
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        # a spiral, so no sample ever repeats: radius 2 + 2 t m/s^2 turning at 2 Hz
+        self.source = make_source(
+            self.directory.name, BASE + WHEEL + DYNAMIC, steps=361, duration=3.0,
+            overrides={"acceleration-lateral": lambda t: [(2 + 2 * t) * np.cos(4 * np.pi * t)],
+                       "acceleration-longitudinal": lambda t: [(2 + 2 * t) * np.sin(4 * np.pi * t)]})
+        self.visibility = window_visibility(self.source)
+        _, self.axes, self.style = axes_for(self.visibility)
+        self.panel = build_gg_panel(self.axes["gg"], self.source, self.style)
+
+    def test_the_trace_is_one_second_of_frames(self):
+        self.assertEqual(self.panel.trace_frames, 120)
+        self.panel.update(200)
+        self.assertEqual(len(self.panel.trace.get_segments()), 120)
+        points = self.panel.trace_points(200)
+        self.assertEqual(points.shape, (121, 2))
+
+    def test_the_trace_ends_at_the_current_sample_with_lateral_right_longitudinal_up(self):
+        lat = self.source.series("acceleration-lateral")[:, 0]
+        long = self.source.series("acceleration-longitudinal")[:, 0]
+        self.panel.update(250)
+        x, y = self.panel.marker.get_data()
+        self.assertEqual((x[0], y[0]), (lat[250], long[250]))
+        points = self.panel.trace_points(250)
+        np.testing.assert_array_equal(points[-1], [lat[250], long[250]])
+        np.testing.assert_array_equal(points[0], [lat[130], long[130]])   # exactly 1 s earlier
+
+    def test_the_oldest_end_is_transparent_and_the_newest_opaque(self):
+        alpha = np.asarray(self.panel.trace.get_colors())[:, 3]
+        self.assertEqual(len(alpha), 120)
+        self.assertTrue(np.all(np.diff(alpha) > 0))                 # strictly fading in time
+        self.assertAlmostEqual(alpha[-1], 1.0)
+        self.assertLess(alpha[0], 0.02)
+
+    def test_samples_older_than_one_second_are_not_drawn(self):
+        self.panel.update(250)
+        drawn = np.concatenate(self.panel.trace.get_segments())
+        lat = self.source.series("acceleration-lateral")[:, 0]
+        # the sample 131 frames back is outside the trace and must not be a vertex
+        old = np.array([lat[119], self.source.series("acceleration-longitudinal")[119, 0]])
+        self.assertFalse(np.any(np.all(np.isclose(drawn, old), axis=1)))
+
+    def test_the_start_of_the_run_repeats_the_first_sample_instead_of_failing(self):
+        self.panel.update(0)
+        segments = np.asarray(self.panel.trace.get_segments())
+        self.assertEqual(segments.shape, (120, 2, 2))
+        np.testing.assert_array_equal(segments[0, 0], segments[-1, 1])
+        self.panel.update(30)
+        self.assertEqual(len(self.panel.trace.get_segments()), 120)
+
+    def test_the_rings_contain_the_run_maximum_and_the_limits_never_change(self):
+        peak = self.source.scales()["acceleration"]
+        self.assertGreaterEqual(self.panel.limit, peak)
+        before = (self.axes["gg"].get_xlim(), self.axes["gg"].get_ylim())
+        for index in (0, 100, 359):
+            self.panel.update(index)
+        self.assertEqual(before, (self.axes["gg"].get_xlim(), self.axes["gg"].get_ylim()))
+        (x0, x1), (y0, y1) = before
+        self.assertLess(x0, -self.panel.limit)
+        self.assertGreater(x1, self.panel.limit)
+        self.assertAlmostEqual(self.axes["gg"].get_aspect(), 1.0)
+
+    def test_the_readout_has_units_and_the_signs_follow_the_axes(self):
+        self.panel.update(0)
+        self.assertEqual(self.panel.readout_lines(0), ("lat  =  +2.00 m/s^2",
+                                                       "long =  +0.00 m/s^2"))
+        # a quarter turn later (t = 0.125 s, frame 15) the point is straight up: long > 0, lat ~ 0
+        lat, long = self.panel._lat[15], self.panel._long[15]
+        self.assertAlmostEqual(lat, 0.0, places=6)
+        self.assertGreater(long, 0.0)
+
+    def test_an_invalid_sample_hides_the_marker(self):
+        self.source.frames.channel[5, self.source._columns["acceleration-lateral"]] = np.nan
+        self.panel._lat = self.source.series("acceleration-lateral")[:, 0].copy()
+        self.panel._lat[5] = np.nan
+        self.panel.update(5)
+        self.assertEqual(len(self.panel.marker.get_xdata()), 0)
+        self.assertTrue(self.panel.readout_lines(5)[0].endswith("n/a"))
+
+    def test_the_record_without_acceleration_channels_cannot_build_a_gg_panel(self):
+        source = make_source(self.directory.name, tuple(c for c in BASE
+                                                        if not c.startswith("acceleration")),
+                             model="noacc")
+        figure, axes, style = axes_for(window_visibility(source))
+        with self.assertRaises(MissingChannelError):
+            build_gg_panel(figure.add_axes([0, 0, 0.2, 0.5]), source, style)
+
+
 class DegradedPanelTest(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
@@ -402,7 +556,7 @@ class DegradedPanelTest(unittest.TestCase):
         panel = build_top_panel(axes["top"], source, self.scene, style, visibility)
         return source, panel
 
-    def test_missing_tire_forces_remove_the_arrows_and_name_it_in_the_legend(self):
+    def test_missing_tire_forces_remove_the_arrows(self):
         channels = tuple(c for c in BASE + WHEEL
                          if c not in ("tire-longitudinal-force", "tire-lateral-force",
                                       "tire-aligning-moment"))
@@ -411,7 +565,6 @@ class DegradedPanelTest(unittest.TestCase):
         self.assertFalse(panel.has_arrows)
         self.assertTrue(panel.has_bars)
         self.assertTrue(all(not line.get_visible() for line in panel.tire_fx))
-        self.assertIn("Fx/Fy/Mz arrows: not available", " ".join(panel.legend_lines()))
 
     def test_missing_fz_removes_the_bars_only(self):
         channels = tuple(c for c in BASE + WHEEL if c != "tire-vertical-force")
@@ -419,7 +572,7 @@ class DegradedPanelTest(unittest.TestCase):
         panel.update(5)
         self.assertTrue(panel.has_arrows and not panel.has_bars)
         self.assertEqual(panel.fz_bars, [])
-        self.assertIn("Fz bars: not available", " ".join(panel.legend_lines()))
+        self.assertEqual(panel.fz_values, [])
 
     def test_forced_top_view_on_a_point_mass_record_draws_without_wheels(self):
         _, panel = self.build_top(BASE, force_top_view=True)
@@ -428,8 +581,7 @@ class DegradedPanelTest(unittest.TestCase):
         self.assertEqual(x[0], x[1])
         self.assertFalse(panel.has_arrows or panel.has_bars)
         self.assertTrue(any(line.startswith("slip") for line in panel.readout_lines(5)))
-        text = " ".join(panel.legend_lines())
-        self.assertIn("Fz bars: not available", text)
+        self.assertEqual(panel.fz_values, [])
 
     def test_an_invalid_sample_draws_nothing_and_reads_n_a(self):
         source = make_source(self.directory.name, BASE + WHEEL + DYNAMIC)
@@ -451,7 +603,7 @@ class DegradedPanelTest(unittest.TestCase):
         for view in ("rear", "right"):
             panel = build_attitude_panel(axes[view], source, self.scene, view, style)
             panel.update(4)
-            self.assertIn("APPROXIMATE", " ".join(panel.legend_lines()))
+            self.assertIn("APPROXIMATE", panel._title.get_text())
             self.assertIn("approx.", panel.readout_lines(4)[0])
         x, y = panel.reference.get_data()
         np.testing.assert_allclose(np.arctan2(y[1] - y[0], x[1] - x[0]), -0.02, atol=1e-12)
@@ -512,11 +664,11 @@ class RecordedRunTest(unittest.TestCase):
 
     def test_planar_plant_hides_attitude_by_default_and_shows_it_approximate_on_request(self):
         _, hidden, _ = self.build("planar-7dof")
-        self.assertEqual(hidden.visible, ("track", "top"))
+        self.assertEqual(hidden.visible, ("gg", "track", "top"))
         source, shown, panels = self.build("planar-7dof", quasi=True)
         self.assertEqual(shown.visible, WINDOWS)
         self.assertTrue(shown.attitude_is_approximate and not shown.attitude_is_dynamic)
-        self.assertIn("APPROXIMATE", " ".join(panels["rear"].legend_lines()))
+        self.assertIn("APPROXIMATE", panels["rear"]._title.get_text())
         attitude = [w for w in source.warnings if w.startswith("roll/pitch")]
         self.assertEqual(len(attitude), 1)
         self.assertTrue(any(w.startswith("coarse record") for w in source.warnings))

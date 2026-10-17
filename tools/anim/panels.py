@@ -8,6 +8,7 @@ sample draws nothing and prints ``n/a`` instead of a zero.
 
 Screen axes are ``(right, up)``:
 
+* gg: body lateral acceleration to the right (``+y`` is right), longitudinal up;
 * track: ``Y`` east to the right, ``X`` north up;
 * rear: body ``+y`` right, ``-z`` up; right: body ``+x`` right, ``-z`` up;
 * top: the body rotated by ``-beta`` so the velocity is always up.
@@ -22,6 +23,7 @@ from pathlib import Path
 
 import numpy as np
 from matplotlib.collections import LineCollection
+from matplotlib.colors import to_rgba
 from matplotlib.lines import Line2D
 from matplotlib.patches import Rectangle
 
@@ -32,10 +34,23 @@ from tools.anim.scene import (VIEWS, VehicleScene, body_rotation, build_vehicle_
 from tools.anim.style import AnimationStyle
 
 __all__ = ["Panel", "TrackGeometry", "load_track_geometry", "build_track_panel",
-           "build_attitude_panel", "build_top_panel", "build_panels"]
+           "build_attitude_panel", "build_top_panel", "build_gg_panel", "build_panels"]
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 FONT = "monospace"
+
+#: Fz bar block (data units of the top window): bar width, grid pitch, and the height
+#: reserved above a bar for its name and below it for its value.
+BAR_WIDTH = 0.30
+BAR_PITCH = 0.62
+BAR_LABEL = 0.30
+BAR_VALUE = 0.34
+
+#: Extra room above the vehicle in the top window, for the title and the readout.
+TOP_HEADROOM = 1.3
+
+#: Length of the fading GG trace.
+GG_TRACE_SECONDS = 1.0
 
 
 @dataclass(frozen=True)
@@ -79,13 +94,16 @@ def load_track_geometry(manifest, root=None) -> TrackGeometry:
 
 
 class Panel:
-    """One window: its axes, its artists, a static legend and a dynamic readout."""
+    """One window: its axes, its artists, a title and a dynamic readout.
+
+    There is deliberately no static explanatory text: the arrow scales are printed by
+    the command line and documented in docs/dev/animation-export.md.
+    """
 
     name = "panel"
 
     def __init__(self, axes, source: FrameSource, style: AnimationStyle):
         self.axes, self.source, self.style = axes, source, style
-        self._legend: list[str] = []
         axes.set_facecolor(style.panel_background)
         axes.set_xticks([])
         axes.set_yticks([])
@@ -94,22 +112,19 @@ class Panel:
         self._title = axes.text(0.5, 0.985, "", transform=axes.transAxes, ha="center",
                                 va="top", color=style.muted, fontsize=style.font_size,
                                 family=FONT)
-        self._readout = axes.text(0.015, 0.985, "", transform=axes.transAxes, ha="left",
+        # the readout sits just below the title, so a narrow window never overlaps them
+        box = axes.get_position()
+        height_px = max(box.height * axes.figure.get_size_inches()[1] * axes.figure.dpi, 1.0)
+        title_fraction = 1.5 * style.font_size * axes.figure.dpi / 72.0 / height_px
+        self._readout = axes.text(0.015, 0.985 - title_fraction, "", transform=axes.transAxes,
+                                  ha="left",
                                   va="top", color=style.foreground,
                                   fontsize=style.font_size * 0.9, family=FONT)
-        self._legend_text = axes.text(0.985, 0.015, "", transform=axes.transAxes, ha="right",
-                                      va="bottom", color=style.muted,
-                                      fontsize=style.font_size * 0.8, family=FONT)
 
     # -- API -------------------------------------------------------------------------
 
     def update(self, index: int) -> None:  # pragma: no cover - overridden
         raise NotImplementedError
-
-    def legend_lines(self) -> tuple[str, ...]:
-        """The exact static text printed in the window's corner."""
-
-        return tuple(self._legend)
 
     def readout_lines(self, index: int) -> tuple[str, ...]:
         return ()
@@ -118,7 +133,6 @@ class Panel:
 
     def _finish(self, title: str) -> None:
         self._title.set_text(title)
-        self._legend_text.set_text("\n".join(self._legend))
 
     def _set_readout(self, index: int) -> None:
         self._readout.set_text("\n".join(self.readout_lines(index)))
@@ -154,6 +168,95 @@ def _vector_from_polar(heading: float, length: float):
     """Screen ``(Y, X)`` components of a world vector of ``length`` at ``heading``."""
 
     return np.array([np.sin(heading), np.cos(heading)]) * length
+
+
+# ======================================================================================
+# GG window
+# ======================================================================================
+
+def _ring_step(peak: float) -> float:
+    """A round ring spacing that gives at most five rings up to ``peak``."""
+
+    for step in (0.5, 1.0, 2.0, 2.5, 5.0, 10.0, 20.0, 50.0):
+        if peak / step <= 5.0:
+            return step
+    return 100.0
+
+
+class GGPanel(Panel):
+    """Lateral (right) against longitudinal (up) acceleration with a fading trace."""
+
+    name = "gg"
+
+    def __init__(self, axes, source: FrameSource, style):
+        super().__init__(axes, source, style)
+        along = source.series("acceleration-longitudinal")
+        across = source.series("acceleration-lateral")
+        if along is None or across is None:
+            raise MissingChannelError(
+                f"gg: no acceleration channels are available in {source.model_name}")
+        self._long, self._lat = along[:, 0], across[:, 0]
+        peak = float(source.scales().get("acceleration", 1.0))
+        step = _ring_step(peak)
+        rings = int(np.ceil(peak / step - 1e-9))
+        rings += 1 if rings * step < 1.05 * peak else 0
+        self.limit = rings * step
+        self._set_limits(-self.limit, self.limit, -self.limit, self.limit, margin=0.14)
+
+        angle = np.linspace(0.0, 2.0 * np.pi, 181)
+        for k in range(1, rings + 1):
+            ring = self._line(style.grid, style.thin_line_width)
+            ring.set_data(k * step * np.cos(angle), k * step * np.sin(angle))
+            self.axes.text(k * step, -0.03 * self.limit, f"{k * step:g}", ha="center", va="top",
+                           color=style.muted, fontsize=style.font_size * 0.7, family=FONT)
+        for xs, ys in (([-self.limit, self.limit], [0.0, 0.0]),
+                       ([0.0, 0.0], [-self.limit, self.limit])):
+            self._line(style.grid, style.thin_line_width).set_data(xs, ys)
+        self.axes.text(self.limit, 0.03 * self.limit, "lat", ha="right", va="bottom",
+                       color=style.muted, fontsize=style.font_size * 0.75, family=FONT)
+        self.axes.text(0.03 * self.limit, self.limit, "long", ha="left", va="top",
+                       color=style.muted, fontsize=style.font_size * 0.75, family=FONT)
+
+        self.trace_frames = max(1, int(round(GG_TRACE_SECONDS * source.frame_rate)))
+        colours = np.tile(to_rgba(style.acceleration), (self.trace_frames, 1))
+        colours[:, 3] = np.arange(1, self.trace_frames + 1) / self.trace_frames
+        self.trace = LineCollection([], colors=colours, linewidths=style.line_width * 1.3,
+                                    capstyle="round")
+        axes.add_collection(self.trace)
+        (self.marker,) = axes.plot([], [], "o", color=style.acceleration, markersize=7,
+                                   markeredgecolor=style.background)
+        self._finish("gg  (m/s^2)")
+        self.update(0)
+
+    def readout_lines(self, index: int) -> tuple[str, ...]:
+        lat, along = self._lat[index], self._long[index]
+        return (f"lat  = " + (f"{lat:+6.2f} m/s^2" if np.isfinite(lat) else "n/a"),
+                f"long = " + (f"{along:+6.2f} m/s^2" if np.isfinite(along) else "n/a"))
+
+    def trace_points(self, index: int) -> np.ndarray:
+        """``(trace_frames + 1, 2)`` points ``(lat, long)``, oldest first, ending at ``index``.
+
+        Before the run has lasted a full trace length the oldest point repeats, so the
+        trace always has the same number of segments (and fixed colours).
+        """
+
+        rows = np.clip(np.arange(index - self.trace_frames, index + 1), 0, None)
+        return np.column_stack((self._lat[rows], self._long[rows]))
+
+    def update(self, index: int) -> None:
+        points = self.trace_points(index)
+        self.trace.set_segments(np.stack((points[:-1], points[1:]), axis=1))
+        now = points[-1]
+        if np.all(np.isfinite(now)):
+            self.marker.set_data([now[0]], [now[1]])
+        else:
+            self.marker.set_data([], [])
+        self._set_readout(index)
+
+
+def build_gg_panel(axes, frame_source: FrameSource,
+                   style: AnimationStyle | None = None) -> GGPanel:
+    return GGPanel(axes, frame_source, style or AnimationStyle())
 
 
 # ======================================================================================
@@ -199,24 +302,6 @@ class TrackPanel(Panel):
         self.body_length = style.track_body_fraction * self.extent
         self.yaw_radius = 0.022 * self.extent
 
-        self._legend = [
-            "white: body +x   green: velocity   orange: acceleration   violet: yaw accel.",
-        ]
-        if "speed" in self.scales:
-            self._legend.append(
-                f"velocity arrow full scale = {self.scales['speed']:.1f} m/s (run maximum)")
-        else:
-            self._legend.append("velocity arrow: not available (no speed channel)")
-        if "acceleration" in self.scales and self._acc is not None:
-            self._legend.append("acceleration arrow full scale = "
-                                f"{self.scales['acceleration']:.1f} m/s^2 (run maximum)")
-        else:
-            self._legend.append("acceleration arrow: not available")
-        if "yaw_acceleration" in self.scales and self._yaw is not None:
-            self._legend.append("yaw arc: 300 deg = "
-                                f"{self.scales['yaw_acceleration']:.1f} rad/s^2, clockwise = +")
-        else:
-            self._legend.append("yaw acceleration: not available")
         self._finish("track  (north up)")
         self.update(0)
 
@@ -327,14 +412,8 @@ class AttitudePanel(Panel):
         self.reference = self._line(style.velocity, style.line_width * 1.3)
         self.reference_half = float(half * 0.9)
 
-        self._legend = [f"dashed: horizon   green: body {'y' if view == 'rear' else 'x'} axis",
-                        f"{self.angle_name}: {'right side' if view == 'rear' else 'nose'} "
-                        f"{'down' if view == 'rear' else 'up'} = +"]
-        if self.approximate:
-            self._legend.append("APPROXIMATE (quasi-static estimate, not a simulated state)")
-        elif self.heave is not None:
-            self._legend.append("heave is positive down")
-        self._finish(f"{view} view  ({self.angle_name})")
+        self._finish(f"{view} view  ({self.angle_name})"
+                     + ("  APPROXIMATE" if self.approximate else ""))
         self.update(0)
 
     def _angle(self, index):
@@ -421,9 +500,9 @@ class TopPanel(Panel):
         self.velocity_full = 1.15 * self.edges.extent()
         reach = self.reach
         self.bar_x0 = reach + 0.35
-        right_edge = self.bar_x0 + 4 * 0.3 + 0.2 if self.has_bars else reach
+        right_edge = (self.bar_x0 + BAR_PITCH + BAR_WIDTH + 0.2) if self.has_bars else reach
         self.overlay_top = -reach - 0.15
-        self._set_limits(-reach, right_edge, -reach - 1.1, reach, margin=0.0)
+        self._set_limits(-reach, right_edge, -reach - 1.1, reach + TOP_HEADROOM, margin=0.0)
 
         self.vehicle = LineCollection([], colors=style.body, linewidths=style.thin_line_width * 1.3)
         axes.add_collection(self.vehicle)
@@ -441,31 +520,39 @@ class TopPanel(Panel):
                 line.set_visible(False)
         self._build_bars()
         self._build_overlays()
-        self._legend = self._legend_text_lines()
         self._finish("top view  (velocity up)")
         self.update(0)
 
     # -- construction ----------------------------------------------------------------
 
     def _build_bars(self):
-        self.fz_bars, self.fz_outline = [], []
-        self.fz_height = 2 * self.reach - 0.6
-        self.fz_base = -self.reach + 0.1
+        """Four Fz bars in a 2x2 grid that mirrors the car: FL FR over RL RR."""
+
+        self.fz_bars, self.fz_outline, self.fz_values = [], [], []
+        row_height = self.reach          # two rows share the window height 2 * reach
+        self.fz_height = max(row_height - BAR_LABEL - BAR_VALUE - 0.12, 0.3)
         if not self.has_bars:
             return
+        style = self.style
         for k, label in enumerate(("FL", "FR", "RL", "RR")):
-            x = self.bar_x0 + 0.3 * k
-            outline = Rectangle((x, self.fz_base), 0.22, self.fz_height, fill=False,
-                                edgecolor=self.style.grid, linewidth=self.style.thin_line_width)
-            bar = Rectangle((x, self.fz_base), 0.22, 0.0, facecolor=self.style.fz_bar,
-                            edgecolor="none")
+            row, column = divmod(k, 2)
+            x = self.bar_x0 + BAR_PITCH * column
+            cell_top = self.reach - row * row_height
+            base = cell_top - BAR_LABEL - self.fz_height
+            centre = x + 0.5 * BAR_WIDTH
+            outline = Rectangle((x, base), BAR_WIDTH, self.fz_height, fill=False,
+                                edgecolor=style.grid, linewidth=style.thin_line_width)
+            bar = Rectangle((x, base), BAR_WIDTH, 0.0, facecolor=style.fz_bar, edgecolor="none")
             self.axes.add_patch(outline)
             self.axes.add_patch(bar)
-            self.axes.text(x + 0.11, self.fz_base - 0.08, label, ha="center", va="top",
-                           color=self.style.muted, fontsize=self.style.font_size * 0.75,
-                           family=FONT)
+            self.axes.text(centre, cell_top - 0.02, label, ha="center", va="top",
+                           color=style.muted, fontsize=style.font_size * 0.8, family=FONT)
+            value = self.axes.text(centre, base - 0.06, "", ha="center", va="top",
+                                   color=style.foreground, fontsize=style.font_size * 0.8,
+                                   family=FONT)
             self.fz_bars.append(bar)
             self.fz_outline.append(outline)
+            self.fz_values.append(value)
 
     def _build_overlays(self):
         style, reach = self.style, self.reach
@@ -497,26 +584,6 @@ class TopPanel(Panel):
             self.bar_centered[label] = centered
         self.overlay_x0 = x0
 
-    def _legend_text_lines(self) -> list[str]:
-        lines = ["green: velocity (always up)   white: body +x   violet arc: body slip"]
-        if self.has_arrows:
-            lines.append("red: Fx   blue: Fy  (N, tire frame, full scale = "
-                         f"{self.scales['tire_force']:.0f} N)")
-            if self.has_mz:
-                lines.append("violet arc at wheel: Mz (N*m), full scale = "
-                             f"{self.scales['tire_moment']:.1f} N*m, clockwise = +")
-            else:
-                lines.append("Mz: not available")
-        else:
-            lines.append("Fx/Fy/Mz arrows: not available (no tire force channels)")
-        if self.has_bars:
-            lines.append(f"Fz bars: full scale = {self.scales['tire_vertical_force']:.0f} N")
-        else:
-            lines.append("Fz bars: not available (no tire-vertical-force channel)")
-        if "steering" in self.scales:
-            lines.append(f"steer bar: +/-{self.scales['steering']:.3f} rad (run maximum)")
-        return lines
-
     # -- per frame -------------------------------------------------------------------
 
     def _beta_at(self, index):
@@ -543,10 +610,6 @@ class TopPanel(Panel):
         if self._brake_force is not None:
             value = self._brake_force[index, 0]
             lines.append("brake = " + (f"{value:.0f} N" if np.isfinite(value) else "n/a"))
-        if self.has_bars:
-            loads = self._fz[index]
-            lines.append("Fz = " + (" ".join(f"{v:5.0f}" for v in loads) + " N"
-                                    if np.all(np.isfinite(loads)) else "n/a"))
         return tuple(lines)
 
     def update(self, index: int) -> None:
@@ -625,9 +688,10 @@ class TopPanel(Panel):
             loads = self._fz[index]
             for k, bar in enumerate(self.fz_bars):
                 value = loads[k]
-                height = 0.0 if not np.isfinite(value) else (
-                    self.fz_height * max(value, 0.0) / self.scales["tire_vertical_force"])
-                bar.set_height(height)
+                finite = bool(np.isfinite(value))
+                bar.set_height(0.0 if not finite else (
+                    self.fz_height * max(value, 0.0) / self.scales["tire_vertical_force"]))
+                self.fz_values[k].set_text(f"{value:.0f} N" if finite else "n/a")
         values = {"throttle": self._throttle, "steer": self._steer}
         brake = self._brake
         for label, rect in self.bars.items():
@@ -663,9 +727,11 @@ def build_top_panel(axes, frame_source: FrameSource, scene: VehicleScene,
 def build_panels(axes_by_name: dict, frame_source: FrameSource, scene: VehicleScene,
                  track_geometry: TrackGeometry, style: AnimationStyle,
                  visibility: WindowVisibility) -> dict[str, Panel]:
-    """Build the panel of every visible window, in the order track, rear, right, top."""
+    """Build the panel of every visible window, in the order gg, track, rear, right, top."""
 
     panels: dict[str, Panel] = {}
+    if visibility.gg:
+        panels["gg"] = build_gg_panel(axes_by_name["gg"], frame_source, style)
     if visibility.track:
         panels["track"] = build_track_panel(axes_by_name["track"], frame_source,
                                             track_geometry, style)

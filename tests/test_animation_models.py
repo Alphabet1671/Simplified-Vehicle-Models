@@ -41,8 +41,8 @@ MODELS = {
 
 #: (visible windows, attitude_is_dynamic) per model without any option.
 EXPECTED = {
-    "point-mass": (("track",), False),
-    "planar-7dof": (("track", "top"), False),
+    "point-mass": (("gg", "track"), False),
+    "planar-7dof": (("gg", "track", "top"), False),
     "body-10dof": (WINDOWS, True),
     "14dof-simple": (WINDOWS, True),
 }
@@ -86,6 +86,7 @@ class ModelMatrixTest(unittest.TestCase):
         self.assertIn("tire-longitudinal-force", str(caught.exception))
         self.assertIn("point-mass", str(caught.exception))
         self.assertEqual(window_visibility(source).hidden, ("rear", "right", "top"))
+        self.assertEqual(window_visibility(source).visible, ("gg", "track"))
 
     def test_planar_hides_attitude_unless_the_flag_and_the_pair_are_both_present(self):
         source = self.sources["planar-7dof"]
@@ -121,11 +122,12 @@ class ModelMatrixTest(unittest.TestCase):
         for layout in (full, planar, point):
             left, bottom, width, height = layout["track"]
             self.assertAlmostEqual(bottom + height, full["track"][1] + full["track"][3])
+            self.assertLess(layout["gg"][0] + layout["gg"][2], left)   # GG left of the track
         # freed attitude space goes to the top view first
         self.assertGreater(planar["top"][3], full["top"][3])
         self.assertAlmostEqual(planar["top"][3], planar["track"][3])
-        # a lone track fills the figure
-        self.assertGreater(point["track"][2], 0.95)
+        # a track beside the GG column fills the rest of the width
+        self.assertAlmostEqual(point["track"][0] + point["track"][2], 1.0 - 0.012)
 
     def test_each_excerpt_renders_120_frames_of_the_right_shape(self):
         for name in MODELS:
@@ -165,7 +167,7 @@ class ModelMatrixTest(unittest.TestCase):
             source.record, source, placeholder_scene(GEOMETRY), track_geometry(), SMALL,
             allow_quasi_static=True)
         self.assertEqual(tuple(panels), WINDOWS)
-        self.assertIn("APPROXIMATE", " ".join(panels["rear"].legend_lines()))
+        self.assertIn("APPROXIMATE", panels["rear"]._title.get_text())
 
     def test_brake_bar_falls_back_to_brake_force_when_there_is_no_fraction(self):
         channels = tuple(c for c in MODELS["14dof-simple"]["channels"] if c != "brake-fraction")

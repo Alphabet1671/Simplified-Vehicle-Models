@@ -24,6 +24,10 @@ The frame count equals the dry-run count (`floor(66.563 * 120) + 1 = 7 988`), an
 
 The size estimate in the dry run was 41.4 MB. It is a rough model (0.02 bit per pixel per frame) and it was **wrong by a factor of 2.7**: the measured size is 15.6 MB. The estimate should be treated as an upper bound until the constant is refitted.
 
+## Layout change after this export
+
+The export above was rendered with the first layout. A later change added the GG diagram, arranged the Fz bars as a 2 x 2 grid with a value under each bar, and removed the small explanatory text (full scales moved to the command-line output). The 9.68x ratio and the stills belong to the first layout. A 0.5 s excerpt of the new layout (61 frames) rendered at 6.72x (56 ms per frame) including start-up, which is a short sample and not a replacement for a full-lap measurement; the full lap has not been re-rendered.
+
 ## Render cost
 
 The earlier plan predicted 4.30x from a 60-frame prototype and expected 4.3-6x for a full export. The real export is **9.68x**, so the plan figure was optimistic by a factor of 2.3. It is below the 12x threshold at which the plan calls for a `--frame-chunk` multiprocessing follow-up, so no follow-up was started. A full lap of about 66 s of simulated time takes about 10.7 minutes on this machine.

@@ -917,3 +917,24 @@ renders in about 97 s and a 66 s lap in about 10.7 min (measured ratio 9.68×).
 - **Deliberate exclusions:** no racing-line view, no 3-D perspective camera, no
   audio, no live playback, no GUI, and no change to any physics. These match the
   master plan's deferred scope.
+
+## Revision 2026-10-16: GG window, 2 x 2 Fz bars, no legend text
+
+This revision supersedes the parts of the plan that describe `legend_lines()` and the
+scale legends printed on the frames.
+
+- **GG window (new).** `gg` is a fifth window, shown whenever the record has
+  `acceleration-longitudinal` and `acceleration-lateral`, so the point-mass model gets it
+  too. It is a column at the left (20 % of the width), with the other windows laid out in
+  the remaining width as before. Lateral acceleration is to the right and longitudinal is
+  up, with rings at round values. The trace is the last 1.0 s (`frame_rate` frames) as a
+  `LineCollection` with a fixed alpha ramp, updated with `set_segments`.
+- **Fz bars.** A 2 x 2 grid that mirrors the car (FL FR over RL RR), each with its instant
+  value in N under the bar (`n/a` when not finite).
+- **No explanatory text in the picture.** `Panel.legend_lines()` is removed. Titles,
+  readouts, bar names and values remain. The footer still names hidden windows and
+  warnings. The APPROXIMATE label of quasi-static attitude is now in the window title. The
+  arrow and bar full scales moved to the command-line output (`full scales (run maxima ...)`).
+- **Measured cost of the final layout.** The full 14DoF lap re-rendered at 6.19x real time
+  (411.8 s, 51.6 ms per frame, 14.1 MB). The 9.68x figures quoted earlier in this plan are
+  the first layout.

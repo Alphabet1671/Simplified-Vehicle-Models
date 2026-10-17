@@ -38,11 +38,13 @@ class BuildFigureTest(unittest.TestCase):
     def boxes(self, figure):
         return [axes.get_position().bounds for axes in figure.axes]
 
-    def test_full_layout_has_four_axes_and_the_track_spans_the_height(self):
+    def test_full_layout_has_five_axes_and_the_track_spans_the_height(self):
         source, figure, panels, visibility = figure_for(self.directory.name,
                                                         BASE + WHEEL + DYNAMIC)
-        self.assertEqual(len(figure.axes), 4)
-        self.assertEqual(tuple(panels), ("track", "rear", "right", "top"))
+        self.assertEqual(len(figure.axes), 5)
+        self.assertEqual(tuple(panels), ("gg", "track", "rear", "right", "top"))
+        self.assertLess(panels["gg"].axes.get_position().x1,
+                        panels["track"].axes.get_position().x0)
         track = panels["track"].axes.get_position()
         top = panels["top"].axes.get_position()
         self.assertAlmostEqual(track.y1 - track.y0, (top.y1 - panels["rear"].axes.get_position().y0),
@@ -50,14 +52,14 @@ class BuildFigureTest(unittest.TestCase):
 
     def test_without_attitude_the_top_axes_spans_the_track_height(self):
         _, figure, panels, _ = figure_for(self.directory.name, BASE + WHEEL + QUASI)
-        self.assertEqual(len(figure.axes), 2)
+        self.assertEqual(len(figure.axes), 3)
         track, top = panels["track"].axes.get_position(), panels["top"].axes.get_position()
         self.assertAlmostEqual(top.y0, track.y0, places=9)
         self.assertAlmostEqual(top.y1, track.y1, places=9)
 
     def test_without_wheel_data_the_attitude_axes_span_the_full_height_side_by_side(self):
         _, figure, panels, _ = figure_for(self.directory.name, BASE + DYNAMIC)
-        self.assertEqual(tuple(panels), ("track", "rear", "right"))
+        self.assertEqual(tuple(panels), ("gg", "track", "rear", "right"))
         track = panels["track"].axes.get_position()
         for name in ("rear", "right"):
             box = panels[name].axes.get_position()
@@ -66,22 +68,22 @@ class BuildFigureTest(unittest.TestCase):
         self.assertLess(panels["rear"].axes.get_position().x1,
                         panels["right"].axes.get_position().x0)
 
-    def test_a_point_mass_record_creates_exactly_one_axes(self):
+    def test_a_point_mass_record_creates_the_gg_and_track_axes_only(self):
         _, figure, panels, visibility = figure_for(self.directory.name, BASE)
-        self.assertEqual(len(figure.axes), 1)
-        self.assertEqual(tuple(panels), ("track",))
+        self.assertEqual(len(figure.axes), 2)
+        self.assertEqual(tuple(panels), ("gg", "track"))
         self.assertEqual(visibility.hidden, ("rear", "right", "top"))
 
     def test_force_top_view_adds_only_the_top_axes(self):
         _, figure, panels, visibility = figure_for(self.directory.name, BASE,
                                                    force_top_view=True)
-        self.assertEqual(tuple(panels), ("track", "top"))
-        self.assertEqual(len(figure.axes), 2)
+        self.assertEqual(tuple(panels), ("gg", "track", "top"))
+        self.assertEqual(len(figure.axes), 3)
 
     def test_quasi_static_opt_in_adds_both_attitude_axes(self):
         _, figure, panels, visibility = figure_for(self.directory.name, BASE + WHEEL + QUASI,
                                                    allow_quasi_static=True)
-        self.assertEqual(len(figure.axes), 4)
+        self.assertEqual(len(figure.axes), 5)
         self.assertTrue(visibility.attitude_is_approximate)
 
     def test_the_footer_names_every_hidden_window_with_its_reason(self):

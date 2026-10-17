@@ -210,6 +210,26 @@ class Plan:
         return int(self.source.count * pixels * BITS_PER_PIXEL_PER_FRAME / 8.0)
 
 
+SCALE_LABELS = (("speed", "velocity arrow", "m/s"), ("acceleration", "acceleration arrow", "m/s^2"),
+                ("yaw_acceleration", "yaw-acceleration arc (300 deg)", "rad/s^2"),
+                ("tire_force", "tire Fx/Fy arrows", "N"), ("tire_moment", "tire Mz arc (270 deg)",
+                                                           "N*m"),
+                ("tire_vertical_force", "Fz bar (full height)", "N"),
+                ("steering", "steer bar (half width)", "rad"))
+
+
+def scale_lines(plan: Plan) -> list[str]:
+    """Full-scale values of the arrows and bars. The picture carries no legend, so the
+    scales are printed here (they are the run maxima, fixed for every frame)."""
+
+    scales = plan.source.scales()
+    items = [f"{label} = {scales[key]:.4g} {unit}" for key, label, unit in SCALE_LABELS
+             if key in scales]
+    if not items:
+        return []
+    return ["full scales (run maxima, fixed for every frame):"] + [f"  {item}" for item in items]
+
+
 def describe(plan: Plan) -> str:
     args, source = plan.args, plan.source
     duration = source.count / args.frame_rate
@@ -235,6 +255,7 @@ def describe(plan: Plan) -> str:
         lines.append("attitude: APPROXIMATE (quasi-static estimate, not a simulated state)")
     for note in plan.scene_notes:
         lines.append(f"scene: {note}")
+    lines.extend(scale_lines(plan))
     lines.append(f"warnings ({len(plan.warning_lines())}):")
     lines.extend(f"  {line}" for line in plan.warning_lines())
     if plan.args.dry_run:

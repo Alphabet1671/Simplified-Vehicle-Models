@@ -167,6 +167,18 @@ class ModelMatrixTest(unittest.TestCase):
         self.assertEqual(tuple(panels), WINDOWS)
         self.assertIn("APPROXIMATE", " ".join(panels["rear"].legend_lines()))
 
+    def test_brake_bar_falls_back_to_brake_force_when_there_is_no_fraction(self):
+        channels = tuple(c for c in MODELS["14dof-simple"]["channels"] if c != "brake-fraction")
+        source = make_source(self.directory.name, tuple(dict.fromkeys(channels)),
+                             model="no-fraction", state_names=MODELS["14dof-simple"]["states"])
+        self.assertFalse(source.has_channel("brake-fraction"))
+        _, panels, _ = build_figure(source.record, source, placeholder_scene(GEOMETRY),
+                                    track_geometry(), SMALL)
+        top = panels["top"]
+        top.update(5)
+        # brake-force is 50 N throughout and its run peak is 50 N, so the bar is full
+        self.assertAlmostEqual(top.bars["brake"].get_width(), top.overlay_width)
+
     def test_scales_do_not_depend_on_the_model_name(self):
         scales = {name: source.scales() for name, source in self.sources.items()}
         for name in ("planar-7dof", "body-10dof", "14dof-simple"):

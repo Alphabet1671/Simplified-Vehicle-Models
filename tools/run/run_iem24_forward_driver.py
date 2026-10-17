@@ -52,6 +52,9 @@ _PLANAR_SOURCES = _SOLVER_SOURCES + (
 )
 _VERTICAL_SOURCES = _SOLVER_SOURCES + (
     Path("src/simplified_vehicle_models/solvers/vertical_forward.py"),
+    Path("src/simplified_vehicle_models/solvers/vertical_dense_certificate.py"),
+    Path("src/simplified_vehicle_models/solvers/vertical_between_step.py"),
+    Path("src/simplified_vehicle_models/solvers/dense_domain.py"),
     Path("src/simplified_vehicle_models/solvers/vertical_equilibrium.py"),
     Path("src/simplified_vehicle_models/formulations/vertical_14dof.py"),
     Path("src/simplified_vehicle_models/tires/unitire_transient.py"),
@@ -408,11 +411,13 @@ def warm_start_matches(previous, source_hashes, args):
     historical attempt without them cannot warm-start a track-aware run.
     """
     settings = previous.get("settings", {})
+    defaults = {"preview_seconds": .15, "heading_gain": 1.5, "lateral_gain": 1.5}
     return bool(previous.get("status") == "Completed" and previous.get("lap_completed")
                 and previous.get("source_hashes") == source_hashes
-                and all(settings.get(key) == getattr(args, key)
+                and all(settings.get(key, defaults.get(key)) == getattr(args, key)
                         for key in ("planner", "maximum_speed", "lateral_acceleration",
-                                    "pedal_travel_time", "spacing"))
+                                    "pedal_travel_time", "spacing", "preview_seconds",
+                                    "heading_gain", "lateral_gain"))
                 and canonical_path(settings.get("track") or LEGACY_TRACK)
                 == canonical_path(args.track))
 
@@ -432,6 +437,12 @@ def parse_args(argv=None):
                              "live planner default: no cap beyond the vehicle's own limits")
     parser.add_argument("--pedal-travel-time", type=float, default=.175,
                         help="Seconds for a full pedal travel (0-100%% throttle or 0-max brake)")
+    parser.add_argument("--preview-seconds", type=float, default=.15,
+                         help="Preview horizon used by the shared steering controller")
+    parser.add_argument("--heading-gain", type=float, default=1.5,
+                         help="Heading-error gain used by the shared steering controller")
+    parser.add_argument("--lateral-gain", type=float, default=1.5,
+                         help="Lateral-error gain used by the shared steering controller")
     parser.add_argument("--maximum-step", type=float, default=.02)
     parser.add_argument("--rtol", type=float, default=1.e-6)
     parser.add_argument("--method", choices=("Radau", "BDF"), default="Radau")
@@ -456,7 +467,8 @@ def parse_args(argv=None):
     args = parser.parse_args(argv)
     import math
     for name in ("timeout_seconds", "duration", "maximum_speed", "lateral_acceleration",
-                 "maximum_step", "rtol", "spacing", "pedal_travel_time"):
+                 "maximum_step", "rtol", "spacing", "pedal_travel_time", "preview_seconds",
+                 "heading_gain", "lateral_gain"):
         value = getattr(args, name)
         if value is None:
             continue
@@ -630,6 +642,9 @@ def child(args):
         plant = LoggedPlant(vehicle, plan)
         driver = PreviewDriver(plan, control.wheelbase, control.steering_maximum_angle,
                                control.steering_maximum_rate, control.maximum_pedal_force,
+                                preview_seconds=args.preview_seconds,
+                                heading_gain=args.heading_gain,
+                                lateral_gain=args.lateral_gain,
                                live_limit=live_limit,
                                pedal_travel_time=args.pedal_travel_time)
         initial = plant.initial_state(float(plan.speed[0]))
@@ -756,8 +771,8 @@ def child(args):
         # explicit state domain, and checks parameter-dependent contact
         # conditions. Load-closure and powertrain closure between nodes stay
         # uncertified, so these flags never set between_step_validation_complete.
-        # Both checks are planar-7dof only: the vertical plant has no planar
-        # dense-domain certificate, so its summary records them as None.
+        # The planar and vertical paths certify different, deliberately narrow
+        # interpolant domains. Neither is a full between-step certificate.
         if spec.planar_dense_certificate:
             from simplified_vehicle_models.solvers.planar_dense_certificate import (
                 certify_planar_dense_domain, contact_nonnegativity_conditions)
@@ -767,7 +782,14 @@ def child(args):
                 dense = {"certified": False, "reason": "no verifiable dense interpolant"}
             contact = contact_nonnegativity_conditions(vehicle)
         else:
-            dense = None
+            from simplified_vehicle_models.solvers.vertical_dense_certificate import (
+                certify_vertical_dense_domain)
+            if result.dense_bounds is not None:
+                dense = certify_vertical_dense_domain(vehicle, plan, result.dense_bounds, summary,
+                                                     pedal_dynamics=True)
+            else:
+                dense = {"certified": False, "reason": "no verifiable dense interpolant",
+                         "scope": "vertical dense state-domain only; not full between-step validation"}
             contact = None
         # Save the exact interpolant so independent refinements can be compared
         # continuously (see tools/gates/check_iem24_forward_tube.py).

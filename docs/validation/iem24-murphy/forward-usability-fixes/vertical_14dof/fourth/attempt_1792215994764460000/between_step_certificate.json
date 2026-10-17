@@ -1,0 +1,119 @@
+{
+  "between_step_validation_complete": true,
+  "checks": {
+    "vertical_dense_and_evaluation_domain": true,
+    "refinement_tube": true,
+    "contact_valid_in_run": true,
+    "powertrain_closure_audit": true,
+    "run_source_hashes_match_working_tree": true
+  },
+  "vertical_domain": {
+    "certified": true,
+    "state_domain": {
+      "certified": true,
+      "failed": [],
+      "intervals": 106281,
+      "margins": {
+        "soc_floor": 0.7808385039046646,
+        "soc_ceiling": 0.19496326665775,
+        "speed_over_minimum": 8.020203374429336,
+        "wheel_speed_floor": 37.62956334989057,
+        "steering_headroom": 0.26519601065959736,
+        "jounce_lower_margin": 0.02629281422476938,
+        "jounce_upper_margin": 0.024222951542187073,
+        "pedal_overshoot_beyond_travel": -0.04096473519349619,
+        "path_denominator_over_minimum": 0.47448279253288905,
+        "path_progress_over_minimum": 8.228420136857283
+      },
+      "jounce_travel_limits_m": [
+        [
+          -0.0318,
+          0.0318
+        ],
+        [
+          -0.0318,
+          0.0318
+        ],
+        [
+          -0.0318,
+          0.0318
+        ],
+        [
+          -0.0318,
+          0.0318
+        ]
+      ],
+      "scope": "BDF dense interpolant state-domain certificate only: interpolant-wide SOC, forward-speed, wheel-speed, steering, physical jounce-travel, curvature path-denominator, and path-progress inequalities; not a full between-step certificate, true ODE trajectory, table/damper/tire/load/powertrain validation",
+      "model": "14dof-simple",
+      "full_between_step_certificate": false
+    },
+    "evaluation_domain": {
+      "certified": true,
+      "checks": {
+        "state_domain_and_path": true,
+        "spring_mr_jounce_steer_domain": true,
+        "damper_velocity_inside_table": true,
+        "tire_deflection_in_inverse_domain": true,
+        "tire_load_below_supported_maximum": true,
+        "mass_block_constant": true,
+        "mass_block_positive_definite": true,
+        "plant_guards": true,
+        "input_enclosure_finite": true
+      },
+      "margins": {
+        "jounce_spline_domain": 0.024222951542187073,
+        "damper_velocity_axis": 0.3881468331113978,
+        "tire_deflection_inverse_domain": 0.28096399551074386,
+        "tire_load_upper_bound_n": 1676.8034136456722,
+        "tire_load_cap_n": 10000.0,
+        "wheel_lift_possible": false,
+        "mass_block_minimum_eigenvalue": 2.9321073470569394,
+        "body_speed_over_guard": 8.020203374429336,
+        "wheel_speed_floor": 37.62956334989057,
+        "soc_floor": 0.7808385039046646,
+        "soc_ceiling": 0.19496326665775,
+        "steering_headroom": 0.26519601065959736
+      },
+      "intervals": 106281,
+      "state_domain": {
+        "certified": true,
+        "failed": [],
+        "margins": {
+          "soc_floor": 0.7808385039046646,
+          "soc_ceiling": 0.19496326665775,
+          "speed_over_minimum": 8.020203374429336,
+          "wheel_speed_floor": 37.62956334989057,
+          "steering_headroom": 0.26519601065959736,
+          "jounce_lower_margin": 0.02629281422476938,
+          "jounce_upper_margin": 0.024222951542187073,
+          "pedal_overshoot_beyond_travel": -0.04096473519349619,
+          "path_denominator_over_minimum": 0.47448279253288905,
+          "path_progress_over_minimum": 8.228420136857283
+        }
+      },
+      "scope": "evaluation-domain obligations of the explicit vertical 14-DoF right-hand side over the BDF dense interpolant (spline/damper/tire/mass-block/powertrain guards); not the true ODE trajectory, not directed rounding, and the powertrain closure monotonicity rests on the shared grid audit",
+      "assumptions": [
+        "enclosure bounds the BDF dense interpolant, not the true ODE trajectory",
+        "motion-ratio spline stays in the hull of its knot values (Fritsch-Carlson)",
+        "powertrain closure monotonicity: tests.test_powertrain_closure_audit",
+        "slip, transient-tire and aero evaluations are total on finite inputs (every division is floored by a positive constant); argued by reading the code, NOT enclosed by interval arithmetic, and the tire forces are not bounded here",
+        "rounding covered by enclosure padding, not directed rounding"
+      ],
+      "model": "14dof-simple"
+    }
+  },
+  "source_hash_check": {
+    "passed": true,
+    "mismatched": [],
+    "missing": [],
+    "covers_required_sources": true
+  },
+  "audits": {
+    "tests": [
+      "tests.test_powertrain_closure_audit"
+    ],
+    "run": 3,
+    "passed": true
+  },
+  "note": "flag is raised only if every check passed; no check is waived. Scope: evaluation-domain obligations of the explicit vertical right-hand side over the BDF dense interpolant, plus the empirical refinement tube; not a proof about the true ODE trajectory."
+}

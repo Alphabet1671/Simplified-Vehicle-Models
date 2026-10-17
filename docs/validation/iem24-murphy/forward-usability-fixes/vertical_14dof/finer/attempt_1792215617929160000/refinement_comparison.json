@@ -1,0 +1,30 @@
+{
+  "reference": "docs/validation/iem24-murphy/forward-usability-fixes/vertical_14dof/refined/attempt_1792215394922099000",
+  "refined": "docs/validation/iem24-murphy/forward-usability-fixes/vertical_14dof/finer/attempt_1792215617929160000",
+  "reference_rtol": 5e-06,
+  "refined_rtol": 2.5e-06,
+  "reference_maximum_step_s": 0.0025,
+  "refined_maximum_step_s": 0.00125,
+  "maximum_absolute_differences": {
+    "lap_time_s": 4.804670837188496e-06,
+    "body_speed_mps": 0.00012290767460498842,
+    "lateral_error_m": 4.4797696147624855e-06,
+    "heading_error_rad": 7.810619320265666e-06,
+    "yaw_rate_rad_s": 9.577168584037898e-05,
+    "wheel_speed_rad_s": 0.005531589195044262,
+    "steering_rad": 6.3289946551151055e-06
+  },
+  "limits": {
+    "lap_time_s": 0.02,
+    "body_speed_mps": 0.03,
+    "lateral_error_m": 0.01,
+    "heading_error_rad": 0.01,
+    "yaw_rate_rad_s": 0.02,
+    "wheel_speed_rad_s": 0.3,
+    "steering_rad": 0.01
+  },
+  "worst_tire_state": "kappa_eff_rr",
+  "worst_tire_state_periodic_ratio": 0.02292682684788827,
+  "tire_state_ratio_limit": 1.0,
+  "refinement_validated": true
+}

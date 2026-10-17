@@ -311,11 +311,42 @@ class RunnerTests(unittest.TestCase):
             command = run.call_args.args[0]
             self.assertEqual(command[command.index("--track") + 1], CANONICAL_TRACK)
 
+    def test_driver_settings_are_parsed_recorded_and_match_warm_starts(self):
+        args = parse_args(["--preview-seconds", ".25", "--heading-gain", "2.0",
+                           "--lateral-gain", ".75", "--track", str(DEFAULT_TRACK)])
+        self.assertEqual(args.preview_seconds, .25)
+        self.assertEqual(args.heading_gain, 2.0)
+        self.assertEqual(args.lateral_gain, .75)
+        root, _, code = run_fake_child(
+            "planar-7dof", FakePlanarPlant,
+            extra_args=("--preview-seconds", ".25", "--heading-gain", "2.0",
+                        "--lateral-gain", ".75"))
+        self.assertEqual(code, 0)
+        recorded = json.loads((root / "summary.json").read_text())["settings"]
+        self.assertEqual({name: recorded[name] for name in
+                          ("preview_seconds", "heading_gain", "lateral_gain")},
+                         {"preview_seconds": .25, "heading_gain": 2.0,
+                          "lateral_gain": .75})
+        hashes = {"track.xml": "a"}
+        settings = {"planner": "conservative", "maximum_speed": 8.,
+                    "lateral_acceleration": None, "pedal_travel_time": .175,
+                    "spacing": .5, "preview_seconds": .25,
+                    "heading_gain": 2.0, "lateral_gain": .75,
+                    "track": str(DEFAULT_TRACK)}
+        previous = {"status": "Completed", "lap_completed": True,
+                    "source_hashes": hashes, "settings": settings}
+        self.assertTrue(warm_start_matches(previous, hashes, args))
+        for key, value in (("preview_seconds", .15), ("heading_gain", 1.5),
+                           ("lateral_gain", 1.5)):
+            changed = dict(settings, **{key: value})
+            self.assertFalse(warm_start_matches(dict(previous, settings=changed), hashes, args))
+
     def test_warm_start_requires_matching_track_and_hashes(self):
         hashes = {"track.xml": "a", "track.csv": "b", "tire.xml": "c", "form.xml": "d"}
         args = parse_args(["--track", CANONICAL_TRACK])
         keys = dict(planner="conservative", maximum_speed=8., lateral_acceleration=None,
-                    pedal_travel_time=.175, spacing=.5)
+                    pedal_travel_time=.175, spacing=.5, preview_seconds=.15,
+                    heading_gain=1.5, lateral_gain=1.5)
         previous = {"status": "Completed", "lap_completed": True,
                     "source_hashes": dict(hashes),
                     "settings": dict(keys, track=CANONICAL_TRACK)}
@@ -448,9 +479,11 @@ class ForwardRunnerModelTests(unittest.TestCase):
         self.assertIn("accepted states only", summary["jounce_gate_scope"])
         self.assertEqual(summary["maximum_damper_velocity"], 0.5)
         self.assertEqual(summary["minimum_contact_load_n"], 812.5)
-        # The planar dense certificate and load-interval conditions are planar-only.
-        self.assertIsNone(summary["dense_polynomial_domain_certified"])
-        self.assertIsNone(summary["dense_polynomial_domain"])
+        # Vertical runs record their narrow dense state-domain result; this is
+        # distinct from planar load-closure and is not full between-step validation.
+        self.assertFalse(summary["dense_polynomial_domain_certified"])
+        self.assertIsInstance(summary["dense_polynomial_domain"], dict)
+        self.assertFalse(summary["between_step_validation_complete"])
         self.assertIsNone(summary["contact_nonnegativity_conditions_hold"])
         self.assertIsNone(summary["contact_nonnegativity_conditions"])
 

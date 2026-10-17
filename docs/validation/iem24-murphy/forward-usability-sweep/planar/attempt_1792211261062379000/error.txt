@@ -1,0 +1,10 @@
+Traceback (most recent call last):
+  File "/Users/alphabet1671/Dev/Simplified-Vehicle-Models/.worktrees/forward-usability-fixes/tools/run/run_iem24_forward_driver.py", line 689, in child
+    result = solve_forward(plant, driver, initial, duration=args.duration,
+                           wall_seconds=remaining,
+    ...<2 lines>...
+                           rtol=args.rtol, atol=args.rtol * .01, method=args.method,
+                            initial_pedal=initial_pedal, **recording)
+  File "/Users/alphabet1671/Dev/Simplified-Vehicle-Models/.worktrees/forward-usability-fixes/src/simplified_vehicle_models/solvers/forward_driver.py", line 577, in solve_forward
+    raise TimeoutError("accepted-state validation exceeded its wall budget")
+TimeoutError: accepted-state validation exceeded its wall budget

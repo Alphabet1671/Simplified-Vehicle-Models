@@ -184,6 +184,15 @@ def build_vehicle_edges(scene: VehicleScene, angle_degrees: float = 30.0) -> Veh
     return VehicleEdges(body, tuple(edges), np.array(centres).reshape(-1, 3), np.array(radii))
 
 
+def default_body_size(geometry: dict, wheel_width: float = 0.18) -> tuple[float, float, float]:
+    """Return the placeholder body block ``(length, width, height)`` for a geometry."""
+
+    positions = np.asarray(geometry["wheel_positions_body_m"], dtype=float)
+    wheelbase = float(geometry.get("wheelbase_m", np.ptp(positions[:, 0])))
+    track_width = float(geometry.get("track_width_m", np.ptp(positions[:, 1])))
+    return (wheelbase + 0.9, max(track_width - wheel_width, 0.2), 0.25)
+
+
 def placeholder_scene(geometry: dict, *, body_size=None, wheel_radius: float = 0.2,
                       wheel_width: float = 0.18) -> VehicleScene:
     """A box body with four cylinder wheels, from the record's ``vehicle_geometry``.
@@ -197,10 +206,8 @@ def placeholder_scene(geometry: dict, *, body_size=None, wheel_radius: float = 0
     positions = np.asarray(geometry["wheel_positions_body_m"], dtype=float)
     if positions.shape != (4, 2):
         raise ValueError("wheel_positions_body_m must be four (x, y) pairs")
-    wheelbase = float(geometry.get("wheelbase_m", np.ptp(positions[:, 0])))
-    track_width = float(geometry.get("track_width_m", np.ptp(positions[:, 1])))
     if body_size is None:
-        body_size = (wheelbase + 0.9, max(track_width - wheel_width, 0.2), 0.25)
+        body_size = default_body_size(geometry, wheel_width)
     z_wheel = float(geometry["cg_height_m"]) - float(wheel_radius)
     cylinder = wheel_cylinder_triangles(wheel_radius, wheel_width)
     wheels = tuple((cylinder, np.array([x, y, z_wheel])) for x, y in positions)

@@ -32,10 +32,15 @@ import numpy as np
 AUDITS = ("tests.test_powertrain_closure_audit", "tests.test_contact_condition_grid")
 
 
-def run_audits():
-    suite = unittest.defaultTestLoader.loadTestsFromNames(AUDITS)
+#: The vertical plant has no planar load loop, so only the powertrain audit applies.
+VERTICAL_AUDITS = ("tests.test_powertrain_closure_audit",)
+
+
+def run_audits(vertical=False):
+    names = VERTICAL_AUDITS if vertical else AUDITS
+    suite = unittest.defaultTestLoader.loadTestsFromNames(names)
     outcome = unittest.TextTestRunner(stream=open("/dev/null", "w"), verbosity=0).run(suite)
-    return {"tests": list(AUDITS), "run": outcome.testsRun, "passed": outcome.wasSuccessful()}
+    return {"tests": list(names), "run": outcome.testsRun, "passed": outcome.wasSuccessful()}
 
 
 def _node_guesses(vehicle, trace):
@@ -130,7 +135,11 @@ def vertical_dense_domain(vehicle, attempt, summary):
         lateral_cap, 1., 2., vehicle=control if live_limit else None,
         live_limit=live_limit)
     pedal = bounds.shape[1] == 39
-    return certify_vertical_dense_domain(vehicle, plan, bounds, summary, pedal_dynamics=pedal)
+    from simplified_vehicle_models.solvers.vertical_between_step import certify_vertical_between_step
+    domain = certify_vertical_dense_domain(vehicle, plan, bounds, summary, pedal_dynamics=pedal)
+    between = certify_vertical_between_step(vehicle, plan, bounds, summary, pedal_dynamics=pedal)
+    return {"certified": bool(domain.get("certified") and between.get("certified")),
+            "state_domain": domain, "evaluation_domain": between}
 
 
 def source_hash_check(summary, model=None):
@@ -151,7 +160,8 @@ def source_hash_check(summary, model=None):
     model = model or "planar-7dof"
     required = (("load_interval.py", "dense_domain.py", "planar_7dof.py")
                 if model == "planar-7dof" else
-                ("dense_domain.py", "vertical_dense_certificate.py", "vertical_14dof.py"))
+                ("dense_domain.py", "vertical_dense_certificate.py", "vertical_14dof.py",
+                 "vertical_between_step.py"))
     covered = all(any(key.endswith(need) for key in recorded) for need in required)
     return {"passed": bool(recorded) and covered and not mismatched and not missing,
             "mismatched": mismatched, "missing": missing, "covers_required_sources": covered}
@@ -187,19 +197,29 @@ def main(argv=None):
     hashes = source_hash_check(summary, model)
     if model == "14dof-simple":
         dense = vertical_dense_domain(vehicle, args.fine, summary)
-        report = {"between_step_validation_complete": False,
-                  "checks": {"vertical_dense_domain": bool(dense.get("certified")),
-                              "run_source_hashes_match_working_tree": bool(hashes["passed"])},
-                  "vertical_dense_domain": dense, "source_hash_check": hashes,
-                  "note": "vertical state-domain scope is not a full between-step certificate"}
+        audits = run_audits(vertical=True)
+        checks = {
+            "vertical_dense_and_evaluation_domain": bool(dense.get("certified")),
+            "refinement_tube": bool(tube.get("passed")),
+            "contact_valid_in_run": bool(summary.get("contact_valid")),
+            "powertrain_closure_audit": bool(audits["passed"]),
+            "run_source_hashes_match_working_tree": bool(hashes["passed"]),
+        }
+        complete = all(checks.values())
+        report = {"between_step_validation_complete": complete, "checks": checks,
+                  "vertical_domain": dense, "source_hash_check": hashes, "audits": audits,
+                  "note": "flag is raised only if every check passed; no check is waived. "
+                          "Scope: evaluation-domain obligations of the explicit vertical "
+                          "right-hand side over the BDF dense interpolant, plus the empirical "
+                          "refinement tube; not a proof about the true ODE trajectory."}
         (args.fine / "between_step_certificate.json").write_text(
             json.dumps(report, indent=2, allow_nan=False) + "\n", encoding="utf-8")
-        summary["between_step_validation_complete"] = False
-        summary["between_step_checks"] = report["checks"]
+        summary["between_step_validation_complete"] = complete
+        summary["between_step_checks"] = checks
         summary["usable"] = acceptance_gate(summary)
         summary_path.write_text(json.dumps(summary, indent=2, allow_nan=False) + "\n", encoding="utf-8")
-        print(args.fine, report["checks"], "between_step: False", "usable:", summary["usable"])
-        return 1
+        print(args.fine, checks, "between_step:", complete, "usable:", summary["usable"])
+        return 0 if complete else 1
     audits = run_audits()
     started = time.perf_counter()
     closure = load_closure(vehicle, args.fine, args.workers)

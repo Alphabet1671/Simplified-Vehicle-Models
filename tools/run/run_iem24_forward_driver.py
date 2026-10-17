@@ -53,6 +53,7 @@ _PLANAR_SOURCES = _SOLVER_SOURCES + (
 _VERTICAL_SOURCES = _SOLVER_SOURCES + (
     Path("src/simplified_vehicle_models/solvers/vertical_forward.py"),
     Path("src/simplified_vehicle_models/solvers/vertical_dense_certificate.py"),
+    Path("src/simplified_vehicle_models/solvers/vertical_between_step.py"),
     Path("src/simplified_vehicle_models/solvers/dense_domain.py"),
     Path("src/simplified_vehicle_models/solvers/vertical_equilibrium.py"),
     Path("src/simplified_vehicle_models/formulations/vertical_14dof.py"),

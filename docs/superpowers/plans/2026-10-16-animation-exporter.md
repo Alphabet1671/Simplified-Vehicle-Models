@@ -847,7 +847,12 @@ arrows, four `Fz` bars, and the input readout.
 The ratio is the useful figure, because it does not depend on the length of the
 run. The lap is 73.56 s of simulated time, which holds 8 828 frames, so at 4.30×
 that lap renders in 316 s = **5.3 min**. The 5.3 min and the ratio are the same
-measurement:
+measurement. **Superseded by the real export (Task 9): 9.68x, 80.6 ms per frame, 644 s
+for a 66.57 s lap.** The prototype and the real figure disagree by 2.3×; the cause was
+not isolated (the real figure has more artists than the prototype, and includes the
+encoder pipe). See `docs/validation/iem24-murphy/animation-export.md` for the measured
+split. The 4.30x
+figure below is kept as the prototype's result, not as a forecast:
 
 ```text
 5.27 min render / 73.56 s of run = 4.30x real time
@@ -858,8 +863,8 @@ with hidden windows has fewer artists and draws no slower. Task 9 measures the
 real ratio per layout instead of assuming the saving.
 
 That projection excludes the `ffmpeg` time, which is small against the draw, so
-the expected ratio for a full export is 4.3–6× real time at 1920×1080. The plan
-does not assume a smaller figure:
+the prototype suggested 4.3–6× real time at 1920×1080. **The measured full export is
+9.68×.** The design points that were kept:
 
 - `render_frames` updates existing artists. It never rebuilds the figure and
   never calls `axes.clear()`.
@@ -877,7 +882,7 @@ does not assume a smaller figure:
 
 Resolution is the largest lever: 1280×720 for a fast export and 1920×1080 for a
 final export. The measured ratio applies to any run length, so a 10 s excerpt
-renders in about 43 s and a full lap in about 5.3 min.
+renders in about 97 s and a 66 s lap in about 10.7 min (measured ratio 9.68×).
 
 ## 8. Risks
 
@@ -887,7 +892,7 @@ renders in about 43 s and a full lap in about 5.3 min.
 | K2 | The tire-frame arrow rotation is wrong by one sign | Task 2 verifies the tire-frame forces against the plant's own body-force output. |
 | K3 | The planar model has no dynamic attitude, so the roll and pitch windows would be empty or misleading | The windows are hidden by default. `--quasi-static-attitude` shows a labelled approximate estimate when the recorder provides the channels. Record-specification decision D3 fixes the default. |
 | K4 | The 14-DoF plant is still being implemented by another worker | Every interface here is additive and reads `state_names` and a channel dict. Task 10 uses synthetic records, so the exporter is tested without the vertical plant. |
-| K5 | A 120 fps video is large and a render is slow | The measured ratio is 4.30× real time at 1920×1080, so a 73.56 s lap renders in 5.3 min. Task 9 measures the real ratio. `--frame-rate`, `--time-range`, resolution, and CRF are all exposed. |
+| K5 | A 120 fps video is large and a render is slow | The measured ratio of the real export is 9.68× real time at 1920×1080 (the 4.30× prototype figure was optimistic), so a 66.57 s lap renders in 10.7 min. That is under the 12× threshold, so `--frame-chunk` is not built. `--frame-rate`, `--time-range`, resolution, and CRF are all exposed. |
 | K6 | Float32 rounding in the record changes a rendered number | The precision is in the manifest, the readouts show 2 decimals, and `--record-precision float64` is available. |
 | K7 | matplotlib output is not bit-identical across machines | Determinism is claimed only for the artist data, which is tested. The video digest is recorded, not asserted. |
 | K8 | A record is rendered after the model changed | V10 source-hash verification, and the exporter prints the mismatch when it renders anyway. |

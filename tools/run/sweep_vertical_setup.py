@@ -1,9 +1,24 @@
 """Damper, anti-roll and inertance setup sweep for the vertical 14-DoF model.
 
-A spring-*rate* override is **not available**: the wheel-rate curve is a spline
-inside the sha256-pinned corner NPZ, not an XML scalar, so a spring sweep needs a
-LUT regeneration or a new suspension parameter (see the Task 10 report's Open
-issue 1). The accepted override names are listed below.
+Two layouts are swept.
+
+* **independent-corner.** A spring-*rate* override is **not available**: the
+  wheel-rate curve is a spline inside the sha256-pinned corner NPZ, not an XML
+  scalar, so a spring sweep needs a LUT regeneration or a new suspension parameter
+  (see the Task 10 report's Open issue 1).
+* **axle-roll-heave and four-mode (modal).** The mode spring rates are XML scalars,
+  so ``rate_<mode>`` is accepted (``rate_heave``, ``rate_roll``, ``rate_pitch``,
+  ``rate_warp``, or ``rate_heave_front``, ``rate_roll_front``, ``rate_heave_rear``,
+  ``rate_roll_rear`` for the axle layout), in N/m and wheel-referred. A mode
+  damper takes ``<mode>.click_<valve>`` (for example ``roll.click_rebound``) or the
+  bare ``click_<valve>`` for all four. There is no ARB or inertance on a modal
+  layout. In the linearization the corner stiffness and damping matrices are
+  ``T^T K T`` and ``T^T C T``; a mode damper is read at the wheel-referred mode
+  velocity with no motion ratio. The per-axle ride frequency and corner damping
+  ratio use the diagonal of those two matrices for the corner, which is an
+  approximation when the modes couple the corners.
+
+The accepted override names for the independent-corner layout are listed below.
 
 One *setup* is an override mapping over the parameters the compiled 14-DoF
 vehicle actually exposes: one click per damper valve (``click_compression``,
@@ -100,6 +115,7 @@ from simplified_vehicle_models.suspension.components import CompiledDamper
 from simplified_vehicle_models.suspension.damper_table import DamperSetting
 from simplified_vehicle_models.suspension.elements import AxleArbRates
 from simplified_vehicle_models.suspension.layouts.independent_corner import IndependentCornerNetwork
+from simplified_vehicle_models.suspension.layouts.modal import ModalNetwork
 from simplified_vehicle_models.tires.unitire_transient import (
     TransientTireState,
     steady_rolling_state,
@@ -145,6 +161,8 @@ _TOOL_SOURCES = (
     Path("src/simplified_vehicle_models/suspension/elements.py"),
     Path("src/simplified_vehicle_models/suspension/kinematics.py"),
     Path("src/simplified_vehicle_models/suspension/layouts/independent_corner.py"),
+    Path("src/simplified_vehicle_models/suspension/layouts/modal.py"),
+    Path("src/simplified_vehicle_models/suspension/modal_components.py"),
     Path("src/simplified_vehicle_models/suspension/monotone_spline.py"),
     Path("src/simplified_vehicle_models/suspension/network.py"),
     Path("src/simplified_vehicle_models/tires/unitire_simple.py"),
@@ -284,6 +302,57 @@ def _corner_network(vehicle) -> IndependentCornerNetwork:
     return network
 
 
+def _network(vehicle):
+    """Return the compiled network of a layout the sweep supports."""
+
+    network = vehicle.suspension.network
+    if not isinstance(network, (IndependentCornerNetwork, ModalNetwork)):
+        raise ValueError(
+            f"the setup sweep supports the independent-corner and modal layouts, "
+            f"not {vehicle.suspension.layout!r}"
+        )
+    return network
+
+
+def _mode_key(name: str) -> str:
+    """Return the override spelling of a mode name (``heave-front`` -> ``heave_front``)."""
+
+    return name.replace("-", "_")
+
+
+def _corner_stiffness_diagonal(vehicle, position: np.ndarray) -> np.ndarray:
+    """Return the four tangent corner spring rates [N/m] of either layout."""
+
+    network = _network(vehicle)
+    if isinstance(network, ModalNetwork):
+        return np.diag(network.stiffness_matrix).copy()
+    rate = np.empty(4)
+    for axle, (left, right) in ((0, (0, 1)), (1, (2, 3))):
+        rate[[left, right]] = network.springs.axle(axle).derivative(position[[left, right]])
+    return rate
+
+
+def _damping_matrix(vehicle, slopes: np.ndarray, position: np.ndarray) -> np.ndarray:
+    """Return the 4x4 corner damping matrix [N s/m] for per-damper ``slopes``.
+
+    Independent corner: ``diag(slope / MR^2)`` with the two axle slopes. Modal:
+    ``T^T diag(slope) T`` with the four mode slopes, no motion ratio.
+    """
+
+    network = _network(vehicle)
+    if isinstance(network, ModalNetwork):
+        return network.transform.T @ (np.asarray(slopes, dtype=float)[:, None] * network.transform)
+    ratios = np.array([vehicle.suspension.kinematics.motion_ratio(i, position[i]) for i in range(4)])
+    axle = np.array([slopes[0], slopes[0], slopes[1], slopes[1]], dtype=float)
+    return np.diag(axle / ratios**2)
+
+
+def _damper_list(vehicle) -> tuple:
+    """Return the compiled dampers: two axle dampers or four mode dampers."""
+
+    return tuple(_network(vehicle).dampers)
+
+
 def _axle_scalar(vehicle, name: str, axle: int) -> float:
     """Return one axle scalar (``arb_wheel_rate``, ``inertance`` or ``static_toe``)."""
 
@@ -308,22 +377,32 @@ def valid_override_names(vehicle) -> dict[str, str]:
     """
 
     catalogue: dict[str, str] = {}
+    network = _network(vehicle)
+    modal = isinstance(network, ModalNetwork)
+    labels = [_mode_key(n) for n in network.mode_names] if modal else ["front", "rear"]
     common_valves: set[str] | None = None
-    for index, axle_name in enumerate(("front", "rear")):
-        damper = _corner_network(vehicle).dampers[index]
+    for label, damper in zip(labels, network.dampers):
         valves = {valve.name: valve for valve in damper.table.valves}
         common_valves = set(valves) if common_valves is None else common_valves & set(valves)
         for name, valve in sorted(valves.items()):
-            catalogue[f"{axle_name}.click_{name}"] = (
-                f"{axle_name} damper {name!r} click (0..{valve.clicks - 1})"
+            catalogue[f"{label}.click_{name}"] = (
+                f"{label} damper {name!r} click (0..{valve.clicks - 1})"
             )
     for name in sorted(common_valves or ()):
-        catalogue[f"click_{name}"] = f"both dampers, {name!r} click"
-    for name in ("arb_wheel_rate", "inertance", "static_toe"):
+        catalogue[f"click_{name}"] = f"all dampers, {name!r} click"
+    if modal:
+        for label, rate in zip(labels, network.rates):
+            catalogue[f"rate_{label}"] = f"wheel-referred {label} mode rate [N/m] ({float(rate)!r})"
+        scalar_names = ("static_toe",)
+    else:
+        scalar_names = ("arb_wheel_rate", "inertance", "static_toe")
+    for name in scalar_names:
         for axle, axle_name in enumerate(("front", "rear")):
-            catalogue[f"{name}_{axle_name}"] = (
-                f"compiled {axle_name} axle {name} ({_axle_scalar(vehicle, name, axle)!r})"
+            value = (
+                float(vehicle.suspension.kinematics.axle(axle).static_toe)
+                if name == "static_toe" else _axle_scalar(vehicle, name, axle)
             )
+            catalogue[f"{name}_{axle_name}"] = f"compiled {axle_name} axle {name} ({value!r})"
     return catalogue
 
 
@@ -357,6 +436,8 @@ def apply_overrides(vehicle, overrides: Mapping[str, float]):
         raise ValueError(
             f"unknown override name(s) {unknown}; valid names are {sorted(catalogue)}"
         )
+    if isinstance(_network(vehicle), ModalNetwork):
+        return _apply_modal_overrides(vehicle, requested)
     network = _corner_network(vehicle)
     clicks = [dict(damper.setting.clicks) for damper in network.dampers]
     scalars = {
@@ -406,6 +487,49 @@ def apply_overrides(vehicle, overrides: Mapping[str, float]):
         arb=AxleArbRates(scalars[("arb_wheel_rate", 0)], scalars[("arb_wheel_rate", 1)]),
         inertance=(scalars[("inertance", 0)], scalars[("inertance", 1)]),
     )
+    return replace(
+        vehicle,
+        suspension=replace(vehicle.suspension, kinematics=kinematics, network=network),
+    )
+
+
+def _apply_modal_overrides(vehicle, requested: Mapping[str, float]):
+    """Return ``vehicle`` with mode-rate, mode-damper-click and static-toe overrides."""
+
+    network = vehicle.suspension.network
+    labels = [_mode_key(n) for n in network.mode_names]
+    rates = [float(rate) for rate in network.rates]
+    clicks = [dict(damper.setting.clicks) for damper in network.dampers]
+    toe = {axle: float(vehicle.suspension.kinematics.axle(axle).static_toe) for axle in (0, 1)}
+    for raw_name, raw_value in requested.items():
+        name, value = _coerce_override(raw_name, raw_value)
+        if name.startswith("rate_"):
+            if value < 0.0:
+                raise ValueError(f"override {name!r}: value {value} must be non-negative")
+            rates[labels.index(name[len("rate_"):])] = value
+        elif name.startswith("static_toe_"):
+            toe[0 if name.endswith("_front") else 1] = value
+        else:
+            label, _, field = name.partition(".")
+            if not field:
+                label, field = "", name
+            valve = field[len("click_"):]
+            indices = range(4) if not label else [labels.index(label)]
+            for index in indices:
+                clicks[index][valve] = value
+    dampers = tuple(
+        CompiledDamper(table=damper.table, setting=DamperSetting(clicks[index]))
+        for index, damper in enumerate(network.dampers)
+    )
+    for index, damper in enumerate(dampers):
+        try:
+            damper.setting.validate(damper.table)
+        except ValueError as error:
+            raise ValueError(f"override click for the {labels[index]} damper: {error}") from error
+    kinematics = vehicle.suspension.kinematics
+    for axle in (0, 1):
+        kinematics = kinematics.with_axle(axle, static_toe=toe[axle])
+    network = network.with_kinematics(kinematics).with_rates(rates).with_dampers(dampers)
     return replace(
         vehicle,
         suspension=replace(vehicle.suspension, kinematics=kinematics, network=network),
@@ -509,15 +633,11 @@ def _linear_subsystem(vehicle, speed: float) -> _LinearSubsystem:
         column[2] = -positions[index, 0]
         column[3 + index] = -1.0
         damping += vehicle.tire_vertical_damping * np.outer(column, column)
-    for index in range(4):
-        damper = _corner_network(vehicle).dampers[0 if index < 2 else 1]
-        ratio = vehicle.suspension.kinematics.motion_ratio(index, position[3 + index])
-        slope = float(np.asarray(damper.force(np.zeros(1)).slope)[0])
-        damping[3 + index, 3 + index] += slope / ratio**2
-    spring_rate = np.empty(4)
-    for axle, (left, right) in ((0, (0, 1)), (1, (2, 3))):
-        spring_rate[[left, right]] = _corner_network(vehicle).springs.axle(axle).derivative(
-            position[3:][[left, right]])
+    slopes = np.array([
+        float(np.asarray(damper.force(np.zeros(1)).slope)[0]) for damper in _damper_list(vehicle)
+    ])
+    damping[3:, 3:] += _damping_matrix(vehicle, slopes, position[3:])
+    spring_rate = _corner_stiffness_diagonal(vehicle, position[3:])
     tire_rate = np.asarray(
         tire_deflection_load(
             vehicle.planar.tire, _tire_deflection(vehicle, position), np.zeros(4), 0.0
@@ -546,10 +666,11 @@ def _corner_damping_ratio(vehicle, subsystem: _LinearSubsystem, index: int, velo
     """
 
     front = index == 0
-    damper = _corner_network(vehicle).dampers[0 if front else 1]
-    force = float(np.asarray(damper.force(np.array([velocity])).force)[0])
-    ratio = vehicle.suspension.kinematics.motion_ratio(0 if front else 2, 0.0)
-    wheel_rate = (abs(force) / abs(velocity)) / ratio**2
+    secant = np.array([
+        abs(float(np.asarray(damper.force(np.array([velocity])).force)[0])) / abs(velocity)
+        for damper in _damper_list(vehicle)
+    ])
+    wheel_rate = float(_damping_matrix(vehicle, secant, np.zeros(4))[0 if front else 2, 0 if front else 2])
     fraction = vehicle.sprung_front_fraction if front else 1.0 - vehicle.sprung_front_fraction
     sprung = vehicle.sprung_mass * fraction / 2.0
     omega = 2.0 * np.pi * subsystem.ride_frequency_hz[index]

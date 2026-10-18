@@ -14,6 +14,7 @@ from tools.sim_gui.settings import RunSettings, runner_argv, validate
 from tools.sim_gui.study import (
     StudyDefinition, StudyIndex, TooManyCases, Dimension, expand, dimension_from_sweep,
 )
+from tools.sim_gui.execute import child_command, finish_case, parse_progress
 from simplified_vehicle_models.compiler.compile import compile_formulation
 
 
@@ -410,6 +411,37 @@ class VariantTests(unittest.TestCase):
             root = ElementTree.parse(write_variant(configuration, Path(d), "case_003").formulation).getroot()
             self.assertEqual(root.get("subtype"), "planar-7dof")
             self.assertEqual(root.findall("requires"), [])
+
+
+class ExecutionTests(unittest.TestCase):
+    def test_parse_progress_clips_and_rejects_non_json(self):
+        self.assertEqual(parse_progress('{"rhs_time": 150.0, "wall_seconds": 3}', 300.0), 0.5)
+        self.assertEqual(parse_progress('{"rhs_time": 400}', 300.0), 1.0)
+        self.assertIsNone(parse_progress('not json', 300.0))
+
+    def test_child_command_records_attempt(self):
+        from tools.sim_gui.execute import PreparedCase
+        prepared = PreparedCase(Path('/tmp/case'), Path('/tmp/formulation.xml'), Path('/tmp/vehicle.xml'),
+                                ['--model', 'planar-7dof', '--record'])
+        command = child_command(prepared, Path('/tmp/case/attempt_A'))
+        self.assertEqual(command[-2:], ['--child-attempt', '/tmp/case/attempt_A'])
+        self.assertEqual(command.count('--record'), 1)
+
+    def test_finish_case_status_mapping(self):
+        from tools.sim_gui.execute import PreparedCase
+        with tempfile.TemporaryDirectory() as d:
+            prepared = PreparedCase(Path(d), Path(d) / 'f.xml', Path(d) / 'v.xml', ['--model', 'planar-7dof'])
+            for code, timed, cancelled, expected in ((0, False, False, 'completed'), (2, False, False, 'rejected'),
+                                                       (1, False, False, 'failed'), (0, True, False, 'timed_out'),
+                                                       (0, False, True, 'cancelled')):
+                attempt = Path(d) / ('attempt_' + expected)
+                attempt.mkdir()
+                if code == 0 and not timed and not cancelled:
+                    (attempt / 'summary.json').write_text('{}')
+                result = finish_case(prepared, attempt, return_code=code, timed_out=timed,
+                                     cancelled=cancelled, wall_seconds=1.25, command=['cmd'])
+                self.assertEqual(result['status'], expected)
+                self.assertTrue((attempt / 'parent.json').is_file())
 
 if __name__ == "__main__":
     unittest.main()

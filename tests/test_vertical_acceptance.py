@@ -417,7 +417,7 @@ class VerticalModalGates(unittest.TestCase):
         tire = tangent_tire_stiffness(self.vehicle, self.x0)
         masses = unsprung_masses(self.vehicle)
         # Independent pin of the ARB input the warp expectation rests on:
-        # 120 lbf/in rear, zero front (Task 4 DSS row 18/19 override, 1 lbf/in
+        # 120 lbf/in rear, zero front (model setup; 1 lbf/in
         # = 4.4482216152605 N / 0.0254 m).
         network = self.vehicle.suspension.network
         self.assertAlmostEqual(network.arb.rear, 120.0 * 4.4482216152605 / 0.0254, delta=1.0)

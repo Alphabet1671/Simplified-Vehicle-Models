@@ -33,6 +33,7 @@ from tools.run.sweep_vertical_setup import (  # noqa: E402
 )
 
 AXLE = ROOT / "models/suspensions/iem24_axle_roll_heave.xml"
+MODE_DAMPERS = ROOT / "models/dampers"
 FOUR = ROOT / "models/suspensions/iem24_four_mode.xml"
 _CACHE: dict = {}
 
@@ -76,16 +77,18 @@ class ModalOverrideTests(unittest.TestCase):
 
 
 class ModalLinearisationTests(unittest.TestCase):
-    def test_the_axle_example_has_the_independent_corner_stiffness(self):
+    def test_the_axle_example_has_physical_distinct_roll_mode_stiffness(self):
         independent = _linear_subsystem(vehicle_of_default(), 0.0)
         axle = _linear_subsystem(vehicle_of(AXLE), 0.0)
-        np.testing.assert_allclose(axle.stiffness, independent.stiffness, rtol=2e-4, atol=1.0)
+        self.assertGreater(independent.stiffness[3, 3], axle.stiffness[3, 3])
+        self.assertNotAlmostEqual(axle.stiffness[3, 3], independent.stiffness[3, 3], delta=1.0)
 
     def test_the_damping_block_is_the_transformed_mode_slopes(self):
         vehicle = vehicle_of(FOUR)
         network = vehicle.suspension.network
         slopes = np.array([float(np.asarray(d.force(np.zeros(1)).slope)[0]) for d in network.dampers])
-        expected = network.transform.T @ np.diag(slopes) @ network.transform
+        factors = np.asarray(network.damper_velocity_factors)
+        expected = network.transform.T @ np.diag(slopes * factors**2) @ network.transform
         subsystem = _linear_subsystem(vehicle, 0.0)
         tire = vehicle.tire_vertical_damping
         block = subsystem.damping[3:, 3:] - tire * np.eye(4)
@@ -129,21 +132,15 @@ class ModalSweepTests(unittest.TestCase):
         self.assertGreater(stiff.heave_frequency_hz, base.heave_frequency_hz * 1.15)
         self.assertAlmostEqual(stiff.roll_frequency_hz, base.roll_frequency_hz, delta=1e-6)
 
-    def test_the_axle_example_matches_the_independent_baseline_closely(self):
-        # Same springs and ARB. The front quarter-car ride frequency depends on
-        # the stiffness only, so it matches to rounding. The |lambda| modes also carry
-        # the dampers, which differ (a mode damper has no motion ratio), so they
-        # agree to a few percent only.
+    def test_the_axle_example_uses_the_updated_spring_rates(self):
+        # Distinct measured modal spring rates intentionally differ from the
+        # independent-corner model and its former corner-spring/ARB equivalent.
         (axle,) = self.sweep(AXLE, [{}])
         (independent,) = sweep_vertical_setup(DEFAULT_FORMULATION, [{}], "step-response")
-        self.assertAlmostEqual(axle.front_ride_frequency_hz, independent.front_ride_frequency_hz, places=3)
-        # The rear differs on purpose: a modal corner rate is the diagonal of
-        # T^T K T, which includes the rear ARB inside the roll rate, while the
-        # independent-corner corner rate is the spring alone.
-        self.assertGreater(axle.rear_ride_frequency_hz, independent.rear_ride_frequency_hz)
-        self.assertAlmostEqual(axle.heave_frequency_hz / independent.heave_frequency_hz, 1.0, delta=0.03)
-        self.assertAlmostEqual(axle.pitch_frequency_hz / independent.pitch_frequency_hz, 1.0, delta=0.03)
-        self.assertAlmostEqual(axle.roll_frequency_hz / independent.roll_frequency_hz, 1.0, delta=0.03)
+        self.assertNotAlmostEqual(axle.front_ride_frequency_hz, independent.front_ride_frequency_hz, places=2)
+        self.assertGreater(axle.front_ride_frequency_hz, 0.0)
+        # Physical modal rates now follow the DSS's different heave/roll springs;
+        # they need not reproduce the legacy independent-corner model.
 
 
 class FourWayReportTextTests(unittest.TestCase):

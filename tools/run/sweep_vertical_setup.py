@@ -13,10 +13,11 @@ Two layouts are swept.
   damper takes ``<mode>.click_<valve>`` (for example ``roll.click_rebound``) or the
   bare ``click_<valve>`` for all four. There is no ARB or inertance on a modal
   layout. In the linearization the corner stiffness and damping matrices are
-  ``T^T K T`` and ``T^T C T``; a mode damper is read at the wheel-referred mode
-  velocity with no motion ratio. The per-axle ride frequency and corner damping
-  ratio use the diagonal of those two matrices for the corner, which is an
-  approximation when the modes couple the corners.
+  ``T^T K T`` and ``T^T C T``; axle-roll-heave modal dampers apply DSS
+  wheel/shaft ratios and orthonormal-mode travel Jacobians. Four-mode retains
+  direct wheel-referred mode velocity because no separate ratios are declared.
+  The per-axle ride frequency and corner damping ratio use the diagonal of those
+  two matrices for the corner, an approximation when the modes couple the corners.
 
 The accepted override names for the independent-corner layout are listed below.
 
@@ -336,12 +337,14 @@ def _damping_matrix(vehicle, slopes: np.ndarray, position: np.ndarray) -> np.nda
     """Return the 4x4 corner damping matrix [N s/m] for per-damper ``slopes``.
 
     Independent corner: ``diag(slope / MR^2)`` with the two axle slopes. Modal:
-    ``T^T diag(slope) T`` with the four mode slopes, no motion ratio.
+    ``T^T diag(slope * J^2) T``, where ``J`` is the shaft/mode travel Jacobian.
     """
 
     network = _network(vehicle)
     if isinstance(network, ModalNetwork):
-        return network.transform.T @ (np.asarray(slopes, dtype=float)[:, None] * network.transform)
+        factors = np.asarray(network.damper_velocity_factors, dtype=float)
+        modal_slopes = np.asarray(slopes, dtype=float) * factors**2
+        return network.transform.T @ (modal_slopes[:, None] * network.transform)
     ratios = np.array([vehicle.suspension.kinematics.motion_ratio(i, position[i]) for i in range(4)])
     axle = np.array([slopes[0], slopes[0], slopes[1], slopes[1]], dtype=float)
     return np.diag(axle / ratios**2)
@@ -373,7 +376,8 @@ def valid_override_names(vehicle) -> dict[str, str]:
     ``click_<valve>`` applies to every damper that has that valve, and
     ``front.click_<valve>`` / ``rear.click_<valve>`` address one damper. The
     suspension scalars are the ARB rate and inertance of the compiled
-    independent-corner network and the static toe of its kinematics.
+    independent-corner network and the static toe of its kinematics. Modal
+    damping uses each network's shaft/mode travel Jacobian.
     """
 
     catalogue: dict[str, str] = {}

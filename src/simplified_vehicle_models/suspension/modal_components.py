@@ -11,8 +11,9 @@ Two ``suspension-assembly`` subtypes nest their parts as child components:
 
 ``spring-model/mode-rate`` holds one wheel-referred mode rate [N/m]. A mode
 damper is a ``damper-model/table-mode``: the same damper table and click
-parameters as a corner damper, read at the wheel-referred mode velocity (no
-motion ratio). See ``layouts/modal.py`` for the conventions.
+parameters as a corner damper. Axle roll/heave mode dampers apply the configured
+DSS wheel/shaft ratio and the orthonormal-mode travel Jacobian; four-mode dampers
+retain direct wheel-referred mode velocity pending an explicit ratio definition.
 
 The assemblies provide the single ``suspension-forces`` capability.
 """
@@ -43,6 +44,11 @@ from simplified_vehicle_models.xml.schema import (
 )
 
 _RATE_UNITS = {"rate": "N/m"}
+
+_AXLE_MOTION_UNITS = {
+    "motion_ratio_heave_front": "1", "motion_ratio_roll_front": "1",
+    "motion_ratio_heave_rear": "1", "motion_ratio_roll_rear": "1",
+}
 
 AXLE_ROLES = (
     "kinematics",
@@ -83,7 +89,9 @@ def _damper(model: Model, children: Mapping[str, object], role: str) -> Compiled
 def compile_axle_roll_heave(model: Model, children: Mapping[str, object]) -> CompiledSuspension:
     """Compile the axle roll/heave suspension from its nine compiled children."""
 
-    closed_parameters(model, {})
+    values = closed_parameters(model, _AXLE_MOTION_UNITS)
+    if any(value <= 0.0 for value in values.values()):
+        raise ValueError(f"{model.path}: all heave/roll motion ratios must be positive")
     try:
         return build_axle_roll_heave(
             kinematics=_child(model, children, "kinematics", SuspensionKinematics),
@@ -95,6 +103,8 @@ def compile_axle_roll_heave(model: Model, children: Mapping[str, object]) -> Com
             roll_damper_front=_damper(model, children, "roll-damper-front"),
             heave_damper_rear=_damper(model, children, "heave-damper-rear"),
             roll_damper_rear=_damper(model, children, "roll-damper-rear"),
+            motion_ratios=(values["motion_ratio_heave_front"], values["motion_ratio_roll_front"],
+                           values["motion_ratio_heave_rear"], values["motion_ratio_roll_rear"]),
         )
     except ValueError as error:
         raise ValueError(f"{model.path}: {error}") from error

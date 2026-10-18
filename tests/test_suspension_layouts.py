@@ -131,16 +131,27 @@ class ExampleAssemblyTests(unittest.TestCase):
         roles = {item.role for item in compiled.manifest.loaded_components}
         self.assertIn("suspension/warp-spring", roles)
 
-    def test_the_axle_example_matches_the_independent_corner_springs(self):
+    def test_the_axle_example_uses_the_measured_distinct_roll_springs(self):
         compiled = compile_with(ROOT / "models/suspensions/iem24_axle_roll_heave.xml")
         axle = compiled.model.suspension
-        independent = reference()
-        rng = np.random.default_rng(3)
-        for _ in range(5):
-            z = rng.uniform(-0.003, 0.003, 4)
-            np.testing.assert_allclose(axle.network.static_forces(z),
-                                       independent.network.static_forces(z),
-                                       rtol=1e-4, atol=0.5)
+        self.assertEqual(axle.network.mode_names, ("heave-front", "roll-front", "heave-rear", "roll-rear"))
+        np.testing.assert_allclose(axle.network.rates,
+                                   [78_807.07586091432, 61_294.39233626669,
+                                    78_807.07586091432, 82_309.61256584385],
+                                   rtol=1e-12)
+        np.testing.assert_allclose(axle.network.damper_velocity_factors,
+                                   [1/(1.05*np.sqrt(2)), 1/(1.20*np.sqrt(2)),
+                                    1/(1.10*np.sqrt(2)), 1/(1.30*np.sqrt(2))])
+        expected_clicks = (6, 5, 6, 8)
+        for damper, click in zip(axle.network.dampers, expected_clicks):
+            self.assertEqual(damper.setting.clicks, {"compression": click, "rebound": click})
+        self.assertEqual(axle.network.dampers[1].table.metadata["file_sha256"],
+                         axle.network.dampers[3].table.metadata["file_sha256"])
+        self.assertEqual(axle.network.dampers[0].table.metadata["source_sha256"], "from real car data")
+        self.assertEqual(axle.network.dampers[2].table.metadata["file_sha256"],
+                         axle.network.dampers[0].table.metadata["file_sha256"])
+        self.assertNotEqual(axle.network.dampers[0].table.compression_force[1, 6],
+                            axle.network.dampers[1].table.compression_force[1, 5])
 
     def test_a_missing_child_role_is_named(self):
         text = (ROOT / "models/suspensions/iem24_four_mode.xml").read_text()
@@ -323,7 +334,7 @@ class IndependentEquivalenceTests(unittest.TestCase):
 
 
 class DamperTests(unittest.TestCase):
-    """A mode damper acts on the wheel-referred mode velocity with no motion ratio."""
+    """Modal damper shaft kinematics follow each mode's travel Jacobian."""
 
     def test_linear_mode_dampers_give_t_transpose_c_t(self):
         c = 1500.0
@@ -346,6 +357,48 @@ class DamperTests(unittest.TestCase):
         zdot = np.array([0.1, 0.1, 0.1, 0.1])  # pure heave: heave rate = 0.2
         force = suspension.network.forces(np.zeros(4), zdot).elements["damper"]
         np.testing.assert_allclose(force, 2000.0 * 0.2 * 0.5 * np.ones(4), rtol=1e-12)
+
+    def test_axle_modes_apply_separate_heave_and_roll_motion_ratios(self):
+        class RecordingDamper(LinearDamper):
+            def force(self, velocity):
+                self.last_velocity = np.asarray(velocity, dtype=float).copy()
+                return super().force(velocity)
+
+        dampers = [RecordingDamper(1000.0) for _ in range(4)]
+        layout = build_axle_roll_heave(
+            kinematics=reference().kinematics,
+            heave_rate_front=80e3, roll_rate_front=60e3,
+            heave_rate_rear=80e3, roll_rate_rear=60e3,
+            heave_damper_front=dampers[0], roll_damper_front=dampers[1],
+            heave_damper_rear=dampers[2], roll_damper_rear=dampers[3],
+            motion_ratios=(1.05, 1.20, 1.10, 1.30),
+        )
+        rate = 0.1
+        qdot = np.array([rate, 0., 0., 0.])
+        # MR is wheel/shaft travel. In orthonormal heave, each corner travels
+        # q/sqrt(2), so shaft velocity and generalized force use 1/(sqrt(2)*MR).
+        layout.network.forces(np.zeros(4), AXLE_MODE_MATRIX.T @ qdot)
+        heave_jacobian = 1.0 / (np.sqrt(2) * 1.05)
+        self.assertAlmostEqual(float(dampers[0].last_velocity[0]), heave_jacobian * rate)
+        self.assertAlmostEqual(float(dampers[1].last_velocity[0]), 0.0)
+        got = layout.network.forces(np.zeros(4), AXLE_MODE_MATRIX.T @ qdot)
+        expected_corner = AXLE_MODE_MATRIX.T @ np.array([1000 * heave_jacobian**2 * rate, 0, 0, 0])
+        np.testing.assert_allclose(got.elements["damper"], expected_corner)
+        self.assertAlmostEqual(float(got.damper_velocity[0]), abs(heave_jacobian * rate))
+        modal_force = float((AXLE_MODE_MATRIX @ got.elements["damper"])[0])
+        self.assertAlmostEqual(modal_force * rate, 1000 * (heave_jacobian * rate)**2)
+        # Roll modes use their independent DSS ratio, with the expected
+        # left/right sign pattern and the same virtual-work power identity.
+        roll_rate = -0.07
+        roll_velocity = AXLE_MODE_MATRIX.T @ np.array([0., roll_rate, 0., 0.])
+        roll_forces = layout.network.forces(np.zeros(4), roll_velocity)
+        roll_jacobian = 1.0 / (np.sqrt(2) * 1.20)
+        self.assertAlmostEqual(float(dampers[1].last_velocity[0]), roll_jacobian * roll_rate)
+        roll_mode_force = float((AXLE_MODE_MATRIX @ roll_forces.elements["damper"])[1])
+        self.assertAlmostEqual(roll_mode_force * roll_rate,
+                               1000 * (roll_jacobian * roll_rate)**2)
+        np.testing.assert_allclose(roll_forces.elements["damper"][:2],
+                                   [roll_mode_force/np.sqrt(2), -roll_mode_force/np.sqrt(2)])
 
     def test_a_damper_flag_propagates(self):
         class Flagged:

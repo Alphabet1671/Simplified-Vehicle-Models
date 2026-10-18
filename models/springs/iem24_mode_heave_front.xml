@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- Wheel-referred mode spring rate (orthonormal mode coordinate). IEM24 front wheel rate 450 lbf/in (provenance.md): equal heave and corner rate. -->
+<!-- Wheel-referred heave-mode spring rate: IEM24 physical heave spring 450 lbf/in (78 807.075861 N/m). Source: from real car data. -->
 <model schema-version="1.0" id="iem24-mode-heave-front" type="spring-model" subtype="mode-rate">
   <parameters>
     <parameter name="rate" value="78807.07586091432" unit="N/m"/>

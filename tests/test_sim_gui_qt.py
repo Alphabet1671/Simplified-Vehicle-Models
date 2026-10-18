@@ -28,6 +28,7 @@ if QApplication is not None:
     from tools.sim_gui.qt.study_tab import StudyTab
     from tools.sim_gui.qt.workers import ValidationWorker
     from tools.sim_gui.qt.queue import CaseQueue
+    from tools.sim_gui.qt.main_window import MainWindow
     from tools.sim_gui.study import Dimension, StudyDefinition, CaseSpec, expand, WARNING_CASES, TooManyCases
     from tools.sim_gui.execute import PreparedCase
     from PyQt6.QtCore import QEventLoop, QTimer, Qt

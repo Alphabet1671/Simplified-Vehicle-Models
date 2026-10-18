@@ -206,7 +206,11 @@ def register_builtin_components() -> None:
         motor_envelope,
         power_plant,
     )
-    from simplified_vehicle_models.suspension import components, modal_components
+    from simplified_vehicle_models.suspension import (
+        components,
+        hydraulic_components,
+        modal_components,
+    )
 
     _ = (
         fixed_aero,
@@ -221,6 +225,7 @@ def register_builtin_components() -> None:
         motor_envelope,
         power_plant,
         components,
+        hydraulic_components,
         modal_components,
     )
     register_component(

@@ -126,6 +126,45 @@ _WHEEL_SPEED_PATTERNS = ("omega_{}", "wheel_speed_{}")
 _WHEELS = ("fl", "fr", "rl", "rr")
 
 
+def plant_class_for(spec: ModelSpec, vehicle):
+    """Return the plant class for a compiled vehicle.
+
+    A vertical vehicle whose suspension network carries its own states (the
+    hydraulic layout) needs a plant class with those states appended; every
+    other vehicle uses the spec's plant class unchanged.
+    """
+    module = importlib.import_module(spec.plant_module)
+    factory = getattr(module, "vertical_plant_class", None)
+    if factory is not None and hasattr(vehicle, "suspension"):
+        network = getattr(vehicle.suspension, "network", None)
+        if network is not None and int(getattr(network, "n_states", 0)) > 0:
+            return factory(vehicle)
+    return spec.plant
+
+
+def network_state_ranges(vehicle, plant, accepted_state):
+    """Return the summary entries for the suspension network's own states.
+
+    The range covers every plant evaluation (rejected Newton trials included) and
+    the accepted trajectory. A state outside the network's physical bounds, for
+    example a gas volume beyond an accumulator stop, makes ``network_state_valid``
+    false, which the ``table_domain_valid`` gate reads.
+    """
+    network = vehicle.suspension.network
+    count = int(getattr(plant, "network_states", 0))
+    if count == 0:
+        return {}
+    bounds = np.asarray(network.state_bounds, dtype=float)
+    offset = plant.state_size - plant.network_states
+    accepted = accepted_state[offset:]
+    low = np.minimum(plant.network_state_minimum, accepted.min(axis=1))
+    high = np.maximum(plant.network_state_maximum, accepted.max(axis=1))
+    valid = bool(np.all(low >= bounds[:, 0]) and np.all(high <= bounds[:, 1]))
+    return {"network_state_names": list(network.state_names),
+            "network_state_minimum": low.tolist(), "network_state_maximum": high.tolist(),
+            "network_state_bounds": bounds.tolist(), "network_state_valid": valid}
+
+
 def model_spec(model: str) -> ModelSpec:
     """Return the specification of one forward model."""
     try:
@@ -546,8 +585,13 @@ def child(args):
         summary["model_inputs"] = {key: str(path) for key, path in physical_inputs.items()}
         snapshot = root / "source_snapshot"
         snapshot.mkdir()
+        source_names = {}
         for path in sources:
-            (snapshot / path.name).write_bytes(path.read_bytes())
+            name = path.name
+            if name in source_names:
+                name = str(path).replace("/", "__")
+            source_names[name] = path
+            (snapshot / name).write_bytes(path.read_bytes())
         summary["environment"] = {"python": sys.version, "numpy": np.__version__,
                                   "scipy": scipy.__version__, "platform": platform.platform()}
         vehicle = compile_formulation(str(spec.formulation)).model
@@ -569,7 +613,7 @@ def child(args):
                                 lateral_cap, 1., 2.,
                                 vehicle=control if live_limit else None,
                                 live_limit=live_limit)
-        plant_class = spec.plant
+        plant_class = plant_class_for(spec, vehicle)
         # The plant publishes its layout; every column index below is derived
         # from it instead of being repeated as a literal.
         names = tuple(plant_class.state_names)
@@ -696,10 +740,13 @@ def child(args):
             summary["jounce_evaluation_maximum_m"] = finite_or_none(plant.maximum_jounce)
             summary["out_of_range_evaluations"] = plant.out_of_range_evaluations
             summary["jounce_travel_valid"] = travel_valid
+            if getattr(plant, "network_states", 0):
+                summary.update(network_state_ranges(vehicle, plant, result.state))
             summary["contact_valid"] = bool(result.lap_completed
                 and math.isfinite(plant.minimum_contact_load)
                 and plant.minimum_contact_load >= 0.
                 and plant.out_of_range_evaluations == 0
+                and summary.get("network_state_valid", True)
                 and travel_valid)
         # Interval-wide evidence that is narrower than between-step validation:
         # it bounds the BDF dense interpolant (not the true trajectory) for the

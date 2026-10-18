@@ -364,8 +364,15 @@ def vertical_mass_block(vehicle, jounce) -> np.ndarray:
 
 
 def evaluate_vertical_dynamics(vehicle, state: VerticalState, wheel_torques, steering: float,
-                               tire_states: tuple[TransientTireState, ...]) -> VerticalEvaluation:
-    """Evaluate the vertical 14-DOF equations in FL, FR, RL, RR order."""
+                               tire_states: tuple[TransientTireState, ...],
+                               network_state=None) -> VerticalEvaluation:
+    """Evaluate the vertical 14-DOF equations in FL, FR, RL, RR order.
+
+    ``network_state`` holds the suspension network's own states (hydraulic gas
+    fractions). It is ``None`` for a stateless layout; for a stateful one,
+    ``None`` means the network at rest at the evaluated jounces, and the rates of
+    the states are returned in ``corner_forces.ds_dt``.
+    """
     p = vehicle.planar
     torques = np.asarray(wheel_torques, dtype=float)
     if torques.shape != (4,) or len(tire_states) != 4:
@@ -404,7 +411,7 @@ def evaluate_vertical_dynamics(vehicle, state: VerticalState, wheel_torques, ste
     bfx, bfy = rotate_tire_forces_to_body(fx, fy, angles)
     drag_down, drag = aerodynamic_forces(p, float(np.hypot(state.v_x, state.v_y)))
     kinematics = vehicle.suspension.kinematics
-    suspension = vehicle.suspension.network.forces(jounce, jounce_rate)
+    suspension = vehicle.suspension.network.forces(jounce, jounce_rate, network_state)
     total_force = np.array([suspension.total[i] for i in range(4)])
     # Body Newton-Euler; include gravity, aero, RC jacking and anti-dive/squat.
     # Roll-centre curves are queried at absolute roll capped to measured range.

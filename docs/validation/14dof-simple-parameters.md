@@ -103,7 +103,41 @@ radius is measured, and no radius was invented to hide the inconsistency.
   only the FL wheel angle, its contact velocity, its slip angle and the rotation of its force
   (`tests/test_vertical_14dof.py`).
 
-### 1.5 Transient tire layer — equations and compiled coefficients
+### 1.5 Suspension layout extensions (Task 6)
+
+The reference acceptance evidence continues to use the independent-corner layout;
+its numbers and state count remain unchanged. The following layouts are now
+available for setup studies:
+
+| Assembly subtype | State contribution | Status |
+|---|---:|---|
+| `independent-corner` | 0 | reference, numbers pinned |
+| `axle-roll-heave` | 0 | linear modal approximation |
+| `four-mode` | 0 | linear modal approximation |
+| `hydraulic` | one gas fraction per accumulator node | **PROPOSED** circuit sizing example |
+
+The modal examples use wheel-referred mode rates and mode damper velocities with
+no additional motion ratio. Consequently their per-axle ride frequencies and
+corner damping ratios are diagonal approximations, not a nonlinear full-car mode
+fit. The four-mode roll frequency saturates with rate because the tires remain in
+series (9.90 to 10.41 Hz over the documented rate sweep). The axle example's
+front ride frequency is 4.283 Hz; its rear ride frequency is 3.74 Hz versus 3.59
+Hz for the independent layout because the diagonal includes the rear ARB. Its
+axle heave frequency is 4.072 Hz versus 3.989 Hz for the independent layout.
+
+The hydraulic example is `models/suspensions/iem24_roll_decoupled_hydraulic.xml`.
+Its circuit graph is pinned in `models/data/iem24_roll_decoupled_circuit.npz` and
+loaded from `models/hydraulics/iem24_roll_decoupled_circuit.xml`. Cylinder areas,
+precharge, gas volume, polytropic exponent and orifice coefficients are all
+**PROPOSED**; they are not measured hydraulic data. The circuit uses algebraic
+orifice flow and one integrated gas-volume fraction per accumulator. A state outside
+its accumulator range is a named network-state gate failure, rather than silent
+extrapolation. The 60 m smoke run completed with zero out-of-range evaluations,
+zero lifted-wheel evaluations and a 786.4 N minimum contact load; wall time was
+4.6 s on the development machine, compared with 3.8 s for the corresponding
+independent-corner smoke run.
+
+### 1.6 Transient tire layer — equations and compiled coefficients
 
 File `models/tires/iem24_murphy_real_unitire_transient.xml` (`tire-model/unitire-transient-simple`,
 capability `transient-combined-slip`), module

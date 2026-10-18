@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- IEM24 corner springs and dampers with a PROPOSED per-axle roll-decoupled hydraulic
+     circuit. The springs carry the sprung static load and the bump stop. The circuit adds
+     a gas-spring stiffness that is felt by heave but not by roll once the left-right line
+     is open (stiff-line limit); the anti-roll bar is not part of this layout.
+     PROPOSED: every hydraulic value; see hydraulics/iem24_roll_decoupled_circuit.xml. -->
+<model schema-version="1.0" id="iem24-roll-decoupled-hydraulic" type="suspension-assembly" subtype="hydraulic">
+  <components>
+    <component role="kinematics" ref="../suspension-kinematics/iem24_murphy_real_suspension_kinematics.xml"/>
+    <component role="spring" ref="../springs/iem24_murphy_real_suspension_springs.xml"/>
+    <component role="circuit" ref="../hydraulics/iem24_roll_decoupled_circuit.xml"/>
+    <component role="damper-front" ref="../dampers/multimatic_dssv_vc01_front.xml"/>
+    <component role="damper-rear" ref="../dampers/multimatic_dssv_vc01_rear.xml"/>
+  </components>
+</model>

@@ -42,7 +42,7 @@ ROOT = Path(__file__).resolve().parents[1]
 TRIALS = ROOT / "docs/validation/iem24-murphy/14dof_simple_trials"
 GATE_TOOL = ROOT / "tools/gates/check_14dof_simple_gates.py"
 PLANAR_REFERENCE = ("docs/validation/iem24-murphy/seven_dof_track_pair/original/"
-                    "attempt_1792288979150821000")
+                    "attempt_1792298175493764000")
 
 #: What a reader must run when the gate table is missing or stale.
 GATE_TOOL_COMMAND = (

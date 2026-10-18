@@ -496,6 +496,15 @@ Vertical tire stiffness and damping generate road-contact normal force. Suspensi
 - `14dof-simple` — **delivered** (`models/formulations/iem24_murphy_real_14dof_simple.xml`). It adds the four unsprung vertical dynamics, vertical tire contact from the existing loaded-radius fit, a corner suspension LUT (spring and bump/droop stops, N-valve damper tables, rear ARB, motion ratio, roll-centre and anti geometry, static toe, a configurable jounce-steer curve with a zero baseline because no measured curve exists), table transients and coupled body/suspension/contact dynamics with an implicit mass matrix. Its tire layer keeps the **unchanged steady UniTire force law** and adds three *provisional* transient states per corner — delayed longitudinal slip, load-coupled lateral carcass deformation, and trail angle — that is 12 tire states and a **38-state plant** (39 with the driver pedal state). The transient tire states are not mechanical DOFs and do not rename the model. All transient coefficients are PROPOSED and unfitted.
 - `14dof-complete` — **next, not delivered**. It replaces the provisional transient layer with fitted coefficients (longitudinal length, lateral carcass response, trail pole and lead, contact transitions) and adds camber-dependent full UniTire steady-state forces and full moments, using the camber gain the corner LUT already stores. Camber does not yet change a tire force in `14dof-simple`; static toe and jounce steer do.
 
+The `14dof-simple` suspension force path is layout-pluggable. The delivered
+`independent-corner` assembly is numerically pinned as the reference; the
+stateless `axle-roll-heave` and `four-mode` assemblies provide linear modal
+approximations, and `hydraulic` provides a stateful interconnected circuit. All
+layouts retain the same kinematics layer and wheel-referred force-network seam.
+The hydraulic example uses one gas-fraction state per accumulator and algebraic
+orifice flows; its values are **PROPOSED** sizing parameters, not measured data.
+See [Adding a suspension layout](dev/adding-a-suspension-layout.md).
+
 A **transient tire model fitting tool is required** before either rung can support a measured-vehicle accuracy claim. It is not part of this plan.
 
 The 10-DOF massless-corner milestone stays an independent future model. It is **not** safely obtained by setting the unsprung mass to zero in the nonsingular 14-DOF mass matrix.
@@ -561,6 +570,14 @@ The suspension input should be a coherent per-corner dataset indexed primarily b
 Optimal-control solvers require useful derivatives. Raw piecewise-linear tables have discontinuous derivatives, so optimization-facing LUTs should use validated differentiable interpolation, such as shape-preserving or constrained smooth splines. Extrapolation beyond physical jounce limits should normally be prohibited by constraints rather than silently continued.
 
 **Implemented for `14dof-simple`.** The per-corner dataset is one NPZ (`suspension-corner-v1`) read by a kinematics, a spring and an ARB component that a `suspension-assembly` XML nests (with the two damper components) behind one `suspension-forces` capability; it holds: C1 monotone (Fritsch–Carlson) splines for the spring/bump-stop/droop-stop curve, the damper motion ratio, the roll-centre height and lateral maps, and the front/rear jounce-steer curves; scalar ARB rates, anti fractions, static toe and inertance. The damper is a separate `damper-table-v1` NPZ with one valve row per half (the Multimatic DSSV VC01 uses one `full`-band valve per half, 12 clicks, ±0.5 m/s) and linear extension outside the table with a counted out-of-range flag. Roll-centre height and lateral position are held constant above the 1 g measured point and the queried roll is clipped at the 5° table maximum. Jounce steer has a zero baseline (no measured data) and static toe is the measured 0° at both axles. Bump-stop onset and every unsprung/transient-tire coefficient are PROPOSED, not measured; see [14dof-simple-parameters.md](validation/14dof-simple-parameters.md).
+
+The layout-specific examples are `iem24_axle_roll_heave`, `iem24_four_mode` and
+`iem24_roll_decoupled_hydraulic`. The modal rates and mode dampers are
+**PROPOSED** values; the modal ride-frequency and corner-damping figures are
+therefore diagonal approximations. The hydraulic circuit is also **PROPOSED**:
+its pinned NPZ stores node/cylinder/line/accumulator data and its XML stores only
+scalar line scaling plus the NPZ hash. No hydraulic parameter in the example is
+claimed as measured.
 
 ## 6\. Track model
 

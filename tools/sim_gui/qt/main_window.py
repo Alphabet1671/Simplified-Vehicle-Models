@@ -224,6 +224,8 @@ class MainWindow(QMainWindow):
         self._validation_thread = None
         self._validation_worker = None
         if self._progress_dialog is not None:
+            # QProgressDialog.close() emits canceled; a normal finish is not a cancel.
+            self._progress_dialog.canceled.disconnect(self._cancel_validation)
             self._progress_dialog.close()
             self._progress_dialog = None
         if self._validation_cancelled:

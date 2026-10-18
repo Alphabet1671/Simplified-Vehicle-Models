@@ -489,6 +489,9 @@ class MainWindowTests(unittest.TestCase):
         self.assertIsNot(worker_threads[0], main_thread)
         self.assertIsNone(window._validation_thread)
         self.assertFalse(window._validation_thread is not None and window._validation_thread.isRunning())
+        # Closing the progress dialog on a normal finish must not count as a cancel.
+        self.assertFalse(window._validation_cancelled)
+        self.assertEqual(len(window._prepared), len(window.study_index.cases))
         prior_index = window.study_index
         many_cases = tuple(mock.Mock() for _ in range(51))
         with mock.patch("tools.sim_gui.qt.main_window.expand", return_value=many_cases), mock.patch("tools.sim_gui.qt.main_window._confirm", return_value=QMessageBox.StandardButton.No) as confirm:

@@ -18,6 +18,7 @@ if QApplication is not None:
     from PyQt6.QtGui import QFont
     from tools.sim_gui import REPOSITORY_ROOT
     from tools.sim_gui.vehicle import VehicleConfiguration
+    from tools.sim_gui.settings import RunSettings
     from tools.sim_gui.qt.model_panel import ModelPanel
     from tools.sim_gui.qt.settings_tab import SettingsTab
 
@@ -64,6 +65,42 @@ class ModelPanelTests(unittest.TestCase):
         warn.assert_called_once()
         self.assertEqual(combo.currentIndex(), old)
 
+    def test_reset_restores_combo_font_and_button(self):
+        combo = self._combo("tire")
+        combo.setCurrentIndex(1 if combo.currentIndex() == 0 else 0)
+        self.assertTrue(combo.font().bold())
+        reset = self.panel._slot_widgets["tire"][2]
+        self.assertTrue(reset.isEnabled())
+        reset.click()
+        self.assertEqual(combo.currentData(), str(self.cfg.choices["tire"]))
+        self.assertFalse(combo.font().bold())
+        self.assertFalse(reset.isEnabled())
+
+    def test_rebuild_retains_bold_changed_tire(self):
+        tire = self._combo("tire")
+        tire.setCurrentIndex(1 if tire.currentIndex() == 0 else 0)
+        powertrain = self._combo("powertrain")
+        powertrain.setCurrentIndex(1 if powertrain.currentIndex() == 0 else 0)
+        self.assertTrue(self._combo("tire").font().bold())
+
+    def test_point_mass_model_is_shown_without_emission(self):
+        point_mass = VehicleConfiguration.open(
+            REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_point_mass.xml"
+        )
+        panel = ModelPanel(point_mass)
+        try:
+            self.assertEqual(panel._model.currentText(), "point-mass")
+            self.assertIn("no forward runner", panel._error.text())
+            emitted = []
+            panel.configurationChanged.connect(emitted.append)
+            panel._model.setCurrentText("planar-7dof")
+            self.assertEqual(emitted, [panel.configuration()])
+        finally:
+            panel.deleteLater()
+
+    def test_track_is_preselected(self):
+        self.assertIsNotNone(self.panel.track())
+
 
 @unittest.skipIf(QApplication is None, "PyQt6 is not installed")
 class SettingsTabTests(unittest.TestCase):
@@ -80,3 +117,27 @@ class SettingsTabTests(unittest.TestCase):
     def test_planar_timeout_maximum(self):
         self.tab.set_model("planar-7dof")
         self.assertEqual(self.tab.timeout_seconds.maximum(), 300.0)
+
+    def test_14dof_clears_quasi_static_and_uses_long_timeout(self):
+        self.tab.quasi_static_attitude.setChecked(True)
+        self.tab.set_model("14dof-simple")
+        self.assertFalse(self.tab.quasi_static_attitude.isChecked())
+        self.assertFalse(self.tab.settings().quasi_static_attitude)
+        self.assertEqual(self.tab.timeout_seconds.value(), 3600.0)
+        self.assertEqual(self.tab.timeout_seconds.maximum(), 1e6)
+
+    def test_set_settings_emits_once_and_sets_lateral_cap(self):
+        emitted = []
+        self.tab.settingsChanged.connect(emitted.append)
+        from tools.sim_gui.settings import RunSettings
+        self.tab.set_settings(RunSettings(lateral_acceleration=2.0))
+        self.assertEqual(len(emitted), 1)
+        self.assertTrue(self.tab.lateral_cap.isChecked())
+        self.assertTrue(self.tab.lateral_value.isEnabled())
+
+    def test_preset_emits_once(self):
+        emitted = []
+        self.tab.settingsChanged.connect(emitted.append)
+        self.tab.preset_button.click()
+        self.assertEqual(len(emitted), 1)
+        self.assertEqual(emitted[0], RunSettings.for_model("planar-7dof"))

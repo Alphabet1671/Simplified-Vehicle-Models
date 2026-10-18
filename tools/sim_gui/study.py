@@ -5,6 +5,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from itertools import product
 import json
+import math
 import os
 from pathlib import Path
 import subprocess
@@ -102,6 +103,12 @@ def _case_label(changes: list[tuple[str, str]]) -> str:
     return ", ".join(f"{key}={value}" for key, value in changes)
 
 
+def _resolve_value(value: str | None) -> Path:
+    """Resolve repository-relative and absolute path values canonically."""
+    path = Path(value or "")
+    return (path if path.is_absolute() else REPOSITORY_ROOT / path).resolve()
+
+
 def _relative_or_absolute(path: Path) -> str:
     path = path.resolve()
     try:
@@ -117,12 +124,28 @@ def expand(definition: StudyDefinition) -> tuple[CaseSpec, ...]:
     baseline.update({"model": definition.model, "track": definition.track})
 
     def differs(dimension: Dimension, index: int) -> bool:
-        return dimension.values[index] != baseline.get(dimension.key)
+        value = dimension.values[index]
+        baseline_value = baseline.get(dimension.key)
+        if dimension.key in {"model", "track"}:
+            if dimension.key == "track":
+                return _resolve_value(value) != _resolve_value(baseline_value)
+            return value != baseline_value
+        return _resolve_value(value) != _resolve_value(baseline_value)
 
     if definition.mode == "full-factorial":
+        case_count = math.prod(len(dimension.values) for dimension in dimensions)
+        if case_count > MAXIMUM_CASES:
+            raise TooManyCases(f"study has {case_count} cases; maximum is {MAXIMUM_CASES}")
         combinations = list(product(*(range(len(d.values)) for d in dimensions)))
     else:
         # Keep an explicit baseline case, then vary one dimension at a time.
+        case_count = 1 + sum(
+            differs(dimension, index)
+            for dimension in dimensions
+            for index in range(len(dimension.values))
+        )
+        if case_count > MAXIMUM_CASES:
+            raise TooManyCases(f"study has {case_count} cases; maximum is {MAXIMUM_CASES}")
         combinations = [None]
         for position, dimension in enumerate(dimensions):
             for index in range(len(dimension.values)):
@@ -131,12 +154,12 @@ def expand(definition: StudyDefinition) -> tuple[CaseSpec, ...]:
                 combination = [None] * len(dimensions)
                 combination[position] = index
                 combinations.append(tuple(combination))
-    if len(combinations) > MAXIMUM_CASES:
-        raise TooManyCases(f"study has {len(combinations)} cases; maximum is {MAXIMUM_CASES}")
 
     baseline_configuration = None
     if definition.source:
-        baseline_configuration = VehicleConfiguration.open(Path(definition.source)).with_model(definition.model)
+        baseline_configuration = VehicleConfiguration.open(
+            Path(definition.source)
+        ).with_model(definition.model)
         for key, value in definition.choices.items():
             baseline_value = baseline_configuration.choices.get(key)
             resolved = Path(value) if Path(value).is_absolute() else REPOSITORY_ROOT / value
@@ -247,11 +270,15 @@ class StudyIndex:
                cases: tuple[CaseSpec, ...]) -> "StudyIndex":
         directory = Path(directory)
         directory.mkdir(parents=True, exist_ok=True)
-        result = subprocess.run(
-            ["git", "rev-parse", "HEAD"], capture_output=True, text=True,
-            cwd=REPOSITORY_ROOT,
-        )
-        commit = result.stdout.strip() if result.returncode == 0 else None
+        try:
+            result = subprocess.run(
+                ["git", "rev-parse", "HEAD"], capture_output=True, text=True,
+                cwd=REPOSITORY_ROOT,
+            )
+        except OSError:
+            commit = None
+        else:
+            commit = result.stdout.strip() if result.returncode == 0 else None
         payload = {
             "schema": "sim-study-v1",
             "name": definition.name,

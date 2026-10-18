@@ -1,6 +1,8 @@
+import json
 import os
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 from xml.etree import ElementTree
 
@@ -9,7 +11,9 @@ from tools.sim_gui.catalogue import candidates, scan_catalogue, tracks
 from tools.sim_gui.vehicle import VehicleConfiguration
 from tools.sim_gui.variant import VariantFiles, write_variant
 from tools.sim_gui.settings import RunSettings, runner_argv, validate
-from tools.sim_gui.study import StudyDefinition, StudyIndex, TooManyCases, Dimension, expand, dimension_from_sweep
+from tools.sim_gui.study import (
+    StudyDefinition, StudyIndex, TooManyCases, Dimension, expand, dimension_from_sweep,
+)
 from simplified_vehicle_models.compiler.compile import compile_formulation
 
 
@@ -50,7 +54,11 @@ class SettingsTests(unittest.TestCase):
 
 class StudyTests(unittest.TestCase):
     def definition(self, mode):
-        return StudyDefinition("test", "", "track-a", "planar-7dof", {"tire": "a"}, RunSettings(), mode, (Dimension("tire", ("a", "b")), Dimension("model", ("planar-7dof", "14dof-simple"))))
+        return StudyDefinition(
+            "test", "", "track-a", "planar-7dof", {"tire": "a"}, RunSettings(), mode,
+            (Dimension("tire", ("a", "b")),
+             Dimension("model", ("planar-7dof", "14dof-simple"))),
+        )
 
     def test_expansion_modes_and_labels(self):
         one = expand(self.definition("one-at-a-time"))
@@ -58,16 +66,58 @@ class StudyTests(unittest.TestCase):
         self.assertEqual(one[0].label, "baseline")
         self.assertEqual(one[1].label, "tire=b")
         self.assertEqual(one[2].label, "model=14dof-simple")
-        self.assertEqual(len(expand(self.definition("full-factorial"))), 4)
+        factorial = expand(self.definition("full-factorial"))
+        self.assertEqual(len(factorial), 4)
+        self.assertEqual(factorial[3].label, "tire=b, model=14dof-simple")
+
+    def test_absolute_baseline_value_is_skipped(self):
+        source = REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_14dof_simple.xml"
+        baseline = VehicleConfiguration.open(source)
+        tire = baseline.choices["tire"]
+        definition = StudyDefinition(
+            "absolute", source.as_posix(), "track", "14dof-simple",
+            {key: path.relative_to(REPOSITORY_ROOT).as_posix()
+             for key, path in baseline.choices.items()},
+            RunSettings(), "one-at-a-time",
+            (Dimension("tire", (str(tire), "models/tires/hoosier-43075-r20-simple.xml")),),
+        )
+        cases = expand(definition)
+        self.assertEqual(len(cases), 2)
+        self.assertEqual([case.label for case in cases],
+                         ["baseline", "tire=hoosier-43075-r20-simple"])
+
 
     def test_five_cases_when_no_dimension_matches_baseline(self):
-        definition = StudyDefinition("x", "", "t", "point-mass", {"tire": "x"}, RunSettings(), "one-at-a-time", (Dimension("tire", ("a", "b")), Dimension("model", ("planar-7dof", "14dof-simple"))))
+        definition = StudyDefinition(
+            "x", "", "t", "point-mass", {"tire": "x"}, RunSettings(), "one-at-a-time",
+            (Dimension("tire", ("a", "b")),
+             Dimension("model", ("planar-7dof", "14dof-simple"))),
+        )
         self.assertEqual(len(expand(definition)), 5)
 
     def test_case_cap(self):
-        definition = StudyDefinition("x", "", "t", "m", {}, RunSettings(), "full-factorial", (Dimension("x", tuple(str(i) for i in range(501))),))
+        definition = StudyDefinition(
+            "x", "", "t", "m", {}, RunSettings(), "full-factorial",
+            (Dimension("x", tuple(str(i) for i in range(501))),),
+        )
         with self.assertRaises(TooManyCases):
             expand(definition)
+
+    def test_case_cap_is_checked_before_factorial_product(self):
+        dimensions = tuple(Dimension(str(i), tuple(str(j) for j in range(1000)))
+                           for i in range(3))
+        definition = StudyDefinition("x", "", "t", "m", {}, RunSettings(),
+                                     "full-factorial", dimensions)
+        with self.assertRaises(TooManyCases):
+            expand(definition)
+
+    def test_index_create_handles_missing_git(self):
+        with tempfile.TemporaryDirectory() as d, mock.patch(
+                "tools.sim_gui.study.subprocess.run", side_effect=FileNotFoundError):
+            StudyIndex.create(Path(d), self.definition("one-at-a-time"),
+                              expand(self.definition("one-at-a-time")))
+            payload = json.loads((Path(d) / "study.json").read_text())
+            self.assertIsNone(payload["repository_commit"])
 
     def test_duplicate_key(self):
         with self.assertRaisesRegex(ValueError, "slot tire is already swept"):
@@ -115,6 +165,26 @@ class StudyTests(unittest.TestCase):
             for key, value in cases[0].choices.items():
                 if not key.startswith("powertrain"):
                     self.assertEqual(cases[1].choices[key], value)
+            factorial = expand(StudyDefinition(
+                "parent-factorial", source.as_posix(), "track", "14dof-simple", choices,
+                RunSettings(), "full-factorial", (
+                    Dimension("powertrain", (choices["powertrain"], str(powertrain))),
+                    Dimension("model", ("14dof-simple", "planar-7dof")),
+                ),
+            ))
+            self.assertEqual(len(factorial), 4)
+            self.assertEqual([case.label for case in factorial],
+                             ["baseline", "model=planar-7dof", "powertrain=powertrain",
+                              "powertrain=powertrain, model=planar-7dof"])
+            self.assertEqual(factorial[0].choices["powertrain/power-plant"],
+                             choices["powertrain/power-plant"])
+            self.assertEqual(factorial[1].choices["powertrain/power-plant"],
+                             choices["powertrain/power-plant"])
+            self.assertEqual(factorial[2].choices["powertrain/power-plant"],
+                             str(powerplant.resolve()))
+            self.assertEqual(factorial[3].choices["powertrain/power-plant"],
+                             str(powerplant.resolve()))
+            self.assertTrue(all(case.sweep_points == {} for case in factorial))
 
     def test_dimension_from_sweep_reads_members(self):
         source = REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_14dof_simple.xml"

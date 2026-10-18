@@ -9,7 +9,8 @@ from tools.sim_gui import REPOSITORY_ROOT, child_environment
 from tools.sim_gui.execute import child_command, new_attempt, prepare_case
 from tools.sim_gui.settings import RunSettings
 from tools.sim_gui.study import CaseSpec, StudyDefinition, StudyIndex, expand
-from tools.sim_gui.run_study import run_study, main as run_study_main
+from tools.sim_gui.run_study import run_study, main as run_study_main, _study_directory
+from tools.sim_gui.execute import PreparedCase
 from tools.sim_gui.vehicle import VehicleConfiguration
 
 try:
@@ -18,6 +19,43 @@ except ImportError:
     SCIPY_AVAILABLE = False
 else:
     SCIPY_AVAILABLE = True
+
+
+class HeadlessRunnerUnitTests(unittest.TestCase):
+    def setUp(self):
+        self.root = REPOSITORY_ROOT / "runs" / "_test"
+        self.assertTrue(str(self.root).endswith("runs/_test"))
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+
+    def definition(self, name="unit"):
+        return StudyDefinition(name, "", "", "point-mass", {}, RunSettings(), "one-at-a-time", ())
+
+    def test_study_directory_uses_local_timestamp_and_suffixes_clashes(self):
+        first = _study_directory(self.root, self.definition())
+        second = _study_directory(self.root, self.definition())
+        self.assertRegex(first.name, r"^unit_\d{8}-\d{6}$")
+        self.assertEqual(second.name, first.name + "_2")
+
+    def test_worker_failure_is_recorded_and_other_cases_finish(self):
+        definition = self.definition("failure")
+        fake_dir = self.root / "failure_000" / "cases" / "case_000"
+        fake_dir.mkdir(parents=True)
+        fake = PreparedCase(fake_dir, fake_dir / "f.xml", fake_dir / "v.xml", ["--record"])
+        with mock.patch("tools.sim_gui.run_study.prepare_case", return_value=fake), \
+             mock.patch("tools.sim_gui.run_study.validate_case", return_value=None), \
+             mock.patch("tools.sim_gui.run_study.child_command", side_effect=RuntimeError("boom")):
+            output = run_study(definition, output_root=self.root, parallel=1)
+        case = json.loads((output / "study.json").read_text())["cases"][0]
+        self.assertEqual(case["status"], "failed")
+        self.assertEqual(case["error"], "RuntimeError: boom")
+
+    def test_all_invalid_cli_returns_one(self):
+        definition = self.definition("all-invalid")
+        path = self.root / "definition.study.json"
+        self.root.mkdir(parents=True)
+        path.write_text(json.dumps(definition.to_json()))
+        with mock.patch("tools.sim_gui.run_study.validate_case", return_value="bad"):
+            self.assertEqual(run_study_main(["--definition", str(path), "--output-root", str(self.root)]), 1)
 
 
 @unittest.skipUnless(SCIPY_AVAILABLE, "scipy is required for the forward-driver integration test")

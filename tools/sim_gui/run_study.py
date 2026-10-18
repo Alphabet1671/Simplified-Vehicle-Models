@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
+from datetime import datetime
 import json
 from pathlib import Path
 import subprocess
@@ -18,14 +18,21 @@ from .study import StudyDefinition, StudyIndex, expand
 
 
 def _study_directory(output_root: Path, definition: StudyDefinition) -> Path:
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    directory = Path(output_root) / f"{definition.name}_{stamp}"
-    directory.mkdir(parents=True, exist_ok=False)
-    return directory
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    root = Path(output_root)
+    for suffix in ("", *[f"_{index}" for index in range(2, 10000)]):
+        directory = root / f"{definition.name}_{stamp}{suffix}"
+        try:
+            directory.mkdir(parents=True, exist_ok=False)
+        except FileExistsError:
+            continue
+        return directory
+    raise FileExistsError(f"could not allocate study directory for {definition.name!r}")
 
 
 def run_study(definition: StudyDefinition, output_root: Path = REPOSITORY_ROOT / "runs",
               parallel: int = 1, on_update: Callable[[str, dict], None] | None = None) -> Path:
+    """Prepare and run all valid cases in a study, returning its output directory."""
     if parallel < 1:
         raise ValueError("parallel must be at least 1")
     study_dir = _study_directory(Path(output_root), definition)
@@ -54,23 +61,26 @@ def run_study(definition: StudyDefinition, output_root: Path = REPOSITORY_ROOT /
 
     def worker(item: PreparedCase, case):
         update(case.id, status="running")
-        attempt = new_attempt(item)
-        command = child_command(item, attempt)
-        started = time.perf_counter()
-        timed_out = False
-        return_code = None
-        with (attempt / "run.log").open("w") as log:
-            process = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT,
-                                       cwd=REPOSITORY_ROOT, env=child_environment())
-            try:
-                return_code = process.wait(timeout=item.timeout_seconds)
-            except subprocess.TimeoutExpired:
-                timed_out = True
-                process.kill()
-                return_code = process.wait()
-        fields = finish_case(item, attempt, return_code=return_code,
-                             timed_out=timed_out, cancelled=False,
-                             wall_seconds=time.perf_counter() - started, command=command)
+        try:
+            attempt = new_attempt(item)
+            command = child_command(item, attempt)
+            started = time.perf_counter()
+            timed_out = False
+            return_code = None
+            with (attempt / "run.log").open("w") as log:
+                process = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT,
+                                           cwd=REPOSITORY_ROOT, env=child_environment())
+                try:
+                    return_code = process.wait(timeout=item.timeout_seconds)
+                except subprocess.TimeoutExpired:
+                    timed_out = True
+                    process.kill()
+                    return_code = process.wait()
+            fields = finish_case(item, attempt, return_code=return_code,
+                                 timed_out=timed_out, cancelled=False,
+                                 wall_seconds=time.perf_counter() - started, command=command)
+        except Exception as error:
+            fields = {"status": "failed", "error": f"{type(error).__name__}: {error}"}
         update(case.id, **fields)
         return fields
 
@@ -82,16 +92,19 @@ def run_study(definition: StudyDefinition, output_root: Path = REPOSITORY_ROOT /
 
 
 def main(argv=None):
+    """Run a study from a JSON definition and return its process exit code."""
     parser = argparse.ArgumentParser(description="Run a simulation GUI study")
     parser.add_argument("--definition", type=Path, required=True)
     parser.add_argument("--output-root", type=Path, default=REPOSITORY_ROOT / "runs")
     parser.add_argument("--parallel", type=int, default=1)
     args = parser.parse_args(argv)
+    if args.parallel < 1:
+        parser.error("--parallel must be at least 1")
     definition = StudyDefinition.from_json(json.loads(args.definition.read_text()))
     directory = run_study(definition, args.output_root, args.parallel)
     payload = json.loads((directory / "study.json").read_text())
-    return 0 if all(case.get("status") in {"completed", "invalid"}
-                    for case in payload["cases"]) else 1
+    valid = [case for case in payload["cases"] if case.get("status") != "invalid"]
+    return 0 if valid and all(case.get("status") == "completed" for case in valid) else 1
 
 
 if __name__ == "__main__":

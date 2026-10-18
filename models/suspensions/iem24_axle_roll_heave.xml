@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Axle roll/heave example: spring rates reproduce the IEM24 corner springs plus the rear ARB (see tests/test_suspension_layouts.py). Mode dampers are PROPOSED. -->
+<model schema-version="1.0" id="iem24-axle-roll-heave" type="suspension-assembly" subtype="axle-roll-heave">
+  <components>
+    <component role="kinematics" ref="../suspension-kinematics/iem24_murphy_real_suspension_kinematics.xml"/>
+    <component role="heave-spring-front" ref="../springs/iem24_mode_heave_front.xml"/>
+    <component role="heave-damper-front" ref="../dampers/multimatic_dssv_vc01_mode.xml"/>
+    <component role="roll-spring-front" ref="../springs/iem24_mode_roll_front.xml"/>
+    <component role="roll-damper-front" ref="../dampers/multimatic_dssv_vc01_mode.xml"/>
+    <component role="heave-spring-rear" ref="../springs/iem24_mode_heave_rear.xml"/>
+    <component role="heave-damper-rear" ref="../dampers/multimatic_dssv_vc01_mode.xml"/>
+    <component role="roll-spring-rear" ref="../springs/iem24_mode_roll_rear.xml"/>
+    <component role="roll-damper-rear" ref="../dampers/multimatic_dssv_vc01_mode.xml"/>
+  </components>
+</model>

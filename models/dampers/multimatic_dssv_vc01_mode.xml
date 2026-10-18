@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Multimatic DSSV VC01 table used as a MODE damper: the table is read at the wheel-referred
+     mode velocity (orthonormal T zdot) with no motion ratio, and the force is the mode force.
+     PROPOSED: clicks 5/7 as for the front corner damper; no mode damper has been measured.
+     Same NPZ as the corner damper. Provenance: docs/model-data/provenance.md. -->
+<model schema-version="1.0" id="multimatic-dssv-vc01-mode" type="damper-model" subtype="table-mode">
+  <parameters>
+    <parameter name="click_compression" value="5" unit="1"/>
+    <parameter name="click_rebound" value="7" unit="1"/>
+  </parameters>
+  <data role="damper-table" path="../data/multimatic_dssv_vc01.npz" format="npz" sha256="e4504e26385b697018db7b05a39822e8aea731a49e07c3d945927787a0e95ccf"/>
+</model>

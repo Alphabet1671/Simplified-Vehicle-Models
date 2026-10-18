@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Wheel-referred mode spring rate (orthonormal mode coordinate). IEM24 rear wheel rate 350 lbf/in. -->
+<model schema-version="1.0" id="iem24-mode-heave-rear" type="spring-model" subtype="mode-rate">
+  <parameters>
+    <parameter name="rate" value="61294.39233626669" unit="N/m"/>
+  </parameters>
+</model>

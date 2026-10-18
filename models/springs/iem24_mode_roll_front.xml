@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Wheel-referred mode spring rate (orthonormal mode coordinate). Front roll = corner rate + front ARB (0). -->
+<model schema-version="1.0" id="iem24-mode-roll-front" type="spring-model" subtype="mode-rate">
+  <parameters>
+    <parameter name="rate" value="78807.07586091432" unit="N/m"/>
+  </parameters>
+</model>

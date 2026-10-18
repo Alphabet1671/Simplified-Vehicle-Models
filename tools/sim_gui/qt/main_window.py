@@ -129,8 +129,9 @@ class MainWindow(QMainWindow):
             self.study_tab.settings = settings
 
     def open_output_folder(self) -> None:
-        self.output_root.mkdir(parents=True, exist_ok=True)
-        QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.output_root)))
+        folder = self.study_index.directory if self.study_index is not None else self.output_root
+        folder.mkdir(parents=True, exist_ok=True)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
 
     def _selection_changed(self) -> None:
         self._refresh_log()

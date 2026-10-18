@@ -5,6 +5,7 @@ from pathlib import Path
 import sys
 import tempfile
 import time
+import shutil
 
 from unittest import mock
 import json
@@ -30,7 +31,7 @@ if QApplication is not None:
     from tools.sim_gui.qt.workers import ValidationWorker
     from tools.sim_gui.qt.queue import CaseQueue
     from tools.sim_gui.qt.main_window import MainWindow
-    from PyQt6.QtCore import QSettings, QEventLoop, QTimer
+    from PyQt6.QtCore import QSettings, QEventLoop, QTimer, QThread
     from PyQt6.QtWidgets import QMessageBox
     from tools.sim_gui.study import Dimension, StudyDefinition, CaseSpec, expand, WARNING_CASES, TooManyCases
     from tools.sim_gui.execute import PreparedCase
@@ -347,6 +348,17 @@ class CaseQueueTests(unittest.TestCase):
 @unittest.skipIf(QApplication is None, "PyQt6 is not installed")
 class MainWindowTests(unittest.TestCase):
 
+    def _window(self, store=None):
+        if store is None:
+            store_dir = Path(tempfile.mkdtemp())
+            self.addCleanup(lambda: shutil.rmtree(store_dir, ignore_errors=True))
+            store = QSettings(str(store_dir / "settings.ini"), QSettings.Format.IniFormat)
+        output = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(output, ignore_errors=True))
+        window = MainWindow(output_root=output, settings_store=store)
+        self.addCleanup(window.close)
+        return window
+
     def _wait(self, queue, timeout=5):
         loop = QEventLoop()
         queue.allFinished.connect(loop.quit)
@@ -355,12 +367,14 @@ class MainWindowTests(unittest.TestCase):
         queue.shutdown()
 
     def test_main_window_end_to_end_case(self):
-        import shutil
         output = REPOSITORY_ROOT / "runs" / "_test"
         if output.exists():
             shutil.rmtree(output)
         self.addCleanup(lambda: shutil.rmtree(output) if output.exists() else None)
-        store = QSettings(str(Path(tempfile.mkdtemp()) / "settings.ini"), QSettings.Format.IniFormat)
+        self.assertTrue(str(output).endswith("runs/_test"))
+        store_dir = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(store_dir, ignore_errors=True))
+        store = QSettings(str(store_dir / "settings.ini"), QSettings.Format.IniFormat)
         window = MainWindow(output_root=output, settings_store=store)
         self.addCleanup(window.close)
         window.open_model(REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_planar_7dof.xml")
@@ -375,16 +389,59 @@ class MainWindowTests(unittest.TestCase):
         record = window.study_index.directory / window.study_index.cases[0]["run_record"]
         self.assertTrue(record.exists())
 
+    def test_panel_tire_swap_reaches_built_baseline(self):
+        store_dir = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(store_dir, ignore_errors=True))
+        store = QSettings(str(store_dir / "settings.ini"), QSettings.Format.IniFormat)
+        output = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(output, ignore_errors=True))
+        window = MainWindow(output_root=output, settings_store=store)
+        self.addCleanup(window.close)
+        window.open_model(REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_planar_7dof.xml")
+        combo = window.model_panel._slot_widgets["tire"][0]
+        index = next(i for i in range(combo.count()) if "hoosier-43075" in combo.itemData(i))
+        combo.setCurrentIndex(index)
+        window.build_cases()
+        deadline = time.time() + 10
+        while window._validation_thread is not None and time.time() < deadline:
+            app.processEvents()
+        self.assertEqual(Path(window.study_index.cases[0]["choices"]["tire"]).name, "hoosier-43075-r20-simple.xml")
+
+    def test_open_study_restores_changed_model_tire_settings_and_recent(self):
+        window = self._window()
+        window.open_model(REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_planar_7dof.xml")
+        combo = window.model_panel._slot_widgets["tire"][0]
+        combo.setCurrentIndex(next(i for i in range(combo.count()) if "hoosier-43075" in combo.itemData(i)))
+        window.model_panel._model.setCurrentText("14dof-simple")
+        definition = window._definition()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "x.study.json"
+            path.write_text(json.dumps(definition.to_json()))
+            with mock.patch("tools.sim_gui.qt.main_window.QFileDialog.getOpenFileName", return_value=(str(path), "")):
+                window.open_study()
+            self.assertEqual(window.configuration.model, "14dof-simple")
+            self.assertTrue(window.model_panel._slot_widgets["tire"][0].font().bold())
+            self.assertEqual(window.settings_tab.settings(), definition.settings)
+            self.assertIn(str(path), window._recent)
+
     def test_point_mass_disables_run(self):
-        store = QSettings(str(Path(tempfile.mkdtemp()) / "settings.ini"), QSettings.Format.IniFormat)
-        window = MainWindow(settings_store=store)
+        store_dir = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(store_dir, ignore_errors=True))
+        store = QSettings(str(store_dir / "settings.ini"), QSettings.Format.IniFormat)
+        output = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(output, ignore_errors=True))
+        window = MainWindow(output_root=output, settings_store=store)
         self.addCleanup(window.close)
         window.open_model(REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_point_mass.xml")
         self.assertFalse(window.run_action.isEnabled())
 
     def test_save_open_study_round_trip(self):
-        store = QSettings(str(Path(tempfile.mkdtemp()) / "settings.ini"), QSettings.Format.IniFormat)
-        window = MainWindow(settings_store=store)
+        store_dir = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(store_dir, ignore_errors=True))
+        store = QSettings(str(store_dir / "settings.ini"), QSettings.Format.IniFormat)
+        output = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(output, ignore_errors=True))
+        window = MainWindow(output_root=output, settings_store=store)
         self.addCleanup(window.close)
         source = REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_planar_7dof.xml"
         window.open_model(source)
@@ -395,21 +452,114 @@ class MainWindowTests(unittest.TestCase):
             restored = StudyDefinition.from_json(json.loads(path.read_text()))
         self.assertEqual(restored.to_json(), definition.to_json())
 
+    def test_validation_runs_in_thread_and_warning_and_cap_hooks(self):
+        window = self._window()
+        window.open_model(REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_planar_7dof.xml")
+        main_thread = QThread.currentThread()
+        worker_threads = []
+        original_run = ValidationWorker.run
+        def record_thread(worker):
+            worker_threads.append(QThread.currentThread())
+            original_run(worker)
+        with mock.patch.object(ValidationWorker, "run", record_thread):
+            window.build_cases()
+            deadline = time.time() + 10
+            while window._validation_thread is not None and time.time() < deadline:
+                app.processEvents()
+        self.assertTrue(worker_threads)
+        self.assertIsNot(worker_threads[0], main_thread)
+        self.assertIsNone(window._validation_thread)
+        self.assertFalse(window._validation_thread is not None and window._validation_thread.isRunning())
+        prior_index = window.study_index
+        many_cases = tuple(mock.Mock() for _ in range(51))
+        with mock.patch("tools.sim_gui.qt.main_window.expand", return_value=many_cases), mock.patch("tools.sim_gui.qt.main_window._confirm", return_value=QMessageBox.StandardButton.No) as confirm:
+            window.build_cases()
+        confirm.assert_called_once()
+        self.assertIs(window.study_index, prior_index)
+        too_many = tuple(mock.Mock() for _ in range(501))
+        with mock.patch("tools.sim_gui.qt.main_window.expand", return_value=too_many), mock.patch("tools.sim_gui.qt.main_window._warn") as warn:
+            window.build_cases()
+        warn.assert_called_once()
+        self.assertIs(window.study_index, prior_index)
+
+    def test_log_selection_tails_and_timer_tracks_running(self):
+        window = self._window()
+        with tempfile.TemporaryDirectory() as tmp:
+            case_dir = Path(tmp)
+            log = case_dir / "run.log"
+            log.write_text("\n".join(str(i) for i in range(2500)))
+            window.study_index = mock.Mock(directory=case_dir, cases=({"attempt": ".", "status": "running"},))
+            window.queue_table.setRowCount(1)
+            window.queue_table.selectRow(0)
+            window._refresh_log()
+            self.assertLessEqual(len(window.log_view.toPlainText().splitlines()), 2000)
+            window._running = True
+            window._log_timer.start()
+            self.assertTrue(window._log_timer.isActive())
+            window._all_finished()
+            self.assertFalse(window._log_timer.isActive())
+
+    def test_actions_shortcuts_output_folder_and_geometry_round_trip(self):
+        store_dir = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(store_dir, ignore_errors=True))
+        store = QSettings(str(store_dir / "settings.ini"), QSettings.Format.IniFormat)
+        window = self._window(store)
+        self.assertEqual(window.open_action.shortcut().toString(), "Ctrl+O")
+        self.assertEqual(window.save_action.shortcut().toString(), "Ctrl+S")
+        self.assertEqual(window.run_action.shortcut().toString(), "F5")
+        with mock.patch("tools.sim_gui.qt.main_window.QDesktopServices.openUrl") as opened:
+            window.open_output_folder()
+            opened.assert_called_once()
+        window.resize(777, 555)
+        window.close()
+        restored = self._window(store)
+        self.assertEqual(restored.size().width(), 777)
+
+    def test_save_study_is_atomic_json(self):
+        window = self._window()
+        window.open_model(REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_planar_7dof.xml")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "x.study.json"
+            with mock.patch("tools.sim_gui.qt.main_window.QFileDialog.getSaveFileName", return_value=(str(path), "")):
+                window.save_study()
+            self.assertEqual(json.loads(path.read_text())["model"], "planar-7dof")
+            self.assertFalse(path.with_suffix(path.suffix + ".tmp").exists())
+
     def test_close_no_keeps_window_and_yes_stops(self):
         from PyQt6.QtGui import QCloseEvent
-        store = QSettings(str(Path(tempfile.mkdtemp()) / "settings.ini"), QSettings.Format.IniFormat)
-        window = MainWindow(settings_store=store)
-        self.addCleanup(window.close)
+        window = self._window()
+        fake_process = mock.Mock()
+        fake_process.Running = object()
+        fake_process.state.return_value = fake_process.Running
+        queue = mock.Mock()
+        queue._running = {"case_000": mock.Mock(process=fake_process)}
+        window._queue = queue
         window._running = True
+        self.addCleanup(lambda: queue.shutdown())
         with mock.patch("tools.sim_gui.qt.main_window._confirm", return_value=QMessageBox.StandardButton.No):
             event = QCloseEvent()
             window.closeEvent(event)
-            self.assertTrue(event.isAccepted() is False)
+        self.assertFalse(event.isAccepted())
+        queue.stop.assert_not_called()
+        queue.shutdown.assert_not_called()
+        self.assertEqual(fake_process.state(), fake_process.Running)
+        queue.allFinished.connect.reset_mock()
+        with mock.patch("tools.sim_gui.qt.main_window._confirm", return_value=QMessageBox.StandardButton.Yes):
+            with mock.patch("tools.sim_gui.qt.main_window.QEventLoop") as loop_type:
+                event = QCloseEvent()
+                window.closeEvent(event)
+        self.assertTrue(event.isAccepted())
+        queue.stop.assert_called_once()
+        queue.shutdown.assert_called_once()
         window._running = False
 
     def test_recent_files_are_limited_to_ten(self):
-        store = QSettings(str(Path(tempfile.mkdtemp()) / "settings.ini"), QSettings.Format.IniFormat)
-        window = MainWindow(settings_store=store)
+        store_dir = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(store_dir, ignore_errors=True))
+        store = QSettings(str(store_dir / "settings.ini"), QSettings.Format.IniFormat)
+        output = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(output, ignore_errors=True))
+        window = MainWindow(output_root=output, settings_store=store)
         self.addCleanup(window.close)
         for index in range(12):
             window._remember(Path(f"/tmp/model-{index}.xml"))

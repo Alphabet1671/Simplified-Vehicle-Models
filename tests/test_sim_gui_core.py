@@ -82,6 +82,92 @@ class StudyTests(unittest.TestCase):
             self.assertEqual(index.cases[1]["status"], "completed")
             self.assertFalse((Path(d) / "study.json.tmp").exists())
 
+    def test_parent_dimension_refreshes_children(self):
+        source = REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_14dof_simple.xml"
+        baseline = VehicleConfiguration.open(source)
+        choices = {key: path.relative_to(REPOSITORY_ROOT).as_posix()
+                   for key, path in baseline.choices.items()}
+        from tools.model_data.xml_references import rewrite_references
+
+        with tempfile.TemporaryDirectory() as d:
+            folder = Path(d)
+            powertrain = folder / "powertrain.xml"
+            powerplant = folder / "powerplant.xml"
+            for original, output, model_id in (
+                (REPOSITORY_ROOT / "models/powertrains/murphy_2024.xml", powertrain, "test-powertrain"),
+                (REPOSITORY_ROOT / "models/power-plants/amk_dd5_100c.xml", powerplant, "test-powerplant"),
+            ):
+                tree = ElementTree.parse(original)
+                tree.getroot().set("id", model_id)
+                rewrite_references(tree, original.parent, folder,
+                                   {"power-plant": powerplant} if output == powertrain else None)
+                tree.write(output, encoding="unicode")
+            definition = StudyDefinition(
+                "parent", source.as_posix(), "track", "14dof-simple", choices,
+                RunSettings(), "one-at-a-time", (Dimension("powertrain", (choices["powertrain"], str(powertrain))),),
+            )
+            cases = expand(definition)
+            self.assertEqual(len(cases), 2)
+            self.assertEqual(cases[0].choices, choices)
+            self.assertEqual(cases[1].choices["powertrain/power-plant"], str(powerplant.resolve()))
+            self.assertEqual(cases[1].choices["powertrain/energy-storage"],
+                             "models/energy-storages/murphy_2024_battery.xml")
+            for key, value in cases[0].choices.items():
+                if not key.startswith("powertrain"):
+                    self.assertEqual(cases[1].choices[key], value)
+
+    def test_dimension_from_sweep_reads_members(self):
+        source = REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_14dof_simple.xml"
+        baseline = VehicleConfiguration.open(source)
+        tire = Path(baseline.choices["tire"])
+        from tools.model_data.xml_references import rewrite_references
+        with tempfile.TemporaryDirectory() as d:
+            folder = Path(d)
+            files = []
+            for index, x in enumerate((0.9, 1.1)):
+                output = folder / f"tire__0{index}.xml"
+                tree = ElementTree.parse(tire)
+                tree.getroot().set("id", f"sweep-tire-{index}")
+                rewrite_references(tree, tire.parent, folder)
+                tree.write(output, encoding="unicode")
+                files.append(output.name)
+            (folder / "sweep.json").write_text(__import__("json").dumps({
+                "schema": "component-sweep-v1", "target": "parameter:mu_0_x",
+                "operation": "scale", "unit": "1", "members": [
+                    {"index": 0, "file": files[0], "data": [], "label": "mu x0.9", "x": 0.9},
+                    {"index": 1, "file": files[1], "data": [], "label": "mu x1.1", "x": 1.1},
+                ],
+            }))
+            dimension = dimension_from_sweep(folder, baseline)
+            self.assertEqual(dimension.key, "tire")
+            self.assertEqual(dimension.values, tuple(str(path.resolve()) for path in (folder / f for f in files)))
+            self.assertEqual(dimension.labels, ("mu x0.9", "mu x1.1"))
+            self.assertEqual(dimension.sweep, str(folder.resolve()))
+            self.assertEqual(dimension.points[1], {"sweep": str(folder.resolve()), "index": 1,
+                                                   "target": "parameter:mu_0_x", "operation": "scale", "x": 1.1, "unit": "1"})
+            choices = {key: path.relative_to(REPOSITORY_ROOT).as_posix() for key, path in baseline.choices.items()}
+            definition = StudyDefinition("sweep", source.as_posix(), "track", "14dof-simple", choices,
+                                         RunSettings(), "one-at-a-time", (dimension,))
+            cases = expand(definition)
+            self.assertEqual(len(cases), 3)
+            self.assertEqual(cases[2].label, "tire=mu x1.1")
+            self.assertEqual(cases[2].sweep_points["tire"]["x"], 1.1)
+            self.assertEqual(cases[0].sweep_points, {})
+
+    def test_sweep_that_fits_no_slot_is_refused(self):
+        configuration = VehicleConfiguration.open(REPOSITORY_ROOT / "models/vehicles/iem24_murphy_real_planar.xml")
+        # A friction-ellipse tire has no matching slot; the vehicle requires steady-combined-slip.
+        with tempfile.TemporaryDirectory() as d:
+            folder = Path(d)
+            source = REPOSITORY_ROOT / "models/tires/iem24_murphy_real_tire.xml"
+            member = folder / "member.xml"
+            member.write_text(source.read_text())
+            (folder / "sweep.json").write_text(__import__("json").dumps({
+                "schema": "component-sweep-v1", "members": [{"index": 0, "file": "member.xml", "label": "x", "x": 1}],
+            }))
+            with self.assertRaises(ValueError):
+                dimension_from_sweep(folder, configuration)
+
 
 class CatalogueTests(unittest.TestCase):
     def setUp(self):

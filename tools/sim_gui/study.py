@@ -122,12 +122,13 @@ def expand(definition: StudyDefinition) -> tuple[CaseSpec, ...]:
     if definition.mode == "full-factorial":
         combinations = list(product(*(range(len(d.values)) for d in dimensions)))
     else:
-        combinations = [tuple(0 for _ in dimensions)]
+        # Keep an explicit baseline case, then vary one dimension at a time.
+        combinations = [None]
         for position, dimension in enumerate(dimensions):
             for index in range(len(dimension.values)):
                 if not differs(dimension, index):
                     continue
-                combination = [0] * len(dimensions)
+                combination = [None] * len(dimensions)
                 combination[position] = index
                 combinations.append(tuple(combination))
     if len(combinations) > MAXIMUM_CASES:
@@ -155,7 +156,10 @@ def expand(definition: StudyDefinition) -> tuple[CaseSpec, ...]:
         track = definition.track
         changes: list[tuple[str, str]] = []
         points: dict[str, dict] = {}
-        selected: list[tuple[Dimension, int]] = list(zip(dimensions, combination))
+        selected: list[tuple[Dimension, int]] = [] if combination is None else [
+            (dimension, index) for dimension, index in zip(dimensions, combination)
+            if index is not None
+        ]
         for dimension, index in selected:
             value = dimension.values[index]
             if dimension.key == "model":

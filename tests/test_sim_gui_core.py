@@ -125,6 +125,57 @@ class VariantTests(unittest.TestCase):
             self.assertTrue((Path(d) / "powertrain.xml").is_file())
             self.assertFalse((Path(d) / "drivetrain.xml").exists())
 
+    def test_two_level_nested_swap_writes_all_changed_ancestors(self):
+        with tempfile.TemporaryDirectory() as source_dir:
+            source = Path(source_dir)
+            vehicle = source / "vehicle.xml"
+            outer = source / "outer.xml"
+            inner = source / "inner.xml"
+            old_leaf = source / "old-leaf.xml"
+            new_leaf = source / "new-leaf.xml"
+            sibling = source / "sibling.xml"
+            vehicle.write_text(
+                '<model type="vehicle-assembly" subtype="four-wheel"><components>'
+                '<component role="drivetrain" ref="outer.xml"/>'
+                '<component role="unchanged" ref="sibling.xml"/>'
+                '</components></model>')
+            outer.write_text(
+                '<model type="drivetrain-assembly" subtype="electric-four-wheel"><components>'
+                '<component role="controller" ref="inner.xml"/>'
+                '<component role="sibling" ref="sibling.xml"/>'
+                '</components></model>')
+            inner.write_text(
+                '<model type="controller-model" subtype="pedal-map"><components>'
+                '<component role="leaf" ref="old-leaf.xml"/>'
+                '</components></model>')
+            old_leaf.write_text('<model type="controller-model" subtype="pedal-map" id="old-leaf"/>')
+            new_leaf.write_text('<model type="controller-model" subtype="pedal-map" id="new-leaf"/>')
+            sibling.write_text('<model type="controller-model" subtype="pedal-map" id="sibling"/>')
+            configuration = VehicleConfiguration.open(vehicle).with_choice(
+                "drivetrain/controller/leaf", new_leaf)
+            with tempfile.TemporaryDirectory() as output_dir:
+                output = Path(output_dir)
+                files = write_variant(configuration, output, "case_004")
+                self.assertTrue((output / "drivetrain.xml").is_file())
+                self.assertTrue((output / "drivetrain__controller.xml").is_file())
+                self.assertFalse((output / "unchanged.xml").exists())
+                vehicle_root = ElementTree.parse(files.vehicle).getroot()
+                drivetrain_ref = vehicle_root.find("./components/component[@role='drivetrain']").get("ref")
+                drivetrain_path = (output / drivetrain_ref).resolve()
+                self.assertEqual(drivetrain_path, (output / "drivetrain.xml").resolve())
+                outer_root = ElementTree.parse(drivetrain_path).getroot()
+                controller_ref = outer_root.find("./components/component[@role='controller']").get("ref")
+                controller_path = (output / controller_ref).resolve()
+                self.assertEqual(controller_path, (output / "drivetrain__controller.xml").resolve())
+                inner_root = ElementTree.parse(controller_path).getroot()
+                leaf_ref = inner_root.find("./components/component[@role='leaf']").get("ref")
+                self.assertEqual((controller_path.parent / leaf_ref).resolve(), new_leaf.resolve())
+                sibling_ref = outer_root.find("./components/component[@role='sibling']").get("ref")
+                self.assertEqual((drivetrain_path.parent / sibling_ref).resolve(), sibling.resolve())
+                self.assertTrue(vehicle_root.get("id").endswith(".case-004"))
+                self.assertTrue(outer_root.get("id").endswith(".case-004"))
+                self.assertTrue(inner_root.get("id").endswith(".case-004"))
+
     def test_model_change_drops_requires(self):
         configuration = VehicleConfiguration.open(self.FORMULATION_14).with_model("planar-7dof")
         with tempfile.TemporaryDirectory() as d:

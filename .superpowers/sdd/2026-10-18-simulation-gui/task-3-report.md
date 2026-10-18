@@ -31,3 +31,14 @@ The baseline and tire tests compile files written into an unresolved `TemporaryD
 
 - The current compiler registry does not expose a straightforward runnable fixture for a two-level nested vehicle tree, so no additional deep compile fixture was introduced beyond the existing arbitrary-depth vehicle configuration test. The writer itself recursively handles arbitrary nesting and writes deepest copies first.
 - Existing unrelated worktree modifications were left untouched.
+
+## Fix round 1
+Added `test_two_level_nested_swap_writes_all_changed_ancestors` to cover the required temporary vehicle → assembly → assembly → leaf case. The test writes to an unresolved `TemporaryDirectory`, verifies both changed ancestor copies (`drivetrain.xml` and `drivetrain__controller.xml`), follows rewritten references to the replacement leaf, verifies unchanged siblings retain original paths, and checks case suffixes on copied IDs.
+
+Command:
+
+```text
+MPLCONFIGDIR=/tmp/mplcfg PYTHONPATH=src:. python3 -m unittest tests.test_sim_gui_core -v
+```
+
+Result: **16 tests passed**.

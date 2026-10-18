@@ -100,6 +100,18 @@ class ModelPanel(QWidget):
         """Return the initial configuration used for reset comparisons."""
         return self._baseline
 
+    def set_track(self, path: Path) -> None:
+        """Select a track by resolved path, adding it when not catalogued."""
+        if not hasattr(self, "_track"):
+            return
+        target = Path(path).resolve()
+        for index in range(self._track.count()):
+            if Path(self._track.itemData(index)).resolve() == target:
+                self._track.setCurrentIndex(index)
+                return
+        self._track.addItem(target.stem, str(target))
+        self._track.setCurrentIndex(self._track.count() - 1)
+
     def _update_source_text(self) -> None:
         if self._cfg is None:
             return

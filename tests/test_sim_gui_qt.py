@@ -424,6 +424,25 @@ class MainWindowTests(unittest.TestCase):
             self.assertEqual(window.settings_tab.settings(), definition.settings)
             self.assertIn(str(path), window._recent)
 
+    def test_open_study_restores_track_and_built_case(self):
+        window = self._window()
+        source = REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_planar_7dof.xml"
+        window.open_model(source)
+        definition = window._definition()
+        track = REPOSITORY_ROOT / "models/tracks/2024_michigan_endurance_v11.xml"
+        definition = definition.__class__(definition.name, definition.source, str(track), definition.model, definition.choices, definition.settings, definition.mode, definition.dimensions)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "track.study.json"
+            path.write_text(json.dumps(definition.to_json()))
+            with mock.patch("tools.sim_gui.qt.main_window.QFileDialog.getOpenFileName", return_value=(str(path), "")):
+                window.open_study()
+            self.assertEqual(window.model_panel.track().resolve(), track.resolve())
+            window.build_cases()
+            deadline = time.time() + 10
+            while window._validation_thread is not None and time.time() < deadline:
+                app.processEvents()
+            self.assertEqual(Path(window.study_index.cases[0]["track"]).resolve(), track.resolve())
+
     def test_point_mass_disables_run(self):
         store_dir = Path(tempfile.mkdtemp())
         self.addCleanup(lambda: __import__("shutil").rmtree(store_dir, ignore_errors=True))
@@ -481,6 +500,26 @@ class MainWindowTests(unittest.TestCase):
             window.build_cases()
         warn.assert_called_once()
         self.assertIs(window.study_index, prior_index)
+
+    def test_validation_cancel_stops_after_first_case(self):
+        window = self._window()
+        window.open_model(REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_planar_7dof.xml")
+        progress_count = []
+        original = window._validation_progress
+        def cancel_after_first(done, total):
+            progress_count.append(done)
+            if done == 1:
+                window._cancel_validation()
+            original(done, total)
+        with mock.patch.object(window, "_validation_progress", side_effect=cancel_after_first):
+            window.build_cases()
+            deadline = time.time() + 10
+            while window._validation_thread is not None and time.time() < deadline:
+                app.processEvents()
+        self.assertTrue(progress_count)
+        self.assertEqual(progress_count, [1])
+        self.assertEqual(window._prepared, [])
+        self.assertTrue(window.run_action.isEnabled())
 
     def test_log_selection_tails_and_timer_tracks_running(self):
         window = self._window()

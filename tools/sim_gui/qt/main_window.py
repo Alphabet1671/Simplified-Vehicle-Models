@@ -50,6 +50,7 @@ class MainWindow(QMainWindow):
         self._queue = CaseQueue(parent=self)
         self._validation_thread = None
         self._validation_worker = None
+        self._validation_cancelled = False
         self._progress_dialog = None
         self._queue.caseFinished.connect(self._case_finished)
         self._queue.caseProgress.connect(self._case_progress)
@@ -196,17 +197,23 @@ class MainWindow(QMainWindow):
         thread.started.connect(worker.run)
         worker.caseReady.connect(self._case_ready)
         worker.progress.connect(self._validation_progress)
+        dialog = QProgressDialog("Building cases…", "Cancel", 0, len(cases), self)
+        dialog.setAutoClose(False)
+        dialog.canceled.connect(self._cancel_validation)
         worker.finished.connect(thread.quit)
         worker.finished.connect(worker.deleteLater)
         thread.finished.connect(thread.deleteLater)
         thread.finished.connect(self._validation_finished)
         self._validation_thread = thread
         self._validation_worker = worker
-        dialog = QProgressDialog("Building cases…", "Cancel", 0, len(cases), self)
-        dialog.setAutoClose(True)
         dialog.show()
         self._progress_dialog = dialog
         thread.start()
+
+    def _cancel_validation(self) -> None:
+        self._validation_cancelled = True
+        if self._validation_worker is not None:
+            self._validation_worker.cancel()
 
     def _validation_progress(self, done, total) -> None:
         if self._progress_dialog is not None:
@@ -219,6 +226,12 @@ class MainWindow(QMainWindow):
         if self._progress_dialog is not None:
             self._progress_dialog.close()
             self._progress_dialog = None
+        if self._validation_cancelled:
+            self._run_requested = False
+            self._prepared = []
+            self.run_action.setEnabled(self.configuration is not None and self.configuration.runnable)
+            self._validation_cancelled = False
+            return
         self.queue_table.set_cases(self.study_index.cases)
         self._refresh_status()
         if self._run_requested:
@@ -269,6 +282,7 @@ class MainWindow(QMainWindow):
         self.model_panel.set_configuration(configuration, baseline=baseline)
         self.settings_tab.set_model(configuration.model)
         self.settings_tab.set_settings(definition.settings)
+        self.model_panel.set_track(Path(definition.track))
         self.study_tab = StudyTab(configuration, definition.settings, self)
         self.tabs.insertTab(1, self.study_tab, "Study")
         self.study_tab.set_definition(definition)

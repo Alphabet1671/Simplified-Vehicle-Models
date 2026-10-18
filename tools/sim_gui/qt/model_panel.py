@@ -80,9 +80,9 @@ class ModelPanel(QWidget):
         self._update_source_text()
 
     def set_configuration(self, cfg: VehicleConfiguration) -> None:
-        """Set the current configuration and rebuild the controls."""
+        """Set the current configuration as a new reset baseline."""
         self._cfg = cfg
-        self._baseline = cfg if self._baseline is None else self._baseline
+        self._baseline = cfg
         self._rebuild()
 
     def configuration(self) -> VehicleConfiguration | None:
@@ -112,8 +112,12 @@ class ModelPanel(QWidget):
         self._source.setToolTip(path)
 
     def _clear_form(self) -> None:
+        """Remove form rows and schedule their containers for deletion."""
         while self._form.rowCount():
-            self._form.removeRow(0)
+            row = self._form.takeRow(0)
+            for item in (row.fieldItem, row.labelItem):
+                if item is not None and item.widget() is not None:
+                    item.widget().deleteLater()
         self._slot_widgets.clear()
 
     def _rebuild(self) -> None:

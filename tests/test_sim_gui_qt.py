@@ -2,6 +2,7 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import unittest
 from pathlib import Path
+
 from unittest import mock
 
 try:
@@ -55,6 +56,26 @@ class ModelPanelTests(unittest.TestCase):
         combo.setCurrentIndex(1 if combo.currentIndex() == 0 else 0)
         self.assertIn("powertrain/power-plant", self.panel._slot_widgets)
         self.assertIsNot(old_child, self._combo("powertrain/power-plant"))
+        from PyQt6.QtCore import QCoreApplication, QEvent
+        app.processEvents()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        try:
+            from PyQt6 import sip
+            self.assertTrue(sip.isdeleted(old_child))
+        except ImportError:
+            self.assertTrue(old_child.parent() is None or old_child not in self.panel.findChildren(type(old_child)))
+
+    def test_new_configuration_resets_baseline(self):
+        first = self.panel.configuration()
+        combo = self._combo("tire")
+        combo.setCurrentIndex(1 if combo.currentIndex() == 0 else 0)
+        second = VehicleConfiguration.open(
+            REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_planar_7dof.xml"
+        )
+        self.panel.set_configuration(second)
+        self.assertFalse(self._combo("tire").font().bold())
+        self.assertFalse(self.panel._slot_widgets["tire"][2].isEnabled())
+        self.assertEqual(self.panel.baseline(), second)
 
     def test_incompatible_candidate_warns_and_restores(self):
         combo = self._combo("tire")
@@ -141,3 +162,15 @@ class SettingsTabTests(unittest.TestCase):
         self.tab.preset_button.click()
         self.assertEqual(len(emitted), 1)
         self.assertEqual(emitted[0], RunSettings.for_model("planar-7dof"))
+
+    def test_nonplanar_settings_clear_quasi_static_and_validate(self):
+        self.tab.set_model("14dof-simple")
+        self.tab.set_settings(RunSettings(quasi_static_attitude=True))
+        self.assertFalse(self.tab.settings().quasi_static_attitude)
+
+    def test_choice_lists_match_runner_parser(self):
+        from tools.run import run_iem24_forward_driver as runner
+        for name, values in self.tab._CHOICES.items():
+            for value in values:
+                args = runner.parse_args(["--model", "planar-7dof", f"--{name.replace('_', '-')}", value])
+                self.assertEqual(getattr(args, name), value)

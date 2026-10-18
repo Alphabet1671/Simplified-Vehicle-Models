@@ -1,7 +1,12 @@
 """Qt widget for forward-run settings."""
 from __future__ import annotations
 
+from dataclasses import replace
+from pathlib import Path
+
 from PyQt6.QtCore import pyqtSignal
+
+from tools.run import run_iem24_forward_driver as runner
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -31,11 +36,21 @@ class SettingsTab(QWidget):
         "rtol",
         "spacing",
     )
-    _CHOICES = {
-        "method": ("Radau", "BDF"),
-        "planner": ("conservative", "live"),
-        "record_precision": ("float32", "float64"),
-    }
+    @staticmethod
+    def _parser_choices() -> dict[str, tuple[str, ...]]:
+        """Read choice lists from the runner parser actions."""
+        parser = runner._build_parser() if hasattr(runner, "_build_parser") else None
+        if parser is None:
+            # parse_args does not expose its parser, so mirror its declarations.
+            return {
+                "method": ("Radau", "BDF"),
+                "planner": ("conservative", "live"),
+                "record_precision": ("float32", "float64"),
+            }
+        actions = {action.dest: tuple(action.choices or ()) for action in parser._actions}
+        return {name: actions[name] for name in ("method", "planner", "record_precision")}
+
+    _CHOICES = _parser_choices.__func__()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         """Create a settings form with the reference-lap defaults."""
@@ -95,11 +110,17 @@ class SettingsTab(QWidget):
         self.preset_button = preset
 
     def settings(self) -> RunSettings:
-        """Return the current settings object."""
-        return self._settings
+        """Return current settings after validating them for the model."""
+        settings = self._settings
+        track = getattr(runner, "DEFAULT_TRACK", Path("models/tracks/2024_michigan_endurance_multilap_closed.xml"))
+        from tools.sim_gui.settings import validate
+        validate(settings, self._model, Path(track))
+        return settings
 
     def set_settings(self, settings: RunSettings) -> None:
         """Replace all values and emit one consolidated change notification."""
+        if self._model != "planar-7dof" and settings.quasi_static_attitude:
+            settings = replace(settings, quasi_static_attitude=False)
         self._block_widgets(True)
         try:
             self._settings = settings

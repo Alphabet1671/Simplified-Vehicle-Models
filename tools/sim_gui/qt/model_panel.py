@@ -79,10 +79,10 @@ class ModelPanel(QWidget):
         super().resizeEvent(event)
         self._update_source_text()
 
-    def set_configuration(self, cfg: VehicleConfiguration) -> None:
-        """Set the current configuration as a new reset baseline."""
+    def set_configuration(self, cfg: VehicleConfiguration, baseline: VehicleConfiguration | None = None) -> None:
+        """Set the current configuration and optional reset baseline."""
         self._cfg = cfg
-        self._baseline = cfg
+        self._baseline = baseline if baseline is not None else cfg
         self._rebuild()
 
     def configuration(self) -> VehicleConfiguration | None:

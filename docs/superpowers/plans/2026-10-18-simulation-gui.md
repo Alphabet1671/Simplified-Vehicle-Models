@@ -5,6 +5,7 @@
 **Goal:** Make a cross-platform PyQt6 GUI that loads a full vehicle model, shows one dropdown for each component, lets the user swap components and sweep them in a study, and runs each case into a run record.
 
 **Architecture:**
+- The GUI changes no parameter. A separate CLI, `tools/model_data/generate_component_sweep.py`, writes a folder of component files that differ in one value. The GUI sweeps that folder as one dimension.
 - A Qt-free core in `tools/sim_gui/` does the work: it scans the model catalogue, holds the vehicle configuration, writes variant XML, builds the study cases and runs them.
 - A thin Qt layer in `tools/sim_gui/qt/` shows the core.
 - Each case runs in its own process through `tools/sim_gui/run_case.py`. That script patches the runner's model specification and calls the existing `child()` function of `tools/run/run_iem24_forward_driver.py`. The runner file does not change.
@@ -22,7 +23,8 @@
 - Make it cross-platform. Use `pathlib`, `os.pathsep`, `sys.executable` and `QProcess` or `subprocess` with argument lists. Never use a shell. Do not use POSIX-only calls such as signals, `fork` or `timeout`.
 - Start every case process with the repository root as its working directory, and with `PYTHONPATH = <root>/src` + `os.pathsep` + `<root>`.
 - Always record. Every case passes `--record`.
-- Write all study output under `runs/` in the repository root by default. Add `/runs/` to `.gitignore`.
+- Write all study output under `runs/` in the repository root by default. Add `/runs/` and `/models/sweeps/` to `.gitignore`. A run record hashes the sweep files it used, so keep a sweep folder for as long as you keep its runs.
+- The GUI does not edit, write or sweep parameter values. Only `tools/model_data/generate_component_sweep.py` makes changed component files.
 - The runnable models are the keys of `runner.MODELS`: `planar-7dof` and `14dof-simple`. A point-mass formulation can be opened, but the GUI cannot run it. Show the message `no forward runner for point-mass; select planar-7dof or 14dof-simple`.
 - Write JSON with `indent=2, sort_keys=True, allow_nan=False`. Write files atomically: write `<name>.tmp`, then `os.replace`.
 - Write the docs in ASD-STE100 style.
@@ -35,9 +37,10 @@
 | Location | Package `tools/sim_gui/`. Start it with `PYTHONPATH=src:. python3 tools/sim_gui/app.py`. |
 | Input file | **Open Vehicle Model** accepts a `vehicle-formulation` XML or a `vehicle-assembly` XML. A formulation sets the default model from its subtype. An assembly defaults to `planar-7dof`. |
 | Dropdowns | One dropdown for each component role of the assembly. Powertrain and drivetrain assemblies also get one dropdown for each child role, labelled `powertrain › power-plant`. That is two levels, no more. |
-| Candidates | Scan all `*.xml` under `models/`, reading root attributes only. A candidate fits a slot when its descriptor capability equals the capability of the current component. When that capability is `None`, it must have the same `(type, subtype)` instead. **Browse…** adds a file from outside `models/`, under the same rule. |
+| Candidates | Scan all `*.xml` under `models/`, reading root attributes only. **Do not scan `models/sweeps/`**, so generated variants do not fill the dropdowns. A candidate fits a slot when its descriptor capability equals the capability of the current component. When that capability is `None`, it must have the same `(type, subtype)` instead. **Browse…** adds a file from outside the scan, under the same rule. |
 | Other dropdowns | **Model**: `planar-7dof`, `14dof-simple`. **Track**: every `track-model/closed-xy-profile` under `models/tracks/` (the runner accepts only this subtype). |
-| Parameters | Read-only. A table shows the parameters of the selected slot's component. The GUI does not edit parameters in this version. |
+| Parameters | **The GUI never changes a parameter.** A read-only table shows the parameters of the selected slot's component. To change a value, make component files with the sweep generator (Task 11). The GUI only selects and sweeps whole component files. |
+| Sweep folders | The sweep generator writes `models/sweeps/<name>/`: one component XML per value, its data files, and `sweep.json`. In the Study tab, **Add sweep folder…** reads `sweep.json` and adds one dimension. The slot is the one whose current component fits the folder's members. The values are the members in `sweep.json` order. Each case label uses the swept value, for example `suspension: rc_height_front offset=+0.010 m`. `models/sweeps/` is git-ignored. |
 | Variant files | Write each case to `cases/case_NNN/model/`: `vehicle.xml`, `formulation.xml`, and `powertrain.xml` / `drivetrain.xml` when a child slot changed. Rewrite each `ref` and `path` as a POSIX path relative to the variant file, or as an absolute path when no relative path exists (for example, another drive on Windows). Set `id` to `<original id>.case-NNN`. Put the origin in a top XML comment. |
 | Formulation | Copy the source formulation. Set its subtype to the selected model. Keep its `requires` list only when the subtype did not change. Otherwise drop it, so the default list applies. |
 | Process model | The GUI is the parent and has no runner parent process. It makes `attempt_<time_ns>/`, starts `run_case.py --case-dir D --child-attempt A <runner args>` with one `QProcess`, sends stdout and stderr to `A/run.log`, stops the process at the timeout, and writes `A/parent.json` in the runner's format. This makes one process for each case, so Stop works on every platform. |
@@ -72,6 +75,9 @@ runs/<study-name>_<YYYYmmdd-HHMMSS>/
  "cases": [{"id": "case_000", "label": "baseline", "model": "planar-7dof",
             "track": "models/tracks/2024_michigan_endurance_closed.xml",
             "choices": {"tire": "models/tires/iem24_murphy_real_unitire.xml"},
+            "sweep_points": {"suspension": {"sweep": "models/sweeps/rch_front", "index": 3,
+                             "target": "data:corner-table:rc_height_front", "operation": "offset",
+                             "x": 0.01, "unit": "m"}},
             "directory": "cases/case_000", "status": "completed", "error": null,
             "attempt": "cases/case_000/attempt_1792...", "run_record": "cases/case_000/attempt_1792.../run_record.npz",
             "summary": {"status": "Duration_Limit", "lap_completed": false, "usable": false,
@@ -100,6 +106,9 @@ All paths in `study.json` are POSIX and relative to the study directory. Choice 
 | `tools/sim_gui/qt/queue.py` | `CaseQueue` (QProcess pool) and the queue table |
 | `tools/sim_gui/qt/workers.py` | `ValidationWorker` on a `QThread` |
 | `tools/sim_gui/app.py` | `main()`: start the QApplication |
+| `tools/model_data/xml_references.py` | `relative_reference()` and `rewrite_references()`, used by the variant writer and the sweep generator |
+| `tools/model_data/generate_component_sweep.py` | Sweep generator CLI: one component XML (and data file) per value, plus `sweep.json` |
+| `tests/test_component_sweep.py` | Sweep generator tests |
 | `tests/test_sim_gui_core.py` | Tests for the Qt-free core |
 | `tests/test_sim_gui_run.py` | One real 0.3 s case, run end to end |
 | `tests/test_sim_gui_qt.py` | Offscreen widget tests |
@@ -139,7 +148,9 @@ class CatalogueTests(unittest.TestCase):
         return {e.path.relative_to(REPOSITORY_ROOT / "models").as_posix() for e in entries}
 
     def test_every_model_xml_is_listed(self):
-        self.assertEqual(len(self.catalogue), len(list((REPOSITORY_ROOT / "models").rglob("*.xml"))))
+        models = REPOSITORY_ROOT / "models"
+        expected = [p for p in models.rglob("*.xml") if p.relative_to(models).parts[0] != "sweeps"]
+        self.assertEqual(len(self.catalogue), len(expected))
 
     def test_tire_candidates_share_the_capability(self):
         slot = self.by_rel["tires/iem24_murphy_real_unitire.xml"]
@@ -196,6 +207,8 @@ def read_entry(path):
 def scan_catalogue(root=REPOSITORY_ROOT / "models"):
     entries = []
     for path in sorted(Path(root).rglob("*.xml")):
+        if "sweeps" in path.relative_to(root).parts[:1]:
+            continue          # generated sweep members are added only through "Add sweep folder"
         try:
             entries.append(read_entry(path))
         except ValueError:
@@ -287,11 +300,14 @@ class VehicleTests(unittest.TestCase):
 
 ### Task 3: Variant XML writer
 
-**Files:** Create `tools/sim_gui/variant.py`. Test: `tests/test_sim_gui_core.py`.
+**Files:** Create `tools/model_data/xml_references.py` and `tools/sim_gui/variant.py`. Test: `tests/test_sim_gui_core.py`.
 
 **Interfaces:**
 - Consumes: `VehicleConfiguration` (Task 2).
-- Produces: `write_variant(configuration, directory: Path, case_id: str) -> VariantFiles(formulation: Path, vehicle: Path)`.
+- Produces:
+  - `relative_reference(target: Path, directory: Path) -> str`, in `tools/model_data/xml_references.py`
+  - `rewrite_references(tree, source_dir: Path, output_dir: Path, replace: dict[str, Path] | None = None) -> None`, in the same module. Task 11 uses both.
+  - `write_variant(configuration, directory: Path, case_id: str) -> VariantFiles(formulation: Path, vehicle: Path)`
 
 - [ ] **Step 1: Write the failing tests.**
 
@@ -335,23 +351,41 @@ class VariantTests(unittest.TestCase):
 - [ ] **Step 3: Implement.**
 
 ```python
-def _reference(target: Path, directory: Path) -> str:
-    try:
-        return Path(os.path.relpath(target, directory)).as_posix()
-    except ValueError:                      # another drive on Windows
-        return target.resolve().as_posix()
+# tools/model_data/xml_references.py
+"""Move a model XML to another folder and keep every ref and data path valid."""
+from __future__ import annotations
+import os
+from pathlib import Path
 
-def _rewrite(source: Path, directory: Path, case_id: str, replace: dict[str, Path]) -> ElementTree.ElementTree:
-    tree = ElementTree.parse(source)
-    root = tree.getroot()
-    root.set("id", f"{root.get('id')}.{case_id.replace('_', '-')}")
-    for element in root.iter():
+def relative_reference(target: Path, directory: Path) -> str:
+    try:
+        return Path(os.path.relpath(Path(target).resolve(), Path(directory).resolve())).as_posix()
+    except ValueError:                      # another drive on Windows
+        return Path(target).resolve().as_posix()
+
+def rewrite_references(tree, source_dir, output_dir, replace=None):
+    """Re-anchor each ``ref``/``path`` of ``tree`` from ``source_dir`` to ``output_dir``.
+
+    ``replace`` maps a component role to a new target file for that role.
+    """
+    replace = replace or {}
+    for element in tree.getroot().iter():
         for attribute in ("ref", "path"):
             value = element.get(attribute)
             if value is None:
                 continue
             target = replace.get(element.get("role")) if element.tag == "component" else None
-            element.set(attribute, _reference(target or (source.parent / value).resolve(), directory))
+            element.set(attribute, relative_reference(target or (Path(source_dir) / value), output_dir))
+```
+
+Resolve both paths before `os.path.relpath`. On macOS, `/tmp` is a link to `/private/tmp`. A probe on 2026-10-18 used an unresolved output folder and got a wrong `../` count, so the loader failed with "data path … must be a regular file". Add a test that writes to `tempfile.TemporaryDirectory()` without `resolve()` and compiles the result.
+
+```python
+# tools/sim_gui/variant.py (core of one file)
+def _variant_tree(source: Path, directory: Path, case_id: str, replace: dict[str, Path]):
+    tree = ElementTree.parse(source)
+    tree.getroot().set("id", f"{tree.getroot().get('id')}.{case_id.replace('_', '-')}")
+    rewrite_references(tree, source.parent, directory, replace)
     return tree
 ```
 
@@ -396,9 +430,11 @@ def _rewrite(source: Path, directory: Path, case_id: str, replace: dict[str, Pat
 **Interfaces:**
 - Consumes: `VehicleConfiguration`, `RunSettings`.
 - Produces:
-  - `Dimension(key: str, values: tuple[str, ...])`. The key is a slot key, `"model"` or `"track"`. Each value is a repository-relative POSIX path or a model name.
+  - `Dimension(key: str, values: tuple[str, ...], labels: tuple[str, ...] = (), sweep: str | None = None, points: tuple[dict, ...] = ())`. The key is a slot key, `"model"` or `"track"`. Each value is a repository-relative POSIX path or a model name. `labels` defaults to each file stem. `sweep` is the folder of a generated sweep, or `None`. `points` holds, for each member, `{"sweep": folder, "index": i, "target": "...", "operation": "...", "x": float, "unit": "..."}`, copied from `sweep.json`.
+  - A study refuses two dimensions with the same key: `ValueError("slot <key> is already swept")`. To change two values of one component, the user makes one sweep folder for each value combination outside the GUI.
+  - `dimension_from_sweep(folder: Path, configuration) -> Dimension`. It reads `folder/sweep.json` (schema `component-sweep-v1`, Task 11). It finds the one slot whose current component `fits` the first member, and raises `ValueError` when zero or more than one slot fits. The values are the member XML paths. The labels are the member `label` fields, in file order.
   - `StudyDefinition(name: str, source: str, track: str, model: str, choices: dict[str, str], settings: RunSettings, mode: Literal["one-at-a-time", "full-factorial"], dimensions: tuple[Dimension, ...])`, with `to_json` and `from_json`.
-  - `CaseSpec(id: str, label: str, model: str, track: str, choices: dict[str, str])`
+  - `CaseSpec(id: str, label: str, model: str, track: str, choices: dict[str, str], sweep_points: dict[str, dict])`. `sweep_points` maps a swept slot key to its member's point dict. It is empty for the baseline, and empty for a non-sweep dimension.
   - `expand(definition) -> tuple[CaseSpec, ...]`
   - `MAXIMUM_CASES = 500`, `WARNING_CASES = 50`, `class TooManyCases(ValueError)`
   - `StudyIndex`, with `create(directory, definition, cases)`, `load(directory)`, `update(case_id, **fields)` (atomic rewrite) and `cases`.
@@ -407,7 +443,11 @@ def _rewrite(source: Path, directory: Path, case_id: str, replace: dict[str, Pat
   - One-at-a-time with dimensions `tire:[a,b]` and `model:[planar-7dof,14dof-simple]` gives 1 + 2 + 2 = 5 cases. A value equal to the baseline is skipped, so the result is 3 when the baseline is `a` and `planar-7dof`.
   - Full factorial over the same dimensions gives 4 cases.
   - `case_000` is the baseline in one-at-a-time mode.
-  - Labels have the form `tire=hoosier-43075-r20-simple, model=14dof-simple`. The baseline label is `baseline`.
+  - Labels have the form `tire=hoosier-43075-r20-simple, model=14dof-simple`. The baseline label is `baseline`. A sweep dimension uses its member label, for example `suspension=rc_height_front +0.010 m`.
+  - `dimension_from_sweep` on a fixture folder of three generated suspension members (made with Task 11's `generate_sweep`, in a temporary folder) gives key `suspension`, three values in file order, and the member labels. One-at-a-time over it gives 4 cases.
+  - A sweep folder whose members fit no slot (aero members with an assembly that has no aero role) raises `ValueError`.
+
+  Note: Task 5 tests that use `generate_sweep` run after Task 11 is done. Add them in Task 11, Step 6.
   - A parent dimension (`powertrain`) gives cases whose child choices are the new assembly's children. Use `VehicleConfiguration.with_choice`.
   - 501 cases raise `TooManyCases`.
   - `StudyIndex.update` keeps every other case unchanged and leaves no `.tmp` file behind.
@@ -583,7 +623,7 @@ Behaviour:
 
 `StudyTab` layout:
 - Mode radio buttons **One-at-a-time** and **Full factorial**.
-- A dimension list (`QListWidget`). **Add dimension** gives a menu of the slot keys, `model` and `track`. **Remove** deletes the selected dimension.
+- A dimension list (`QListWidget`). **Add dimension** gives a menu of the slot keys, `model` and `track`. **Add sweep folder…** opens a `QFileDialog.getExistingDirectory` at `models/sweeps/` and calls `dimension_from_sweep`. On `ValueError`, it shows a warning. **Remove** deletes the selected dimension. A sweep dimension shows as `suspension ← sweeps/<name> (N)`, and its member checklist shows the labels.
 - For the selected dimension, a checklist (`QListWidget` with checkable items) of its candidates, or the model names, or the tracks.
 - A **Case preview** table (id, label). It updates on every change, and shows the case count in red above 50.
 - **Study name** `QLineEdit`, default `study`, limited to the regular expression `[A-Za-z0-9_-]{1,40}`.
@@ -638,21 +678,118 @@ Rules:
 
 ---
 
-### Task 11: Documentation and full suite
+### Task 11: Component sweep generator
+
+**Files:**
+- Create: `tools/model_data/generate_component_sweep.py`
+- Test: `tests/test_component_sweep.py`; add the sweep tests of Task 5 to `tests/test_sim_gui_core.py`
+
+**Interfaces:**
+- Consumes: `relative_reference`, `rewrite_references` (Task 3); `npz_bytes`, `atomic_write_bytes` from `tools/model_data/generate_damper_lut.py`; `load_model` from `simplified_vehicle_models.xml.loader`.
+- Produces:
+  - `generate_sweep(base: Path, target: str, operation: Literal["value", "offset", "scale"], numbers: Sequence[float], output: Path, *, name: str, unit: str | None = None, force: bool = False, command: list[str] | None = None) -> Path` (the path of `sweep.json`)
+  - A CLI with the same inputs:
+
+```bash
+PYTHONPATH=src:. python3 tools/model_data/generate_component_sweep.py \
+    --base models/suspensions/iem24_murphy_real_suspension.xml \
+    --set data:corner-table:rc_height_front --unit m \
+    --offsets -0.02 -0.01 0 0.01 0.02 \
+    --name rch_front            # writes models/sweeps/rch_front/
+```
+
+Generator rules:
+
+| Item | Rule |
+|---|---|
+| Base | One component XML (`kind == "component"`). Refuse an assembly or a formulation with `ValueError("base must be a component model, not <kind>")`. |
+| Target | Exactly one `--set`. `parameter:<name>` changes one XML `<parameter>`. `data:<role>:<key>` changes one array in the NPZ file of the `<data role=...>` element. A CSV data target is refused: `only npz data arrays can be swept`. A non-float array (dtype kind not `f`) is refused. |
+| Operation | Exactly one of `--values`, `--offsets` or `--scales`. Allowed counts: 1 to 100 numbers. `--values` sets the value. It needs a scalar target (an XML parameter, or an array with `size == 1`); for a curve such as `rc_height_front` (3 knots) use `--offsets` (add to every knot) or `--scales` (multiply every knot). Each number must be finite. |
+| Unit | A parameter target takes its unit from the XML; a different `--unit` is an error. A data target needs `--unit`, because an NPZ has no units. `--scales` labels use `x`. |
+| Output | Default `models/sweeps/<name>/`. `--output-dir` changes it. The name must match `[A-Za-z0-9_-]{1,40}`. A folder that exists is an error. With `--force`, the generator deletes the folder first, but only if it contains a `sweep.json`. |
+| Members | `<base stem>__NN.xml` (NN = 00, 01, …, in input order). A data target also gets `<data stem>__NN.npz`. All other arrays are copied unchanged and in the same order, written with `npz_bytes`. The member XML points at its own NPZ, with the new `sha256`. Every other `ref`/`path` goes through `rewrite_references`, so it still resolves. The id is `<base id>.sweep-<name>-NN`. Before the root element, the file has the comment `<!-- Generated by tools/model_data/generate_component_sweep.py: <target> <operation> <x> <unit>, from <base>. Do not edit. -->`. |
+| Check | After it writes each member, the generator calls `load_model(member)` and loads the NPZ again with `np.load`. When either fails, it deletes the folder and raises the error. The GUI's **Build Cases** compiles the full vehicle later. |
+| Labels | value: `rc_height_front = 0.045 m`. offset: `rc_height_front +0.010 m`. scale: `rc_height_front x1.10`. Format numbers with `{:+.3g}` for offsets and `{:.4g}` for values; use `x{:.3g}` for scales. |
+
+A probe on 2026-10-18 tested this method. It copied `iem24_murphy_real_corners.npz` with `rc_height_front + 0.01` through `npz_bytes`, pointed a suspension XML at the copy with the new sha256, and swapped it into the 14DoF formulation. After `compile_formulation`, the front roll-centre height curve read `[0.051275, 0.0555, 0.0555]` (base `[0.041275, 0.0455, 0.0455]`), and the rear did not change.
+
+`sweep.json` (schema `component-sweep-v1`, written atomically):
+
+```json
+{"schema": "component-sweep-v1", "name": "rch_front", "created_utc": "...", "repository_commit": "<sha or null>",
+ "command": ["--base", "..."], "base": "models/suspensions/iem24_murphy_real_suspension.xml",
+ "base_sha256": "...", "model_type": "suspension-model", "subtype": "corner-table",
+ "target": "data:corner-table:rc_height_front", "operation": "offset", "unit": "m",
+ "baseline_value": [0.041275, 0.0455, 0.0455],
+ "members": [{"index": 0, "file": "iem24_murphy_real_suspension__00.xml",
+              "data": ["iem24_murphy_real_suspension__00.npz"], "label": "rc_height_front -0.02 m",
+              "x": -0.02, "value": [0.021275, 0.0255, 0.0255]}]}
+```
+
+- [ ] **Step 1: Write the failing tests** (`tests/test_component_sweep.py`). Each test writes into a `tempfile.TemporaryDirectory()` given as `output`.
+
+```python
+SUSPENSION = REPOSITORY_ROOT / "models/suspensions/iem24_murphy_real_suspension.xml"
+
+class ComponentSweepTests(unittest.TestCase):
+    def test_offset_changes_only_the_target_array(self):
+        with tempfile.TemporaryDirectory() as d:
+            index = json.loads(generate_sweep(SUSPENSION, "data:corner-table:rc_height_front", "offset",
+                                              [-0.01, 0.0, 0.01], Path(d) / "rch", name="rch", unit="m").read_text())
+            base = np.load(REPOSITORY_ROOT / "models/data/iem24_murphy_real_corners.npz")
+            member = np.load(Path(d) / "rch" / index["members"][2]["data"][0])
+            self.assertEqual(member.files, base.files)
+            np.testing.assert_allclose(member["rc_height_front"], base["rc_height_front"] + 0.01)
+            for key in base.files:
+                if key != "rc_height_front":
+                    np.testing.assert_array_equal(member[key], base[key])
+
+    def test_member_compiles_inside_the_vehicle(self):
+        # Swap member 2 into the 14DoF formulation with Task 3's writer and compile it.
+        ...  # VehicleConfiguration.open(FORMULATION_14).with_choice("suspension", member) -> write_variant -> compile_formulation
+
+    def test_member_points_at_its_own_table_with_a_matching_hash(self):
+        ...  # parse member XML; data path resolves to __02.npz; sha256 attribute == hashlib.sha256(bytes).hexdigest()
+
+    def test_parameter_target_takes_its_unit_from_the_xml(self):
+        ...  # parameter:arb_wheel_rate_rear, values [15000, 25000] -> index["unit"] == "N/m", member parameter value == "25000.0"
+
+    def test_values_on_a_curve_is_refused(self):
+        with self.assertRaisesRegex(ValueError, "scalar"):
+            generate_sweep(SUSPENSION, "data:corner-table:rc_height_front", "value", [0.05], Path(d), name="x", unit="m")
+
+    def test_existing_folder_needs_force_and_a_sweep_json(self): ...
+    def test_assembly_base_is_refused(self): ...
+    def test_output_is_byte_reproducible(self): ...  # two runs give identical member XML and NPZ bytes (created_utc only in sweep.json)
+```
+
+Write out every `...` body in full when you implement. The comments give the exact assertions.
+
+- [ ] **Step 2: Run** `python3 -m unittest tests.test_component_sweep -v`. Expect `ImportError`.
+- [ ] **Step 3: Implement** `generate_component_sweep.py` to the rules table. Use `argparse` with a mutually exclusive required group for `--values`, `--offsets` and `--scales` (`nargs="+"`, `type=float`). Read the NPZ with `np.load(path, allow_pickle=False)`. Keep each array's dtype: `np.asarray(new, dtype=old.dtype)`. Write parameter values with `repr(float(x))`.
+- [ ] **Step 4: Run the tests.** Expect PASS.
+- [ ] **Step 5: Run the generator once by hand** with the RCH command above. Then open it in the GUI: **Add sweep folder…** → `models/sweeps/rch_front`. Expect 6 cases in one-at-a-time mode (baseline plus 5 members).
+- [ ] **Step 6: Add the sweep tests of Task 5** to `tests/test_sim_gui_core.py`, and run them. Expect PASS.
+- [ ] **Step 7: Commit** `feat: add component sweep generator`.
+
+---
+
+### Task 12: Documentation and full suite
 
 **Files:**
 - Create: `docs/dev/simulation-gui.md`
-- Modify: `docs/dev/tools-layout.md` (add the row `` `tools/sim_gui/` | Run simulations from a GUI: component swaps, sweeps, run records. See [simulation-gui.md](simulation-gui.md) ``), and `README.md` (add one link line in the tools list, if a tools list exists).
+- Modify: `docs/dev/tools-layout.md` (add the row `` `tools/sim_gui/` | Run simulations from a GUI: component swaps, sweeps, run records. See [simulation-gui.md](simulation-gui.md) ``, and extend the `tools/model_data/` row with `generate_component_sweep.py`: one component file per value for a GUI sweep), and `README.md` (add one link line in the tools list, if a tools list exists).
 
 - [ ] **Step 1: Write `docs/dev/simulation-gui.md`** in ASD-STE100 style. Give it these sections:
   - Install (`pip install -e .[gui]`, or `pip install "PyQt6>=6.5"`).
   - Start the GUI.
   - Load a vehicle model.
   - Swap a component, with the candidate rule.
+  - Make a parameter sweep: run `generate_component_sweep.py`, then **Add sweep folder…**. Give the RCH example.
   - Run a study, with the two modes and the case limits.
   - Output layout and the `study.json` schema.
   - The headless runner.
-  - Limits: no parameter editing, no warm start, no point-mass runner, and planar runs capped at 300 s.
+  - Limits: the GUI does not edit parameters (use the generator), one sweep dimension per slot, no warm start, no point-mass runner, and planar runs capped at 300 s.
   - Hand-off: the post-processing GUI reads `study.json` and each `run_record.npz`. For an animation now, use `tools/anim/export_animation.py --record <path>`.
 - [ ] **Step 2: Run the full suite.**
   `MPLCONFIGDIR=/tmp/mplcfg PYTHONPATH=src:. python3 -m unittest discover -s tests -q > /tmp/full_suite.log 2>&1; grep -nE "^(Ran |OK|FAILED|FAIL:|ERROR:)" /tmp/full_suite.log`
@@ -664,6 +801,7 @@ Rules:
 ## Out of Scope (later work)
 
 - The post-processing GUI: graphs, reports and animations from `study.json`.
-- Editing parameters, and sweeping parameter values.
+- Parameter editing inside the GUI. This is a design rule, not later work: use the sweep generator.
+- Sweeps of two targets in one component in one generator call.
 - Warm-start chains and multi-segment runs.
 - A forward runner for the point-mass model.

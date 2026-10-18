@@ -53,6 +53,7 @@ class StudyTab(QWidget):
         self.full_factorial.toggled.connect(self._refresh_preview)
         self.study_name = QLineEdit("study")
         self.study_name.setValidator(QRegularExpressionValidator(QRegularExpression(r"[A-Za-z0-9_-]{1,40}"), self.study_name))
+        self.study_name.textChanged.connect(self._sanitize_name)
         self.dimension_list = QListWidget()
         self.dimension_list.currentRowChanged.connect(self._select_dimension)
         self.member_list = QListWidget()
@@ -81,6 +82,14 @@ class StudyTab(QWidget):
         layout.addWidget(self.preview_label)
         layout.addWidget(self.preview_count)
         layout.addWidget(self.preview)
+
+    def _sanitize_name(self, text: str) -> None:
+        """Keep the study name within its documented character set."""
+        sanitized = "".join(char for char in text if char.isascii() and (char.isalnum() or char in "_-") )[:40]
+        if sanitized != text:
+            self.study_name.blockSignals(True)
+            self.study_name.setText(sanitized)
+            self.study_name.blockSignals(False)
 
     def definition(self, base) -> StudyDefinition:
         """Return a study definition using the selected dimensions."""

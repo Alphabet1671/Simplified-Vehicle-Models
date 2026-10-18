@@ -99,9 +99,10 @@ def generate_sweep(base: Path, target: str, operation: Operation, numbers: Seque
     source_npz = None
     baseline = None
     if kind == "parameter":
-        parameter = next((p for p in root.findall("./parameters/parameter") if p.get("name") == key), None)
-        if parameter is None:
-            raise ValueError(f"parameter not found: {key}")
+        matches = [p for p in root.findall("./parameters/parameter") if p.get("name") == key]
+        if len(matches) != 1:
+            raise ValueError(f"target {target} matches {len(matches)} elements; expected exactly one")
+        parameter = matches[0]
         xml_unit = parameter.get("unit", "1")
         if unit is not None and unit != xml_unit:
             raise ValueError(f"unit {unit!r} does not match XML unit {xml_unit!r}")
@@ -111,9 +112,10 @@ def generate_sweep(base: Path, target: str, operation: Operation, numbers: Seque
         except ValueError as error:
             raise ValueError(f"parameter is not numeric: {key}") from error
     else:
-        data_element = next((d for d in root.findall("./data") if d.get("role") == role), None)
-        if data_element is None:
-            raise ValueError(f"data role not found: {role}")
+        data_matches = [d for d in root.findall("./data") if d.get("role") == role]
+        if len(data_matches) != 1:
+            raise ValueError(f"target {target} matches {len(data_matches)} elements; expected exactly one")
+        data_element = data_matches[0]
         if data_element.get("format", "npz").lower() != "npz" or Path(data_element.get("path", "")).suffix.lower() != ".npz":
             raise ValueError("only npz data arrays can be swept")
         if unit is None:
@@ -154,17 +156,26 @@ def generate_sweep(base: Path, target: str, operation: Operation, numbers: Seque
                 data_element.set("sha256", hashlib.sha256(data_bytes).hexdigest())
             member_root = ElementTree.fromstring(ElementTree.tostring(root, encoding="unicode"))
             if kind == "parameter":
-                member_parameter = next(p for p in member_root.findall("./parameters/parameter") if p.get("name") == key)
+                member_matches = [p for p in member_root.findall("./parameters/parameter") if p.get("name") == key]
+                if len(member_matches) != 1:
+                    raise ValueError(f"target {target} matches {len(member_matches)} elements; expected exactly one")
+                member_parameter = member_matches[0]
                 member_parameter.set("value", repr(float(value_array)))
             else:
-                member_data_root = next(d for d in member_root.findall("./data") if d.get("role") == role)
+                member_data_matches = [d for d in member_root.findall("./data") if d.get("role") == role]
+                if len(member_data_matches) != 1:
+                    raise ValueError(f"target {target} matches {len(member_data_matches)} elements; expected exactly one")
+                member_data_root = member_data_matches[0]
                 member_data_root.set("path", f"{stem}.npz")
                 member_data_root.set("sha256", hashlib.sha256(member_data.read_bytes()).hexdigest())
             member_root.set("id", f"{root.get('id', '')}.sweep-{name}-{index:02d}")
             member_tree = ElementTree.ElementTree(member_root)
             rewrite_references(member_tree, base.parent, output)
             if member_data is not None:
-                member_data_root = next(d for d in member_root.findall("./data") if d.get("role") == role)
+                member_data_matches = [d for d in member_root.findall("./data") if d.get("role") == role]
+                if len(member_data_matches) != 1:
+                    raise ValueError(f"target {target} matches {len(member_data_matches)} elements; expected exactly one")
+                member_data_root = member_data_matches[0]
                 member_data_root.set("path", member_data.name)
                 member_data_root.set("sha256", hashlib.sha256(member_data.read_bytes()).hexdigest())
             comment = ElementTree.Comment(

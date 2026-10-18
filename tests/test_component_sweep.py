@@ -83,6 +83,49 @@ class ComponentSweepTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 generate_sweep(AERO, "parameter:downforce_area", "value", [3.0], Path(d) / "bad", name="bad", unit="m")
 
+    def test_parameter_offset_and_scale_labels(self):
+        with tempfile.TemporaryDirectory() as d:
+            offset = json.loads(generate_sweep(AERO, "parameter:downforce_area", "offset", [0.5], Path(d) / "offset", name="offset").read_text())
+            scale = json.loads(generate_sweep(AERO, "parameter:downforce_area", "scale", [1.1], Path(d) / "scale", name="scale").read_text())
+            self.assertEqual(offset["members"][0]["value"], 4.0)
+            self.assertEqual(offset["members"][0]["label"], "downforce_area +0.5 m^2")
+            self.assertAlmostEqual(scale["members"][0]["value"], 3.85)
+            self.assertEqual(scale["members"][0]["label"], "downforce_area x1.1")
+
+    def test_sweep_schema_and_rewritten_references(self):
+        with tempfile.TemporaryDirectory() as d:
+            folder = Path(d) / "rch"
+            payload = json.loads(generate_sweep(SUSPENSION, "data:corner-table:rc_height_front", "offset", [0.01], folder, name="rch", unit="m").read_text())
+            for key in ("schema", "name", "created_utc", "repository_commit", "command", "base", "base_sha256", "model_type", "subtype", "target", "operation", "unit", "baseline_value", "members"):
+                self.assertIn(key, payload)
+            self.assertEqual(payload["base"], SUSPENSION.relative_to(REPOSITORY_ROOT).as_posix())
+            from tools.sim_gui.catalogue import read_entry
+            entry = read_entry(SUSPENSION)
+            self.assertEqual((payload["model_type"], payload["subtype"]), (entry.model_type, entry.subtype))
+            with np.load(CORNERS) as base:
+                np.testing.assert_array_equal(payload["baseline_value"], base["rc_height_front"])
+            for member in payload["members"]:
+                self.assertTrue({"index", "file", "data", "label", "x", "value"} <= set(member))
+            base_root = ElementTree.parse(SUSPENSION).getroot()
+            member_root = ElementTree.parse(folder / payload["members"][0]["file"]).getroot()
+            for element in base_root.iter():
+                if element.get("path") or (element.tag == "component" and element.get("ref")):
+                    attribute = "path" if element.get("path") else "ref"
+                    if element.get("role") == "corner-table":
+                        continue
+                    target = (SUSPENSION.parent / element.get(attribute)).resolve()
+                    member_element = next(e for e in member_root.iter() if e.tag == element.tag and e.get("role") == element.get("role"))
+                    self.assertEqual((folder / member_element.get(attribute)).resolve(), target)
+
+    def test_duplicate_parameter_target_is_refused(self):
+        with tempfile.TemporaryDirectory() as d:
+            duplicate = Path(d) / "duplicate.xml"
+            text = AERO.read_text()
+            text = text.replace("</parameters>", '<parameter name="downforce_area" value="3.5" unit="m^2" /></parameters>')
+            duplicate.write_text(text)
+            with self.assertRaisesRegex(ValueError, r"target parameter:downforce_area matches 2 elements; expected exactly one"):
+                generate_sweep(duplicate, "parameter:downforce_area", "value", [4], Path(d) / "out", name="dup")
+
     def test_values_on_a_curve_is_refused(self):
         with tempfile.TemporaryDirectory() as d, self.assertRaisesRegex(ValueError, "scalar"):
             generate_sweep(SUSPENSION, "data:corner-table:rc_height_front", "value", [0.05], Path(d) / "x", name="x", unit="m")

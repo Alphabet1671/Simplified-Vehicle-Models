@@ -20,4 +20,8 @@ The generator defect found while reviewing the binding label rules was that scal
 
 - `tests/test_component_sweep.py` (new generator coverage)
 - `tests/test_sim_gui_core.py` (generated-sweep dimension/expansion test)
-- `tools/model_data/generate_component_sweep.py` (scale-label fix)
+- `tools/model_data/generate_component_sweep.py` (scale-label fix; exactly-one target matching)
+
+## Review/fix round
+
+Added duplicate-target rejection: parameter and data-role targets now collect matches and require exactly one, with the prescribed error for missing or duplicate matches. Added tests for duplicate parameters, parameter offset/scale values and labels, sweep schema/reference preservation, and all member metadata. The focused suite now reports **50 tests, OK**.

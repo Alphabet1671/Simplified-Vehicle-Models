@@ -42,7 +42,7 @@ ROOT = Path(__file__).resolve().parents[1]
 TRIALS = ROOT / "docs/validation/iem24-murphy/14dof_simple_trials"
 GATE_TOOL = ROOT / "tools/gates/check_14dof_simple_gates.py"
 PLANAR_REFERENCE = ("docs/validation/iem24-murphy/seven_dof_track_pair/original/"
-                    "attempt_1792187768241214000")
+                    "attempt_1792288979150821000")
 
 #: What a reader must run when the gate table is missing or stale.
 GATE_TOOL_COMMAND = (
@@ -407,21 +407,14 @@ class Vertical14DofEvidenceTests(unittest.TestCase):
 
     def test_planar_reference_provenance_is_recorded_not_gated(self):
         agreement = self.table["planar_reference_source_hash_agreement"]
-        self.assertEqual(agreement["sources_checked"], 14)
-        self.assertFalse(agreement["all_sources_match"])
-        # Exactly one source differs: the reference was produced by the Task 8
-        # runner before its final review fixes. Every shared model file matches.
-        self.assertEqual([entry["source"].rsplit("/", 1)[-1]
-                          for entry in agreement["mismatches"]],
-                         ["run_iem24_forward_driver.py"])
-        self.assertEqual(agreement["mismatches"][0]["reason"], "sha256 differs")
-        mismatched = [entry for entry in agreement["sources"] if not entry["matches"]]
-        self.assertEqual(len(mismatched), 1)
-        self.assertNotEqual(mismatched[0]["recorded_sha256"],
-                            mismatched[0]["working_sha256"])
+        self.assertEqual(agreement["sources_checked"], len(agreement["sources"]))
+        self.assertGreater(agreement["sources_checked"], 0)
+        # The reference lap was regenerated from the same sources as the 14DoF lap
+        # (the suspension-layout refactor), so every recorded hash matches. A
+        # difference would still be recorded as provenance and never fail a gate.
+        self.assertEqual(agreement["mismatches"], [])
+        self.assertTrue(agreement["all_sources_match"])
         for entry in agreement["sources"]:
-            if entry["source"].endswith("run_iem24_forward_driver.py"):
-                continue
             with self.subTest(source=entry["source"]):
                 self.assertTrue(entry["matches"])
         # A provenance difference must not fail a gate.

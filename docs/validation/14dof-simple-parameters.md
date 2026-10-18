@@ -6,9 +6,11 @@ suspension, damper and transient-tire parameter comes from, states the reference
 tested against, and reports the Task 9 acceptance gates with their measured evidence. The lap evidence
 lives in [`docs/validation/iem24-murphy/14dof_simple_trials/`](iem24-murphy/14dof_simple_trials/); the
 machine-readable gate table is
-[`attempt_1792190392697144000/gates.json`](iem24-murphy/14dof_simple_trials/attempt_1792190392697144000/gates.json),
+[`attempt_1792288406878879000/gates.json`](iem24-murphy/14dof_simple_trials/attempt_1792288406878879000/gates.json),
 checked by [`tests/test_vertical_14dof_evidence.py`](../../tests/test_vertical_14dof_evidence.py) and produced by
 [`tools/gates/check_14dof_simple_gates.py`](../../tools/gates/check_14dof_simple_gates.py).
+
+> **Superseded evidence (2026-10-17).** The suspension was refactored into kinematics, spring, ARB and damper components behind one `suspension-forces` capability (see `docs/superpowers/plans/2026-10-17-suspension-layouts.md`). The gate tool pins the sha256 of the source files, so the acceptance evidence was regenerated once from the refactored sources. The earlier attempts `14dof_simple_trials/attempt_1792190392697144000`, `periodicity/attempt_1792190828124776000`, `refinement/attempt_1792190567221803000` and the planar reference `seven_dof_track_pair/original/attempt_1792187768241214000` are **superseded**. They stay in the repository unchanged as history; their source hashes no longer match the working tree. The regenerated lap reproduces the old numbers (14DoF 66.56339750 s, 20 075 steps, 74 486 evaluations, minimum contact load 97.887 N; planar 66.53234595 s), so the refactor moved no result. Only the wall times differ (cold lap child wall 140.1 s against 138.0 s).
 
 > **A transient tire model fitting tool is needed.** Every coefficient of the transient tire layer
 > (`longitudinal_length_scale`, `lateral_length_scale`, `trail_pole_ratio`, `trail_lead_ratio`), the
@@ -187,10 +189,10 @@ PYTHONPATH=src:. python3 tools/run/run_iem24_forward_driver.py --model 14dof-sim
   --duration 300.0 --timeout-seconds 1800.0 \
   --output-root docs/validation/iem24-murphy/14dof_simple_trials
 PYTHONPATH=src:. python3 tools/gates/check_14dof_simple_gates.py \
-  --attempt      docs/validation/iem24-murphy/14dof_simple_trials/attempt_1792190392697144000 \
-  --periodicity  docs/validation/iem24-murphy/14dof_simple_trials/periodicity/attempt_1792190828124776000 \
-  --refinement   docs/validation/iem24-murphy/14dof_simple_trials/refinement/attempt_1792190567221803000 \
-  --planar-reference docs/validation/iem24-murphy/seven_dof_track_pair/original/attempt_1792187768241214000
+  --attempt      docs/validation/iem24-murphy/14dof_simple_trials/attempt_1792288406878879000 \
+  --periodicity  docs/validation/iem24-murphy/14dof_simple_trials/periodicity/attempt_1792288811970287000 \
+  --refinement   docs/validation/iem24-murphy/14dof_simple_trials/refinement/attempt_1792288547293860000 \
+  --planar-reference docs/validation/iem24-murphy/seven_dof_track_pair/original/attempt_1792288979150821000
 ```
 
 The accepted 1800 s guard was not needed: the cold lap used 138.0 s of child wall time (solver 125.8 s of
@@ -198,7 +200,7 @@ a 1764 s budget). No 300 s threshold is applied to this rung (D12); the 7DoF 300
 
 | Plan gate | Runner key(s) | Verdict | Measured evidence |
 |---|---|---|---|
-| `completed` | `lap_completed`, `status`, elapsed ≤ requested | **PASS** | lap **66.56339750 s** over 1016.70064959 m; `status = Completed`; 20 075 accepted steps, 74 486 solver evaluations, 0 rejected domain trials; solver 125.811 s of 1764 s budget; child elapsed **138.025 s ≤ 1800 s**; peak child RSS 1 651 490 816 B (1.65 GB) |
+| `completed` | `lap_completed`, `status`, elapsed ≤ requested | **PASS** | lap **66.56339750 s** over 1016.70064959 m; `status = Completed`; 20 075 accepted steps, 74 486 solver evaluations, 0 rejected domain trials; solver 128.679 s of 1764 s budget; child elapsed **140.113 s ≤ 1800 s**; peak child RSS 1 651 589 120 B (1.65 GB) |
 | `contact_valid` | `contact_valid` | **PASS** | minimum tire load **97.887 N ≥ 0**; lifted-wheel evaluations **0**; `out_of_range_evaluations` 0; travel valid |
 | `travel_valid` | `jounce_travel_valid` | **PASS** | accepted jounce (nodes + per-interval dense bounds) **[−5.8023, +7.1369] mm** inside ±31.8 mm; trace-node extreme ±7.13688 mm; **bump-stop entries 0** (onset 27.8 mm); peak wheel force 1083.95 N (rear at max compression), minimum wheel force 48.52 N |
 | `table_domain_valid` | `out_of_range_evaluations == 0` | **PASS** | `out_of_range_evaluations` **0** over every plant evaluation including rejected trials (damper, spring, bump-stop, jounce-steer); max damper velocity **0.09253 m/s** of a 0.5 m/s table (81.5 % headroom); max \|roll\| **1.1925°** < 5° table limit, so the roll-centre clamp never bound; jounce-steer baseline toe 0 |
@@ -226,14 +228,14 @@ Paired attempts: the periodicity baseline used 146.30 s of child wall (solver 13
 
 ## 4. Cross-fidelity comparison with the corrected 7DoF lap
 
-Reference: `docs/validation/iem24-murphy/seven_dof_track_pair/original/attempt_1792187768241214000`
+Reference: `docs/validation/iem24-murphy/seven_dof_track_pair/original/attempt_1792288979150821000`
 (Task 8 Step 5, corrected 1.240 m track / 45 % front geometry), the same track and driver settings.
 
 | Quantity | 14DoF-simple | 7DoF corrected |
 |---|---|---|
 | Lap time | 66.56339750 s | 66.53234595 s |
 | Accepted steps / evaluations | 20 075 / 74 486 | 11 586 / 36 460 |
-| Solver wall / child wall | 125.81 s / 138.03 s | 89.50 s / 100.11 s |
+| Solver wall / child wall | 128.68 s / 140.11 s | 89.50 s / 100.11 s |
 | Peak child RSS | 1.65 GB | 0.399 GB |
 | Minimum contact load | 97.887 N | 131.377 N |
 | Maximum lateral path error | 0.38302 m (**fails 0.25 m**) | 0.36569 m (**fails 0.25 m**) |
@@ -428,7 +430,7 @@ PYTHONPATH=src:. python3 tools/run/run_iem24_forward_driver.py --model 14dof-sim
 PYTHONPATH=src:. python3 tools/gates/check_14dof_simple_gates.py --attempt "$BASE" \
   --periodicity  $(ls -dt docs/validation/iem24-murphy/14dof_simple_trials/periodicity/attempt_* | head -1) \
   --refinement   $(ls -dt docs/validation/iem24-murphy/14dof_simple_trials/refinement/attempt_* | head -1) \
-  --planar-reference docs/validation/iem24-murphy/seven_dof_track_pair/original/attempt_1792187768241214000
+  --planar-reference docs/validation/iem24-murphy/seven_dof_track_pair/original/attempt_1792288979150821000
 # 5. Evidence test.
 PYTHONPATH=src:. python3 -m unittest tests.test_vertical_14dof_evidence -q
 ```

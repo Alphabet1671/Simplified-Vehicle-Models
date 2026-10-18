@@ -225,6 +225,27 @@ class StudyTests(unittest.TestCase):
             self.assertEqual(cases[2].sweep_points["tire"]["x"], 1.1)
             self.assertEqual(cases[0].sweep_points, {})
 
+    def test_generated_sweep_dimension_expands_cases(self):
+        from tools.model_data.generate_component_sweep import generate_sweep
+        from tests.test_component_sweep import SUSPENSION
+        source = REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_14dof_simple.xml"
+        configuration = VehicleConfiguration.open(source)
+        with tempfile.TemporaryDirectory() as d:
+            folder = Path(d) / "rch"
+            generate_sweep(SUSPENSION, "data:corner-table:rc_height_front", "offset",
+                           [-0.01, 0.0, 0.01], folder, name="rch", unit="m")
+            dimension = dimension_from_sweep(folder, configuration)
+            key = next(key for key, path in configuration.choices.items() if path.resolve() == SUSPENSION.resolve())
+            self.assertEqual(dimension.key, key)
+            self.assertEqual(len(dimension.values), 3)
+            self.assertEqual(dimension.labels, ("rc_height_front -0.01 m", "rc_height_front +0 m", "rc_height_front +0.01 m"))
+            choices = {key: path.relative_to(REPOSITORY_ROOT).as_posix() for key, path in configuration.choices.items()}
+            definition = StudyDefinition("sweep", source.as_posix(), "track", "14dof-simple", choices,
+                                         RunSettings(), "one-at-a-time", (dimension,))
+            cases = expand(definition)
+            self.assertEqual(len(cases), 4)
+            self.assertEqual(cases[3].sweep_points[key]["x"], 0.01)
+
     def test_sweep_that_fits_no_slot_is_refused(self):
         configuration = VehicleConfiguration.open(REPOSITORY_ROOT / "models/vehicles/iem24_murphy_real_planar.xml")
         # A friction-ellipse tire has no matching slot; the vehicle requires steady-combined-slip.

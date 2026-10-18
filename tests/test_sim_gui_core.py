@@ -9,6 +9,7 @@ from tools.sim_gui.catalogue import candidates, scan_catalogue, tracks
 from tools.sim_gui.vehicle import VehicleConfiguration
 from tools.sim_gui.variant import VariantFiles, write_variant
 from tools.sim_gui.settings import RunSettings, runner_argv, validate
+from tools.sim_gui.study import StudyDefinition, StudyIndex, TooManyCases, Dimension, expand, dimension_from_sweep
 from simplified_vehicle_models.compiler.compile import compile_formulation
 
 
@@ -22,7 +23,19 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(parsed.planner, "live")
         self.assertEqual(parsed.maximum_speed, 60.0)
         self.assertEqual(parsed.timeout_seconds, 900.0)
+        self.assertEqual(parsed.duration, 300.0)
+        self.assertEqual(parsed.pedal_travel_time, 0.175)
+        self.assertEqual(parsed.maximum_step, 0.008)
+        self.assertEqual(parsed.rtol, 1e-5)
+        self.assertEqual(parsed.method, "BDF")
+        self.assertEqual(parsed.spacing, 0.5)
         self.assertTrue(parsed.record)
+
+    def test_model_defaults_and_unknown_json(self):
+        self.assertEqual(RunSettings.for_model("planar-7dof").timeout_seconds, 300.0)
+        self.assertEqual(RunSettings.for_model("14dof-simple").timeout_seconds, 3600.0)
+        with self.assertRaisesRegex(ValueError, "unknown run setting"):
+            RunSettings.from_json({"unknown": 1})
 
     def test_validation(self):
         track = REPOSITORY_ROOT / "models/tracks/2024_michigan_endurance_closed.xml"
@@ -33,6 +46,37 @@ class SettingsTests(unittest.TestCase):
 
     def test_json_round_trip(self):
         self.assertEqual(RunSettings.from_json(RunSettings().to_json()), RunSettings())
+
+
+class StudyTests(unittest.TestCase):
+    def definition(self, mode):
+        return StudyDefinition("test", "", "track-a", "planar-7dof", {"tire": "a"}, RunSettings(), mode, (Dimension("tire", ("a", "b")), Dimension("model", ("planar-7dof", "14dof-simple"))))
+
+    def test_expansion_modes_and_labels(self):
+        one = expand(self.definition("one-at-a-time"))
+        self.assertEqual(len(one), 3)
+        self.assertEqual(one[0].label, "baseline")
+        self.assertEqual(one[1].label, "tire=b")
+        self.assertEqual(one[2].label, "model=14dof-simple")
+        self.assertEqual(len(expand(self.definition("full-factorial"))), 4)
+
+    def test_case_cap(self):
+        definition = StudyDefinition("x", "", "t", "m", {}, RunSettings(), "full-factorial", (Dimension("x", tuple(str(i) for i in range(501))),))
+        with self.assertRaises(TooManyCases):
+            expand(definition)
+
+    def test_duplicate_key(self):
+        with self.assertRaisesRegex(ValueError, "slot tire is already swept"):
+            StudyDefinition("x", "", "t", "m", {}, RunSettings(), "one-at-a-time", (Dimension("tire", ("a",)), Dimension("tire", ("b",))))
+
+    def test_index_update_is_atomic(self):
+        with tempfile.TemporaryDirectory() as d:
+            index = StudyIndex.create(Path(d), self.definition("one-at-a-time"), expand(self.definition("one-at-a-time")))
+            old = index.cases[1]
+            index.update("case_001", status="completed")
+            self.assertEqual(index.cases[0]["status"] if "status" in index.cases[0] else None, None)
+            self.assertEqual(index.cases[1]["status"], "completed")
+            self.assertFalse((Path(d) / "study.json.tmp").exists())
 
 
 class CatalogueTests(unittest.TestCase):

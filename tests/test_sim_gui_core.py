@@ -60,6 +60,10 @@ class StudyTests(unittest.TestCase):
         self.assertEqual(one[2].label, "model=14dof-simple")
         self.assertEqual(len(expand(self.definition("full-factorial"))), 4)
 
+    def test_five_cases_when_no_dimension_matches_baseline(self):
+        definition = StudyDefinition("x", "", "t", "point-mass", {"tire": "x"}, RunSettings(), "one-at-a-time", (Dimension("tire", ("a", "b")), Dimension("model", ("planar-7dof", "14dof-simple"))))
+        self.assertEqual(len(expand(definition)), 5)
+
     def test_case_cap(self):
         definition = StudyDefinition("x", "", "t", "m", {}, RunSettings(), "full-factorial", (Dimension("x", tuple(str(i) for i in range(501))),))
         with self.assertRaises(TooManyCases):

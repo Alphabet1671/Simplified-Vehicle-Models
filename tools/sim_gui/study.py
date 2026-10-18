@@ -133,6 +133,21 @@ def expand(definition: StudyDefinition) -> tuple[CaseSpec, ...]:
     if len(combinations) > MAXIMUM_CASES:
         raise TooManyCases(f"study has {len(combinations)} cases; maximum is {MAXIMUM_CASES}")
 
+    baseline_configuration = None
+    if definition.source:
+        baseline_configuration = VehicleConfiguration.open(Path(definition.source)).with_model(definition.model)
+        for key, value in definition.choices.items():
+            baseline_value = baseline_configuration.choices.get(key)
+            resolved = Path(value) if Path(value).is_absolute() else REPOSITORY_ROOT / value
+            if baseline_value is None:
+                raise ValueError(f"unknown slot {key}")
+            if resolved.resolve() != baseline_value.resolve():
+                baseline_configuration = baseline_configuration.with_choice(key, resolved)
+        valid_keys = set(baseline_configuration.choices) | {"model", "track"}
+        for dimension in dimensions:
+            if dimension.key not in valid_keys:
+                raise ValueError(f"unknown slot {dimension.key}")
+
     cases: list[CaseSpec] = []
     for case_index, combination in enumerate(combinations):
         choices = dict(definition.choices)
@@ -154,14 +169,17 @@ def expand(definition: StudyDefinition) -> tuple[CaseSpec, ...]:
                 if dimension.sweep is not None and dimension.points:
                     points[dimension.key] = dict(dimension.points[index])
 
-        if definition.source and any(
-            dimension.key not in {"model", "track"} and differs(dimension, index)
-            for dimension, index in selected
-        ) and all(Path(value).exists() for value in choices.values()):
-            configuration = VehicleConfiguration.open(Path(definition.source))
-            for key, value in choices.items():
-                if key in configuration.choices and value != str(configuration.choices[key]):
-                    configuration = configuration.with_choice(key, Path(value))
+        if baseline_configuration is not None:
+            configuration = baseline_configuration
+            changed = [
+                (dimension.key, dimension.values[index])
+                for dimension, index in selected
+                if dimension.key not in {"model", "track"} and differs(dimension, index)
+            ]
+            for key, value in sorted(changed, key=lambda item: item[0].count("/")):
+                configuration = configuration.with_choice(
+                    key, Path(value) if Path(value).is_absolute() else REPOSITORY_ROOT / value
+                )
             choices = {
                 key: _relative_or_absolute(value) for key, value in configuration.choices.items()
             }

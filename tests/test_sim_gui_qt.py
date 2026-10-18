@@ -7,6 +7,7 @@ import tempfile
 import time
 
 from unittest import mock
+import json
 
 try:
     from PyQt6.QtWidgets import QApplication
@@ -29,6 +30,8 @@ if QApplication is not None:
     from tools.sim_gui.qt.workers import ValidationWorker
     from tools.sim_gui.qt.queue import CaseQueue
     from tools.sim_gui.qt.main_window import MainWindow
+    from PyQt6.QtCore import QSettings, QEventLoop, QTimer
+    from PyQt6.QtWidgets import QMessageBox
     from tools.sim_gui.study import Dimension, StudyDefinition, CaseSpec, expand, WARNING_CASES, TooManyCases
     from tools.sim_gui.execute import PreparedCase
     from PyQt6.QtCore import QEventLoop, QTimer, Qt
@@ -341,7 +344,76 @@ class CaseQueueTests(unittest.TestCase):
         finally:
             tab.deleteLater()
 
-    def test_parallel_limit(self):
+@unittest.skipIf(QApplication is None, "PyQt6 is not installed")
+class MainWindowTests(unittest.TestCase):
+    
+    def test_main_window_end_to_end_case(self):
+        import shutil
+        output = REPOSITORY_ROOT / "runs" / "_test"
+        if output.exists():
+            shutil.rmtree(output)
+        self.addCleanup(lambda: shutil.rmtree(output) if output.exists() else None)
+        store = QSettings(str(Path(tempfile.mkdtemp()) / "settings.ini"), QSettings.Format.IniFormat)
+        window = MainWindow(output_root=output, settings_store=store)
+        self.addCleanup(window.close)
+        window.open_model(REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_planar_7dof.xml")
+        window.settings_tab.duration.setValue(0.3)
+        window.settings_tab.timeout_seconds.setValue(120.0)
+        window.run_cases()
+        loop = QEventLoop()
+        window._queue.allFinished.connect(loop.quit)
+        QTimer.singleShot(120000, loop.quit)
+        loop.exec()
+        self.assertEqual(window.queue_table.item(0, 2).text(), "completed")
+        record = window.study_index.directory / window.study_index.cases[0]["run_record"]
+        self.assertTrue(record.exists())
+
+    def test_point_mass_disables_run(self):
+        store = QSettings(str(Path(tempfile.mkdtemp()) / "settings.ini"), QSettings.Format.IniFormat)
+        window = MainWindow(settings_store=store)
+        self.addCleanup(window.close)
+        window.open_model(REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_point_mass.xml")
+        self.assertFalse(window.run_action.isEnabled())
+
+    def test_save_open_study_round_trip(self):
+        store = QSettings(str(Path(tempfile.mkdtemp()) / "settings.ini"), QSettings.Format.IniFormat)
+        window = MainWindow(settings_store=store)
+        self.addCleanup(window.close)
+        source = REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_planar_7dof.xml"
+        window.open_model(source)
+        definition = window._definition()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "definition.study.json"
+            path.write_text(json.dumps(definition.to_json()))
+            restored = StudyDefinition.from_json(json.loads(path.read_text()))
+        self.assertEqual(restored.to_json(), definition.to_json())
+
+    def test_close_no_keeps_window_and_yes_stops(self):
+        from PyQt6.QtGui import QCloseEvent
+        store = QSettings(str(Path(tempfile.mkdtemp()) / "settings.ini"), QSettings.Format.IniFormat)
+        window = MainWindow(settings_store=store)
+        self.addCleanup(window.close)
+        window._running = True
+        with mock.patch("tools.sim_gui.qt.main_window._confirm", return_value=QMessageBox.StandardButton.No):
+            event = QCloseEvent()
+            window.closeEvent(event)
+            self.assertTrue(event.isAccepted() is False)
+        window._running = False
+
+    def test_recent_files_are_limited_to_ten(self):
+        store = QSettings(str(Path(tempfile.mkdtemp()) / "settings.ini"), QSettings.Format.IniFormat)
+        window = MainWindow(settings_store=store)
+        self.addCleanup(window.close)
+        for index in range(12):
+            window._remember(Path(f"/tmp/model-{index}.xml"))
+        self.assertEqual(len(window._recent), 10)
+
+    def _prepared(self, root, name="case_000", timeout=2.0):
+        directory = Path(root) / name
+        directory.mkdir(parents=True)
+        return PreparedCase(directory, directory / "formulation.xml", directory / "vehicle.xml", [], timeout_seconds=timeout)
+
+    def test_parallel_limit_legacy(self):
         with tempfile.TemporaryDirectory() as tmp:
             prepared = [self._prepared(tmp, f"case_{i}") for i in range(3)]
             command = [sys.executable, "-c", "import time; time.sleep(.2)"]

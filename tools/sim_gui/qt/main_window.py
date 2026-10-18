@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 from PyQt6.QtCore import QEventLoop, QSettings, QTimer, QUrl, Qt, pyqtSignal
@@ -119,7 +120,13 @@ class MainWindow(QMainWindow):
     def _definition(self) -> StudyDefinition:
         if self.study_tab is None:
             return StudyDefinition("study", str(self.configuration.source), self.model_panel.track().as_posix(), self.configuration.model, {key: str(value) for key, value in self.configuration.choices.items()}, self.settings_tab.settings(), "one-at-a-time", ())
-        return self.study_tab.definition(self.configuration)
+        definition = self.study_tab.definition(self.configuration)
+        track = self.model_panel.track()
+        return replace(
+            definition,
+            track=track.as_posix() if track is not None else "",
+            settings=self.settings_tab.settings(),
+        )
 
     def build_cases(self) -> None:
         """Prepare and validate the current study cases."""
@@ -142,6 +149,8 @@ class MainWindow(QMainWindow):
         worker.caseReady.connect(self._case_ready)
         worker.finished.connect(worker.deleteLater)
         worker.run()
+        self.queue_table.set_cases(self.study_index.cases)
+        self._refresh_status()
 
     def _case_ready(self, prepared, error) -> None:
         if error is None:

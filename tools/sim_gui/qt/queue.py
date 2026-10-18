@@ -107,10 +107,10 @@ class CaseQueue(QObject):
         timer.setSingleShot(True)
         running = _Running(prepared, process, attempt, command, timer, time.perf_counter())
         self._running[prepared.directory.name] = running
-        process.readyReadStandardOutput.connect(lambda key=prepared.directory.name: self._read(key))
-        process.finished.connect(lambda code, status, key=prepared.directory.name: self._finished(key, code, status))
-        process.errorOccurred.connect(lambda error, key=prepared.directory.name: self._error(key, error))
-        timer.timeout.connect(lambda key=prepared.directory.name: self._timeout_case(key))
+        process.readyReadStandardOutput.connect(lambda *_, key=prepared.directory.name: self._read(key))
+        process.finished.connect(lambda code, status, *_, key=prepared.directory.name: self._finished(key, code, status))
+        process.errorOccurred.connect(lambda error, *_, key=prepared.directory.name: self._error(key, error))
+        timer.timeout.connect(lambda *_, key=prepared.directory.name: self._timeout_case(key))
         timeout = self._timeout if self._timeout is not None else prepared.timeout_seconds
         timer.start(max(1, int(timeout * 1000)))
         self.caseStarted.emit(prepared.directory.name)

@@ -346,7 +346,14 @@ class CaseQueueTests(unittest.TestCase):
 
 @unittest.skipIf(QApplication is None, "PyQt6 is not installed")
 class MainWindowTests(unittest.TestCase):
-    
+
+    def _wait(self, queue, timeout=5):
+        loop = QEventLoop()
+        queue.allFinished.connect(loop.quit)
+        QTimer.singleShot(int(timeout * 1000), loop.quit)
+        loop.exec()
+        queue.shutdown()
+
     def test_main_window_end_to_end_case(self):
         import shutil
         output = REPOSITORY_ROOT / "runs" / "_test"

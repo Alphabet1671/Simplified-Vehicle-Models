@@ -123,7 +123,7 @@ class StudyTab(QWidget):
         for key in keys:
             if key not in swept:
                 action = self._dimension_menu.addAction(key)
-                action.triggered.connect(lambda _checked=False, value=key: self._add_dimension(value))
+                action.triggered.connect(lambda *_, value=key: self._add_dimension(value))
 
     def _add_dimension(self, key: str) -> None:
         if key in {dimension.key for dimension in self._dimensions}:

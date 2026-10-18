@@ -2,6 +2,9 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import unittest
 from pathlib import Path
+import sys
+import tempfile
+import time
 
 from unittest import mock
 
@@ -22,6 +25,12 @@ if QApplication is not None:
     from tools.sim_gui.settings import RunSettings
     from tools.sim_gui.qt.model_panel import ModelPanel
     from tools.sim_gui.qt.settings_tab import SettingsTab
+    from tools.sim_gui.qt.study_tab import StudyTab
+    from tools.sim_gui.qt.workers import ValidationWorker
+    from tools.sim_gui.qt.queue import CaseQueue
+    from tools.sim_gui.study import Dimension, StudyDefinition, CaseSpec, expand, WARNING_CASES, TooManyCases
+    from tools.sim_gui.execute import PreparedCase
+    from PyQt6.QtCore import QEventLoop, QTimer
 
 
 @unittest.skipIf(QApplication is None, "PyQt6 is not installed")
@@ -174,3 +183,116 @@ class SettingsTabTests(unittest.TestCase):
             for value in values:
                 args = runner.parse_args(["--model", "planar-7dof", f"--{name.replace('_', '-')}", value])
                 self.assertEqual(getattr(args, name), value)
+
+
+@unittest.skipIf(QApplication is None, "PyQt6 is not installed")
+class StudyTabTests(unittest.TestCase):
+    def setUp(self):
+        self.cfg = VehicleConfiguration.open(REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_planar_7dof.xml")
+        self.settings = RunSettings()
+        self.tab = StudyTab(self.cfg, self.settings)
+
+    def tearDown(self):
+        self.tab.deleteLater()
+
+    def test_preview_count_three(self):
+        tire = self.cfg.choices["tire"]
+        hoosier = REPOSITORY_ROOT / "models/tires/hoosier-43075-r20-simple.xml"
+        self.tab._dimensions = [Dimension("tire", (str(tire), str(hoosier)))]
+        self.tab._refresh_preview()
+        self.assertEqual(self.tab.preview.rowCount(), 2)
+
+    def test_warning_count_red(self):
+        values = tuple(f"model-{i}" for i in range(WARNING_CASES + 1))
+        self.tab._dimensions = [Dimension("model", values)]
+        self.tab._refresh_preview()
+        self.assertIn("red", self.tab.preview_count.styleSheet())
+
+    def test_name_validator_rejects_spaces(self):
+        self.tab.study_name.setText("a b")
+        self.assertNotEqual(self.tab.study_name.text(), "a b")
+
+    def test_too_many_cases_is_preview_error(self):
+        self.tab._dimensions = [Dimension("tire", tuple(str(self.cfg.choices["tire"]) + str(i) for i in range(501)))]
+        self.tab._refresh_preview()
+        self.assertIn("maximum", self.tab.preview_count.text())
+
+
+@unittest.skipIf(QApplication is None, "PyQt6 is not installed")
+class ValidationWorkerTests(unittest.TestCase):
+    def test_real_cases_prepare_and_validate(self):
+        source = REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_planar_7dof.xml"
+        cfg = VehicleConfiguration.open(source)
+        hoosier = REPOSITORY_ROOT / "models/tires/hoosier-43075-r20-simple.xml"
+        definition = StudyDefinition("test", str(source), "models/tracks/2024_michigan_endurance_closed.xml", "planar-7dof", {"tire": str(cfg.choices["tire"])}, RunSettings(), "one-at-a-time", ())
+        cases = (CaseSpec("case_000", "baseline", "planar-7dof", definition.track, definition.choices, {}), CaseSpec("case_001", "hoosier", "planar-7dof", definition.track, {"tire": str(hoosier)}, {}))
+        with tempfile.TemporaryDirectory() as tmp:
+            worker = ValidationWorker(Path(tmp), definition, cases)
+            ready, progress = [], []
+            worker.caseReady.connect(lambda item, error: ready.append((item, error)))
+            worker.progress.connect(lambda done, total: progress.append((done, total)))
+            worker.run()
+        self.assertEqual(len(ready), 2)
+        self.assertTrue(all(item is not None and error is None for item, error in ready))
+        self.assertEqual(progress, [(1, 2), (2, 2)])
+
+
+@unittest.skipIf(QApplication is None, "PyQt6 is not installed")
+class CaseQueueTests(unittest.TestCase):
+    def _prepared(self, root, name="case_000", timeout=2.0):
+        directory = Path(root) / name
+        directory.mkdir(parents=True)
+        return PreparedCase(directory, directory / "formulation.xml", directory / "vehicle.xml", [], timeout_seconds=timeout)
+
+    def _wait(self, queue, timeout=5):
+        loop = QEventLoop()
+        queue.allFinished.connect(loop.quit)
+        QTimer.singleShot(int(timeout * 1000), loop.quit)
+        loop.exec()
+
+    def test_cancelled_case_finishes_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            prepared = self._prepared(tmp)
+            command = [sys.executable, "-c", "import json,time; print(json.dumps({'rhs_time': 1.0}), flush=True); time.sleep(30)"]
+            queue = CaseQueue(command_factory=lambda _p, _a: command)
+            finished = []
+            queue.caseFinished.connect(lambda key, fields: finished.append(fields["status"]))
+            queue.caseProgress.connect(lambda *_: queue.stop())
+            queue.start([prepared], 1)
+            self._wait(queue)
+            self.assertEqual(finished, ["cancelled"])
+
+    def test_timeout_case(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            prepared = self._prepared(tmp, timeout=2.0)
+            command = [sys.executable, "-c", "import time; time.sleep(30)"]
+            queue = CaseQueue(command_factory=lambda _p, _a: command)
+            finished = []
+            queue.caseFinished.connect(lambda key, fields: finished.append(fields["status"]))
+            queue.start([prepared], 1, timeout=0.5)
+            self._wait(queue)
+            self.assertEqual(finished, ["timed_out"])
+
+    def test_normal_exit_without_summary_is_failed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            prepared = self._prepared(tmp)
+            command = [sys.executable, "-c", "print('{\\\"rhs_time\\\": 1}', flush=True)"]
+            queue = CaseQueue(command_factory=lambda _p, _a: command)
+            finished = []
+            queue.caseFinished.connect(lambda key, fields: finished.append(fields["status"]))
+            queue.start([prepared], 1)
+            self._wait(queue)
+            self.assertEqual(finished, ["failed"])
+
+    def test_parallel_limit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            prepared = [self._prepared(tmp, f"case_{i}") for i in range(3)]
+            command = [sys.executable, "-c", "import time; time.sleep(.2)"]
+            queue = CaseQueue(command_factory=lambda _p, _a: command)
+            active = [0]
+            maximum = [0]
+            queue.caseStarted.connect(lambda *_: (active.__setitem__(0, active[0] + 1), maximum.__setitem__(0, max(maximum[0], active[0]))))
+            queue.caseFinished.connect(lambda *_: active.__setitem__(0, active[0] - 1))
+            queue.start(prepared, 2)
+            self._wait(queue)
+            self.assertLessEqual(maximum[0], 2)

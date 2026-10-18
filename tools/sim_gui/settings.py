@@ -12,6 +12,7 @@ from tools.run import run_iem24_forward_driver as runner
 
 @dataclass(frozen=True, slots=True)
 class RunSettings:
+    """Immutable runner settings."""
     duration: float = 300.0
     timeout_seconds: float = 300.0
     maximum_speed: float = 60.0
@@ -30,6 +31,7 @@ class RunSettings:
 
     @classmethod
     def for_model(cls, model: str) -> "RunSettings":
+        """Return model-specific default settings."""
         return cls(timeout_seconds=300.0 if model == "planar-7dof" else 3600.0)
 
     def to_json(self) -> dict[str, Any]:
@@ -37,10 +39,14 @@ class RunSettings:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> "RunSettings":
+        unknown = set(data) - set(cls.__dataclass_fields__)
+        if unknown:
+            raise ValueError(f"unknown run setting(s): {', '.join(sorted(unknown))}")
         return cls(**data)
 
 
 def runner_argv(settings: RunSettings, model: str, track: Path) -> list[str]:
+    """Build runner arguments from settings."""
     values = [
         ("--model", model), ("--track", str(track)), ("--planner", settings.planner),
         ("--duration", repr(settings.duration)), ("--timeout-seconds", repr(settings.timeout_seconds)),
@@ -64,6 +70,7 @@ def runner_argv(settings: RunSettings, model: str, track: Path) -> list[str]:
 
 
 def validate(settings: RunSettings, model: str, track: Path) -> None:
+    """Validate settings using the runner parser."""
     if settings.quasi_static_attitude and model != "planar-7dof":
         raise ValueError("quasi-static attitude applies to planar-7dof only")
     stderr = io.StringIO()
@@ -73,16 +80,4 @@ def validate(settings: RunSettings, model: str, track: Path) -> None:
     except SystemExit as error:
         message = stderr.getvalue().strip()
         raise ValueError(message or f"invalid runner arguments (exit {error.code})") from None
-
-
-def _json_value(value: Any) -> Any:
-    return value
-
-
-def to_json(settings: RunSettings) -> dict[str, Any]:
-    return asdict(settings)
-
-
-def from_json(data: dict[str, Any]) -> RunSettings:
-    return RunSettings(**data)
 

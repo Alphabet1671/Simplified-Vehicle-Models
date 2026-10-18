@@ -7,6 +7,8 @@ from xml.etree import ElementTree
 from tools.sim_gui import REPOSITORY_ROOT, child_environment
 from tools.sim_gui.catalogue import candidates, scan_catalogue, tracks
 from tools.sim_gui.vehicle import VehicleConfiguration
+from tools.sim_gui.variant import VariantFiles, write_variant
+from simplified_vehicle_models.compiler.compile import compile_formulation
 
 
 class CatalogueTests(unittest.TestCase):
@@ -92,6 +94,43 @@ class VehicleTests(unittest.TestCase):
         self.assertEqual(configuration.model, "point-mass")
         self.assertFalse(configuration.runnable)
 
+
+class VariantTests(unittest.TestCase):
+    FORMULATION_14 = REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_14dof_simple.xml"
+    PLANAR_FORMULATION = REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_planar_7dof.xml"
+
+    def test_baseline_variant_compiles_to_same_components(self):
+        configuration = VehicleConfiguration.open(self.FORMULATION_14)
+        with tempfile.TemporaryDirectory() as d:
+            files = write_variant(configuration, Path(d), "case_000")
+            base = compile_formulation(self.FORMULATION_14).manifest
+            case = compile_formulation(files.formulation).manifest
+            self.assertEqual([(c.role, c.path) for c in case.loaded_components if c.role != "powertrain_drivetrain"],
+                             [(c.role, c.path) for c in base.loaded_components if c.role != "powertrain_drivetrain"])
+
+    def test_tire_swap_reaches_compiled_model(self):
+        hoosier = REPOSITORY_ROOT / "models/tires/hoosier-43075-r20-simple.xml"
+        configuration = VehicleConfiguration.open(self.PLANAR_FORMULATION).with_choice("tire", hoosier)
+        with tempfile.TemporaryDirectory() as d:
+            files = write_variant(configuration, Path(d), "case_001")
+            roles = {c.role: c.path for c in compile_formulation(files.formulation).manifest.loaded_components}
+            self.assertEqual(roles["tire"], hoosier.resolve())
+            self.assertEqual(ElementTree.parse(files.vehicle).getroot().get("id"), "iem24-murphy-real-planar.case-001")
+
+    def test_changed_child_writes_nested_assembly(self):
+        configuration = VehicleConfiguration.open(self.PLANAR_FORMULATION).with_choice(
+            "powertrain/power-plant", REPOSITORY_ROOT / "models/power-plants/placeholder_2024_motor.xml")
+        with tempfile.TemporaryDirectory() as d:
+            write_variant(configuration, Path(d), "case_002")
+            self.assertTrue((Path(d) / "powertrain.xml").is_file())
+            self.assertFalse((Path(d) / "drivetrain.xml").exists())
+
+    def test_model_change_drops_requires(self):
+        configuration = VehicleConfiguration.open(self.FORMULATION_14).with_model("planar-7dof")
+        with tempfile.TemporaryDirectory() as d:
+            root = ElementTree.parse(write_variant(configuration, Path(d), "case_003").formulation).getroot()
+            self.assertEqual(root.get("subtype"), "planar-7dof")
+            self.assertEqual(root.findall("requires"), [])
 
 if __name__ == "__main__":
     unittest.main()

@@ -22,11 +22,10 @@ else:
 class RunCaseIntegrationTests(unittest.TestCase):
     study_dir = REPOSITORY_ROOT / "runs" / "_test"
 
-    def tearDown(self):
+    def setUp(self):
         path = self.study_dir
         self.assertTrue(str(path).endswith("runs/_test"))
-        if path.exists():
-            shutil.rmtree(path)
+        self.addCleanup(shutil.rmtree, path, ignore_errors=True)
 
     def test_planar_child_writes_verified_record_with_hoosier(self):
         source = REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_planar_7dof.xml"

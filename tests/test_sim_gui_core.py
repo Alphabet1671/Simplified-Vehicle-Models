@@ -426,6 +426,28 @@ class ExecutionTests(unittest.TestCase):
         command = child_command(prepared, Path('/tmp/case/attempt_A'))
         self.assertEqual(command[-2:], ['--child-attempt', '/tmp/case/attempt_A'])
         self.assertEqual(command.count('--record'), 1)
+        for bad in (['--model', 'planar-7dof'],
+                    ['--model', 'planar-7dof', '--record', '--record'],
+                    ['--model', 'planar-7dof', '--record', '--child-attempt', 'x'],
+                    ['--model', 'planar-7dof', '--record', '--output-root', 'x']):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                child_command(PreparedCase(prepared.directory, prepared.formulation, prepared.vehicle, bad),
+                              Path('/tmp/case/attempt_A'))
+
+    def test_finish_case_uses_prepared_timeout_and_model(self):
+        from tools.sim_gui.execute import PreparedCase
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            prepared = PreparedCase(root, root / 'f.xml', root / 'v.xml', ['--record'],
+                                    model='14dof-simple', timeout_seconds=120.0)
+            attempt = root / 'attempt_A'
+            attempt.mkdir()
+            finish_case(prepared, attempt, return_code=2, timed_out=False, cancelled=False,
+                        wall_seconds=1.25, command=['cmd'])
+            parent = json.loads((attempt / 'parent.json').read_text())
+            self.assertEqual(parent['timeout_seconds'], 120.0)
+            from tools.run.run_iem24_forward_driver import solver_wall_budget
+            self.assertEqual(parent['solver_wall_budget_seconds'], solver_wall_budget(120.0, '14dof-simple'))
 
     def test_finish_case_status_mapping(self):
         from tools.sim_gui.execute import PreparedCase

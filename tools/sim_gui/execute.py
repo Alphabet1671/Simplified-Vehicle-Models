@@ -24,6 +24,8 @@ class PreparedCase:
     formulation: Path
     vehicle: Path
     argv: list[str]
+    model: str = "planar-7dof"
+    timeout_seconds: float = 300.0
 
 
 def _resolve(value: str | Path) -> Path:
@@ -43,7 +45,6 @@ def prepare_case(study_dir: Path, definition: StudyDefinition, case: CaseSpec) -
     directory = study_dir / "cases" / case.id
     model_dir = directory / "model"
     configuration = VehicleConfiguration.open(_resolve(definition.source)).with_model(case.model)
-    baseline = VehicleConfiguration.open(_resolve(definition.source)).with_model(case.model)
     changes = []
     for key, value in case.choices.items():
         current = configuration.choices.get(key)
@@ -64,7 +65,8 @@ def prepare_case(study_dir: Path, definition: StudyDefinition, case: CaseSpec) -
         "vehicle": files.vehicle.relative_to(directory).as_posix(), "argv": argv,
     }
     _atomic_json(directory / "case.json", payload)
-    return PreparedCase(directory, files.formulation, files.vehicle, argv)
+    return PreparedCase(directory, files.formulation, files.vehicle, argv,
+                         model=case.model, timeout_seconds=definition.settings.timeout_seconds)
 
 
 def validate_case(prepared: PreparedCase) -> str | None:
@@ -82,6 +84,11 @@ def new_attempt(prepared: PreparedCase) -> Path:
 
 
 def child_command(prepared: PreparedCase, attempt: Path) -> list[str]:
+    forbidden = {"--child-attempt", "--output-root"}
+    if prepared.argv.count("--record") != 1:
+        raise ValueError("prepared argv must contain exactly one --record")
+    if forbidden.intersection(prepared.argv):
+        raise ValueError("prepared argv must not contain --child-attempt or --output-root")
     command = [sys.executable, "-u", str(Path(__file__).with_name("run_case.py").resolve()), "--case-dir",
                str(prepared.directory), *prepared.argv, "--child-attempt", str(attempt)]
     return command
@@ -113,13 +120,13 @@ def finish_case(prepared: PreparedCase, attempt: Path, *, return_code: int | Non
         status, parent_status, parent_code = "rejected", "Child_Rejected", return_code
     else:
         status, parent_status, parent_code = "failed", "Child_Rejected", return_code
-    timeout = _timeout_from_argv(prepared.argv)
+    timeout = prepared.timeout_seconds
     parent = {"status": parent_status, "return_code": parent_code,
               "total_wall_seconds": wall_seconds, "within_wall_limit": not timed_out,
               "timeout_seconds": timeout, "requested_wall_seconds": timeout,
               "elapsed_wall_seconds": wall_seconds,
-              "solver_wall_budget_seconds": runner.solver_wall_budget(timeout, _model_from_argv(prepared.argv)),
-              "model": _model_from_argv(prepared.argv), "command": list(command),
+              "solver_wall_budget_seconds": runner.solver_wall_budget(timeout, prepared.model),
+              "model": prepared.model, "command": list(command),
               "attempt": str(attempt)}
     _atomic_json(Path(attempt) / "parent.json", parent)
     study_root = prepared.directory.parent.parent

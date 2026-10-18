@@ -37,3 +37,20 @@ OK
 
 - `finish_case` receives the command and timing from the parent orchestration; this task does not itself manage process cancellation or timeout watches.
 - The child intentionally reuses the existing runner implementation and does not modify hash-pinned runner files.
+
+## Review fix round 1
+
+Applied the requested hardening:
+
+- `child_command` now requires exactly one `--record` and rejects prepared arguments containing `--child-attempt` or `--output-root`.
+- `PreparedCase` stores the selected model and timeout. `finish_case` uses these fields for parent metadata and solver wall budget, even when argv omits those options.
+- Removed the unused baseline assignment.
+- The integration test registers its guarded cleanup in `setUp` with `addCleanup`.
+
+Validation command:
+
+```text
+MPLCONFIGDIR=/tmp/mplcfg PYTHONPATH=src:. python3 -m unittest tests.test_sim_gui_core tests.test_sim_gui_run -v
+Ran 36 tests in 11.457s
+OK
+```

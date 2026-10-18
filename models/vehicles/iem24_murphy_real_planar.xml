@@ -48,8 +48,6 @@
         <component role="powertrain" ref="../powertrains/iem24_murphy_real_planar.xml" />
         <component role="drivetrain" ref="../drivetrains/iem24_murphy_real.xml" />
         <component role="suspension" ref="../suspensions/iem24_murphy_real_suspension.xml" />
-        <component role="damper-front" ref="../dampers/multimatic_dssv_vc01_front.xml" />
-        <component role="damper-rear" ref="../dampers/multimatic_dssv_vc01_rear.xml" />
         <component role="tire-transient" ref="../tires/iem24_murphy_real_unitire_transient.xml" />
     </components>
 </model>

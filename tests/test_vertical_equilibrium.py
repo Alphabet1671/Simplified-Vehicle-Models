@@ -21,7 +21,6 @@ from simplified_vehicle_models.solvers.vertical_equilibrium import (
     solve_static_equilibrium,
     solve_steady_corner,
 )
-from simplified_vehicle_models.suspension.corner import corner_forces, corner_toe_angles
 from simplified_vehicle_models.suspension.monotone_spline import MonotoneSpline
 from simplified_vehicle_models.tires.unitire_simple import loaded_radius
 from simplified_vehicle_models.tires.unitire_transient import steady_rolling_state
@@ -105,7 +104,7 @@ class VerticalEquilibriumOracleTests(unittest.TestCase):
         # Zero baseline toe at the equilibrium jounces: no jounce-steer offsets.
         # This is the input-level check on the helper; the evaluator-level gate
         # is test_zero_baseline_toe_is_inactive_in_the_evaluator_at_static_state.
-        np.testing.assert_array_equal(corner_toe_angles(vehicle.suspension, jounce), np.zeros(4))
+        np.testing.assert_array_equal(vehicle.suspension.kinematics.toe(jounce), np.zeros(4))
 
         # Align each wheel with its own loaded radius: slip ratio exactly zero.
         # The tire states depend on the load, so refine the vertical state and
@@ -203,7 +202,7 @@ class VerticalEquilibriumOracleTests(unittest.TestCase):
     def test_zero_baseline_toe_is_inactive_in_the_evaluator_at_static_state(self):
         """Oracle: at the static state the evaluator uses the pure steering angles.
 
-        ``corner_toe_angles`` is only a helper and could agree with itself while
+        ``kinematics.toe`` is only a helper and could agree with itself while
         the evaluator used something else, so the gate goes through
         ``VerticalEvaluation``. Two independent statements are checked.
 
@@ -250,13 +249,11 @@ class VerticalEquilibriumOracleTests(unittest.TestCase):
                 low, high = axle.jounce_limits
                 return MonotoneSpline([low, 0.0, high], [0.0, 0.0, toe])
 
-            suspension = dataclasses.replace(
-                vehicle.suspension,
-                front=dataclasses.replace(vehicle.suspension.front,
-                                          jounce_steer=curve(vehicle.suspension.front)),
-                rear=dataclasses.replace(vehicle.suspension.rear,
-                                         jounce_steer=curve(vehicle.suspension.rear)),
-            )
+            kinematics = vehicle.suspension.kinematics
+            suspension = vehicle.suspension
+            for index in (0, 1):
+                suspension = suspension.with_axle_geometry(
+                    index, jounce_steer=curve(kinematics.axle(index)))
             return dataclasses.replace(vehicle, suspension=suspension)
 
         zero_toe = evaluate_vertical_dynamics(with_toe(0.0), refined_state, np.zeros(4), 0.0,
@@ -269,8 +266,12 @@ class VerticalEquilibriumOracleTests(unittest.TestCase):
         self.assertEqual(zero_toe.out_of_range_count, evaluation.out_of_range_count)
         for name in ("spring", "arb", "damper", "total", "damper_velocity"):
             with self.subTest(corner_force=name):
-                np.testing.assert_array_equal(getattr(zero_toe.corner_forces, name),
-                                              getattr(evaluation.corner_forces, name))
+                mine, base = zero_toe.corner_forces, evaluation.corner_forces
+                if name in mine.elements:
+                    mine, base = mine.elements[name], base.elements[name]
+                else:
+                    mine, base = getattr(mine, name), getattr(base, name)
+                np.testing.assert_array_equal(mine, base)
 
         # The evaluator's commanded slip is the pure steering slip: rebuild the
         # contact kinematics with the steering angles alone and check the
@@ -344,17 +345,9 @@ def _reference_rigid_tire_vehicle(vehicle):
         r_3=vehicle.planar.tire.r_3 / REFERENCE_TIRE_STIFFENING,
     )
     planar = dataclasses.replace(vehicle.planar, tire=tire)
-    suspension = dataclasses.replace(
-        vehicle.suspension,
-        front=dataclasses.replace(
-            vehicle.suspension.front,
-            roll_centre_height=_static_roll_centre(0.041275),
-        ),
-        rear=dataclasses.replace(
-            vehicle.suspension.rear,
-            roll_centre_height=_static_roll_centre(0.05715),
-        ),
-    )
+    suspension = vehicle.suspension.with_axle_geometry(
+        0, roll_centre_height=_static_roll_centre(0.041275)
+    ).with_axle_geometry(1, roll_centre_height=_static_roll_centre(0.05715))
     return dataclasses.replace(vehicle, planar=planar, suspension=suspension)
 
 
@@ -376,12 +369,11 @@ def _axle_roll_stiffness(vehicle, indices) -> float:
     eps = 1e-7
     positions = sprung_wheel_positions(vehicle)
     y = positions[:, 1]
-    zero = corner_forces(
-        vehicle.suspension, np.zeros(4), np.zeros(4), vehicle.dampers
-    ).total
+    network = vehicle.suspension.network
+    zero = network.forces(np.zeros(4), np.zeros(4)).total
     pattern = np.zeros(4)
     pattern[indices] = y[indices] * eps
-    loaded = corner_forces(vehicle.suspension, pattern, np.zeros(4), vehicle.dampers).total
+    loaded = network.forces(pattern, np.zeros(4)).total
     return float(np.sum((loaded - zero)[indices] * y[indices]) / eps)
 
 
@@ -608,8 +600,8 @@ class SteadyCornerTests(unittest.TestCase):
             self.assertEqual(evaluation.out_of_range_count, 0)
             self.assertFalse(bool(np.any(evaluation.corner_forces.out_of_range)))
             self.assertFalse(bool(np.any(evaluation.lifted)))
-            angles = wheel_steering_angles(detail.steering, 4) + corner_toe_angles(
-                self.vehicle.suspension, state.as_vector()[13:17]
+            angles = wheel_steering_angles(detail.steering, 4) + self.vehicle.suspension.kinematics.toe(
+                state.as_vector()[13:17]
             )
             longitudinal, lateral = contact_velocities(
                 PlanarState(state.v_x, state.v_y, state.yaw_rate, np.zeros(4)),

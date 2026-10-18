@@ -114,11 +114,7 @@ def with_inertance(vehicle, inertance: float = STEP_INERTANCE):
     suspension = vehicle.suspension
     return replace(
         vehicle,
-        suspension=replace(
-            suspension,
-            front=replace(suspension.front, inertance=inertance),
-            rear=replace(suspension.rear, inertance=inertance),
-        ),
+        suspension=suspension.with_network(suspension.network.with_inertance(inertance, inertance)),
     )
 
 
@@ -137,10 +133,10 @@ def closed_form_mass(vehicle) -> np.ndarray:
         column[3 + index] = -1.0
         matrix += masses[index] * np.outer(column, column)
     for index in range(4):
-        axle = vehicle.suspension.front if index < 2 else vehicle.suspension.rear
-        if axle.inertance > 0.0:
-            ratio = float(axle.motion_ratio_damper(0.0))
-            matrix[3 + index, 3 + index] += axle.inertance / ratio**2
+        inertance = vehicle.suspension.network.inertance[0 if index < 2 else 1]
+        if inertance > 0.0:
+            ratio = vehicle.suspension.kinematics.motion_ratio(index, 0.0)
+            matrix[3 + index, 3 + index] += inertance / ratio**2
     return matrix
 
 
@@ -161,9 +157,9 @@ def closed_form_stiffness(vehicle, x0) -> np.ndarray:
         dtype=float,
     )
     spring = np.empty(4)
-    for axle, (left, right) in ((vehicle.suspension.front, (0, 1)),
-                                (vehicle.suspension.rear, (2, 3))):
-        spring[[left, right]] = axle.wheel_rate_spring.derivative(x0[3:][[left, right]])
+    network = vehicle.suspension.network
+    for axle, (left, right) in ((0, (0, 1)), (1, (2, 3))):
+        spring[[left, right]] = network.springs.axle(axle).derivative(x0[3:][[left, right]])
     matrix = np.zeros((7, 7))
     for index in range(4):
         column = np.zeros(7)
@@ -173,9 +169,8 @@ def closed_form_stiffness(vehicle, x0) -> np.ndarray:
         column[3 + index] = -1.0
         matrix += tire[index] * np.outer(column, column)
         matrix[3 + index, 3 + index] += spring[index]
-    for axle, (left, right) in ((vehicle.suspension.front, (0, 1)),
-                                (vehicle.suspension.rear, (2, 3))):
-        half = 0.5 * axle.arb_wheel_rate
+    for axle, (left, right) in ((0, (0, 1)), (1, (2, 3))):
+        half = 0.5 * network.arb.axle(axle)
         matrix[3 + left, 3 + left] += half
         matrix[3 + left, 3 + right] -= half
         matrix[3 + right, 3 + left] -= half
@@ -202,9 +197,8 @@ def closed_form_damping(vehicle) -> np.ndarray:
         column[3 + index] = -1.0
         matrix += vehicle.tire_vertical_damping * np.outer(column, column)
     for index in range(4):
-        axle = vehicle.suspension.front if index < 2 else vehicle.suspension.rear
-        damper = vehicle.dampers[0] if index < 2 else vehicle.dampers[1]
-        ratio = float(axle.motion_ratio_damper(0.0))
+        damper = vehicle.suspension.network.dampers[0 if index < 2 else 1]
+        ratio = vehicle.suspension.kinematics.motion_ratio(index, 0.0)
         slope = float(np.asarray(damper.force(np.zeros(1)).slope)[0])
         matrix[3 + index, 3 + index] += slope / ratio**2
     return matrix

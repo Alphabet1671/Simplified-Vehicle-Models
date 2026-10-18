@@ -14,7 +14,7 @@ import hashlib
 import numpy as np
 
 from simplified_vehicle_models.compiler.capabilities import (
-    FRONT_DAMPER_FORCE, REAR_DAMPER_FORCE, SUSPENSION_CORNER, TRANSIENT_COMBINED_SLIP,
+    SUSPENSION_FORCES, TRANSIENT_COMBINED_SLIP,
 )
 from simplified_vehicle_models.compiler.compile import compile_formulation
 from simplified_vehicle_models.solvers.forward_driver import (
@@ -61,6 +61,9 @@ REQUIRED_14DOF_SOURCES = (
     "models/tires/iem24_murphy_real_unitire.xml",
     "models/tires/iem24_murphy_real_unitire_transient.xml",
     "models/suspensions/iem24_murphy_real_suspension.xml",
+    "models/suspension-kinematics/iem24_murphy_real_suspension_kinematics.xml",
+    "models/springs/iem24_murphy_real_suspension_springs.xml",
+    "models/anti-roll-bars/iem24_murphy_real_suspension_arb.xml",
     "models/dampers/multimatic_dssv_vc01_front.xml",
     "models/dampers/multimatic_dssv_vc01_rear.xml",
     "models/data/multimatic_dssv_vc01.npz",
@@ -73,6 +76,11 @@ REQUIRED_14DOF_SOURCES = (
     "src/simplified_vehicle_models/tires/unitire_transient.py",
     "src/simplified_vehicle_models/suspension/damper_table.py",
     "src/simplified_vehicle_models/suspension/corner.py",
+    "src/simplified_vehicle_models/suspension/components.py",
+    "src/simplified_vehicle_models/suspension/elements.py",
+    "src/simplified_vehicle_models/suspension/kinematics.py",
+    "src/simplified_vehicle_models/suspension/network.py",
+    "src/simplified_vehicle_models/suspension/layouts/independent_corner.py",
     "src/simplified_vehicle_models/suspension/monotone_spline.py",
 )
 
@@ -592,6 +600,9 @@ class ForwardRunnerModelTests(unittest.TestCase):
         hashed = {Path(path).resolve() for path in summary["source_hashes"]}
         for required in ("models/dampers/multimatic_dssv_vc01_front.xml",
                          "models/dampers/multimatic_dssv_vc01_rear.xml",
+                         "models/suspension-kinematics/iem24_murphy_real_suspension_kinematics.xml",
+                         "models/springs/iem24_murphy_real_suspension_springs.xml",
+                         "models/anti-roll-bars/iem24_murphy_real_suspension_arb.xml",
                          "models/data/multimatic_dssv_vc01.npz",
                          "models/data/iem24_murphy_real_corners.npz",
                          "models/suspensions/iem24_murphy_real_suspension.xml",
@@ -610,29 +621,43 @@ class ForwardRunnerModelTests(unittest.TestCase):
                          Path("models/tires/iem24_murphy_real_unitire_transient.xml"))
         self.assertEqual(inputs["suspension_xml"],
                          Path("models/suspensions/iem24_murphy_real_suspension.xml"))
-        self.assertEqual(inputs["damper_front_xml"],
+        # The suspension assembly nests five children; each is recorded under
+        # "suspension_<child>_xml" with its table under "..._data".
+        self.assertEqual(inputs["suspension_kinematics_xml"], Path(
+            "models/suspension-kinematics/iem24_murphy_real_suspension_kinematics.xml"))
+        self.assertEqual(inputs["suspension_spring_xml"], Path(
+            "models/springs/iem24_murphy_real_suspension_springs.xml"))
+        self.assertEqual(inputs["suspension_arb_xml"], Path(
+            "models/anti-roll-bars/iem24_murphy_real_suspension_arb.xml"))
+        self.assertEqual(inputs["suspension_damper_front_xml"],
                          Path("models/dampers/multimatic_dssv_vc01_front.xml"))
-        self.assertEqual(inputs["damper_rear_xml"],
+        self.assertEqual(inputs["suspension_damper_rear_xml"],
                          Path("models/dampers/multimatic_dssv_vc01_rear.xml"))
-        self.assertEqual(inputs["damper_front_data"],
+        self.assertEqual(inputs["suspension_damper_front_data"],
                          Path("models/data/multimatic_dssv_vc01.npz"))
-        self.assertEqual(inputs["suspension_data"],
+        self.assertEqual(inputs["suspension_kinematics_data"],
+                         Path("models/data/iem24_murphy_real_corners.npz"))
+        self.assertEqual(inputs["suspension_spring_data"],
                          Path("models/data/iem24_murphy_real_corners.npz"))
         for path in inputs.values():
             self.assertTrue(Path(path).is_file(), path)
         # The planar model resolves only its own roles.
         planar = model_inputs("planar-7dof", DEFAULT_TRACK)
         self.assertEqual(planar["tire_xml"], Path("models/tires/iem24_murphy_real_unitire.xml"))
-        for key in ("tire_transient_xml", "suspension_xml", "damper_front_xml", "damper_rear_xml"):
+        for key in ("tire_transient_xml", "suspension_xml", "suspension_kinematics_xml",
+                    "suspension_damper_front_xml", "suspension_damper_rear_xml"):
             self.assertNotIn(key, planar)
         compiled = compile_formulation(str(model_spec("14dof-simple").formulation))
         roles = {record.role for record in compiled.manifest.loaded_components}
-        self.assertTrue({"suspension", "damper-front", "damper-rear",
-                         "tire-transient"} <= roles)
+        self.assertTrue({"suspension", "tire-transient", "suspension/kinematics",
+                         "suspension/spring", "suspension/arb", "suspension/damper-front",
+                         "suspension/damper-rear"} <= roles)
         components = {compiled.manifest.capability(capability).component_model_id
-                      for capability in (SUSPENSION_CORNER, FRONT_DAMPER_FORCE,
-                                         REAR_DAMPER_FORCE, TRANSIENT_COMBINED_SLIP)}
-        self.assertEqual(len(components), 4)
+                      for capability in (SUSPENSION_FORCES, TRANSIENT_COMBINED_SLIP)}
+        self.assertEqual(len(components), 2)
+        model_ids = {record.model_id for record in compiled.manifest.loaded_components
+                     if record.role.startswith("suspension/")}
+        self.assertEqual(len(model_ids), 5)
         self.assertEqual(compiled.manifest.unused_components, ())
 
 
@@ -894,8 +919,8 @@ class JounceTravelTests(unittest.TestCase):
             str(model_spec("14dof-simple").formulation)).model
 
     def test_travel_limits_are_the_intersection_of_the_axle_limits(self):
-        front = self.vehicle.suspension.front.jounce_limits
-        rear = self.vehicle.suspension.rear.jounce_limits
+        front = self.vehicle.suspension.kinematics.front.jounce_limits
+        rear = self.vehicle.suspension.kinematics.rear.jounce_limits
         lower, upper = jounce_travel_limits(self.vehicle)
         self.assertEqual(lower, max(front[0], rear[0]))
         self.assertEqual(upper, min(front[1], rear[1]))
@@ -905,22 +930,20 @@ class JounceTravelTests(unittest.TestCase):
         # The helper reads only the axle limits, so a duck-typed vehicle with
         # different front and rear travel pins the intersection arithmetic
         # (the compiled assembly validates equal axle travel at compile time).
-        def axle(limits):
-            return SimpleNamespace(jounce_limits=limits)
+        def kinematics(front, rear):
+            return SimpleNamespace(jounce_limits=np.array([front, front, rear, rear]))
 
         vehicle = SimpleNamespace(
-            suspension=SimpleNamespace(front=axle((-0.0318, 0.02)),
-                                       rear=axle((-0.02, 0.05))))
+            suspension=SimpleNamespace(kinematics=kinematics((-0.0318, 0.02), (-0.02, 0.05))))
         lower, upper = jounce_travel_limits(vehicle)
         self.assertEqual([lower, upper], [-0.02, 0.02])
 
     def test_travel_limits_use_both_axle_bounds(self):
-        def axle(limits):
-            return SimpleNamespace(jounce_limits=limits)
+        def kinematics(front, rear):
+            return SimpleNamespace(jounce_limits=np.array([front, front, rear, rear]))
 
         vehicle = SimpleNamespace(
-            suspension=SimpleNamespace(front=axle((-0.05, 0.0318)),
-                                       rear=axle((-0.0318, 0.05))))
+            suspension=SimpleNamespace(kinematics=kinematics((-0.05, 0.0318), (-0.0318, 0.05))))
         lower, upper = jounce_travel_limits(vehicle)
         self.assertEqual([lower, upper], [-0.0318, 0.0318])
 

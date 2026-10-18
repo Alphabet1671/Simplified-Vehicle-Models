@@ -73,6 +73,7 @@ from simplified_vehicle_models.formulations.vertical_14dof import (
     vertical_mass_block,
 )
 from simplified_vehicle_models.solvers.vertical_equilibrium import solve_static_equilibrium
+from simplified_vehicle_models.suspension.elements import CornerSprings
 from simplified_vehicle_models.suspension.monotone_spline import MonotoneSpline
 from simplified_vehicle_models.tires.unitire_simple import loaded_radius
 from simplified_vehicle_models.tires.unitire_transient import (
@@ -122,9 +123,11 @@ class ZeroDamper:
 def undamped(vehicle):
     """Return the vehicle with both dampers and the tire vertical damping removed."""
 
+    suspension = vehicle.suspension
     return replace(
         vehicle,
-        dampers=(ZeroDamper(), ZeroDamper()),
+        suspension=suspension.with_network(
+            suspension.network.with_dampers(ZeroDamper(), ZeroDamper())),
         tire_vertical_damping=0.0,
     )
 
@@ -134,12 +137,7 @@ def with_inertance(vehicle, front, rear):
 
     suspension = vehicle.suspension
     return replace(
-        vehicle,
-        suspension=replace(
-            suspension,
-            front=replace(suspension.front, inertance=front),
-            rear=replace(suspension.rear, inertance=rear),
-        ),
+        vehicle, suspension=suspension.with_network(suspension.network.with_inertance(front, rear))
     )
 
 
@@ -158,14 +156,10 @@ def stiff_springs(vehicle, factor=1.0e4):
         preload = float(spline(0.0))
         return MonotoneSpline(spline.x, preload + factor * (spline.y - preload))
 
-    return replace(
-        vehicle,
-        suspension=replace(
-            suspension,
-            front=replace(suspension.front, wheel_rate_spring=scaled(suspension.front.wheel_rate_spring)),
-            rear=replace(suspension.rear, wheel_rate_spring=scaled(suspension.rear.wheel_rate_spring)),
-        ),
-    )
+    springs = suspension.network.springs
+    network = replace(
+        suspension.network, springs=CornerSprings(scaled(springs.front), scaled(springs.rear)))
+    return replace(vehicle, suspension=suspension.with_network(network))
 
 
 def static_state(vehicle):
@@ -330,13 +324,14 @@ def closed_form_stiffness(vehicle, x0):
     x0 = np.asarray(x0, dtype=float)
     tire = tangent_tire_stiffness(vehicle, x0)
     spring = np.empty(4)
-    for axle, (left, right) in ((vehicle.suspension.front, (0, 1)), (vehicle.suspension.rear, (2, 3))):
-        spring[[left, right]] = axle.wheel_rate_spring.derivative(x0[3:][[left, right]])
+    springs = vehicle.suspension.network.springs
+    for axle, (left, right) in ((0, (0, 1)), (1, (2, 3))):
+        spring[[left, right]] = springs.axle(axle).derivative(x0[3:][[left, right]])
     x_arm = positions[:, 0]
     y_arm = positions[:, 1]
     arb = np.zeros((4, 4))
-    for axle, (left, right) in ((vehicle.suspension.front, (0, 1)), (vehicle.suspension.rear, (2, 3))):
-        half = 0.5 * axle.arb_wheel_rate
+    for axle, (left, right) in ((0, (0, 1)), (1, (2, 3))):
+        half = 0.5 * vehicle.suspension.network.arb.axle(axle)
         arb[left, left] += half
         arb[left, right] -= half
         arb[right, left] -= half
@@ -424,15 +419,16 @@ class VerticalModalGates(unittest.TestCase):
         # Independent pin of the ARB input the warp expectation rests on:
         # 120 lbf/in rear, zero front (Task 4 DSS row 18/19 override, 1 lbf/in
         # = 4.4482216152605 N / 0.0254 m).
-        self.assertAlmostEqual(self.vehicle.suspension.rear.arb_wheel_rate, 120.0 * 4.4482216152605 / 0.0254, delta=1.0)
-        self.assertEqual(self.vehicle.suspension.front.arb_wheel_rate, 0.0)
+        network = self.vehicle.suspension.network
+        self.assertAlmostEqual(network.arb.rear, 120.0 * 4.4482216152605 / 0.0254, delta=1.0)
+        self.assertEqual(network.arb.front, 0.0)
         spring = np.empty(4)
-        for axle, (left, right) in ((self.vehicle.suspension.front, (0, 1)), (self.vehicle.suspension.rear, (2, 3))):
-            spring[[left, right]] = axle.wheel_rate_spring.derivative(self.x0[3:][[left, right]])
+        for axle, (left, right) in ((0, (0, 1)), (1, (2, 3))):
+            spring[[left, right]] = network.springs.axle(axle).derivative(self.x0[3:][[left, right]])
         quarter = np.sqrt((spring + tire) / masses) / (2.0 * np.pi)
         rear_warp = float(
             np.sqrt(
-                (spring[2] + tire[2] + self.vehicle.suspension.rear.arb_wheel_rate) / masses[2]
+                (spring[2] + tire[2] + network.arb.rear) / masses[2]
             )
             / (2.0 * np.pi)
         )
@@ -558,13 +554,9 @@ class VerticalInertanceGates(unittest.TestCase):
         """Return the per-corner ``(b/MR^2) / m_u`` ratios [1]."""
 
         suspension = vehicle.suspension
-        inertance = np.array(
-            [suspension.front.inertance] * 2 + [suspension.rear.inertance] * 2
-        )
-        ratio = np.array(
-            [float(suspension.front.motion_ratio_damper(0.0))] * 2
-            + [float(suspension.rear.motion_ratio_damper(0.0))] * 2
-        )
+        front, rear = suspension.network.inertance
+        inertance = np.array([front] * 2 + [rear] * 2)
+        ratio = suspension.kinematics.motion_ratios(np.zeros(4))
         return inertance / ratio**2 / unsprung_masses(self.vehicle)
 
     def test_inertance_adds_b_over_mr_squared_to_the_jounce_diagonal(self):
@@ -573,10 +565,7 @@ class VerticalInertanceGates(unittest.TestCase):
         difference = self.loaded_block - self.block
         expected = np.zeros((7, 7))
         suspension = self.loaded.suspension
-        ratio = np.array(
-            [float(suspension.front.motion_ratio_damper(0.0))] * 2
-            + [float(suspension.rear.motion_ratio_damper(0.0))] * 2
-        )
+        ratio = suspension.kinematics.motion_ratios(np.zeros(4))
         inertance = np.array([self.FRONT_INERTANCE] * 2 + [self.REAR_INERTANCE] * 2)
         for index in range(4):
             expected[3 + index, 3 + index] = inertance[index] / ratio[index] ** 2
@@ -651,13 +640,14 @@ def suspension_forces(vehicle, jounce):
 
     Positive is a compression force: it pushes the hub down and the body up.
     The ARB term is ``0.5*k_arb*(z_L - z_R)`` on the left wheel, the same
-    convention as ``corner_forces``.
+    convention as the force network.
     """
 
+    network = vehicle.suspension.network
     forces = np.empty_like(jounce)
-    for axle, (left, right) in ((vehicle.suspension.front, (0, 1)), (vehicle.suspension.rear, (2, 3))):
-        forces[:, [left, right]] = axle.wheel_rate_spring(jounce[:, [left, right]])
-        half = 0.5 * axle.arb_wheel_rate * (jounce[:, left] - jounce[:, right])
+    for axle, (left, right) in ((0, (0, 1)), (1, (2, 3))):
+        forces[:, [left, right]] = network.springs.axle(axle)(jounce[:, [left, right]])
+        half = 0.5 * network.arb.axle(axle) * (jounce[:, left] - jounce[:, right])
         forces[:, left] += half
         forces[:, right] -= half
     return forces

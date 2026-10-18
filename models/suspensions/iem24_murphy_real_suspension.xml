@@ -4,14 +4,16 @@
      450/350 lbf/in. Inertance is PROPOSED 0. Jounce steer is a zero curve:
      baseline, no measured jounce-steer data.
      Provenance: docs/model-data/provenance.md. -->
-<model schema-version="1.0" id="iem24-murphy-real-suspension" type="suspension-model" subtype="corner-table">
+<model schema-version="1.0" id="iem24-murphy-real-suspension" type="suspension-assembly" subtype="independent-corner">
   <parameters>
-    <parameter name="arb_wheel_rate_front" value="0.0" unit="N/m"/>
-    <parameter name="arb_wheel_rate_rear" value="21015.220229577164" unit="N/m"/>
     <parameter name="inertance_front" value="0.0" unit="kg"/>
     <parameter name="inertance_rear" value="0.0" unit="kg"/>
-    <parameter name="static_toe_front" value="0.0" unit="rad"/>
-    <parameter name="static_toe_rear" value="0.0" unit="rad"/>
   </parameters>
-  <data role="corner-table" path="../data/iem24_murphy_real_corners.npz" format="npz" sha256="04bb06c93b7f52de2e9bc4fcd4e934532d89a9442e75e79ab5886afadb38f0f0"/>
+  <components>
+    <component role="kinematics" ref="../suspension-kinematics/iem24_murphy_real_suspension_kinematics.xml"/>
+    <component role="spring" ref="../springs/iem24_murphy_real_suspension_springs.xml"/>
+    <component role="arb" ref="../anti-roll-bars/iem24_murphy_real_suspension_arb.xml"/>
+    <component role="damper-front" ref="../dampers/multimatic_dssv_vc01_front.xml"/>
+    <component role="damper-rear" ref="../dampers/multimatic_dssv_vc01_rear.xml"/>
+  </components>
 </model>

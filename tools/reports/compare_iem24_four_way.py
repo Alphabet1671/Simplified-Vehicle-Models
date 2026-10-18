@@ -621,7 +621,7 @@ def write_report(output: Path, result: dict, runs: dict, measured: dict, *, root
             hash_rows.append(f"| {role} ({who}) | `{path}` | `{digest}` |")
 
     limit = drive_torque_limit_nm(planar)
-    clicks = vertical.dampers[0].setting.clicks
+    clicks = vertical.suspension.network.dampers[0].setting.clicks
     damper_clicks, damper_rebound = float(clicks["compression"]), float(clicks["rebound"])
     initial = {model: runs[model]["data"] for model in MODELS}
     aero = planar.aero

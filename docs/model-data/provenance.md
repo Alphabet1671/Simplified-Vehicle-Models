@@ -63,7 +63,7 @@ Historical grid measurements below predate this physics and start-charge fix.
 
 | Field | Value |
 |---|---|
-| File | `models/data/iem24_murphy_real_corners.npz` (schema `suspension-corner-v1`), `models/suspensions/iem24_murphy_real_suspension.xml` (`suspension-model/corner-table`) |
+| File | `models/data/iem24_murphy_real_corners.npz` (schema `suspension-corner-v1`, unchanged), consumed through five XML files: the assembly `models/suspensions/iem24_murphy_real_suspension.xml` (`suspension-assembly/independent-corner`), and its children `models/suspension-kinematics/iem24_murphy_real_suspension_kinematics.xml` (`suspension-kinematics/corner-table`), `models/springs/iem24_murphy_real_suspension_springs.xml` (`spring-model/corner-table`), `models/anti-roll-bars/iem24_murphy_real_suspension_arb.xml` (`arb-model/axle-rate`) and the two damper files (see below). Before the suspension-layout refactor one `suspension-model/corner-table` file held all of this; the NPZ bytes did not change |
 | SHA-256 | `04bb06c93b7f52de2e9bc4fcd4e934532d89a9442e75e79ab5886afadb38f0f0` |
 | Source | `/Users/alphabet1671/Desktop/IEM_24_DSS.xlsx`, sheet `FSAE_Specs_EV`, read by fixed cell address |
 | Source SHA-256 | `e436c2f61d46f23614515e34cbce381e45a5e508b9840012c88511f59afac5d8` (the generator exits with an error when `--dss-sha256` does not match) |
@@ -72,9 +72,9 @@ Historical grid measurements below predate this physics and start-charge fix.
 | Spring curve | Wheel force against jounce; spring, bump stop, and droop stop in one curve. Zero jounce is the static equilibrium: the curve holds the **sprung** static corner load (505.778 N front, 646.503 N rear, from 287 kg total, 45 % front static load, 13 kg unsprung per corner, PROPOSED) at jounce 0. PROPOSED bump and droop stops: the wheel rate rises to 10x with a C1 smoothstep over 27.8-29.8 mm and stays 10x to the 31.8 mm design travel, in both directions. The DSS 31.8 mm travel remains a hard limit: a query beyond it raises a domain error |
 | Roll-centre table | The 1 g DSS point is placed at roll = 0.289 deg/g x 1 g (reference rigid-tire roll gradient). Table: roll magnitude 0, 0.289 deg, 5 deg to height. Above the 1 g point, height and lateral position are held constant (no DSS data beyond 1 g); this is recorded in the NPZ `metadata` key. Lateral is odd in roll (Task 6 multiplies by the sign of the roll angle), height is even |
 | Jounce steer | **User-selected baseline placeholder.** Front and rear knots at -31.8, 0, +31.8 mm with 0 deg toe change. Source: "baseline, no measured jounce-steer data" (also in the NPZ `metadata` and the XML comment). The schema accepts measured nonzero knots later; the generator enforces strictly rising jounce, finite values, an explicit 0 mm / 0 deg reference, and knots at both travel limits |
-| XML scalars | `arb_wheel_rate_front` 0, `arb_wheel_rate_rear` 21 015.22 N/m, `inertance_front/rear` 0 kg (PROPOSED), `static_toe_front/rear` 0 rad (from DSS C26/F26) |
+| XML scalars | Kinematics file: `static_toe_front/rear` 0 rad (from DSS C26/F26). ARB file: `arb_wheel_rate_front` 0, `arb_wheel_rate_rear` 21 015.22 N/m. Assembly file: `inertance_front/rear` 0 kg (PROPOSED). The spring file holds no scalar |
 | Generator | `tools/model_data/generate_suspension_lut.py`, `suspension-lut-v1` |
-| Command | `python3 tools/model_data/generate_suspension_lut.py --dss /Users/alphabet1671/Desktop/IEM_24_DSS.xlsx --dss-sha256 e436c2f61d46f23614515e34cbce381e45a5e508b9840012c88511f59afac5d8 --wheel-rate-front-lbf-in 450 --wheel-rate-rear-lbf-in 350 --arb-rear-lbf-in 120 --output-npz models/data/iem24_murphy_real_corners.npz --output-xml models/suspensions/iem24_murphy_real_suspension.xml` |
+| Command | `python3 tools/model_data/generate_suspension_lut.py --dss /Users/alphabet1671/Desktop/IEM_24_DSS.xlsx --dss-sha256 e436c2f61d46f23614515e34cbce381e45a5e508b9840012c88511f59afac5d8 --wheel-rate-front-lbf-in 450 --wheel-rate-rear-lbf-in 350 --arb-rear-lbf-in 120 --output-npz models/data/iem24_murphy_real_corners.npz --output-xml models/suspensions/iem24_murphy_real_suspension.xml`. `--output-xml` is the assembly; the kinematics, spring and ARB part files are written to the sibling directories `suspension-kinematics/`, `springs/` and `anti-roll-bars/`, and the assembly references the two damper files through `--damper-front-ref` and `--damper-rear-ref` (defaults: the Multimatic VC01 files) |
 | CI fixture | `tests/fixtures/iem24_dss_suspension_rows.csv` is a raw copy of DSS rows 17-31, columns A-J. A test compares the cells with the workbook when it is present (skipped otherwise) and checks that generation from the fixture reproduces the committed NPZ byte for byte |
 | Determinism | Stored zip entries with fixed 1980-01-01 timestamps; no path or time in the bytes. Two runs give the same SHA-256 |
 
@@ -102,7 +102,7 @@ It also records the unit conversions and two open data questions.
 
 ## IEM24 vertical 14DoF vehicle parameters and tire vertical law
 
-Introduced with `14dof-simple` (`models/formulations/iem24_murphy_real_14dof_simple.xml`). The shared assembly `models/vehicles/iem24_murphy_real_planar.xml` gains five scalars and four component roles. The planar 7DoF formulation ignores them: it lists the roles `suspension`, `damper-front`, `damper-rear`, `tire-transient` as unused components and the five scalars as unconsumed parameters.
+Introduced with `14dof-simple` (`models/formulations/iem24_murphy_real_14dof_simple.xml`). The shared assembly `models/vehicles/iem24_murphy_real_planar.xml` gains five scalars and four component roles. The planar 7DoF formulation ignores them: it lists the roles `suspension` and `tire-transient` as unused components and the five scalars as unconsumed parameters.
 
 | Quantity | Value | Source |
 |---|---|---|
@@ -116,7 +116,7 @@ Introduced with `14dof-simple` (`models/formulations/iem24_murphy_real_14dof_sim
 | Sprung front fraction | `(287*0.45 - 26)/235` = 0.4389 | Derived |
 | Roll and pitch inertia | `235*0.193^2` = 8.754 kg*m^2; `235*0.386^2` = 35.01 kg*m^2 | Derived |
 
-Direct component roles: `suspension` (corner table), `damper-front` and `damper-rear` (Multimatic DSSV VC01 XMLs, distinct `front-damper-force` and `rear-damper-force` capabilities, clicks 5 / 7), and `tire-transient`. The steady `tire` role is unchanged. The yaw radius of gyration stays the 7DoF measured value; the sprung yaw inertia is not derived in this task.
+Direct component roles: `suspension` (an assembly providing the single `suspension-forces` capability) and `tire-transient`. The suspension assembly nests the roles `kinematics`, `spring`, `arb`, `damper-front` and `damper-rear` (Multimatic DSSV VC01 XMLs, clicks 5 / 7); the manifest records them as `suspension/kinematics` and so on. The steady `tire` role is unchanged. The yaw radius of gyration stays the 7DoF measured value; the sprung yaw inertia is not derived in this task.
 
 ### Tire vertical law (`tires/vertical.py`)
 
@@ -135,17 +135,17 @@ All of these values are PROPOSED or user estimates except the radius law, which 
 
 ## IEM24 vertical 14DoF-simple lap evidence (Task 9)
 
-Task 9 generated lap evidence for the delivered `14dof-simple` rung. **It changed no data file**: the damper NPZ/XML, the suspension NPZ/XML and the transient tire XML were not regenerated, and their recorded digests above still apply.
+Task 9 generated lap evidence for the delivered `14dof-simple` rung. **It changed no data file**: the damper NPZ/XML, the corner NPZ and the transient tire XML were not regenerated, and their recorded digests above still apply. The attempts named below were regenerated on 2026-10-17 after the suspension-layout refactor and supersede the Task 9 attempts `attempt_1792190392697144000`, `periodicity/attempt_1792190828124776000`, `refinement/attempt_1792190567221803000` and the planar reference `attempt_1792187768241214000`, which stay in the repository as history. The regenerated numbers are the same as the original ones.
 
 | Item | Value |
 |---|---|
-| Acceptance attempt | `docs/validation/iem24-murphy/14dof_simple_trials/attempt_1792190392697144000` (cold lap, `models/tracks/2024_michigan_endurance_closed.xml`, BDF, `rtol` 1e-5, `maximum_step` 0.005 s, live planner, 1800 s user-selected wall budget) |
-| Paired attempts | periodicity baseline `.../14dof_simple_trials/periodicity/attempt_1792190828124776000` (warm start, cold-lap settings); refinement `.../14dof_simple_trials/refinement/attempt_1792190567221803000` (same warm start, `maximum_step` 0.0025 s, `rtol` 1e-6) |
-| Gate table | `.../attempt_1792190392697144000/gates.json`, written by `tools/gates/check_14dof_simple_gates.py`; checked by `tests/test_vertical_14dof_evidence.py` |
-| Measured lap | 66.56339750 s over 1016.70064959 m; 20 075 accepted steps, 74 486 evaluations; solver wall 125.81 s, child wall 138.03 s, peak child RSS 1.65 GB |
+| Acceptance attempt | `docs/validation/iem24-murphy/14dof_simple_trials/attempt_1792288406878879000` (cold lap, `models/tracks/2024_michigan_endurance_closed.xml`, BDF, `rtol` 1e-5, `maximum_step` 0.005 s, live planner, 1800 s user-selected wall budget) |
+| Paired attempts | periodicity baseline `.../14dof_simple_trials/periodicity/attempt_1792288811970287000` (warm start, cold-lap settings); refinement `.../14dof_simple_trials/refinement/attempt_1792288547293860000` (same warm start, `maximum_step` 0.0025 s, `rtol` 1e-6) |
+| Gate table | `.../attempt_1792288406878879000/gates.json`, written by `tools/gates/check_14dof_simple_gates.py`; checked by `tests/test_vertical_14dof_evidence.py` |
+| Measured lap | 66.56339750 s over 1016.70064959 m; 20 075 accepted steps, 74 486 evaluations; solver wall 128.68 s, child wall 140.11 s, peak child RSS 1.65 GB |
 | Plan gates | all seven pass: `completed`, `contact_valid` (minimum load 97.887 N, 0 lifted-wheel evaluations), `travel_valid` (jounce −5.8023 to +7.1369 mm of ±31.8 mm; 0 bump-stop entries), `table_domain_valid` (`out_of_range_evaluations` 0), `refinement_validated` (Δ lap time 7.65e-7 s, max \|Δv\| 9.36e-05 m/s, worst tire-state ratio 0.037), `periodicity_valid` (closure ratio 0.011), `cross_fidelity_reported` |
 | What the lap does **not** establish | Every attempt is `usable = false`: the driven lap misses the 0.25 m path-tracking cap (0.383 m), `between_step_validation_complete` is never certified, and no measured transient tire data exists. The transient coefficients above stay PROPOSED and unfitted |
-| Cross-fidelity reference | corrected 7DoF lap `docs/validation/iem24-murphy/seven_dof_track_pair/original/attempt_1792187768241214000` (66.53234595 s), itself `usable = false` (0.366 m path error, non-periodic) |
+| Cross-fidelity reference | corrected 7DoF lap `docs/validation/iem24-murphy/seven_dof_track_pair/original/attempt_1792288979150821000` (66.53234595 s), itself `usable = false` (0.366 m path error, non-periodic) |
 | Fitting tool | A **transient tire model fitting tool is still required** for the longitudinal relaxation length, the lateral carcass response, the trail pole and lead, and the contact transitions. Task 9 did not build it |
 
 Parameter-provenance disclosures carried with this rung: the D5 pitch and roll radii of gyration (0.386 m

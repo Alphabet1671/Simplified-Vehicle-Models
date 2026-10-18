@@ -49,7 +49,6 @@ from simplified_vehicle_models.solvers.forward_powertrain import (
     ForwardPowertrain, evaluate_forward_powertrain,
 )
 from simplified_vehicle_models.solvers.vertical_equilibrium import solve_static_equilibrium
-from simplified_vehicle_models.suspension.corner import corner_toe_angles
 from simplified_vehicle_models.suspension.errors import DomainError
 from simplified_vehicle_models.tires.unitire_simple import loaded_radius
 from simplified_vehicle_models.tires.unitire_transient import (
@@ -167,11 +166,7 @@ class VerticalForwardPlant:
         self.vehicle = vehicle
         self.plan = plan
         self.driven, self.gearing, self.gear_efficiency = _drivetrain_context(vehicle.planar)
-        limits = np.array(
-            [vehicle.suspension.front.jounce_limits] * 2
-            + [vehicle.suspension.rear.jounce_limits] * 2,
-            dtype=float,
-        )
+        limits = vehicle.suspension.kinematics.jounce_limits
         self.jounce_minimum = limits[:, 0] - JOUNCE_TRIAL_MARGIN
         self.jounce_maximum = limits[:, 1] + JOUNCE_TRIAL_MARGIN
         # Diagnostic counters and extremes, matching ``PlanarForwardPlant`` names.
@@ -261,8 +256,8 @@ class VerticalForwardPlant:
             )
             loads = np.asarray(evaluation.normal_loads, dtype=float)
             radii = loaded_radius(planar.tire, loads)
-            angles = wheel_steering_angles(steering, _CORNER_COUNT) + corner_toe_angles(
-                vehicle.suspension, q[13:17]
+            angles = wheel_steering_angles(steering, _CORNER_COUNT) + (
+                vehicle.suspension.kinematics.toe(q[13:17])
             )
             longitudinal, lateral = contact_velocities(
                 PlanarState(q[0], q[1], q[5], q[9:13]), wheel_positions(planar), angles

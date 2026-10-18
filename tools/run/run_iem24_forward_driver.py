@@ -57,9 +57,14 @@ _VERTICAL_SOURCES = _SOLVER_SOURCES + (
     Path("src/simplified_vehicle_models/tires/unitire_transient.py"),
     Path("src/simplified_vehicle_models/tires/vertical.py"),
     Path("src/simplified_vehicle_models/tires/unitire_simple.py"),
+    Path("src/simplified_vehicle_models/suspension/components.py"),
     Path("src/simplified_vehicle_models/suspension/corner.py"),
     Path("src/simplified_vehicle_models/suspension/damper_table.py"),
+    Path("src/simplified_vehicle_models/suspension/elements.py"),
+    Path("src/simplified_vehicle_models/suspension/kinematics.py"),
+    Path("src/simplified_vehicle_models/suspension/layouts/independent_corner.py"),
     Path("src/simplified_vehicle_models/suspension/monotone_spline.py"),
+    Path("src/simplified_vehicle_models/suspension/network.py"),
 )
 
 
@@ -107,8 +112,7 @@ MODELS: dict[str, ModelSpec] = {
         plant_module="simplified_vehicle_models.solvers.vertical_forward",
         plant_class="VerticalForwardPlant",
         solver_sources=_VERTICAL_SOURCES,
-        component_roles=("tire", "tire-transient", "suspension",
-                         "damper-front", "damper-rear"),
+        component_roles=("tire", "tire-transient", "suspension"),
         planar_dense_certificate=False,
         wall_margin_fraction=.02,
     ),
@@ -158,13 +162,19 @@ def canonical_path(path):
 
 
 def component_xml(vehicle_xml, role):
-    """Resolve one component role of an assembly to its XML path."""
+    """Resolve one component role of an assembly to its XML path.
+
+    A role path such as ``suspension/damper-front`` descends into the children of
+    a component that nests others.
+    """
     vehicle_xml = Path(vehicle_xml)
+    head, _, rest = role.partition("/")
     root = ElementTree.parse(vehicle_xml).getroot()
     for component in root.findall("./components/component"):
-        if component.get("role") == role:
-            return canonical_path(vehicle_xml.parent / component.get("ref"))
-    raise ValueError(f"{vehicle_xml}: no component with role {role!r}")
+        if component.get("role") == head:
+            path = canonical_path(vehicle_xml.parent / component.get("ref"))
+            return component_xml(path, rest) if rest else path
+    raise ValueError(f"{vehicle_xml}: no component with role {head!r}")
 
 
 def component_data_paths(component_xml_path):
@@ -180,8 +190,11 @@ def model_inputs(model: str, track_xml):
 
     The track, its referenced CSV, the vehicle assembly, the formulation and
     the steady tire XML are always present. A model with extra component roles
-    (the vertical 14DoF suspension, both dampers and the transient tire) also
-    records each of those component XMLs and every data table they reference.
+    (the vertical 14DoF suspension and the transient tire) also records each of
+    those component XMLs and every data table they reference. A component that
+    nests children (the suspension assembly: kinematics, spring, ARB, dampers)
+    also records each child under its role path, for example
+    ``suspension_damper_front_xml``.
     """
     spec = model_spec(model)
     track_xml, track_csv = track_files(track_xml)
@@ -191,12 +204,19 @@ def model_inputs(model: str, track_xml):
     for role in spec.component_roles:
         if role == "tire":
             continue  # already recorded as ``tire_xml``
-        xml = component_xml(spec.vehicle, role)
-        key = role.replace("-", "_")
-        inputs[f"{key}_xml"] = xml
-        for index, data in enumerate(component_data_paths(xml)):
-            inputs[f"{key}_data" if index == 0 else f"{key}_data_{index}"] = data
+        _record_component(inputs, role.replace("-", "_"), component_xml(spec.vehicle, role))
     return inputs
+
+
+def _record_component(inputs, key, xml):
+    """Record one component XML, its data tables, and (recursively) its children."""
+    inputs[f"{key}_xml"] = xml
+    for index, data in enumerate(component_data_paths(xml)):
+        inputs[f"{key}_data" if index == 0 else f"{key}_data_{index}"] = data
+    root = ElementTree.parse(xml).getroot()
+    for child in root.findall("./components/component"):
+        _record_component(inputs, f"{key}_{child.get('role').replace('-', '_')}",
+                          canonical_path(Path(xml).parent / child.get("ref")))
 
 
 def source_files(model: str, track_xml):
@@ -303,9 +323,8 @@ def jounce_travel_limits(vehicle):
     intersection of the front and rear axle limits, so a state inside it is
     inside every corner's travel without needing per-corner extremes.
     """
-    axles = (vehicle.suspension.front.jounce_limits, vehicle.suspension.rear.jounce_limits)
-    return (max(float(limits[0]) for limits in axles),
-            min(float(limits[1]) for limits in axles))
+    limits = vehicle.suspension.kinematics.jounce_limits
+    return (float(np.max(limits[:, 0])), float(np.min(limits[:, 1])))
 
 
 def finite_or_none(value):

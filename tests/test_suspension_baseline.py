@@ -8,9 +8,8 @@ refactor with::
 
     PYTHONPATH=src python3 tests/test_suspension_baseline.py --record
 
-Nothing in this module reaches into ``vehicle.suspension.front`` or
-``vehicle.dampers``; it uses only the evaluator, the solvers and the plant, so it
-keeps working across the refactor. A difference here is a bug in the refactor,
+This module reads the suspension only through ``vehicle.suspension.network.forces``
+(the force-network seam of Task 3), the evaluator, the solvers and the plant. A difference here is a bug in the refactor,
 not a tolerance to widen.
 """
 
@@ -90,16 +89,15 @@ def _plant(speed: float, distance: float = 40.0):
 def record() -> dict:
     """Compute every pinned quantity from the current code."""
 
-    from simplified_vehicle_models.suspension.corner import corner_forces
-
     v = vehicle()
     out: dict = {"samples": {}, "evaluations": {}, "equilibrium": {}, "plant": {}}
     for name, (z, zdot) in _SAMPLES.items():
-        forces = corner_forces(v.suspension, z, zdot, v.dampers)
+        forces = v.suspension.network.forces(z, zdot)
         out["samples"][name] = {
             "jounce": z.tolist(), "jounce_rate": zdot.tolist(),
-            "spring": forces.spring.tolist(), "arb": forces.arb.tolist(),
-            "damper": forces.damper.tolist(), "total": forces.total.tolist(),
+            "spring": forces.elements["spring"].tolist(),
+            "arb": forces.elements["arb"].tolist(),
+            "damper": forces.elements["damper"].tolist(), "total": forces.total.tolist(),
             "damper_velocity": forces.damper_velocity.tolist(),
             "out_of_range": forces.out_of_range.astype(int).tolist(),
         }
@@ -162,14 +160,14 @@ class SuspensionBaselineTests(unittest.TestCase):
         cls.expected = json.loads(FIXTURE.read_text())
 
     def test_corner_force_breakdown_is_unchanged(self):
-        from simplified_vehicle_models.suspension.corner import corner_forces
-
         v = vehicle()
         for name, row in self.expected["samples"].items():
             with self.subTest(sample=name):
-                forces = corner_forces(v.suspension, np.array(row["jounce"]),
-                                       np.array(row["jounce_rate"]), v.dampers)
-                for key in ("spring", "arb", "damper", "total", "damper_velocity"):
+                forces = v.suspension.network.forces(np.array(row["jounce"]),
+                                                     np.array(row["jounce_rate"]))
+                for key in ("spring", "arb", "damper"):
+                    _close(self, forces.elements[key], row[key], f"{name}.{key}")
+                for key in ("total", "damper_velocity"):
                     _close(self, getattr(forces, key), row[key], f"{name}.{key}")
                 self.assertEqual(forces.out_of_range.astype(int).tolist(), row["out_of_range"])
 

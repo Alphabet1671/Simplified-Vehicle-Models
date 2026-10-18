@@ -11,10 +11,8 @@ from simplified_vehicle_models.compiler.adapters import CapabilityResolutionErro
 from simplified_vehicle_models.compiler.capabilities import (
     AERO_LOADS,
     DRIVE_FORCE_LIMIT,
-    FRONT_DAMPER_FORCE,
-    REAR_DAMPER_FORCE,
     STEADY_COMBINED_SLIP,
-    SUSPENSION_CORNER,
+    SUSPENSION_FORCES,
     TRANSIENT_COMBINED_SLIP,
 )
 from simplified_vehicle_models.compiler.compile import compile_formulation
@@ -25,14 +23,14 @@ from simplified_vehicle_models.formulations.vertical_14dof import (
 )
 from simplified_vehicle_models.parameters.vehicle import PlanarVehicleParameters
 from simplified_vehicle_models.suspension.components import CompiledDamper
-from simplified_vehicle_models.suspension.corner import SuspensionModel
+from simplified_vehicle_models.suspension.network import CompiledSuspension
 from simplified_vehicle_models.tires.unitire_transient import TransientTireParameters
 from simplified_vehicle_models.tires.unitire_simple import loaded_radius
 
 ROOT = Path(__file__).resolve().parents[1]
 FORMULATION = ROOT / "models/formulations/iem24_murphy_real_14dof_simple.xml"
 PLANAR_FORMULATION = ROOT / "models/formulations/iem24_murphy_real_planar_7dof.xml"
-NEW_ROLES = ("suspension", "damper-front", "damper-rear", "tire-transient")
+NEW_ROLES = ("suspension", "tire-transient")
 
 
 class Vertical14DofCompileTests(unittest.TestCase):
@@ -46,10 +44,11 @@ class Vertical14DofCompileTests(unittest.TestCase):
         vehicle = self.vehicle
         self.assertIsInstance(vehicle, VerticalVehicleParameters)
         self.assertIsInstance(vehicle.planar, PlanarVehicleParameters)
-        self.assertIsInstance(vehicle.suspension, SuspensionModel)
+        self.assertIsInstance(vehicle.suspension, CompiledSuspension)
         self.assertIsInstance(vehicle.transient_tire, TransientTireParameters)
-        self.assertEqual(len(vehicle.dampers), 2)
-        self.assertTrue(all(isinstance(d, CompiledDamper) for d in vehicle.dampers))
+        dampers = vehicle.suspension.network.dampers
+        self.assertEqual(len(dampers), 2)
+        self.assertTrue(all(isinstance(d, CompiledDamper) for d in dampers))
 
     def test_planar_part_equals_the_planar_formulation(self) -> None:
         planar = compile_formulation(PLANAR_FORMULATION).model
@@ -109,23 +108,22 @@ class Vertical14DofCompileTests(unittest.TestCase):
                 STEADY_COMBINED_SLIP,
                 AERO_LOADS,
                 DRIVE_FORCE_LIMIT,
-                SUSPENSION_CORNER,
+                SUSPENSION_FORCES,
                 TRANSIENT_COMBINED_SLIP,
-                FRONT_DAMPER_FORCE,
-                REAR_DAMPER_FORCE,
             ),
         )
         resolved = tuple(record.capability for record in self.manifest.capabilities)
         self.assertEqual(resolved, VERTICAL_14DOF_REQUESTED_CAPABILITIES)
 
-    def test_two_dampers_come_from_distinct_roles(self) -> None:
-        self.assertEqual(self.manifest.capability(FRONT_DAMPER_FORCE).component_role, "damper-front")
-        self.assertEqual(self.manifest.capability(REAR_DAMPER_FORCE).component_role, "damper-rear")
-        self.assertNotEqual(
-            self.manifest.capability(FRONT_DAMPER_FORCE).component_model_id,
-            self.manifest.capability(REAR_DAMPER_FORCE).component_model_id,
-        )
-        self.assertIsNot(self.vehicle.dampers[0], self.vehicle.dampers[1])
+    def test_suspension_is_one_capability_with_nested_children(self) -> None:
+        self.assertEqual(self.manifest.capability(SUSPENSION_FORCES).component_role, "suspension")
+        roles = {record.role: record for record in self.manifest.loaded_components}
+        for child in ("kinematics", "spring", "arb", "damper-front", "damper-rear"):
+            self.assertIn(f"suspension/{child}", roles)
+        self.assertNotEqual(roles["suspension/damper-front"].model_id,
+                            roles["suspension/damper-rear"].model_id)
+        dampers = self.vehicle.suspension.network.dampers
+        self.assertIsNot(dampers[0], dampers[1])
 
     def test_steady_and_transient_tires_use_separate_roles(self) -> None:
         self.assertEqual(self.manifest.capability(STEADY_COMBINED_SLIP).component_role, "tire")
@@ -237,14 +235,14 @@ class RejectionTests(unittest.TestCase):
             '<component role="suspension" ref="../suspensions/iem24_murphy_real_suspension.xml" />',
             "",
         )
-        with self.assertRaisesRegex(CapabilityResolutionError, SUSPENSION_CORNER):
+        with self.assertRaisesRegex(CapabilityResolutionError, SUSPENSION_FORCES):
             self.compile()
 
     def test_formulation_without_complete_capabilities_is_rejected_for_vertical_use(self) -> None:
-        # An incomplete requires list compiles the vertical model without the damper.
+        # An incomplete requires list compiles the vertical model without the suspension.
         self.edit(
             "formulations/iem24_murphy_real_14dof_simple.xml",
-            '<requires capability="rear-damper-force" />',
+            '<requires capability="suspension-forces" />',
             "",
         )
         with self.assertRaises(ValueError):

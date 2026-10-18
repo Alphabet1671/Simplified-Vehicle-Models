@@ -191,10 +191,29 @@ class CliTests(unittest.TestCase):
                 self.assertEqual([p.name for p in data.iterdir()], ["corners.npz"])
                 digest = hashlib.sha256((data / "corners.npz").read_bytes()).hexdigest()
                 self.assertIn(digest, result.stdout)
-                xml = (Path(directory) / "suspensions" / "suspension.xml").read_text()
-                self.assertIn(f'sha256="{digest}"', xml)
-                self.assertIn('path="../data/corners.npz"', xml)
-                self.assertIn('subtype="corner-table"', xml)
+                root = Path(directory)
+                assembly = (root / "suspensions" / "suspension.xml").read_text()
+                self.assertIn('type="suspension-assembly"', assembly)
+                self.assertIn('subtype="independent-corner"', assembly)
+                # The assembly holds no table; the corner NPZ is pinned by the
+                # kinematics and spring part files, which sit in sibling directories.
+                self.assertNotIn("corners.npz", assembly)
+                parts = (
+                    ("suspension-kinematics", "suspension_kinematics.xml", "suspension-kinematics"),
+                    ("springs", "suspension_springs.xml", "spring-model"),
+                )
+                for directory_name, filename, model_type in parts:
+                    xml = (root / directory_name / filename).read_text()
+                    self.assertIn(f'type="{model_type}"', xml)
+                    self.assertIn('subtype="corner-table"', xml)
+                    self.assertIn(f'sha256="{digest}"', xml)
+                    self.assertIn('path="../data/corners.npz"', xml)
+                    self.assertIn(f'ref="../{directory_name}/{filename}"', assembly)
+                arb = (root / "anti-roll-bars" / "suspension_arb.xml").read_text()
+                self.assertIn('subtype="axle-rate"', arb)
+                self.assertIn(f'ref="../anti-roll-bars/suspension_arb.xml"', assembly)
+                for role in ("damper-front", "damper-rear"):
+                    self.assertIn(f'role="{role}"', assembly)
                 digests.append(digest)
         self.assertEqual(digests[0], digests[1])
 

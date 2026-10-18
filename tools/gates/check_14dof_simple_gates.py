@@ -193,12 +193,12 @@ def component_table(role: str) -> Path:
 
 def load_corner_tables() -> dict:
     """Return the compiled corner LUT arrays (spring curves and domains)."""
-    return dict(np.load(component_table("suspension"), allow_pickle=False))
+    return dict(np.load(component_table("suspension/kinematics"), allow_pickle=False))
 
 
 def load_damper_tables() -> dict:
     """Return the compiled damper LUT arrays (velocity axes)."""
-    return dict(np.load(component_table("damper-front"), allow_pickle=False))
+    return dict(np.load(component_table("suspension/damper-front"), allow_pickle=False))
 
 
 def body_speed(trace: np.ndarray, plant_class) -> np.ndarray:

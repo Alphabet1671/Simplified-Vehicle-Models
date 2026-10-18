@@ -30,18 +30,30 @@
 - Write the docs in ASD-STE100 style.
 - Run tests as `MPLCONFIGDIR=/tmp/mplcfg PYTHONPATH=src:. python3 -m unittest tests.<module> -v`. Qt tests set `QT_QPA_PLATFORM=offscreen`, and skip when PyQt6 is not installed.
 
+## Branch Dependency
+
+On 2026-10-18 the local, unpushed branch `feature/docs-tools-layout` (8 commits ahead of its merge base `948518d`) changes these items. It does not contain `origin/main`'s run record work.
+- The suspension becomes a nesting component (`suspension-assembly`, with children `kinematics`, `spring`, `arb`, `damper-front`, `damper-rear`, or modal and hydraulic layouts).
+- The dampers move from the vehicle into the suspension.
+- `tools/run/run_iem24_forward_driver.py` changes: `component_xml` accepts role paths, and there is a new `plant_class_for`.
+
+This plan builds on `origin/main`. It must work unchanged when that branch merges. So:
+- read nesting from the XML (`<components>`), never from a list of model types or roles;
+- in tests, find files and slot keys from the XML, never by hard-coded role lists;
+- use only the runner names that both versions have: `ModelSpec` fields, `MODELS`, `parse_args`, `child`, `canonical_path`.
+
 ## Fixed Decisions
 
 | Topic | Decision |
 |---|---|
 | Location | Package `tools/sim_gui/`. Start it with `PYTHONPATH=src:. python3 tools/sim_gui/app.py`. |
 | Input file | **Open Vehicle Model** accepts a `vehicle-formulation` XML or a `vehicle-assembly` XML. A formulation sets the default model from its subtype. An assembly defaults to `planar-7dof`. |
-| Dropdowns | One dropdown for each component role of the assembly. Powertrain and drivetrain assemblies also get one dropdown for each child role, labelled `powertrain › power-plant`. That is two levels, no more. |
+| Dropdowns | One dropdown for each component role of the assembly. A component whose XML has a `<components>` element (a powertrain, a drivetrain, or the nested suspension assembly on `feature/docs-tools-layout`) also gets one dropdown for each child role, at any depth. The slot key joins the roles with `/`, for example `powertrain/power-plant` or `suspension/damper-front`. This is the same role-path form that the runner's `component_xml` uses on that branch. The label is `powertrain › power-plant`. Never hard-code the role names or the nesting model types. |
 | Candidates | Scan all `*.xml` under `models/`, reading root attributes only. **Do not scan `models/sweeps/`**, so generated variants do not fill the dropdowns. A candidate fits a slot when its descriptor capability equals the capability of the current component. When that capability is `None`, it must have the same `(type, subtype)` instead. **Browse…** adds a file from outside the scan, under the same rule. |
 | Other dropdowns | **Model**: `planar-7dof`, `14dof-simple`. **Track**: every `track-model/closed-xy-profile` under `models/tracks/` (the runner accepts only this subtype). |
 | Parameters | **The GUI never changes a parameter.** A read-only table shows the parameters of the selected slot's component. To change a value, make component files with the sweep generator (Task 11). The GUI only selects and sweeps whole component files. |
 | Sweep folders | The sweep generator writes `models/sweeps/<name>/`: one component XML per value, its data files, and `sweep.json`. In the Study tab, **Add sweep folder…** reads `sweep.json` and adds one dimension. The slot is the one whose current component fits the folder's members. The values are the members in `sweep.json` order. Each case label uses the swept value, for example `suspension: rc_height_front offset=+0.010 m`. `models/sweeps/` is git-ignored. |
-| Variant files | Write each case to `cases/case_NNN/model/`: `vehicle.xml`, `formulation.xml`, and `powertrain.xml` / `drivetrain.xml` when a child slot changed. Rewrite each `ref` and `path` as a POSIX path relative to the variant file, or as an absolute path when no relative path exists (for example, another drive on Windows). Set `id` to `<original id>.case-NNN`. Put the origin in a top XML comment. |
+| Variant files | Write each case to `cases/case_NNN/model/`: `vehicle.xml`, `formulation.xml`, and one copy of each nesting component that has a changed descendant, named by its slot key with `/` replaced by `__` (for example `powertrain.xml`, `suspension.xml`, `suspension__kinematics.xml`). Rewrite each `ref` and `path` as a POSIX path relative to the variant file, or as an absolute path when no relative path exists (for example, another drive on Windows). Set `id` to `<original id>.case-NNN`. Put the origin in a top XML comment. |
 | Formulation | Copy the source formulation. Set its subtype to the selected model. Keep its `requires` list only when the subtype did not change. Otherwise drop it, so the default list applies. |
 | Process model | The GUI is the parent and has no runner parent process. It makes `attempt_<time_ns>/`, starts `run_case.py --case-dir D --child-attempt A <runner args>` with one `QProcess`, sends stdout and stderr to `A/run.log`, stops the process at the timeout, and writes `A/parent.json` in the runner's format. This makes one process for each case, so Stop works on every platform. |
 | Parallel cases | A spinbox from 1 to `os.cpu_count()`. Default: `max(1, min(4, os.cpu_count() // 2))`. |
@@ -254,10 +266,18 @@ class VehicleTests(unittest.TestCase):
     def test_open_formulation_lists_roles_and_children(self):
         configuration = VehicleConfiguration.open(FORMULATION_14)
         self.assertEqual(configuration.model, "14dof-simple")
-        self.assertEqual([s.key for s in configuration.slots()],
-            ["tire", "aero", "powertrain", "powertrain/power-plant", "powertrain/energy-storage",
-             "drivetrain", "drivetrain/transmission", "drivetrain/controller",
-             "suspension", "damper-front", "damper-rear", "tire-transient"])
+        keys = [s.key for s in configuration.slots()]
+        vehicle = REPOSITORY_ROOT / "models/vehicles/iem24_murphy_real_planar.xml"
+        roles = [c.get("role") for c in ElementTree.parse(vehicle).findall("./components/component")]
+        self.assertEqual([k for k in keys if "/" not in k], roles)   # top level, in file order
+        self.assertEqual(keys[keys.index("powertrain") + 1:keys.index("powertrain") + 3],
+                         ["powertrain/power-plant", "powertrain/energy-storage"])
+
+    def test_nesting_is_read_from_the_xml_at_any_depth(self):
+        # Build a temporary three-level tree: vehicle -> outer -> inner -> leaf, by copying
+        # models/vehicles/iem24_murphy_real_planar.xml and pointing role "drivetrain" at a
+        # temporary drivetrain assembly whose "controller" is itself a temporary file that
+        # has a <components> element. Expect the key "drivetrain/controller/<role>".
 
     def test_open_assembly_defaults_to_planar(self):
         configuration = VehicleConfiguration.open(REPOSITORY_ROOT / "models/vehicles/iem24_murphy_real_planar.xml")
@@ -290,7 +310,7 @@ class VehicleTests(unittest.TestCase):
   - A formulation must have exactly one `<source ref>`, which gives the assembly.
   - `model` = the formulation subtype, or `"planar-7dof"` for an assembly.
   - `runnable` = `model in runner.MODELS`. Import the runner lazily: `importlib.import_module("tools.run.run_iem24_forward_driver")`.
-  - Children come only from roles whose entry has `model_type` `powertrain-assembly` or `drivetrain-assembly`.
+  - A slot has children when its XML has a `./components/component` element. Recurse to any depth. Guard against a cycle with the set of resolved paths on the current branch; raise `ValueError("component cycle at <path>")`.
   - `with_choice` checks `fits(read_entry(current), read_entry(new))`.
   - `parameters(key)` reads `./parameters/parameter` with name, value and unit.
 - [ ] **Step 4: Run the tests.** Expect PASS.
@@ -389,7 +409,7 @@ def _variant_tree(source: Path, directory: Path, case_id: str, replace: dict[str
     return tree
 ```
 
-- Write order: the nested assemblies (only when a child key changed), then `vehicle.xml` (it points at the nested files), then `formulation.xml`.
+- Write order: the deepest changed nesting components first, then their parents, then `vehicle.xml`, then `formulation.xml`. Each copy points at the copies of its changed children and at the original files of the rest. Add a test that swaps a child two levels down in a temporary tree, and checks that the compiled manifest loads the new leaf.
 - Start each file with `<!-- Generated by tools/sim_gui for <case_id> from <source path>. Do not edit. -->`, written before the root element.
 - Use `tree.write(path, encoding="UTF-8", xml_declaration=True)`.
 - For an assembly input, make the formulation from scratch: `<model schema-version="1.0" id="<assembly id>.<case>-formulation" type="vehicle-formulation" subtype="<model>"><source ref="vehicle.xml"/></model>`.
@@ -698,11 +718,13 @@ PYTHONPATH=src:. python3 tools/model_data/generate_component_sweep.py \
     --name rch_front            # writes models/sweeps/rch_front/
 ```
 
+After the suspension split on `feature/docs-tools-layout`, the corner table is in `models/suspension-kinematics/iem24_murphy_real_suspension_kinematics.xml`. Use that file as `--base`. The GUI then finds the slot `suspension/kinematics`.
+
 Generator rules:
 
 | Item | Rule |
 |---|---|
-| Base | One component XML (`kind == "component"`). Refuse an assembly or a formulation with `ValueError("base must be a component model, not <kind>")`. |
+| Base | One leaf component XML: registry kind `component` and no `<components>` element. Refuse anything else with `ValueError("base must be a leaf component: <path>")`. A nesting suspension assembly is refused. Sweep its leaf (for example the kinematics file that holds the corner table) and the GUI swaps that leaf through its nested slot. |
 | Target | Exactly one `--set`. `parameter:<name>` changes one XML `<parameter>`. `data:<role>:<key>` changes one array in the NPZ file of the `<data role=...>` element. A CSV data target is refused: `only npz data arrays can be swept`. A non-float array (dtype kind not `f`) is refused. |
 | Operation | Exactly one of `--values`, `--offsets` or `--scales`. Allowed counts: 1 to 100 numbers. `--values` sets the value. It needs a scalar target (an XML parameter, or an array with `size == 1`); for a curve such as `rc_height_front` (3 knots) use `--offsets` (add to every knot) or `--scales` (multiply every knot). Each number must be finite. |
 | Unit | A parameter target takes its unit from the XML; a different `--unit` is an error. A data target needs `--unit`, because an NPZ has no units. `--scales` labels use `x`. |
@@ -729,7 +751,26 @@ A probe on 2026-10-18 tested this method. It copied `iem24_murphy_real_corners.n
 - [ ] **Step 1: Write the failing tests** (`tests/test_component_sweep.py`). Each test writes into a `tempfile.TemporaryDirectory()` given as `output`.
 
 ```python
-SUSPENSION = REPOSITORY_ROOT / "models/suspensions/iem24_murphy_real_suspension.xml"
+CORNERS = REPOSITORY_ROOT / "models/data/iem24_murphy_real_corners.npz"
+AERO = REPOSITORY_ROOT / "models/aero/iem24_murphy_real_aero.xml"
+
+def corner_table_owner() -> Path:
+    """Return the leaf XML that holds the corner table.
+
+    On origin/main it is models/suspensions/iem24_murphy_real_suspension.xml. After the
+    suspension split on feature/docs-tools-layout it is
+    models/suspension-kinematics/iem24_murphy_real_suspension_kinematics.xml. Find it, so
+    the test passes on both.
+    """
+    owners = [path for path in (REPOSITORY_ROOT / "models").rglob("*.xml")
+              if "sweeps" not in path.relative_to(REPOSITORY_ROOT / "models").parts[:1]
+              and any(element.get("role") == "corner-table"
+                      and (path.parent / element.get("path")).resolve() == CORNERS.resolve()
+                      for element in ElementTree.parse(path).getroot().findall("./data"))]
+    assert len(owners) == 1, owners
+    return owners[0]
+
+SUSPENSION = corner_table_owner()
 
 class ComponentSweepTests(unittest.TestCase):
     def test_offset_changes_only_the_target_array(self):
@@ -746,20 +787,24 @@ class ComponentSweepTests(unittest.TestCase):
 
     def test_member_compiles_inside_the_vehicle(self):
         # Swap member 2 into the 14DoF formulation with Task 3's writer and compile it.
-        ...  # VehicleConfiguration.open(FORMULATION_14).with_choice("suspension", member) -> write_variant -> compile_formulation
+        ...  # configuration = VehicleConfiguration.open(FORMULATION_14); key = the one slot key whose
+             # choice == SUSPENSION.resolve() ("suspension" on main, "suspension/kinematics" after the split);
+             # configuration.with_choice(key, member) -> write_variant -> compile_formulation succeeds and the
+             # manifest's loaded components include the member path
 
     def test_member_points_at_its_own_table_with_a_matching_hash(self):
         ...  # parse member XML; data path resolves to __02.npz; sha256 attribute == hashlib.sha256(bytes).hexdigest()
 
     def test_parameter_target_takes_its_unit_from_the_xml(self):
-        ...  # parameter:arb_wheel_rate_rear, values [15000, 25000] -> index["unit"] == "N/m", member parameter value == "25000.0"
+        ...  # generate_sweep(AERO, "parameter:downforce_area", "value", [3.0, 4.0], ...) -> index["unit"] == "m^2",
+             # member 01 parameter value == "4.0"; passing unit="m" raises ValueError
 
     def test_values_on_a_curve_is_refused(self):
-        with self.assertRaisesRegex(ValueError, "scalar"):
-            generate_sweep(SUSPENSION, "data:corner-table:rc_height_front", "value", [0.05], Path(d), name="x", unit="m")
+        with tempfile.TemporaryDirectory() as d, self.assertRaisesRegex(ValueError, "scalar"):
+            generate_sweep(SUSPENSION, "data:corner-table:rc_height_front", "value", [0.05], Path(d) / "x", name="x", unit="m")
 
     def test_existing_folder_needs_force_and_a_sweep_json(self): ...
-    def test_assembly_base_is_refused(self): ...
+    def test_assembly_base_is_refused(self): ...  # vehicle XML and powertrain XML both raise ValueError "base must be a leaf component"
     def test_output_is_byte_reproducible(self): ...  # two runs give identical member XML and NPZ bytes (created_utc only in sweep.json)
 ```
 

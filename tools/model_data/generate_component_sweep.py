@@ -58,7 +58,7 @@ def _format_label(key: str, operation: Operation, x: float, unit: str) -> str:
         prefix = f"{key} {x:+.3g}"
     else:
         prefix = f"{key} x{x:.3g}"
-    return prefix + (f" {unit}" if not (operation == "scale" and unit == "1") else "")
+    return prefix if operation == "scale" else prefix + f" {unit}"
 
 
 def _remove_output(output: Path) -> None:

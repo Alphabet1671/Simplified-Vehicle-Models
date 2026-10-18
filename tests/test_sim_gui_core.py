@@ -8,7 +8,31 @@ from tools.sim_gui import REPOSITORY_ROOT, child_environment
 from tools.sim_gui.catalogue import candidates, scan_catalogue, tracks
 from tools.sim_gui.vehicle import VehicleConfiguration
 from tools.sim_gui.variant import VariantFiles, write_variant
+from tools.sim_gui.settings import RunSettings, runner_argv, validate
 from simplified_vehicle_models.compiler.compile import compile_formulation
+
+
+class SettingsTests(unittest.TestCase):
+    def test_reference_preset_arguments(self):
+        settings = RunSettings(timeout_seconds=900.0)
+        argv = runner_argv(settings, "14dof-simple", REPOSITORY_ROOT / "models/tracks/2024_michigan_endurance_closed.xml")
+        from tools.run.run_iem24_forward_driver import parse_args
+        parsed = parse_args(argv)
+        self.assertEqual(parsed.model, "14dof-simple")
+        self.assertEqual(parsed.planner, "live")
+        self.assertEqual(parsed.maximum_speed, 60.0)
+        self.assertEqual(parsed.timeout_seconds, 900.0)
+        self.assertTrue(parsed.record)
+
+    def test_validation(self):
+        track = REPOSITORY_ROOT / "models/tracks/2024_michigan_endurance_closed.xml"
+        with self.assertRaisesRegex(ValueError, "wall limit"):
+            validate(RunSettings(timeout_seconds=301), "planar-7dof", track)
+        with self.assertRaisesRegex(ValueError, "quasi-static attitude applies to planar-7dof only"):
+            validate(RunSettings(quasi_static_attitude=True), "14dof-simple", track)
+
+    def test_json_round_trip(self):
+        self.assertEqual(RunSettings.from_json(RunSettings().to_json()), RunSettings())
 
 
 class CatalogueTests(unittest.TestCase):

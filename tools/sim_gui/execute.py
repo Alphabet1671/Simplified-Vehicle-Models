@@ -26,6 +26,7 @@ class PreparedCase:
     argv: list[str]
     model: str = "planar-7dof"
     timeout_seconds: float = 300.0
+    duration: float = 300.0
 
 
 def _resolve(value: str | Path) -> Path:
@@ -65,8 +66,15 @@ def prepare_case(study_dir: Path, definition: StudyDefinition, case: CaseSpec) -
         "vehicle": files.vehicle.relative_to(directory).as_posix(), "argv": argv,
     }
     _atomic_json(directory / "case.json", payload)
-    return PreparedCase(directory, files.formulation, files.vehicle, argv,
-                         model=case.model, timeout_seconds=definition.settings.timeout_seconds)
+    return PreparedCase(
+        directory,
+        files.formulation,
+        files.vehicle,
+        argv,
+        model=case.model,
+        timeout_seconds=definition.settings.timeout_seconds,
+        duration=definition.settings.duration,
+    )
 
 
 def validate_case(prepared: PreparedCase) -> str | None:

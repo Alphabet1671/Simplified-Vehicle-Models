@@ -18,6 +18,9 @@ from tools.sim_gui.execute import (
 )
 
 
+_finish_case = finish_case
+
+
 @dataclass
 class _Running:
     prepared: PreparedCase
@@ -40,12 +43,20 @@ class CaseQueue(QObject):
     caseFinished = pyqtSignal(str, dict)
     allFinished = pyqtSignal()
 
-    def __init__(self, study_index=None, update_callback=None, command_factory=child_command, parent=None) -> None:
+    def __init__(
+        self,
+        study_index=None,
+        update_callback=None,
+        command_factory=child_command,
+        finish_factory=_finish_case,
+        parent=None,
+    ) -> None:
         """Create a queue with optional persistent index updates."""
         super().__init__(parent)
         self.study_index = study_index
         self.update_callback = update_callback
         self.command_factory = command_factory
+        self.finish_factory = finish_factory
         self._pending: list[PreparedCase] = []
         self._running: dict[str, _Running] = {}
         self._parallel = 1
@@ -116,7 +127,9 @@ class CaseQueue(QObject):
         running.buffer += data
         while b"\n" in running.buffer:
             line, running.buffer = running.buffer.split(b"\n", 1)
-            progress = parse_progress(line.decode(errors="replace"), running.prepared.timeout_seconds)
+            progress = parse_progress(
+                line.decode(errors="replace"), running.prepared.duration
+            )
             if progress is not None:
                 self.caseProgress.emit(key, progress)
 
@@ -146,19 +159,27 @@ class CaseQueue(QObject):
                 log.flush()
             running.buffer = b""
         running.timer.stop()
-        fields = finish_case(
-            running.prepared,
-            running.attempt,
-            return_code=code,
-            timed_out=running.timed_out,
-            cancelled=running.cancelled,
-            wall_seconds=time.perf_counter() - running.started,
-            command=running.command,
-        )
-        self._record(key, fields)
-        self._running.pop(key, None)
-        self._fill()
-        self._maybe_finished()
+        try:
+            fields = self.finish_factory(
+                running.prepared,
+                running.attempt,
+                return_code=code,
+                timed_out=running.timed_out,
+                cancelled=running.cancelled,
+                wall_seconds=time.perf_counter() - running.started,
+                command=running.command,
+            )
+            self._record(key, fields)
+        except Exception as error:
+            fields = {"status": "failed", "error": f"{type(error).__name__}: {error}"}
+            try:
+                self._record(key, fields)
+            except Exception:
+                self.caseFinished.emit(key, fields)
+        finally:
+            self._running.pop(key, None)
+            self._fill()
+            self._maybe_finished()
 
     def _finish_without_process(self, prepared: PreparedCase, cancelled: bool) -> None:
         attempt = new_attempt(prepared)
@@ -167,6 +188,14 @@ class CaseQueue(QObject):
             wall_seconds=0.0, command=[],
         )
         self._record(prepared.directory.name, fields)
+
+    def shutdown(self) -> None:
+        """Kill active processes and wait briefly; call before application exit."""
+        self._stopping = True
+        for running in tuple(self._running.values()):
+            running.cancelled = True
+            running.process.kill()
+            running.process.waitForFinished(1000)
 
     def _record(self, key: str, fields: dict) -> None:
         if self.study_index is not None:
@@ -194,7 +223,9 @@ class QueueTable(QTableWidget):
         self.setRowCount(0)
         for row, case in enumerate(cases):
             self.insertRow(row)
-            self.setItem(row, 0, QTableWidgetItem(case.get("id", "")))
+            ordinal = QTableWidgetItem(str(row + 1))
+            ordinal.setData(QTableWidgetItem.ItemDataRole.UserRole, case.get("id", ""))
+            self.setItem(row, 0, ordinal)
             self.setItem(row, 1, QTableWidgetItem(case.get("label", "")))
             self.setItem(row, 2, QTableWidgetItem(case.get("status", "pending")))
             progress = QProgressBar()

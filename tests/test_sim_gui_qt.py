@@ -30,7 +30,7 @@ if QApplication is not None:
     from tools.sim_gui.qt.queue import CaseQueue
     from tools.sim_gui.study import Dimension, StudyDefinition, CaseSpec, expand, WARNING_CASES, TooManyCases
     from tools.sim_gui.execute import PreparedCase
-    from PyQt6.QtCore import QEventLoop, QTimer
+    from PyQt6.QtCore import QEventLoop, QTimer, Qt
 
 
 @unittest.skipIf(QApplication is None, "PyQt6 is not installed")
@@ -283,6 +283,62 @@ class CaseQueueTests(unittest.TestCase):
             queue.start([prepared], 1)
             self._wait(queue)
             self.assertEqual(finished, ["failed"])
+
+    def test_finish_error_is_failed_and_queue_continues(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            prepared = self._prepared(tmp)
+            queue = CaseQueue(
+                command_factory=lambda _p, _a: [sys.executable, "-c", "pass"],
+                finish_factory=lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
+            )
+            finished = []
+            queue.caseFinished.connect(lambda key, fields: finished.append(fields))
+            queue.start([prepared], 1)
+            self._wait(queue)
+            self.assertEqual(finished[0]["status"], "failed")
+            self.assertIn("boom", finished[0]["error"])
+
+    def test_progress_uses_simulated_duration(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            prepared = PreparedCase(
+                Path(tmp) / "case_000",
+                Path(tmp) / "formulation.xml",
+                Path(tmp) / "vehicle.xml",
+                [],
+                duration=0.3,
+            )
+            prepared.directory.mkdir()
+            command = [sys.executable, "-c", "print('{\\\"rhs_time\\\": 0.15}', flush=True)"]
+            queue = CaseQueue(command_factory=lambda _p, _a: command)
+            progress = []
+            queue.caseProgress.connect(lambda key, value: progress.append(value))
+            queue.start([prepared], 1)
+            self._wait(queue)
+            self.assertEqual(progress, [0.5])
+
+    def test_shutdown_kills_process(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            prepared = self._prepared(tmp)
+            queue = CaseQueue(command_factory=lambda _p, _a: [sys.executable, "-c", "import time; time.sleep(30)"])
+            queue.start([prepared], 1)
+            app.processEvents()
+            process = next(iter(queue._running.values())).process
+            queue.shutdown()
+            self.assertEqual(process.state(), process.ProcessState.NotRunning)
+
+    def test_add_dimension_menu_and_checklist(self):
+        cfg = VehicleConfiguration.open(REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_planar_7dof.xml")
+        tab = StudyTab(cfg, RunSettings())
+        try:
+            action = next(action for action in tab._dimension_menu.actions() if action.text() == "tire")
+            action.trigger()
+            self.assertEqual(tab._dimensions[0].key, "tire")
+            tab.dimension_list.setCurrentRow(0)
+            before = tab.preview.rowCount()
+            tab.member_list.item(0).setCheckState(Qt.CheckState.Unchecked)
+            self.assertLess(tab.preview.rowCount(), before)
+        finally:
+            tab.deleteLater()
 
     def test_parallel_limit(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -3,11 +3,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PyQt6.QtCore import QRegularExpression
+from PyQt6.QtCore import QRegularExpression, Qt
 from PyQt6.QtGui import QRegularExpressionValidator
 from PyQt6.QtWidgets import (
     QLineEdit,
     QFileDialog,
+    QToolButton,
+    QMenu,
     QFormLayout,
     QLabel,
     QListWidget,
@@ -62,8 +64,13 @@ class StudyTab(QWidget):
         self.preview = QTableWidget(0, 2)
         self.preview.setHorizontalHeaderLabels(("ID", "Label"))
 
-        add = QPushButton("Add dimension")
-        add.clicked.connect(self._add_dimension)
+        add = QToolButton()
+        add.setText("Add dimension")
+        add.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.add_dimension = add
+        self._dimension_menu = QMenu(add)
+        add.setMenu(self._dimension_menu)
+        self._refresh_dimension_menu()
         add_sweep = QPushButton("Add sweep folder…")
         add_sweep.clicked.connect(self._add_sweep)
         remove = QPushButton("Remove")
@@ -109,15 +116,23 @@ class StudyTab(QWidget):
         self._rebuild_dimension_list()
         self._refresh_preview()
 
-    def _add_dimension(self) -> None:
+    def _refresh_dimension_menu(self) -> None:
+        self._dimension_menu.clear()
+        swept = {dimension.key for dimension in self._dimensions}
         keys = [slot.key for slot in self.configuration.slots()] + ["model", "track"]
         for key in keys:
-            if key not in {dimension.key for dimension in self._dimensions}:
-                dimension = self._dimension_for_key(key)
-                self._dimensions.append(dimension)
-                self._rebuild_dimension_list()
-                self._refresh_preview()
-                break
+            if key not in swept:
+                action = self._dimension_menu.addAction(key)
+                action.triggered.connect(lambda _checked=False, value=key: self._add_dimension(value))
+
+    def _add_dimension(self, key: str) -> None:
+        if key in {dimension.key for dimension in self._dimensions}:
+            return
+        dimension = self._dimension_for_key(key)
+        self._dimensions.append(dimension)
+        self._rebuild_dimension_list()
+        self._refresh_dimension_menu()
+        self._refresh_preview()
 
     def _dimension_for_key(self, key: str) -> Dimension:
         if key == "model":
@@ -142,6 +157,7 @@ class StudyTab(QWidget):
             return
         self._dimensions.append(dimension)
         self._rebuild_dimension_list()
+        self._refresh_dimension_menu()
         self._refresh_preview()
 
     def _remove_dimension(self) -> None:
@@ -149,6 +165,7 @@ class StudyTab(QWidget):
         if row >= 0:
             self._dimensions.pop(row)
             self._rebuild_dimension_list()
+            self._refresh_dimension_menu()
             self._refresh_preview()
 
     def _rebuild_dimension_list(self) -> None:
@@ -165,7 +182,22 @@ class StudyTab(QWidget):
             dimension = self._dimensions[row]
             for label in dimension.labels:
                 item = QListWidgetItem(label, self.member_list)
-                item.setCheckState(__import__("PyQt6.QtCore", fromlist=["Qt"]).Qt.CheckState.Checked)
+                item.setCheckState(Qt.CheckState.Checked)
+        self.member_list.itemChanged.connect(self._members_changed)
+
+    def _members_changed(self, _item) -> None:
+        row = self.dimension_list.currentRow()
+        if not 0 <= row < len(self._dimensions):
+            return
+        dimension = self._dimensions[row]
+        checked = tuple(
+            value for value, item in zip(dimension.values, self.member_list.findItems("", Qt.MatchFlag.MatchContains))
+            if item.checkState() == Qt.CheckState.Checked
+        )
+        self._dimensions[row] = Dimension(
+            dimension.key, checked, tuple(dimension.labels[i] for i, item in enumerate(self.member_list.findItems("", Qt.MatchFlag.MatchContains)) if item.checkState() == Qt.CheckState.Checked), dimension.sweep, dimension.points
+        )
+        self._refresh_preview()
 
     def _refresh_preview(self, *_args) -> None:
         try:

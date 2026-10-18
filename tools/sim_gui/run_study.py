@@ -1,0 +1,98 @@
+"""Run simulation GUI studies without Qt."""
+from __future__ import annotations
+
+import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timezone
+import json
+from pathlib import Path
+import subprocess
+import threading
+import time
+from typing import Callable
+
+from . import REPOSITORY_ROOT, child_environment
+from .execute import (PreparedCase, child_command, finish_case, new_attempt,
+                      prepare_case, validate_case)
+from .study import StudyDefinition, StudyIndex, expand
+
+
+def _study_directory(output_root: Path, definition: StudyDefinition) -> Path:
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    directory = Path(output_root) / f"{definition.name}_{stamp}"
+    directory.mkdir(parents=True, exist_ok=False)
+    return directory
+
+
+def run_study(definition: StudyDefinition, output_root: Path = REPOSITORY_ROOT / "runs",
+              parallel: int = 1, on_update: Callable[[str, dict], None] | None = None) -> Path:
+    if parallel < 1:
+        raise ValueError("parallel must be at least 1")
+    study_dir = _study_directory(Path(output_root), definition)
+    cases = expand(definition)
+    index = StudyIndex.create(study_dir, definition, cases)
+    lock = threading.Lock()
+
+    def update(case_id: str, **fields):
+        with lock:
+            index.update(case_id, **fields)
+        if on_update is not None:
+            on_update(case_id, fields)
+
+    prepared: list[tuple[PreparedCase, object]] = []
+    for case in cases:
+        try:
+            item = prepare_case(study_dir, definition, case)
+            error = validate_case(item)
+        except Exception as exc:
+            item, error = None, f"{type(exc).__name__}: {exc}"
+        if error is not None:
+            update(case.id, directory=f"cases/{case.id}", status="invalid", error=error)
+        else:
+            update(case.id, directory=f"cases/{case.id}", status="pending", error=None)
+            prepared.append((item, case))
+
+    def worker(item: PreparedCase, case):
+        update(case.id, status="running")
+        attempt = new_attempt(item)
+        command = child_command(item, attempt)
+        started = time.perf_counter()
+        timed_out = False
+        return_code = None
+        with (attempt / "run.log").open("w") as log:
+            process = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT,
+                                       cwd=REPOSITORY_ROOT, env=child_environment())
+            try:
+                return_code = process.wait(timeout=item.timeout_seconds)
+            except subprocess.TimeoutExpired:
+                timed_out = True
+                process.kill()
+                return_code = process.wait()
+        fields = finish_case(item, attempt, return_code=return_code,
+                             timed_out=timed_out, cancelled=False,
+                             wall_seconds=time.perf_counter() - started, command=command)
+        update(case.id, **fields)
+        return fields
+
+    with ThreadPoolExecutor(max_workers=parallel) as pool:
+        futures = [pool.submit(worker, item, case) for item, case in prepared]
+        for future in as_completed(futures):
+            future.result()
+    return study_dir
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description="Run a simulation GUI study")
+    parser.add_argument("--definition", type=Path, required=True)
+    parser.add_argument("--output-root", type=Path, default=REPOSITORY_ROOT / "runs")
+    parser.add_argument("--parallel", type=int, default=1)
+    args = parser.parse_args(argv)
+    definition = StudyDefinition.from_json(json.loads(args.definition.read_text()))
+    directory = run_study(definition, args.output_root, args.parallel)
+    payload = json.loads((directory / "study.json").read_text())
+    return 0 if all(case.get("status") in {"completed", "invalid"}
+                    for case in payload["cases"]) else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

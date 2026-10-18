@@ -96,8 +96,12 @@ class MainWindow(QMainWindow):
         """Open a vehicle configuration and refresh dependent tabs."""
         self.configuration = __import__("tools.sim_gui.vehicle", fromlist=["VehicleConfiguration"]).VehicleConfiguration.open(path)
         self.model_panel.set_configuration(self.configuration)
-        self.settings_tab.set_model(self.configuration.model)
-        self.study_tab = StudyTab(self.configuration, self.settings_tab.settings(), self)
+        self.settings_tab._model = self.configuration.model
+        try:
+            current_settings = self.settings_tab.settings()
+        except ValueError:
+            current_settings = self.settings_tab._settings
+        self.study_tab = StudyTab(self.configuration, current_settings, self)
         self.tabs.insertTab(1, self.study_tab, "Study")
         self.run_action.setEnabled(self.configuration.runnable)
         self._remember(Path(path))
@@ -132,6 +136,8 @@ class MainWindow(QMainWindow):
             return
         study_dir = _study_directory(self.output_root, definition)
         self.study_index = StudyIndex.create(study_dir, definition, cases)
+        self._queue.study_index = self.study_index
+        self._prepared = []
         worker = ValidationWorker(study_dir, definition, cases, self)
         worker.caseReady.connect(self._case_ready)
         worker.finished.connect(worker.deleteLater)
@@ -146,6 +152,7 @@ class MainWindow(QMainWindow):
         if not self._prepared:
             self.build_cases()
         if self._prepared:
+            self.queue_table.set_cases(self.study_index.cases)
             self._running = True
             self.run_action.setEnabled(False)
             self.stop_action.setEnabled(True)
@@ -172,6 +179,8 @@ class MainWindow(QMainWindow):
         self.study_tab.set_definition(definition)
 
     def _case_finished(self, key, fields) -> None:
+        if self.study_index is not None:
+            self.queue_table.set_cases(self.study_index.cases)
         self._refresh_status()
 
     def _case_progress(self, key, value) -> None:

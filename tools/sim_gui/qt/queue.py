@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import time
 
-from PyQt6.QtCore import QProcess, QProcessEnvironment, QTimer, pyqtSignal, QObject
+from PyQt6.QtCore import QProcess, QProcessEnvironment, QTimer, pyqtSignal, QObject, Qt
 from PyQt6.QtWidgets import QProgressBar, QTableWidget, QTableWidgetItem
 
 from tools.sim_gui import REPOSITORY_ROOT, child_environment
@@ -224,7 +224,7 @@ class QueueTable(QTableWidget):
         for row, case in enumerate(cases):
             self.insertRow(row)
             ordinal = QTableWidgetItem(str(row + 1))
-            ordinal.setData(QTableWidgetItem.ItemDataRole.UserRole, case.get("id", ""))
+            ordinal.setData(Qt.ItemDataRole.UserRole, case.get("id", ""))
             self.setItem(row, 0, ordinal)
             self.setItem(row, 1, QTableWidgetItem(case.get("label", "")))
             self.setItem(row, 2, QTableWidgetItem(case.get("status", "pending")))

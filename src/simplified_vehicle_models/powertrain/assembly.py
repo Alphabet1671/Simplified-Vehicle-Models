@@ -878,8 +878,12 @@ def resolve_braking(
     )
 
 
-register_component(POWERTRAIN_ASSEMBLY_TYPE, POWERTRAIN_SUBTYPE, kind="assembly")
-register_component(DRIVETRAIN_ASSEMBLY_TYPE, DRIVETRAIN_SUBTYPE, kind="assembly")
+register_component(
+    POWERTRAIN_ASSEMBLY_TYPE, POWERTRAIN_SUBTYPE, kind="assembly", nests_components=True
+)
+register_component(
+    DRIVETRAIN_ASSEMBLY_TYPE, DRIVETRAIN_SUBTYPE, kind="assembly", nests_components=True
+)
 
 
 def reduce_powertrain_and_drivetrain(value: object) -> object:

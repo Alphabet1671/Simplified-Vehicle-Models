@@ -110,8 +110,13 @@ def compile_formulation(formulation_path: str | Path) -> CompiledFormulation:
     # one drive-force contract.
     if "powertrain_drivetrain" in loaded:
         for candidate in candidates:
-            if candidate.role in {"powertrain", "drivetrain"}:
+            if candidate.descriptor.nests_assembly:
                 loaded[candidate.role] = LoadedComponent(candidate=candidate, value=None)
+    # A nesting component records each child below its own role, so the manifest
+    # lists every child file (for example ``suspension/kinematics``).
+    for component in tuple(loaded.values()):
+        for child in component.children:
+            loaded[child.role] = child
 
     resolutions: dict[str, ResolutionResult] = {}
     for plan in plans:
@@ -164,14 +169,70 @@ def compile_component(candidate: ComponentCandidate) -> LoadedComponent:
         model=model,
         descriptor=descriptor,
     )
+    if descriptor.nests_component:
+        children = _compile_children(full_candidate)
+        values = {child.role.rsplit("/", 1)[-1]: child.value for child in children}
+        return LoadedComponent(
+            candidate=full_candidate,
+            value=compile_function(model, values),  # type: ignore[call-arg]
+            children=children,
+        )
     return LoadedComponent(
         candidate=full_candidate,
         value=compile_function(model),
     )
 
 
+def _compile_children(parent: ComponentCandidate) -> tuple[LoadedComponent, ...]:
+    """Compile every child of one nesting component.
+
+    Each child must use one of the roles that the parent's descriptor names,
+    and each role must appear exactly once. A child's role is recorded as a path
+    below the parent, for example ``suspension/kinematics``.
+    """
+
+    model = parent.model
+    wanted = parent.descriptor.child_roles
+    seen: list[str] = []
+    children: dict[str, LoadedComponent] = {}
+    for reference in model.references:
+        if reference.tag != "component" or reference.role is None:
+            raise ValueError(
+                f"{model.path}: each child reference must be a component with a role"
+            )
+        if reference.role in seen:
+            raise ValueError(
+                f"{model.path}: duplicate child role {reference.role!r}"
+            )
+        seen.append(reference.role)
+        if reference.role not in wanted:
+            raise ValueError(
+                f"{model.path}: unknown child role {reference.role!r}; "
+                f"expected one of {list(wanted)}"
+            )
+        descriptor = component_descriptor(
+            reference.model.model_type, reference.model.subtype
+        )
+        child = compile_component(
+            ComponentCandidate(
+                role=f"{parent.role}/{reference.role}",
+                model=reference.model,
+                descriptor=descriptor,
+            )
+        )
+        children[reference.role] = child
+    missing = [role for role in wanted if role not in children]
+    if missing:
+        raise ValueError(
+            f"{model.path}: missing child role {missing[0]!r}; "
+            f"a {model.model_type}/{model.subtype} needs {list(wanted)}"
+        )
+    return tuple(children[role] for role in wanted)
+
+
 def _assembly_candidates(assembly: Model) -> tuple[ComponentCandidate, ...]:
     candidates: list[ComponentCandidate] = []
+    nested = []
     roles: set[str] = set()
     for reference in assembly.references:
         if reference.tag != "component" or reference.role is None:
@@ -183,12 +244,13 @@ def _assembly_candidates(assembly: Model) -> tuple[ComponentCandidate, ...]:
                 f"{assembly.path}: duplicate component role {reference.role!r}"
             )
         roles.add(reference.role)
-        if reference.model.model_type in {"powertrain-assembly", "drivetrain-assembly"}:
-            continue
         descriptor = component_descriptor(
             reference.model.model_type,
             reference.model.subtype,
         )
+        if descriptor.nests_assembly:
+            nested.append(reference)
+            continue
         if not descriptor.is_component:
             raise ValueError(
                 f"{assembly.path}: component role {reference.role!r} references "
@@ -202,7 +264,6 @@ def _assembly_candidates(assembly: Model) -> tuple[ComponentCandidate, ...]:
                 descriptor=descriptor,
             )
         )
-    nested = [item for item in assembly.references if item.tag == "component" and item.model.model_type in {"powertrain-assembly", "drivetrain-assembly"}]
     if nested:
         if {item.role for item in nested} != {"powertrain", "drivetrain"}:
             raise ValueError(f"{assembly.path}: vehicle needs powertrain and drivetrain assemblies")

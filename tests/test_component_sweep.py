@@ -20,13 +20,14 @@ FORMULATION_14 = REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_14dof_
 
 
 def corner_table_owner() -> Path:
-    owners = [path for path in (REPOSITORY_ROOT / "models").rglob("*.xml")
-              if "sweeps" not in path.relative_to(REPOSITORY_ROOT / "models").parts[:1]
-              and any(element.get("role") == "corner-table"
-                      and (path.parent / element.get("path")).resolve() == CORNERS.resolve()
-                      for element in ElementTree.parse(path).getroot().findall("./data"))]
-    assert len(owners) == 1, owners
-    return owners[0]
+    configuration = VehicleConfiguration.open(FORMULATION_14)
+    owner = configuration.choices["suspension/kinematics"]
+    root = ElementTree.parse(owner).getroot()
+    matches = [element for element in root.findall("./data")
+               if element.get("role") == "corner-table"
+               and (owner.parent / element.get("path")).resolve() == CORNERS.resolve()]
+    assert len(matches) == 1, (owner, matches)
+    return owner
 
 
 SUSPENSION = corner_table_owner()
@@ -59,7 +60,8 @@ class ComponentSweepTests(unittest.TestCase):
                 loaded = [record.path.resolve() for record in compiled.manifest.loaded_components]
                 self.assertIn(member.resolve(), loaded)
                 # The compiled model's table is reachable through the loaded suspension component.
-                self.assertAlmostEqual(compiled.model.suspension.front.roll_centre_height(0.0), 0.051275)
+                self.assertAlmostEqual(compiled.model.suspension.kinematics.roll_centre_height(0, 0.0),
+                                       0.051275)
 
     def test_member_points_at_its_own_table_with_a_matching_hash(self):
         with tempfile.TemporaryDirectory() as d:

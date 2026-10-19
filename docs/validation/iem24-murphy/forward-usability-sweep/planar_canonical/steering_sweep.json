@@ -1,0 +1,38 @@
+{
+  "model": "planar-7dof",
+  "candidates": [
+    {
+      "candidate": 1,
+      "preview_seconds": 0.1,
+      "heading_gain": 1.5,
+      "lateral_gain": 1.5,
+      "returncode": 2,
+      "wrapper_timeout": false,
+      "attempt": "docs/validation/iem24-murphy/forward-usability-sweep/planar_canonical/attempt_1792212592986723000",
+      "status": "Rejected",
+      "lap_completed": false,
+      "lap_time_s": null,
+      "max_lateral_error_m": null,
+      "path_tracking_valid": null,
+      "canonical_settings_recorded": true,
+      "elapsed_wall_seconds": 49.176271041156724
+    },
+    {
+      "candidate": 2,
+      "preview_seconds": 0.1,
+      "heading_gain": 1.5,
+      "lateral_gain": 2.0,
+      "returncode": 2,
+      "wrapper_timeout": false,
+      "attempt": "docs/validation/iem24-murphy/forward-usability-sweep/planar_canonical/attempt_1792212642446924000",
+      "status": "Rejected",
+      "lap_completed": false,
+      "lap_time_s": null,
+      "max_lateral_error_m": null,
+      "path_tracking_valid": null,
+      "canonical_settings_recorded": true,
+      "elapsed_wall_seconds": 48.5372590420302
+    }
+  ],
+  "selection_rule": "diagnostic only: completed lap, canonical settings recorded, max lateral error under the existing 0.25 m gate; no gate waived"
+}

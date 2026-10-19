@@ -226,7 +226,7 @@ A model without an attitude state must not invent a dynamic attitude. For the
 planar 7-DoF model the recorder may add two clearly named quasi-static
 estimates, `roll-quasi-static` and `pitch-quasi-static`, computed from
 `acceleration-lateral`, `acceleration-longitudinal`, and two suspension-derived
-gradients. The default gradients are the real-car-data-derived values
+gradients. The default gradients are the DSS-derived values
 0.289 deg/g roll and 0.20 deg/g pitch at 1 g, and the channel metadata must mark
 them approximate.
 
@@ -413,6 +413,6 @@ golden value and every recorded hash intact.
 | D1 | Commit a run record for one canonical lap, or keep it out of git and regenerate it on demand? The size estimate is 1.5–4 MB per lap. |
 | D2 | Payload precision default: float32 (halves size, adds rounding) or float64 (exact)? |
 | D3 | The planar 7-DoF model has no attitude state. Choose one: record the labelled `roll-quasi-static` and `pitch-quasi-static` estimates and show the two attitude windows, or record no attitude channel and let the exporter hide those windows. The user's standing instruction is to hide a window whose feature does not exist, so option two is the default until a gradient is confirmed. |
-| D4 | Confirm the reference quasi-static pitch gradient (0.20 deg/g is a placeholder derived from real car data). |
+| D4 | Confirm the reference quasi-static pitch gradient (0.20 deg/g is a placeholder derived from the DSS anti values). |
 | D5 | Confirm that the state names in `trace.csv` are frozen and that the recommended kebab-case names apply only to new states. |
 | D6 | Should the record include the per-wheel contact velocity and the per-wheel force application point? Both are cheap and both would let a later renderer re-derive the arrows independently. |

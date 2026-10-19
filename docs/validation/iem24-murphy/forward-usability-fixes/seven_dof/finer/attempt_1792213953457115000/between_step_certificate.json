@@ -1,0 +1,38 @@
+{
+  "between_step_validation_complete": true,
+  "checks": {
+    "dense_polynomial_domain": true,
+    "refinement_tube": true,
+    "contact_conditions": true,
+    "powertrain_and_contact_audits": true,
+    "load_closure_interval_certificate": true,
+    "run_source_hashes_match_working_tree": true
+  },
+  "source_hash_check": {
+    "passed": true,
+    "mismatched": [],
+    "missing": [],
+    "covers_required_sources": true
+  },
+  "audits": {
+    "tests": [
+      "tests.test_powertrain_closure_audit",
+      "tests.test_contact_condition_grid"
+    ],
+    "run": 5,
+    "passed": true
+  },
+  "load_closure": {
+    "certified": true,
+    "dense_intervals": 19253,
+    "chunks": 32,
+    "spans_certified": 157383,
+    "spans_failed_at_maximum_depth": 0,
+    "deepest_bisection": 9,
+    "maximum_depth": 16,
+    "largest_radius_scale": 4.0,
+    "scope": "for every state in the Bernstein hull of the dense polynomial over each sub-span, a unique root of the load closure lies in a guess box centred on the numerical solution; outward ulp widening, not directed rounding; roots outside the box are not excluded; the polynomial is the interpolant, not the true ODE solution",
+    "wall_seconds": 146.1636842500884
+  },
+  "note": "flag is raised only if every check passed; no check is waived"
+}

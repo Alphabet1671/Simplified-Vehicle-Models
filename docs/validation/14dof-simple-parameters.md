@@ -6,7 +6,7 @@ suspension, damper and transient-tire parameter comes from, states the reference
 tested against, and reports the Task 9 acceptance gates with their measured evidence. The lap evidence
 lives in [`docs/validation/iem24-murphy/14dof_simple_trials/`](iem24-murphy/14dof_simple_trials/); the
 machine-readable gate table is
-[`attempt_1792288406878879000/gates.json`](iem24-murphy/14dof_simple_trials/attempt_1792288406878879000/gates.json),
+[`attempt_1792200889773363000/gates.json`](iem24-murphy/14dof_simple_trials/attempt_1792200889773363000/gates.json),
 checked by [`tests/test_vertical_14dof_evidence.py`](../../tests/test_vertical_14dof_evidence.py) and produced by
 [`tools/gates/check_14dof_simple_gates.py`](../../tools/gates/check_14dof_simple_gates.py).
 
@@ -228,10 +228,10 @@ PYTHONPATH=src:. python3 tools/run/run_iem24_forward_driver.py --model 14dof-sim
   --duration 300.0 --timeout-seconds 1800.0 \
   --output-root docs/validation/iem24-murphy/14dof_simple_trials
 PYTHONPATH=src:. python3 tools/gates/check_14dof_simple_gates.py \
-  --attempt      docs/validation/iem24-murphy/14dof_simple_trials/attempt_1792288406878879000 \
-  --periodicity  docs/validation/iem24-murphy/14dof_simple_trials/periodicity/attempt_1792288811970287000 \
-  --refinement   docs/validation/iem24-murphy/14dof_simple_trials/refinement/attempt_1792288547293860000 \
-  --planar-reference docs/validation/iem24-murphy/seven_dof_track_pair/original/attempt_1792288979150821000
+  --attempt      docs/validation/iem24-murphy/14dof_simple_trials/attempt_1792200889773363000 \
+  --periodicity  docs/validation/iem24-murphy/14dof_simple_trials/periodicity/attempt_1792201049606993000 \
+  --refinement   docs/validation/iem24-murphy/14dof_simple_trials/refinement/attempt_1792201049616532000 \
+  --planar-reference docs/validation/iem24-murphy/seven_dof_track_pair/original/attempt_1792187768241214000
 ```
 
 The accepted 1800 s guard was not needed: the cold lap used 138.0 s of child wall time (solver 125.8 s of

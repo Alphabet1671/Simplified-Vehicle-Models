@@ -52,6 +52,9 @@ _PLANAR_SOURCES = _SOLVER_SOURCES + (
 )
 _VERTICAL_SOURCES = _SOLVER_SOURCES + (
     Path("src/simplified_vehicle_models/solvers/vertical_forward.py"),
+    Path("src/simplified_vehicle_models/solvers/vertical_dense_certificate.py"),
+    Path("src/simplified_vehicle_models/solvers/vertical_between_step.py"),
+    Path("src/simplified_vehicle_models/solvers/dense_domain.py"),
     Path("src/simplified_vehicle_models/solvers/vertical_equilibrium.py"),
     Path("src/simplified_vehicle_models/formulations/vertical_14dof.py"),
     Path("src/simplified_vehicle_models/tires/unitire_transient.py"),
@@ -466,11 +469,13 @@ def warm_start_matches(previous, source_hashes, args):
     historical attempt without them cannot warm-start a track-aware run.
     """
     settings = previous.get("settings", {})
+    defaults = {"preview_seconds": .15, "heading_gain": 1.5, "lateral_gain": 1.5}
     return bool(previous.get("status") == "Completed" and previous.get("lap_completed")
                 and previous.get("source_hashes") == source_hashes
-                and all(settings.get(key) == getattr(args, key)
+                and all(settings.get(key, defaults.get(key)) == getattr(args, key)
                         for key in ("planner", "maximum_speed", "lateral_acceleration",
-                                    "pedal_travel_time", "spacing"))
+                                    "pedal_travel_time", "spacing", "preview_seconds",
+                                    "heading_gain", "lateral_gain"))
                 and canonical_path(settings.get("track") or LEGACY_TRACK)
                 == canonical_path(args.track))
 
@@ -490,6 +495,12 @@ def parse_args(argv=None):
                              "live planner default: no cap beyond the vehicle's own limits")
     parser.add_argument("--pedal-travel-time", type=float, default=.175,
                         help="Seconds for a full pedal travel (0-100%% throttle or 0-max brake)")
+    parser.add_argument("--preview-seconds", type=float, default=.15,
+                         help="Preview horizon used by the shared steering controller")
+    parser.add_argument("--heading-gain", type=float, default=1.5,
+                         help="Heading-error gain used by the shared steering controller")
+    parser.add_argument("--lateral-gain", type=float, default=1.5,
+                         help="Lateral-error gain used by the shared steering controller")
     parser.add_argument("--maximum-step", type=float, default=.02)
     parser.add_argument("--rtol", type=float, default=1.e-6)
     parser.add_argument("--method", choices=("Radau", "BDF"), default="Radau")
@@ -501,11 +512,21 @@ def parse_args(argv=None):
                              f"ten-lap MIS track {DEFAULT_TRACK})")
     parser.add_argument("--warm-start", type=Path,
                         help="Completed previous attempt whose final physical/pedal state starts this lap")
+    parser.add_argument("--record", action="store_true",
+                        help="also write run_record.npz: the full vehicle state, state rate, "
+                             "realized controls and tire/attitude channels at every accepted "
+                             "step (input of tools/anim/export_animation.py)")
+    parser.add_argument("--record-precision", choices=("float32", "float64"),
+                        default="float32", help="payload precision of run_record.npz")
+    parser.add_argument("--quasi-static-attitude", action="store_true",
+                        help="with --record on a planar model, also store the labelled "
+                             "APPROXIMATE roll/pitch estimates (never simulated states)")
     parser.add_argument("--child-attempt", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     import math
     for name in ("timeout_seconds", "duration", "maximum_speed", "lateral_acceleration",
-                 "maximum_step", "rtol", "spacing", "pedal_travel_time"):
+                 "maximum_step", "rtol", "spacing", "pedal_travel_time", "preview_seconds",
+                 "heading_gain", "lateral_gain"):
         value = getattr(args, name)
         if value is None:
             continue
@@ -518,12 +539,60 @@ def parse_args(argv=None):
     args.track = canonical_path(args.track)
     if args.warm_start is not None and args.pedal_travel_time is None:
         parser.error("warm start requires pedal dynamics")
+    if args.quasi_static_attitude and not args.record:
+        parser.error("--quasi-static-attitude needs --record")
     if args.spacing > MAXIMUM_PATH_SPACING_METRES:
         parser.error(f"path spacing must be <= {MAXIMUM_PATH_SPACING_METRES} m")
     if args.timeout_seconds > PLANAR_MAXIMUM_WALL_SECONDS and args.model == "planar-7dof":
         parser.error(f"the planar-7dof wall limit must be <= {PLANAR_MAXIMUM_WALL_SECONDS:g} s; "
                      "use --model 14dof-simple for a longer, user-selected wall limit")
     return args
+
+
+#: File name of the optional run record inside an attempt directory.
+RUN_RECORD_FILE = "run_record.npz"
+
+
+def write_run_record(sink, args, summary, physical_inputs, spec, result, initial_pedal):
+    """Close the sink into ``run_record.npz`` and note it in the summary.
+
+    The manifest hashes only the physical inputs (track, tire, formulation,
+    vehicle and component tables). Solver source is deliberately left out: it
+    changes with every commit, and the record's values are already final.
+    """
+    import datetime
+    import platform
+
+    import scipy
+
+    from simplified_vehicle_models.results.plant_channels import source_hashes
+
+    def relative(path):
+        path = Path(path)
+        try:
+            return path.resolve().relative_to(Path.cwd().resolve())
+        except ValueError:
+            return path
+
+    record_path = sink.close({
+        "producer": {"tool": "tools/run/run_iem24_forward_driver.py",
+                     "python": platform.python_version(), "numpy": np.__version__,
+                     "scipy": scipy.__version__},
+        "model": {"model": args.model, "plant_class": spec.plant_class,
+                  "formulation_xml": str(relative(spec.formulation)),
+                  "mechanical_dof": 7 if spec.planar_dense_certificate else 14},
+        "sources": source_hashes(relative(path) for path in physical_inputs.values()),
+        "integrator": {"method": args.method, "rtol": args.rtol, "atol": args.rtol * .01,
+                       "maximum_step": args.maximum_step,
+                       "wall_seconds": float(result.wall_seconds)},
+        "segment": {"duration_s": float(result.time[-1] - result.time[0]),
+                    "lap_completed": bool(result.lap_completed),
+                    "warm_started": args.warm_start is not None,
+                    "initial_pedal": initial_pedal},
+        "track": {"file": str(args.track)},
+    }, created_utc=datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
+    summary["run_record_file"] = record_path.name
+    summary["run_record_rows"] = int(sink.rows)
 
 
 def acceptance_gate(summary):
@@ -636,6 +705,9 @@ def child(args):
         plant = LoggedPlant(vehicle, plan)
         driver = PreviewDriver(plan, control.wheelbase, control.steering_maximum_angle,
                                control.steering_maximum_rate, control.maximum_pedal_force,
+                                preview_seconds=args.preview_seconds,
+                                heading_gain=args.heading_gain,
+                                lateral_gain=args.lateral_gain,
                                live_limit=live_limit,
                                pedal_travel_time=args.pedal_travel_time)
         initial = plant.initial_state(float(plan.speed[0]))
@@ -668,13 +740,25 @@ def child(args):
         remaining = budget - (time.perf_counter() - started)
         if remaining <= 0:
             raise TimeoutError("setup exhausted the wall budget")
+        # The sink is passed only when recording, so a run without --record calls
+        # solve_forward exactly as before.
+        recording = {}
+        sink = None
+        if args.record:
+            from simplified_vehicle_models.results.plant_channels import RunRecordSink
+            sink = RunRecordSink(plant, track.path_coordinates, root / RUN_RECORD_FILE,
+                                 precision=args.record_precision,
+                                 quasi_static_attitude=args.quasi_static_attitude)
+            recording["step_sink"] = sink
         result = solve_forward(plant, driver, initial, duration=args.duration,
                                wall_seconds=remaining,
                                maximum_wall_seconds=args.timeout_seconds,
                                maximum_step=args.maximum_step,
                                rtol=args.rtol, atol=args.rtol * .01, method=args.method,
-                                initial_pedal=initial_pedal)
+                                initial_pedal=initial_pedal, **recording)
         summary["solver_elapsed_seconds"] = float(result.wall_seconds)
+        if sink is not None:
+            write_run_record(sink, args, summary, physical_inputs, spec, result, initial_pedal)
         np.savetxt(root / "trace.csv", np.column_stack((result.time, result.state.T)),
                    delimiter=",", comments="",
                    header=",".join(header))
@@ -753,8 +837,8 @@ def child(args):
         # explicit state domain, and checks parameter-dependent contact
         # conditions. Load-closure and powertrain closure between nodes stay
         # uncertified, so these flags never set between_step_validation_complete.
-        # Both checks are planar-7dof only: the vertical plant has no planar
-        # dense-domain certificate, so its summary records them as None.
+        # The planar and vertical paths certify different, deliberately narrow
+        # interpolant domains. Neither is a full between-step certificate.
         if spec.planar_dense_certificate:
             from simplified_vehicle_models.solvers.planar_dense_certificate import (
                 certify_planar_dense_domain, contact_nonnegativity_conditions)
@@ -764,7 +848,14 @@ def child(args):
                 dense = {"certified": False, "reason": "no verifiable dense interpolant"}
             contact = contact_nonnegativity_conditions(vehicle)
         else:
-            dense = None
+            from simplified_vehicle_models.solvers.vertical_dense_certificate import (
+                certify_vertical_dense_domain)
+            if result.dense_bounds is not None:
+                dense = certify_vertical_dense_domain(vehicle, plan, result.dense_bounds, summary,
+                                                     pedal_dynamics=True)
+            else:
+                dense = {"certified": False, "reason": "no verifiable dense interpolant",
+                         "scope": "vertical dense state-domain only; not full between-step validation"}
             contact = None
         # Save the exact interpolant so independent refinements can be compared
         # continuously (see tools/gates/check_iem24_forward_tube.py).

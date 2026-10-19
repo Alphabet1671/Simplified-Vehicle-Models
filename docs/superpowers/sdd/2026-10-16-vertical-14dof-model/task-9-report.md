@@ -11,9 +11,9 @@ plan/provenance updates are written. Nothing is committed (the parent commits af
 | `tools/gates/check_14dof_simple_gates.py` | NEW — the Task 9 post-run gate tool: evaluates the plan's seven gates from four finished attempts, writes the seven plan-named booleans (`plan_gates`), each gate's measured evidence, the four trace sha256 pins and the source-hash agreements into `gates.json` |
 | `tests/test_vertical_14dof_evidence.py` | NEW — 28 tests: the gate table and its `plan_gates` block, the gate↔runner-key mapping, evidence presence/non-nullity, source-hash and reference-provenance agreement, trace-pinned re-derivation of the refinement/periodicity/cross-fidelity numbers, and unit tests of the matched-distance comparison |
 | `docs/validation/14dof-simple-parameters.md` | NEW — parameter table with sources, reference numbers, transient tire equations + DOI, the measured gate table, both cross-fidelity sampling grids, the full PROPOSED list, and the disclosures (D1–D17) |
-| `docs/validation/iem24-murphy/14dof_simple_trials/attempt_1792190392697144000/` | NEW — cold acceptance attempt: `summary.json`, `parent.json`, `gates.json`, `cross_fidelity_speed.csv` tracked; `trace.csv`, `pedal.csv`, `dense_polynomials.npz`, `run.log`, `source_snapshot/` gitignored |
-| `docs/validation/iem24-murphy/14dof_simple_trials/periodicity/attempt_1792190828124776000/` | NEW — warm-started periodicity baseline |
-| `docs/validation/iem24-murphy/14dof_simple_trials/refinement/attempt_1792190567221803000/` | NEW — warm-started refinement (`maximum_step` 0.0025 s, `rtol` 1e-6) |
+| `docs/validation/iem24-murphy/14dof_simple_trials/attempt_1792200889773363000/` | NEW — cold acceptance attempt: `summary.json`, `parent.json`, `gates.json`, `cross_fidelity_speed.csv` tracked; `trace.csv`, `pedal.csv`, `dense_polynomials.npz`, `run.log`, `source_snapshot/` gitignored |
+| `docs/validation/iem24-murphy/14dof_simple_trials/periodicity/attempt_1792201049606993000/` | NEW — warm-started periodicity baseline |
+| `docs/validation/iem24-murphy/14dof_simple_trials/refinement/attempt_1792201049616532000/` | NEW — warm-started refinement (`maximum_step` 0.0025 s, `rtol` 1e-6) |
 | `docs/project-master-plan.md` | §3.4 names the two rungs and the 38-state plant; §5 records the implemented LUT schema; §15 Milestone 4 splits `14dof-simple` (delivered) from `14dof-complete` (next) |
 | `docs/model-data/provenance.md` | NEW section: the Task 9 lap evidence, that no data file changed, and the fitting-tool requirement |
 
@@ -82,7 +82,7 @@ touched (`--model planar-7dof` still rejects `--timeout-seconds 301`).
 ## Gate results (honest per gate)
 
 The plan's gate table is evaluated by `tools/gates/check_14dof_simple_gates.py` and recorded in
-`.../attempt_1792190392697144000/gates.json`. The runner's own `usable` flag is **false** on all three
+`.../attempt_1792200889773363000/gates.json`. The runner's own `usable` flag is **false** on all three
 attempts (path tracking, un-certified between-step validation); the gate table does not override it.
 
 | Plan gate | Verdict | Evidence |
@@ -123,7 +123,7 @@ Mean signed difference −0.0017 m/s; the difference is concentrated in the firs
 0.2577 m/s over s = 254–508 m) and stays below 0.016 m/s after s = 508 m on both grids. Every number is
 quoted with its own sampling density — pairing the 0.2076 m/s extreme with s = 452 m, or 0.2577 m/s with
 s = 327 m, would mix the two grids. Full trace in
-`.../attempt_1792190392697144000/cross_fidelity_speed.csv`; both grids in `gates.json`.
+`.../attempt_1792200889773363000/cross_fidelity_speed.csv`; both grids in `gates.json`.
 
 The two laps also ran with different maximum steps (14DoF 0.005 s, 7DoF 0.02 s), so the first-half
 difference is partly integration resolution alongside the different line and start.

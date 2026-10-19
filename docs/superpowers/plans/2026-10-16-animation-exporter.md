@@ -151,9 +151,9 @@ specification. §6 of that specification defines every channel.
 |---|---|---|
 | Track polyline | `track.path_coordinates` from the record's track XML | `X` north, `Y` east, equal aspect |
 | CG marker | `ch:position-x`, `ch:position-y` | one point on the line |
-| Body forward axis | unit vector `(cos psi_b, sin psi_b)` where `psi_b = ch:heading-world - ch:body-slip-angle` | body `+x` in world |
+| Body forward axis | unit vector `(cos psi_b, sin psi_b)` where `psi_b = ch:heading-world` (the body heading: path heading plus heading error) | body `+x` in world |
 | Traveled path | the CG position over `[0, t]` | shows progress along the lap |
-| Velocity vector | `speed * (cos psi_v, sin psi_v)` with `psi_v = ch:heading-world` | body velocity in world |
+| Velocity vector | `speed * (cos psi_v, sin psi_v)` with `psi_v = ch:heading-world + ch:body-slip-angle` | body velocity in world |
 | Acceleration vector (planar) | `(ch:acceleration-longitudinal, ch:acceleration-lateral)` rotated by `psi_b` | body acceleration in world |
 | Z-rotation indicator | `ch:yaw-acceleration` | a labelled circular arrow at the CG with a numeric readout. A rotational vector is out of the view plane, so it is not drawn as an arrow. Positive is a right turn. |
 
@@ -204,6 +204,12 @@ direction(horizon, screen) = ( 1,         0         )
 The screen-right unit vector is body `+x` and the screen-up unit vector is body
 `-z`, because the view looks along body `+y`. A positive pitch is then nose-down
 in the SAE sense, and the body `x` line is above the horizon at the rear.
+`-z`, because the view looks along body `+y`. Positive pitch is **nose up**: the
+repository's 14-DoF plant fixes "pitch positive nose up (`x` forward)" in
+`formulations/vertical_14dof.py`, which is also the right-handed rotation about
+`+y` with `z` down, `x -> (cos p, 0, -sin p)`. The body `x` line therefore rises
+towards the front for positive pitch. Heave is positive **down**, and roll is
+positive right side down.
 
 Both blocks draw the ground as a short thick tick under the wheel contact line so
 the horizon is unambiguous, and both freeze their scale for the whole run.
@@ -477,9 +483,10 @@ class VehicleScene:
     positive roll moves the body `+y` axis towards `+z`, which is down. The
     rear-view projection of that axis is then `(cos roll, -sin roll)`, a
     clockwise rotation on screen.
-  - `body_rotation(0, pitch, 0) @ [1, 0, 0]` equals `[cos pitch, 0, sin pitch]`,
-    so a positive pitch moves the body `+x` axis towards `+z`. The right-view
-    projection of that axis is `(cos pitch, +sin pitch)`.
+  - `body_rotation(0, pitch, 0) @ [1, 0, 0]` equals `[cos pitch, 0, -sin pitch]`,
+    so a positive pitch moves the body `+x` axis towards `-z`, which is up (nose
+    up, matching the 14-DoF plant). The right-view projection of that axis is
+    `(cos pitch, +sin pitch)`.
   - The composition order is yaw about `+z`, then pitch about `+y`, then roll
     about `+x`: `body_rotation(0, 0, 0)` is the identity, and
     `body_rotation(yaw, 0, 0) @ [1, 0, 0]` equals `(cos yaw, sin yaw, 0)`, so a
@@ -549,9 +556,12 @@ class VehicleScene:
 
 - [ ] **Step 1: Write failing tests.** Use a recorded real lap, not synthetic
   data, for the channel mapping.
-  - `build_track_panel` places the CG marker at `position-x`, `position-y` and
-    the body forward axis at `heading - slip`, so a synthetic frame with
-    `slip = 0.1 rad` rotates the axis by exactly `-0.1 rad` on screen.
+  - `build_track_panel` places the CG marker at `position-x`, `position-y`, the
+    body forward axis at `heading-world`, and the velocity vector at
+    `heading-world + slip`, so a synthetic frame with `slip = 0.1 rad` puts the
+    velocity exactly `0.1 rad` clockwise of the body axis on the map. On a
+    recorded lap the velocity direction matches the finite-difference course of
+    the CG to within the differencing error.
   - The rear panel's two line directions match §3.2 for `roll = 0`,
     `roll = +0.05`, and `roll = -0.05` radians, to `1e-12`.
   - The right panel's two line directions match §3.3 for the same three pitch
@@ -607,8 +617,9 @@ class VehicleScene:
   - `rear` and `right` are true for a dynamic attitude channel (`roll` and
     `pitch`). They are false when only the quasi-static pair exists, unless the
     caller passes `allow_quasi_static=True`;
-  - `top` is true whenever the record carries any wheel, tire, or control
-    channel; it is false only for a pure scalar point-mass record;
+  - `top` is true whenever the record carries any `wheel-*` or `tire-*` channel,
+    or the caller passes `force_top_view=True`; it is false for a point-mass
+    record, which has no wheel data (control channels alone do not qualify);
   - `tire_arrows` requires `tire-longitudinal-force` and `tire-lateral-force`;
   - `fz_bars` requires `tire-vertical-force`;
   - `attitude_is_dynamic` is true only when `roll` is a state-derived channel.
@@ -780,7 +791,7 @@ today, hides the top view for the same reason the point mass does.
 
 | Visible windows | Layout | The top view |
 |---|---|---|
-| `track`, `rear`, `right`, `top` | 2 rows × 3 columns: track spans both rows in column 0; rear and right occupy row 0 in columns 1 and 2; top drains both columns in row 1 | bottom right block |
+| `track`, `rear`, `right`, `top` | 2 rows × 3 columns: track spans both rows in column 0; the larger top view spans columns 1 and 2 in row 0 (above); rear and right occupy row 1 in columns 1 and 2 (bottom-left and bottom-right) | upper right block, 62 % of the right half's height |
 | `track`, `rear`, `right` | 1 row × 3 columns: track in column 0, rear in column 1, right in column 2 | absent, so the attitude blocks take the full figure height |
 | `track`, `top` | 1 row × 2 columns: track on the left, top on the right | full figure height |
 | `track` only | 1 row × 1 column | absent |
@@ -839,6 +850,12 @@ The ratio is the useful figure, because it does not depend on the length of the
 run. The lap is 73.56 s of simulated time, which holds 8 828 frames, so at 4.30×
 that lap renders in 316 s = **5.3 min**. The 5.3 min and the ratio are the same
 measurement:
+measurement. **Superseded by the real export (Task 9): 9.68x, 80.6 ms per frame, 644 s
+for a 66.57 s lap.** The prototype and the real figure disagree by 2.3×; the cause was
+not isolated (the real figure has more artists than the prototype, and includes the
+encoder pipe). See `docs/validation/iem24-murphy/animation-export.md` for the measured
+split. The 4.30x
+figure below is kept as the prototype's result, not as a forecast:
 
 ```text
 5.27 min render / 73.56 s of run = 4.30x real time
@@ -849,8 +866,8 @@ with hidden windows has fewer artists and draws no slower. Task 9 measures the
 real ratio per layout instead of assuming the saving.
 
 That projection excludes the `ffmpeg` time, which is small against the draw, so
-the expected ratio for a full export is 4.3–6× real time at 1920×1080. The plan
-does not assume a smaller figure:
+the prototype suggested 4.3–6× real time at 1920×1080. **The measured full export is
+9.68×.** The design points that were kept:
 
 - `render_frames` updates existing artists. It never rebuilds the figure and
   never calls `axes.clear()`.
@@ -868,7 +885,7 @@ does not assume a smaller figure:
 
 Resolution is the largest lever: 1280×720 for a fast export and 1920×1080 for a
 final export. The measured ratio applies to any run length, so a 10 s excerpt
-renders in about 43 s and a full lap in about 5.3 min.
+renders in about 97 s and a 66 s lap in about 10.7 min (measured ratio 9.68×).
 
 ## 8. Risks
 
@@ -878,7 +895,7 @@ renders in about 43 s and a full lap in about 5.3 min.
 | K2 | The tire-frame arrow rotation is wrong by one sign | Task 2 verifies the tire-frame forces against the plant's own body-force output. |
 | K3 | The planar model has no dynamic attitude, so the roll and pitch windows would be empty or misleading | The windows are hidden by default. `--quasi-static-attitude` shows a labelled approximate estimate when the recorder provides the channels. Record-specification decision D3 fixes the default. |
 | K4 | The 14-DoF plant is still being implemented by another worker | Every interface here is additive and reads `state_names` and a channel dict. Task 10 uses synthetic records, so the exporter is tested without the vertical plant. |
-| K5 | A 120 fps video is large and a render is slow | The measured ratio is 4.30× real time at 1920×1080, so a 73.56 s lap renders in 5.3 min. Task 9 measures the real ratio. `--frame-rate`, `--time-range`, resolution, and CRF are all exposed. |
+| K5 | A 120 fps video is large and a render is slow | The measured ratio of the real export is 9.68× real time at 1920×1080 (the 4.30× prototype figure was optimistic), so a 66.57 s lap renders in 10.7 min. That is under the 12× threshold, so `--frame-chunk` is not built. `--frame-rate`, `--time-range`, resolution, and CRF are all exposed. |
 | K6 | Float32 rounding in the record changes a rendered number | The precision is in the manifest, the readouts show 2 decimals, and `--record-precision float64` is available. |
 | K7 | matplotlib output is not bit-identical across machines | Determinism is claimed only for the artist data, which is tested. The video digest is recorded, not asserted. |
 | K8 | A record is rendered after the model changed | V10 source-hash verification, and the exporter prints the mismatch when it renders anyway. |
@@ -903,3 +920,24 @@ renders in about 43 s and a full lap in about 5.3 min.
 - **Deliberate exclusions:** no racing-line view, no 3-D perspective camera, no
   audio, no live playback, no GUI, and no change to any physics. These match the
   master plan's deferred scope.
+
+## Revision 2026-10-16: GG window, 2 x 2 Fz bars, no legend text
+
+This revision supersedes the parts of the plan that describe `legend_lines()` and the
+scale legends printed on the frames.
+
+- **GG window (new).** `gg` is a fifth window, shown whenever the record has
+  `acceleration-longitudinal` and `acceleration-lateral`, so the point-mass model gets it
+  too. It is a column at the left (20 % of the width), with the other windows laid out in
+  the remaining width as before. Lateral acceleration is to the right and longitudinal is
+  up, with rings at round values. The trace is the last 1.0 s (`frame_rate` frames) as a
+  `LineCollection` with a fixed alpha ramp, updated with `set_segments`.
+- **Fz bars.** A 2 x 2 grid that mirrors the car (FL FR over RL RR), each with its instant
+  value in N under the bar (`n/a` when not finite).
+- **No explanatory text in the picture.** `Panel.legend_lines()` is removed. Titles,
+  readouts, bar names and values remain. The footer still names hidden windows and
+  warnings. The APPROXIMATE label of quasi-static attitude is now in the window title. The
+  arrow and bar full scales moved to the command-line output (`full scales (run maxima ...)`).
+- **Measured cost of the final layout.** The full 14DoF lap re-rendered at 6.19x real time
+  (411.8 s, 51.6 ms per frame, 14.1 MB). The 9.68x figures quoted earlier in this plan are
+  the first layout.

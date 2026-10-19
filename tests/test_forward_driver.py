@@ -55,6 +55,22 @@ class DriverTests(unittest.TestCase):
             build_speed_plan(distance, curvature, maximum_speed=np.nan,
                              vehicle=vehicle, live_limit=True)
 
+    def test_explicit_steering_tuning_changes_request_and_respects_limits(self):
+        observation = DriverObservation(45., .05, .02, 10., 0., 0.)
+        tuned = PreviewDriver(self.plan, 1.5, 0.5, 20., 1000.,
+                              preview_seconds=.35, heading_gain=2.5, lateral_gain=.75)
+        legacy = self.driver.command(observation)
+        command = tuned.command(observation)
+        self.assertTrue(np.all(np.isfinite((command.throttle, command.brake_force,
+                                             command.steering_rate))))
+        self.assertLessEqual(abs(command.steering_rate), tuned.maximum_steering_rate)
+        self.assertNotEqual(command.steering_rate, legacy.steering_rate)
+
+    def test_direct_preview_driver_defaults_remain_legacy_values(self):
+        self.assertEqual(self.driver.preview_seconds, .15)
+        self.assertEqual(self.driver.heading_gain, 1.5)
+        self.assertEqual(self.driver.lateral_gain, 1.5)
+
     def test_driver_sign_limits_and_overlap(self):
         command = self.driver.command(DriverObservation(50., 0., 0., 15., 0., 0.))
         self.assertGreater(command.steering_rate, 0)

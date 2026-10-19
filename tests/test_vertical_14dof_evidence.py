@@ -407,14 +407,26 @@ class Vertical14DofEvidenceTests(unittest.TestCase):
 
     def test_planar_reference_provenance_is_recorded_not_gated(self):
         agreement = self.table["planar_reference_source_hash_agreement"]
-        self.assertEqual(agreement["sources_checked"], len(agreement["sources"]))
-        self.assertGreater(agreement["sources_checked"], 0)
-        # The reference lap was regenerated from the same sources as the 14DoF lap
-        # (the suspension-layout refactor), so every recorded hash matches. A
-        # difference would still be recorded as provenance and never fail a gate.
-        self.assertEqual(agreement["mismatches"], [])
-        self.assertTrue(agreement["all_sources_match"])
+        self.assertEqual(agreement["sources_checked"], 14)
+        self.assertFalse(agreement["all_sources_match"])
+        # The reference is a historical lap, produced by the Task 8 runner before its
+        # final review fixes. Three recorded sources differ from the working tree: the
+        # runner itself, and forward_driver.py / planar_forward.py, which later gained
+        # the additive run-record hook (a step_sink callback and last_evaluation
+        # attributes; it changes no number). Every shared model file matches.
+        expected = {"run_iem24_forward_driver.py", "forward_driver.py", "planar_forward.py"}
+        self.assertEqual({entry["source"].rsplit("/", 1)[-1]
+                          for entry in agreement["mismatches"]}, expected)
+        self.assertEqual(len(agreement["mismatches"]), len(expected))
+        for entry in agreement["mismatches"]:
+            self.assertEqual(entry["reason"], "sha256 differs")
+        mismatched = [entry for entry in agreement["sources"] if not entry["matches"]]
+        self.assertEqual(len(mismatched), len(expected))
+        for entry in mismatched:
+            self.assertNotEqual(entry["recorded_sha256"], entry["working_sha256"])
         for entry in agreement["sources"]:
+            if entry["source"].rsplit("/", 1)[-1] in expected:
+                continue
             with self.subTest(source=entry["source"]):
                 self.assertTrue(entry["matches"])
         # A provenance difference must not fail a gate.

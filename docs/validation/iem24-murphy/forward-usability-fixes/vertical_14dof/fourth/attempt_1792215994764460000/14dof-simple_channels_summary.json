@@ -1,0 +1,33 @@
+{
+  "source_attempt": "docs/validation/iem24-murphy/forward-usability-fixes/vertical_14dof/fourth/attempt_1792215994764460000",
+  "model": "14dof-simple",
+  "track": "models/tracks/2024_michigan_endurance_multilap_closed.xml",
+  "formulation": "models/formulations/iem24_murphy_real_14dof_simple.xml",
+  "method": "transient_forward_driver",
+  "status": "Completed",
+  "lap_completed": true,
+  "usable": true,
+  "minimum_time_optimum": false,
+  "lap_time_s": 65.01011164168546,
+  "accepted_steps": 106281,
+  "state_size": 38,
+  "drive_torque_limit_nm": 10.5,
+  "recorded_source_hashes": {
+    "track_xml": "ffc367c0286ba698f3706ae8baf34946c641c01ad4f71935d3ec14a3a326f2c3",
+    "track_csv": "2db5a981f12d0c055afa3b167a9e6efa07cd09b1f6e7b2c51afea44f00e73d77",
+    "tire_xml": "301c55c8213fd9a4149bdec39a8c6fbc6a756e750bd6bd92e80b6567bcbd917b",
+    "formulation_xml": "6e6bbb00601845781ccc679845cc4fd95f42770fdd5eb7456dd73d52f26b8bda",
+    "vehicle_xml": "f7e75a7b0b8a59cb7acd17060d021d73de88e7e8cce8cad1cb8c3400715bd03f"
+  },
+  "channel_definitions": {
+    "velocity_mps": "body-frame velocity magnitude hypot(v_x, v_y)",
+    "longitudinal_acceleration_mps2": "body-frame v_x_dot - yaw_rate*v_y",
+    "lateral_acceleration_mps2": "body-frame v_y_dot + yaw_rate*v_x",
+    "yaw_rate_rad_s": "traced yaw-rate state",
+    "motor_torque_request_nm": "command.throttle * per-motor full-pedal torque limit",
+    "pack_voltage_v": "plant terminal-voltage closure (ForwardPowertrain.voltage)",
+    "rl_power_kw": "replayed RL shaft power referred to the bus through gear and motor efficiency",
+    "rr_power_kw": "replayed RR shaft power referred to the bus through gear and motor efficiency"
+  },
+  "validation_warning": "Driven non-optimal transient; not usable as a validated lap unless every acceptance gate passes."
+}

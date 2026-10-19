@@ -122,78 +122,78 @@
       "usable": "not applicable (optimum of a reduced problem)"
     },
     "planar_7dof": {
-      "attempt": "docs/validation/iem24-murphy/four_way_latest_model/runs/seven_dof/attempt_1792196348296421000",
+      "attempt": "docs/validation/iem24-murphy/forward-usability-fixes/seven_dof/finer/attempt_1792213953457115000",
       "track": "models/tracks/2024_michigan_endurance_multilap_closed.xml",
-      "lap_time_s": 64.99312756253617,
+      "lap_time_s": 64.95195666300549,
       "metrics": {
         "speed_mps": {
-          "rmse": 1.812745172272232,
-          "mae": 1.36936774776218,
-          "bias": 1.2969671407026093,
-          "correlation": 0.9216007258850064,
-          "normalised_rmse": 0.5985567890833127
+          "rmse": 1.8166281500833217,
+          "mae": 1.3709701508248444,
+          "bias": 1.297185953738626,
+          "correlation": 0.9210931826974479,
+          "normalised_rmse": 0.599838923365747
         },
         "longitudinal_acceleration_mps2": {
-          "rmse": 1.816911901384754,
-          "mae": 1.1317231672326353,
-          "bias": -0.10478699492664956,
-          "correlation": 0.6985236634442936,
-          "normalised_rmse": 1.003645201582872
+          "rmse": 1.823298581537489,
+          "mae": 1.1359700992122714,
+          "bias": -0.11246721979342279,
+          "correlation": 0.697904188282216,
+          "normalised_rmse": 1.0071731441784662
         },
         "lateral_acceleration_mps2": {
-          "rmse": 2.728624420534015,
-          "mae": 2.175936056490627,
-          "bias": 0.5426548192731449,
-          "correlation": 0.9384292086595608,
-          "normalised_rmse": 0.3600687253991171
+          "rmse": 2.69298144925998,
+          "mae": 2.149370020364942,
+          "bias": 0.5270037614301579,
+          "correlation": 0.9396561635033491,
+          "normalised_rmse": 0.3553652861351793
         },
         "yaw_rate_rad_s": {
-          "rmse": 0.2109691518390397,
-          "mae": 0.15617054931654825,
-          "bias": -0.010152704851738152,
-          "correlation": 0.9322347788561957,
-          "normalised_rmse": 0.3624160189888199
+          "rmse": 0.21075246866845296,
+          "mae": 0.15531547678053706,
+          "bias": -0.009733656429331834,
+          "correlation": 0.9323121250325924,
+          "normalised_rmse": 0.3620437870706396
         },
         "motor_torque_request_nm": {
-          "rmse": 2.0123770607927036,
-          "mae": 1.5116797039337313,
-          "bias": 0.24114600680933948,
-          "correlation": 0.6983350825776754,
-          "normalised_rmse": 0.75537903162553
+          "rmse": 2.007868757249335,
+          "mae": 1.5111970424823324,
+          "bias": 0.23635854321544694,
+          "correlation": 0.6996748035201182,
+          "normalised_rmse": 0.7536867652847865
         },
         "pack_voltage_v": {
-          "rmse": 23.505256774162763,
-          "mae": 23.052397612778506,
-          "bias": 23.052397612778506,
-          "correlation": 0.3944229441828309,
-          "normalised_rmse": 5.419068015530063
+          "rmse": 19.92880067492854,
+          "mae": 19.400059553272072,
+          "bias": 19.400059553272072,
+          "correlation": 0.3964283758487963,
+          "normalised_rmse": 4.5945265505071635
         }
       },
       "per_lap_speed_rmse": [
-        3.399523374762865,
-        2.0995644726211764,
-        2.671173902417182,
-        1.8210748022874337,
-        1.7613057321724093,
-        2.526906142718861,
-        1.6109190836919796,
-        1.8262371564651438,
-        1.9247226765982748,
-        1.718011352612665
+        3.4020333798422135,
+        2.103132718663301,
+        2.6736011244733358,
+        1.8243507314434528,
+        1.7649868283836105,
+        2.52976524752201,
+        1.6148305625455694,
+        1.8307143890592288,
+        1.9290132052813502,
+        1.722138896316564
       ],
       "per_lap_lateral_acceleration_rmse": [
-        4.110765910075143,
-        3.5510592891397574,
-        3.5812761337848324,
-        3.332122739642645,
-        3.133547420493906,
-        3.1919183252206227,
-        2.9739933479889125,
-        3.2100914911276925,
-        2.914589729096375,
-        3.00366869059637
+        4.066873586967055,
+        3.5094649812375005,
+        3.558008623389924,
+        3.3005965203423715,
+        3.1019052976209394,
+        3.152700737444584,
+        2.9579477445690587,
+        3.199108456584341,
+        2.8910450460317216,
+        2.9849882655300806
       ],
-      "time_gap_final_s": -6.7095174439894265,
+      "time_gap_final_s": -6.750968559498318,
       "hashes": {
         "track_xml": "ffc367c0286ba698f3706ae8baf34946c641c01ad4f71935d3ec14a3a326f2c3",
         "track_csv": "2db5a981f12d0c055afa3b167a9e6efa07cd09b1f6e7b2c51afea44f00e73d77",
@@ -204,89 +204,89 @@
       "gates": {
         "lap_completed": true,
         "integration_completed": true,
-        "periodicity_valid": false,
-        "path_tracking_valid": false,
+        "periodicity_valid": true,
+        "path_tracking_valid": true,
         "resolution_valid": true,
         "checked_rhs_physics_valid": true,
-        "between_step_validation_complete": false,
-        "refinement_validated": false,
+        "between_step_validation_complete": true,
+        "refinement_validated": true,
         "contact_valid": true
       },
-      "usable": false
+      "usable": true
     },
     "vertical_14dof": {
-      "attempt": "docs/validation/iem24-murphy/four_way_latest_model/runs/vertical_14dof/attempt_1792196233966416000",
+      "attempt": "docs/validation/iem24-murphy/forward-usability-fixes/vertical_14dof/fourth/attempt_1792215994764460000",
       "track": "models/tracks/2024_michigan_endurance_multilap_closed.xml",
-      "lap_time_s": 65.06285326492237,
+      "lap_time_s": 65.01011164168546,
       "metrics": {
         "speed_mps": {
-          "rmse": 1.8012245880052968,
-          "mae": 1.3638315974137778,
-          "bias": 1.2872709759091554,
-          "correlation": 0.9225776951683584,
-          "normalised_rmse": 0.5947527663046797
+          "rmse": 1.8000335568367867,
+          "mae": 1.3621269370782456,
+          "bias": 1.2840591887400932,
+          "correlation": 0.9225510383494234,
+          "normalised_rmse": 0.5943594954782965
         },
         "longitudinal_acceleration_mps2": {
-          "rmse": 1.8348661859021997,
-          "mae": 1.1383361419150095,
-          "bias": -0.1135021829772847,
-          "correlation": 0.6978782788143999,
-          "normalised_rmse": 1.0135629810250424
+          "rmse": 1.8454539778458694,
+          "mae": 1.144882083348277,
+          "bias": -0.11489903076120929,
+          "correlation": 0.696152081209298,
+          "normalised_rmse": 1.0194115786216142
         },
         "lateral_acceleration_mps2": {
-          "rmse": 2.7689823259595245,
-          "mae": 2.2097773749670218,
-          "bias": 0.5470439121930908,
-          "correlation": 0.9365856902159991,
-          "normalised_rmse": 0.36539434641789303
+          "rmse": 2.711263348494936,
+          "mae": 2.1615495975147354,
+          "bias": 0.5339763202920977,
+          "correlation": 0.9387600435192508,
+          "normalised_rmse": 0.3577777618521992
         },
         "yaw_rate_rad_s": {
-          "rmse": 0.21472854471162495,
-          "mae": 0.15999362061357336,
-          "bias": -0.009891838740952449,
-          "correlation": 0.9296899847412087,
-          "normalised_rmse": 0.3688741394619818
+          "rmse": 0.21342149010427247,
+          "mae": 0.1580127624649558,
+          "bias": -0.009481658649155447,
+          "correlation": 0.9305167650213506,
+          "normalised_rmse": 0.3666287992154651
         },
         "motor_torque_request_nm": {
-          "rmse": 2.0147399004394746,
-          "mae": 1.5139775012163306,
-          "bias": 0.25502023980205196,
-          "correlation": 0.6971073087679521,
-          "normalised_rmse": 0.7562659625884387
+          "rmse": 2.0179942155355883,
+          "mae": 1.5178704613082779,
+          "bias": 0.26373558354574833,
+          "correlation": 0.6963913915863703,
+          "normalised_rmse": 0.7574875236138553
         },
         "pack_voltage_v": {
-          "rmse": 23.478472812772083,
-          "mae": 23.02415207113869,
-          "bias": 23.02415207113869,
-          "correlation": 0.3919777322145161,
-          "normalised_rmse": 5.412893051780636
+          "rmse": 19.85818922690837,
+          "mae": 19.32386683185659,
+          "bias": 19.32386683185659,
+          "correlation": 0.3909213134219353,
+          "normalised_rmse": 4.578247288247966
         }
       },
       "per_lap_speed_rmse": [
-        3.3928971939699384,
-        2.0888746344594544,
-        2.6639849673312272,
-        1.8105818235325262,
-        1.751686228362011,
-        2.515639545231948,
-        1.598714312308727,
-        1.8160268864832416,
-        1.9139810866294762,
-        1.7053984228356562
+        3.3921259662253522,
+        2.08791626595996,
+        2.663180665402622,
+        1.809400699474724,
+        1.751274389952988,
+        2.5141248101568965,
+        1.5976933870188572,
+        1.8153510202138574,
+        1.9131499138550627,
+        1.7040209065284215
       ],
       "per_lap_lateral_acceleration_rmse": [
-        4.142172181990902,
-        3.588570777705725,
-        3.61599264914673,
-        3.369518122615764,
-        3.1735732243642003,
-        3.2264907190567453,
-        3.008355664782354,
-        3.2438612650883156,
-        2.939522772147468,
-        3.0186673785412994
+        4.0763011634414825,
+        3.5230382140846523,
+        3.575645196290752,
+        3.3190312697753614,
+        3.121504167843333,
+        3.1655854659141047,
+        2.9827057871477685,
+        3.224348775022179,
+        2.9017344371915668,
+        2.9962444301642974
       ],
-      "time_gap_final_s": -6.639858694451036,
+      "time_gap_final_s": -6.693024268921292,
       "hashes": {
         "track_xml": "ffc367c0286ba698f3706ae8baf34946c641c01ad4f71935d3ec14a3a326f2c3",
         "track_csv": "2db5a981f12d0c055afa3b167a9e6efa07cd09b1f6e7b2c51afea44f00e73d77",
@@ -297,35 +297,35 @@
       "gates": {
         "lap_completed": true,
         "integration_completed": true,
-        "periodicity_valid": false,
-        "path_tracking_valid": false,
+        "periodicity_valid": true,
+        "path_tracking_valid": true,
         "resolution_valid": true,
         "checked_rhs_physics_valid": true,
-        "between_step_validation_complete": false,
-        "refinement_validated": false,
+        "between_step_validation_complete": true,
+        "refinement_validated": true,
         "contact_valid": true
       },
-      "usable": false
+      "usable": true
     }
   },
   "model_to_model_speed": {
     "point_mass_vs_planar_7dof": {
-      "speed_rmse_mps": 1.4417602801145806,
-      "speed_mae_mps": 1.393906976382928,
-      "speed_bias_mps": 1.393906976382928,
-      "coefficient_of_determination": 0.9872506212252299
+      "speed_rmse_mps": 1.440702254472205,
+      "speed_mae_mps": 1.3936881633469107,
+      "speed_bias_mps": 1.3936881633469107,
+      "coefficient_of_determination": 0.9875080633280687
     },
     "point_mass_vs_vertical_14dof": {
-      "speed_rmse_mps": 1.4578912851595243,
-      "speed_mae_mps": 1.4036031411763819,
-      "speed_bias_mps": 1.4036031411763819,
-      "coefficient_of_determination": 0.9854304145916353
+      "speed_rmse_mps": 1.4614836636954784,
+      "speed_mae_mps": 1.406814928345444,
+      "speed_bias_mps": 1.406814928345444,
+      "coefficient_of_determination": 0.9853260960862282
     },
     "planar_7dof_vs_vertical_14dof": {
-      "speed_rmse_mps": 0.034550593447169924,
-      "speed_mae_mps": 0.013000162795418184,
-      "speed_bias_mps": 0.009696164793453905,
-      "coefficient_of_determination": 0.999896858240262
+      "speed_rmse_mps": 0.042131124297759164,
+      "speed_mae_mps": 0.016085197612630567,
+      "speed_bias_mps": 0.01312676499853321,
+      "coefficient_of_determination": 0.9998500177542623
     }
   }
 }

@@ -415,11 +415,30 @@ class ForwardResult:
     dense_defect_scaled_max: float = float("nan")
 
 
+@dataclass(frozen=True)
+class StepSample:
+    """One accepted integrator step, as handed to a ``step_sink``.
+
+    ``state`` and ``rates`` hold the plant layout only (the pedal coordinate is
+    reported separately). ``command`` is the *realized* command the plant was
+    evaluated with, i.e. after the pedal lag when the driver has one. The plant's
+    ``last_evaluation`` still describes this exact state when the sink runs.
+    """
+
+    index: int
+    time: float
+    state: np.ndarray
+    rates: np.ndarray
+    command: DriverCommand
+    pedal: float | None
+
+
 def solve_forward(plant: ForwardPlant, driver: PreviewDriver, initial_state,
                   duration=300., wall_seconds=290., maximum_step=0.02,
                   rtol=1.e-6, atol=1.e-8, method="Radau",
                    initial_pedal: float | None = None,
-                   maximum_wall_seconds: float = 300.) -> ForwardResult:
+                   maximum_wall_seconds: float = 300.,
+                   step_sink=None) -> ForwardResult:
     """Integrate all states with a stiff method and stop at the path end.
 
     ``wall_seconds`` is this call's wall budget and ``maximum_wall_seconds`` is
@@ -429,6 +448,12 @@ def solve_forward(plant: ForwardPlant, driver: PreviewDriver, initial_state,
     seconds of the caller's process. The caller must also apply a
     parent-process timeout to include setup. Completion does not assert physical
     validity or hot-lap periodicity.
+
+    ``step_sink`` is an optional callable that receives one :class:`StepSample`
+    per accepted step, in order, from the accepted-state validation loop below.
+    That loop already evaluates the plant at each accepted state, so the sink adds
+    no plant evaluation and never sees a rejected trial. ``None`` (the default)
+    leaves every result bit-for-bit unchanged.
     """
     from scipy.integrate import solve_ivp
 
@@ -460,13 +485,18 @@ def solve_forward(plant: ForwardPlant, driver: PreviewDriver, initial_state,
     evaluations = 0
     rejected_domain_trials = 0
 
+    #: The command of the latest ``state_rates`` call, read only by ``step_sink``.
+    applied = [None]
+
     def state_rates(time, state):
         plant_state = state[:plant_size]
         requested = driver.command(plant.observe(plant_state))
         if not pedal_dynamics:
+            applied[0] = requested
             return plant.evaluate(time, plant_state, requested).solve()
         position = float(state[plant_size])
         realized = driver.realized_command(position, requested)
+        applied[0] = realized
         rates = plant.evaluate(time, plant_state, realized).solve()
         return np.r_[rates, driver.pedal_rate(position, driver.pedal_target(requested))]
 
@@ -542,10 +572,15 @@ def solve_forward(plant: ForwardPlant, driver: PreviewDriver, initial_state,
             dense_polynomials = None
     # Recheck every accepted state without the Newton-trial rejection path.
     # Checking a sparse subset cannot certify contact across the lap.
-    for time_value, state in zip(result.t, result.y.T):
+    for step_number, (time_value, state) in enumerate(zip(result.t, result.y.T)):
         if perf_counter() - start >= wall_seconds:
             raise TimeoutError("accepted-state validation exceeded its wall budget")
-        state_rates(time_value, state)
+        accepted_rates = state_rates(time_value, state)
+        if step_sink is not None:
+            step_sink(StepSample(
+                step_number, float(time_value), np.array(state[:plant_size], dtype=float),
+                np.array(accepted_rates[:plant_size], dtype=float), applied[0],
+                float(np.clip(state[plant_size], -1., 1.)) if pedal_dynamics else None))
     # Endpoints are not enough: reconstruct each interval's interior state
     # from the integrator's dense solution, including its pedal coordinate.
     defect_max = 0.

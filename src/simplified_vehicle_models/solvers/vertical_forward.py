@@ -215,6 +215,10 @@ class VerticalForwardPlant:
         #: has no acceleration fields, so they are exposed here, exactly as the
         #: planar plant exposes them through ``planar_forward.body_accelerations``.
         self.body_accelerations = np.zeros(2)
+        #: The ``VerticalEvaluation`` and ``ForwardPowertrain`` of the latest
+        #: ``evaluate`` call, for a run recorder (see ``PlanarForwardPlant``).
+        self.last_evaluation = None
+        self.last_powertrain = None
 
     # -- plant layout -----------------------------------------------------
 
@@ -491,6 +495,8 @@ class VerticalForwardPlant:
         self.maximum_motor_speed_ratio = max(self.maximum_motor_speed_ratio, speed_ratio)
         self.body_accelerations = np.array(evaluation.body_accelerations, dtype=float, copy=True)
         self.evaluations += 1
+        self.last_evaluation = evaluation
+        self.last_powertrain = point
         return RateSystem(forcing, mass_matrix)
 
 

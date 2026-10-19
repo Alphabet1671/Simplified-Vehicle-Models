@@ -1,0 +1,27 @@
+{
+  "reference": "docs/validation/iem24-murphy/forward-usability-fixes/seven_dof/refined/attempt_1792213804580685000",
+  "refined": "docs/validation/iem24-murphy/forward-usability-fixes/seven_dof/finer/attempt_1792213953457115000",
+  "reference_rtol": 5e-06,
+  "refined_rtol": 2.5e-06,
+  "reference_maximum_step_s": 0.01,
+  "refined_maximum_step_s": 0.005,
+  "maximum_absolute_differences": {
+    "lap_time_s": 7.456060359345429e-06,
+    "body_speed_mps": 0.000378395881448057,
+    "lateral_error_m": 1.3324058525138183e-05,
+    "heading_error_rad": 1.2149521852175549e-05,
+    "yaw_rate_rad_s": 0.00010566545862356058,
+    "wheel_speed_rad_s": 0.010286241427053255,
+    "steering_rad": 1.6230742645950702e-05
+  },
+  "limits": {
+    "lap_time_s": 0.02,
+    "body_speed_mps": 0.03,
+    "lateral_error_m": 0.01,
+    "heading_error_rad": 0.01,
+    "yaw_rate_rad_s": 0.02,
+    "wheel_speed_rad_s": 0.3,
+    "steering_rad": 0.01
+  },
+  "refinement_validated": true
+}

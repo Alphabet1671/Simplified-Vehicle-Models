@@ -86,6 +86,34 @@ def compiled_vehicle():
     return _VEHICLE_CACHE["vehicle"]
 
 
+def without_bump_steer(vehicle):
+    """Return ``vehicle`` with flat (zero) jounce-steer curves, keeping everything else.
+
+    These tests check identities that hold for any bump steer only when the toe
+    change is zero (exact static rates, oracle force balances), so they isolate the
+    physics under test from the derived curves, which have their own tests.
+    """
+
+    from dataclasses import replace
+    from simplified_vehicle_models.suspension.monotone_spline import MonotoneSpline
+
+    kinematics = vehicle.suspension.kinematics
+    for axle in (0, 1):
+        low, high = kinematics.axle(axle).jounce_limits
+        kinematics = kinematics.with_axle(axle, jounce_steer=MonotoneSpline([low, 0.0, high], [0.0, 0.0, 0.0]))
+    suspension = replace(vehicle.suspension, kinematics=kinematics,
+                         network=vehicle.suspension.network.with_kinematics(kinematics))
+    return replace(vehicle, suspension=suspension)
+
+
+def flat_vehicle():
+    """Return the compiled IEM24 vehicle with flat bump steer, cached across the module."""
+
+    if "flat" not in _VEHICLE_CACHE:
+        _VEHICLE_CACHE["flat"] = without_bump_steer(compiled_vehicle())
+    return _VEHICLE_CACHE["flat"]
+
+
 def straight_plan(speed: float = TRIAL_SPEED, distance: float = TRIAL_DISTANCE) -> SpeedPlan:
     """Return a straight closed plan at a constant requested speed."""
 
@@ -222,6 +250,19 @@ class VerticalForwardLayoutTests(unittest.TestCase):
         cls.vehicle = compiled_vehicle()
         cls.plan = straight_plan()
         cls.plant = VerticalForwardPlant(cls.vehicle, cls.plan)
+
+    def test_lift_configuration_uses_steer_rate_for_hub_velocity(self):
+        from dataclasses import replace
+        kin = self.vehicle.suspension.kinematics.with_axle(0, steering_lift_sine_left=.002)
+        suspension = replace(self.vehicle.suspension, kinematics=kin,
+                             network=self.vehicle.suspension.network.with_kinematics(kin))
+        plant = VerticalForwardPlant(replace(self.vehicle, suspension=suspension), self.plan)
+        state = plant.initial_state(15.0)
+        state[STEERING_INDEX] = 0.2
+        still = plant.evaluate(0.0, state, DriverCommand(0.0, 0.0, 0.0)).forcing
+        moving = plant.evaluate(0.0, state, DriverCommand(0.0, 0.0, 0.3)).forcing
+        self.assertTrue(np.all(np.isfinite(moving)))
+        self.assertFalse(np.array_equal(still, moving))
 
     def test_forward_plant_protocol_is_checked_the_same_way_as_the_planar_plant(self):
         planar = PlanarForwardPlant(
@@ -397,7 +438,7 @@ class VerticalForwardInitialStateTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.vehicle = compiled_vehicle()
+        cls.vehicle = flat_vehicle()
 
     def _assert_steady(self, speed: float, curvature: float = 0.0):
         plan = SpeedPlan(np.array([0.0, 200.0]), np.full(2, speed), np.full(2, curvature))
@@ -452,7 +493,7 @@ class VerticalForwardTireStateTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.vehicle = compiled_vehicle()
+        cls.vehicle = flat_vehicle()
         cls.plant = VerticalForwardPlant(cls.vehicle, straight_plan(20.0))
         cls.state = cls.plant.initial_state(20.0)
 

@@ -35,7 +35,7 @@ from simplified_vehicle_models.suspension.network import (  # noqa: E402
 
 FORMULATION = ROOT / "models/formulations/iem24_murphy_real_14dof_simple.xml"
 NPZ = ROOT / "models/data/iem24_murphy_real_corners.npz"
-NPZ_SHA = "04bb06c93b7f52de2e9bc4fcd4e934532d89a9442e75e79ab5886afadb38f0f0"
+NPZ_SHA = "9fbee5d0f237d999e79024e60542a711320a523f73e30577682bbe1bd8dc9904"
 
 _CACHE: dict = {}
 

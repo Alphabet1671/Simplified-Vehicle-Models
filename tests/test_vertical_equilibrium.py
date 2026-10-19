@@ -36,10 +36,53 @@ ROOT = Path(__file__).resolve().parents[1]
 FORMULATION = ROOT / "models/formulations/iem24_murphy_real_14dof_simple.xml"
 
 
+def without_bump_steer(vehicle):
+    """Return ``vehicle`` with flat (zero) jounce-steer curves, keeping everything else.
+
+    These tests check identities that hold for any bump steer only when the toe
+    change is zero (exact static rates, oracle force balances), so they isolate the
+    physics under test from the derived curves, which have their own tests.
+    """
+
+    from dataclasses import replace
+    from simplified_vehicle_models.suspension.monotone_spline import MonotoneSpline
+
+    kinematics = vehicle.suspension.kinematics
+    for axle in (0, 1):
+        low, high = kinematics.axle(axle).jounce_limits
+        kinematics = kinematics.with_axle(axle, jounce_steer=MonotoneSpline([low, 0.0, high], [0.0, 0.0, 0.0]))
+    suspension = replace(vehicle.suspension, kinematics=kinematics,
+                         network=vehicle.suspension.network.with_kinematics(kinematics))
+    return replace(vehicle, suspension=suspension)
+
+
 class VerticalEquilibriumOracleTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.vehicle = compile_formulation(str(FORMULATION)).model
+        cls.vehicle = without_bump_steer(compile_formulation(str(FORMULATION)).model)
+
+    def test_steady_trial_uses_same_steering_lift_as_evaluator(self):
+        from dataclasses import replace
+        from simplified_vehicle_models.solvers.vertical_equilibrium import _corner_point
+        kin = self.vehicle.suspension.kinematics.with_axle(
+            0, steering_lift_sine_left=0.001, steering_lift_sine_right=-0.001)
+        vehicle = replace(self.vehicle, suspension=replace(
+            self.vehicle.suspension, kinematics=kin,
+            network=self.vehicle.suspension.network.with_kinematics(kin)))
+        state0 = solve_static_equilibrium(vehicle)
+        x = np.zeros(14)
+        x[0] = 0.15
+        x[3:6] = state0.as_vector()[6:9]
+        x[6:10] = state0.as_vector()[13:17]
+        state, torques, steering, tires = _corner_point(vehicle, x, 8.0, 0.0)
+        out = evaluate_vertical_dynamics(vehicle, state, torques, steering, tires)
+        pos = sprung_wheel_positions(vehicle)
+        q = state.as_vector()
+        lift = kin.steering_lift([steering, steering, 0, 0])[0]
+        deflection = q[6] + pos[:, 1]*q[7] - pos[:, 0]*q[8] - q[13:17] - lift
+        expected = tire_deflection_load(vehicle.planar.tire, deflection, np.zeros(4), 0.0).load
+        np.testing.assert_allclose(out.normal_loads, expected, rtol=0, atol=1e-10)
+        self.assertNotAlmostEqual(float(out.normal_loads[0]), float(out.normal_loads[1]))
 
     def test_static_equilibrium_load_oracle(self):
         vehicle = self.vehicle
@@ -390,7 +433,7 @@ class SteadyCornerTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.vehicle = compile_formulation(str(FORMULATION)).model
+        cls.vehicle = without_bump_steer(compile_formulation(str(FORMULATION)).model)
         cls.speeds = (12.0, 15.0, 25.0)
         cls.one_g = {
             speed: _solve_steady_corner_detail(cls.vehicle, speed, GRAVITY)

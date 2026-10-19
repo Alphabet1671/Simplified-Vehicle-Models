@@ -422,10 +422,14 @@ class VerticalForwardPlant:
         point = self.powertrain(values, command)
         mechanical = self.mechanical_state(values)
         tires = self.tire_states(values)
+        # The driver supplies steering rate but not acceleration. The omitted
+        # unsprung inertial term m_u*h'*steer_accel is below 1 N for the supported
+        # lift magnitudes (h' <~ 5 mm, steer_accel ~ 10 rad/s^2, m_u ~ 13 kg).
         try:
             evaluation = evaluate_vertical_dynamics(
                 self.vehicle, mechanical, point.wheel_torques,
-                float(values[STEERING_INDEX]), tires, self.network_state(values)
+                float(values[STEERING_INDEX]), tires, self.network_state(values),
+                steering_rate=float(command.steering_rate),
             )
         except DomainError as error:
             # A trial outside a spring, bump-stop, or jounce-steer table is the

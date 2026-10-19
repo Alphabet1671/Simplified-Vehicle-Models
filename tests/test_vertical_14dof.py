@@ -174,11 +174,81 @@ def braking_state(vehicle, kappa, speed=30.0, loads=None, anti=True):
     return vehicle, state, tires, out
 
 
+def without_bump_steer(vehicle):
+    """Return ``vehicle`` with flat (zero) jounce-steer curves, keeping everything else.
+
+    These tests check identities that hold for any bump steer only when the toe
+    change is zero (exact static rates, oracle force balances), so they isolate the
+    physics under test from the derived curves, which have their own tests.
+    """
+
+    from dataclasses import replace
+    from simplified_vehicle_models.suspension.monotone_spline import MonotoneSpline
+
+    kinematics = vehicle.suspension.kinematics
+    for axle in (0, 1):
+        low, high = kinematics.axle(axle).jounce_limits
+        kinematics = kinematics.with_axle(axle, jounce_steer=MonotoneSpline([low, 0.0, high], [0.0, 0.0, 0.0]))
+    suspension = replace(vehicle.suspension, kinematics=kinematics,
+                         network=vehicle.suspension.network.with_kinematics(kinematics))
+    return replace(vehicle, suspension=suspension)
+
 
 class VerticalStateTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.vehicle = compile_formulation(ROOT / "models/formulations/iem24_murphy_real_14dof_simple.xml").model
+        cls.vehicle = without_bump_steer(
+            compile_formulation(ROOT / "models/formulations/iem24_murphy_real_14dof_simple.xml").model)
+
+    def test_geometric_steering_lift_changes_tire_load_and_velocity(self):
+        from dataclasses import replace
+        from simplified_vehicle_models.tires.vertical import tire_deflection_load
+        kin = self.vehicle.suspension.kinematics.with_axle(
+            0, steering_lift_sine_left=0.002, steering_lift_sine_right=-0.002,
+            steering_lift_cosine_left=0.004, steering_lift_cosine_right=0.004)
+        vehicle = replace(self.vehicle, suspension=replace(
+            self.vehicle.suspension, kinematics=kin,
+            network=self.vehicle.suspension.network.with_kinematics(kin)))
+        state = VerticalState(heave=0.012)
+        tires = (TransientTireState(0.0, 0.0, 0.0),) * 4
+        delta, rate = 0.2, 0.3
+        out = evaluate_vertical_dynamics(vehicle, state, np.zeros(4), delta, tires,
+                                         steering_rate=rate)
+        lift, slope, _ = kin.steering_lift([delta, delta, 0.0, 0.0])
+        expected = tire_deflection_load(vehicle.planar.tire, 0.012-lift,
+                                        -slope*np.array([rate, rate, 0.0, 0.0]),
+                                        vehicle.tire_vertical_damping)
+        np.testing.assert_allclose(out.normal_loads, expected.load, atol=1e-10)
+        self.assertGreater(abs(out.normal_loads[0]-out.normal_loads[1]), 0.01)
+        opposite = evaluate_vertical_dynamics(vehicle, state, np.zeros(4), -delta, tires)
+        opposite_lift = kin.steering_lift([-delta, -delta, 0.0, 0.0])[0]
+        opposite_expected = tire_deflection_load(vehicle.planar.tire, 0.012-opposite_lift,
+                                                 np.zeros(4), vehicle.tire_vertical_damping)
+        np.testing.assert_allclose(opposite.normal_loads, opposite_expected.load, atol=1e-10)
+        np.testing.assert_allclose(out.normal_loads[2:], opposite.normal_loads[2:])
+
+    def test_geometric_steering_lift_acceleration_enters_mass_balance(self):
+        from dataclasses import replace
+        kin = self.vehicle.suspension.kinematics.with_axle(
+            0, steering_lift_sine_right=0.0, steering_lift_cosine_left=0.0,
+            steering_lift_cosine_right=0.0, steering_lift_sine_left=0.003)
+        vehicle = replace(self.vehicle, suspension=replace(
+            self.vehicle.suspension, kinematics=kin,
+            network=self.vehicle.suspension.network.with_kinematics(kin)))
+        state = VerticalState(heave=0.01)
+        tires = (TransientTireState(0.0, 0.0, 0.0),) * 4
+        stationary = evaluate_vertical_dynamics(vehicle, state, np.zeros(4), 0.0, tires)
+        driven = evaluate_vertical_dynamics(vehicle, state, np.zeros(4), 0.0, tires,
+                                            steering_acceleration=2.0)
+        m = vehicle.unsprung_mass_front
+        from simplified_vehicle_models.formulations.vertical_14dof import vertical_mass_block
+        diff = vertical_mass_block(vehicle, np.zeros(4)) @ (
+            driven.rates[[2, 3, 4, 17, 18, 19, 20]] -
+            stationary.rates[[2, 3, 4, 17, 18, 19, 20]])
+        positions = sprung_wheel_positions(vehicle)
+        np.testing.assert_allclose(diff, m*0.003*2.0*
+                                   np.array([1, positions[0,1], -positions[0,0], -1, 0, 0, 0]),
+                                   atol=1e-8)
 
     def test_evaluator_smoke_has_documented_shapes(self):
         state = VerticalState()
@@ -691,7 +761,8 @@ class VerticalMassMatrixTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.vehicle = compile_formulation(ROOT / "models/formulations/iem24_murphy_real_14dof_simple.xml").model
+        cls.vehicle = without_bump_steer(
+            compile_formulation(ROOT / "models/formulations/iem24_murphy_real_14dof_simple.xml").model)
 
     @staticmethod
     def _with_inertance(vehicle, front, rear):
@@ -966,7 +1037,8 @@ class LateralLoadTransferTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.vehicle = compile_formulation(ROOT / "models/formulations/iem24_murphy_real_14dof_simple.xml").model
+        cls.vehicle = without_bump_steer(
+            compile_formulation(ROOT / "models/formulations/iem24_murphy_real_14dof_simple.xml").model)
 
     def _lateral_setup(self, speed=30.0, sideslip=0.36):
         """Return (state, tire states) for a sideslip at the static equilibrium.
@@ -1310,7 +1382,8 @@ class LongitudinalLoadTransferTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.vehicle = compile_formulation(ROOT / "models/formulations/iem24_murphy_real_14dof_simple.xml").model
+        cls.vehicle = without_bump_steer(
+            compile_formulation(ROOT / "models/formulations/iem24_murphy_real_14dof_simple.xml").model)
 
     def _braking_at(self, delta_ax, anti=True, speed=None):
         """Solve for the braking slip that changes ax by ``delta_ax`` from coasting."""

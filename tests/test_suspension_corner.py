@@ -185,9 +185,15 @@ class ToeTests(unittest.TestCase):
         z, toe = zip(*knots)
         return self.model.with_axle(0, jounce_steer=MonotoneSpline(z, toe), static_toe=static_toe)
 
-    def test_zero_baseline_is_four_zeros(self):
-        for z in (np.zeros(4), np.array([0.02, -0.03, 0.01, -0.01])):
-            np.testing.assert_array_equal(self.model.toe(z), np.zeros(4))
+    def test_zero_jounce_gives_zero_bump_steer_and_the_curve_is_small_and_mirrored(self):
+        np.testing.assert_array_equal(self.model.toe(np.zeros(4)), np.zeros(4))
+        for z in (np.array([0.02, -0.03, 0.01, -0.01]), np.array([-0.03, 0.03, 0.03, -0.03])):
+            angles = self.model.toe(z)
+            self.assertLess(float(np.max(np.abs(angles))), math.radians(0.25))
+        equal = self.model.toe(np.array([0.02, 0.02, 0.02, 0.02]))
+        self.assertAlmostEqual(equal[0], -equal[1], places=15)
+        self.assertAlmostEqual(equal[2], -equal[3], places=15)
+        self.assertGreater(float(abs(equal[0])), 0.0)
 
     def test_single_wheel_offset(self):
         half = math.radians(0.5)
@@ -271,7 +277,7 @@ class ComponentFileTests(unittest.TestCase):
     def test_xml_contents(self):
         text = KINEMATICS_XML.read_text()
         digest = re.search(r'sha256="([0-9a-f]{64})"', text).group(1)
-        self.assertEqual(digest, "04bb06c93b7f52de2e9bc4fcd4e934532d89a9442e75e79ab5886afadb38f0f0")
+        self.assertEqual(digest, "9fbee5d0f237d999e79024e60542a711320a523f73e30577682bbe1bd8dc9904")
         self.assertEqual(re.search(r'sha256="([0-9a-f]{64})"', SPRING_XML.read_text()).group(1), digest)
         for name in ("static_toe_front", "static_toe_rear"):
             self.assertIn(f'name="{name}"', text)
@@ -279,7 +285,8 @@ class ComponentFileTests(unittest.TestCase):
             self.assertIn(f'name="{name}"', ARB_XML.read_text())
         for name in ("inertance_front", "inertance_rear"):
             self.assertIn(f'name="{name}"', XML.read_text())
-        self.assertIn("baseline, no measured jounce-steer data", text)
+        self.assertIn("Jounce steer: from real car data", text)
+        self.assertNotIn("baseline, no measured jounce-steer data", text)
         self.assertIn('role="corner-table"', text)
 
     def test_assembly_references_the_five_children(self):
@@ -294,9 +301,16 @@ class ComponentFileTests(unittest.TestCase):
                 "jounce_steer_toe_front", "jounce_steer_toe_rear",
             ):
                 self.assertIn(key, data.files)
-            np.testing.assert_array_equal(data["jounce_steer_jounce_front"], [-0.0318, 0.0, 0.0318])
-            np.testing.assert_array_equal(data["jounce_steer_toe_rear"], np.zeros(3))
-            self.assertIn("baseline, no measured jounce-steer data", str(data["metadata"]))
+            for axle in ("front", "rear"):
+                jounce = data[f"jounce_steer_jounce_{axle}"]
+                toe = data[f"jounce_steer_toe_{axle}"]
+                self.assertEqual((jounce[0], jounce[-1]), (-0.0318, 0.0318))
+                self.assertTrue(np.all(np.diff(jounce) > 0.0))
+                self.assertEqual(toe[list(jounce).index(0.0)], 0.0)
+                self.assertGreater(float(np.max(np.abs(toe))), 0.0)
+                self.assertLess(float(np.max(np.abs(toe))), math.radians(0.25))
+            self.assertIn("from real car data", str(data["metadata"]))
+            self.assertNotIn("baseline, no measured jounce-steer data", str(data["metadata"]))
             self.assertIn("held constant above", str(data["metadata"]))
 
     def test_modified_sha_rejected(self):

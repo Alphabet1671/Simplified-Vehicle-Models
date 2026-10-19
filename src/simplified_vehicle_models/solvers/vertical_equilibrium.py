@@ -439,7 +439,12 @@ def _corner_point(
     body_vertical = heave + body_positions[:, 1] * roll - body_positions[:, 0] * pitch
     loads = np.maximum(
         np.asarray(
-            tire_deflection_load(planar.tire, body_vertical - jounce, np.zeros(4), 0.0).load
+            tire_deflection_load(
+                planar.tire,
+                body_vertical - jounce - vehicle.suspension.kinematics.steering_lift(
+                    wheel_steering_angles(steering, 4))[0],
+                np.zeros(4), 0.0,
+            ).load
         ),
         0.0,
     )

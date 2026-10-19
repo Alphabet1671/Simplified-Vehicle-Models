@@ -42,6 +42,10 @@ class AxleGeometry:
     jounce_steer: MonotoneSpline
     jounce_limits: tuple[float, float]
     static_sprung_load: float
+    steering_lift_sine_left: float = 0.0
+    steering_lift_cosine_left: float = 0.0
+    steering_lift_sine_right: float = 0.0
+    steering_lift_cosine_right: float = 0.0
 
     def __post_init__(self) -> None:
         low, high = self.jounce_limits
@@ -52,6 +56,10 @@ class AxleGeometry:
             if not 0.0 <= value <= 1.0:
                 raise ValueError(f"{name} must be a fraction from zero through one")
         for name in ("camber_gain", "static_toe"):
+            if not np.isfinite(getattr(self, name)):
+                raise ValueError(f"{name} must be finite")
+        for name in ("steering_lift_sine_left", "steering_lift_cosine_left",
+                     "steering_lift_sine_right", "steering_lift_cosine_right"):
             if not np.isfinite(getattr(self, name)):
                 raise ValueError(f"{name} must be finite")
         if not (np.isfinite(self.static_sprung_load) and self.static_sprung_load > 0.0):
@@ -160,6 +168,25 @@ class SuspensionKinematics:
             angles[left] = axle.static_toe + float(axle.jounce_steer(z[left]))
             angles[right] = -(axle.static_toe + float(axle.jounce_steer(z[right])))
         return angles
+
+    def steering_lift(self, angles) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Hub rise and first/second steer derivatives in FL, FR, RL, RR order.
+
+        The signed, measured-geometry coefficients b and a define
+        h(delta) = b*sin(delta) + a*(1-cos(delta)). No offset at zero steer.
+        The rear may steer but has zero geometry unless configured explicitly.
+        """
+        delta = _four("steering angles", angles)
+        b = np.array([self.front.steering_lift_sine_left,
+                      self.front.steering_lift_sine_right,
+                      self.rear.steering_lift_sine_left,
+                      self.rear.steering_lift_sine_right])
+        a = np.array([self.front.steering_lift_cosine_left,
+                      self.front.steering_lift_cosine_right,
+                      self.rear.steering_lift_cosine_left,
+                      self.rear.steering_lift_cosine_right])
+        sine, cosine = np.sin(delta), np.cos(delta)
+        return b*sine + a*(1.0-cosine), b*cosine + a*sine, -b*sine + a*cosine
 
     @property
     def jounce_limits(self) -> np.ndarray:

@@ -50,6 +50,47 @@ def reference():
     return _CACHE["c"]
 
 
+class SteeringLiftGeometryTests(unittest.TestCase):
+    def test_defaults_and_signed_curves(self):
+        kin = reference().kinematics.with_axle(
+            0, steering_lift_sine_left=0.0, steering_lift_cosine_left=0.0,
+            steering_lift_sine_right=0.0, steering_lift_cosine_right=0.0)
+        height, slope, curvature = kin.steering_lift([0.3, -0.3, 0.2, 0.2])
+        np.testing.assert_array_equal(height, np.zeros(4))
+        np.testing.assert_array_equal(slope, np.zeros(4))
+        np.testing.assert_array_equal(curvature, np.zeros(4))
+        kin = kin.with_axle(0, steering_lift_sine_left=0.003,
+                            steering_lift_sine_right=-0.003,
+                            steering_lift_cosine_left=0.004,
+                            steering_lift_cosine_right=0.004)
+        h, dh, d2h = kin.steering_lift([0.3, 0.3, 0.2, 0.2])
+        self.assertAlmostEqual(h[0]-h[1], 0.006*np.sin(0.3))
+        np.testing.assert_array_equal(h[2:], np.zeros(2))
+        for i in range(2):
+            self.assertAlmostEqual(dh[i], (kin.steering_lift([0.300001, 0.300001, 0, 0])[0][i]
+                                            - kin.steering_lift([0.299999, 0.299999, 0, 0])[0][i])/2e-6,
+                                   places=10)
+        with self.assertRaisesRegex(ValueError, 'steering_lift_sine_left'):
+            kin.with_axle(0, steering_lift_sine_left=float('nan'))
+
+    def test_optional_xml_parameters_compile_and_validate_units(self):
+        from simplified_vehicle_models.suspension.components import compile_suspension_kinematics
+        from simplified_vehicle_models.xml.loader import load_model
+        source = ROOT / 'models/suspension-kinematics/iem24_murphy_real_suspension_kinematics.xml'
+        content = source.read_text().replace('ref="../', f'ref="{(ROOT / "models").as_posix()}/')
+        content = content.replace('path="../', f'path="{(ROOT / "models").as_posix()}/')
+        content = re.sub(r'\s*<parameter name="steering_lift_[^>]*/>', '', content)
+        element = '<parameter name="steering_lift_sine_left_front" value="0.003" unit="m"/>'
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / 'kinematics.xml'
+            path.write_text(content.replace('</parameters>', element + '</parameters>'))
+            compiled = compile_suspension_kinematics(load_model(path))
+            self.assertAlmostEqual(compiled.front.steering_lift_sine_left, .003)
+            path.write_text(content.replace('</parameters>', element.replace('unit="m"', 'unit="rad"') + '</parameters>'))
+            with self.assertRaises(ValueError):
+                compile_suspension_kinematics(load_model(path))
+
+
 class NoDamper:
     def force(self, velocity):
         v = np.asarray(velocity, dtype=float)

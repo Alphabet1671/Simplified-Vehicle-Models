@@ -274,8 +274,8 @@ class VerticalEvaluation:
 
     ``generalized_forces`` is the 7-vector Q for [heave (+down), roll
     (right-down), pitch (nose-up), jounce x4 (+compression)] before any
-    inertance velocity term, i.e. the forcing that ``M0 @ a = Q`` solves when
-    inertance is zero.
+    inertance velocity term, including prescribed steering-lift acceleration;
+    it is the forcing that ``M0 @ a = Q`` solves when inertance is zero.
     """
 
     rates: np.ndarray
@@ -365,13 +365,16 @@ def vertical_mass_block(vehicle, jounce) -> np.ndarray:
 
 def evaluate_vertical_dynamics(vehicle, state: VerticalState, wheel_torques, steering: float,
                                tire_states: tuple[TransientTireState, ...],
-                               network_state=None) -> VerticalEvaluation:
+                               network_state=None, *, steering_rate: float = 0.0,
+                               steering_acceleration: float = 0.0) -> VerticalEvaluation:
     """Evaluate the vertical 14-DOF equations in FL, FR, RL, RR order.
 
     ``network_state`` holds the suspension network's own states (hydraulic gas
     fractions). It is ``None`` for a stateless layout; for a stateful one,
     ``None`` means the network at rest at the evaluated jounces, and the rates of
-    the states are returned in ``corner_forces.ds_dt``.
+    the states are returned in ``corner_forces.ds_dt``. Prescribed steering
+    rate/acceleration are derivatives of the road-wheel command in rad/s and
+    rad/s²; a changing steer trajectory must supply both for dynamic lift.
     """
     p = vehicle.planar
     torques = np.asarray(wheel_torques, dtype=float)
@@ -390,12 +393,18 @@ def evaluate_vertical_dynamics(vehicle, state: VerticalState, wheel_torques, ste
     # Heave is the sprung CG's motion, so the body-point arms are measured from it.
     z_body = state.heave + state.roll * pos_s[:, 1] - state.pitch * pos_s[:, 0]
     z_dot = state.v_z + state.roll_rate * pos_s[:, 1] - state.pitch_rate * pos_s[:, 0]
-    hub_down = z_body - jounce
-    hub_rate = z_dot - jounce_rate
+    commanded_angles = wheel_steering_angles(steering, 4)
+    lift, lift_slope, lift_curvature = vehicle.suspension.kinematics.steering_lift(commanded_angles)
+    if not np.isfinite(steering_rate) or not np.isfinite(steering_acceleration):
+        raise ValueError("steering rate and acceleration must be finite")
+    steer_rates = wheel_steering_angles(steering_rate, 4)
+    steer_accelerations = wheel_steering_angles(steering_acceleration, 4)
+    hub_down = z_body - jounce - lift
+    hub_rate = z_dot - jounce_rate - lift_slope * steer_rates
     tire_vertical = tire_deflection_load(p.tire, hub_down, hub_rate,
                                          vehicle.tire_vertical_damping)
     loads = np.maximum(np.asarray(tire_vertical.load), 0.0)
-    angles = wheel_steering_angles(steering, 4) + vehicle.suspension.kinematics.toe(jounce)
+    angles = commanded_angles + vehicle.suspension.kinematics.toe(jounce)
     planar_state = PlanarState(state.v_x, state.v_y, state.yaw_rate, q[9:13])
     vx, vy = contact_velocities(planar_state, pos, angles)
     radii = loaded_radius(p.tire, loads)
@@ -531,6 +540,15 @@ def evaluate_vertical_dynamics(vehicle, state: VerticalState, wheel_torques, ste
     has_inertance = bool(vehicle.suspension.network.has_inertia)
     block = vertical_mass_block(vehicle, jounce)
     forcing_block = gen.copy()
+    # Prescribed steering subtracts h(delta) from hub-down position, so the
+    # known h_ddot=h''*delta_dot^2+h'*delta_ddot enters M*a=Q+m*c*h_ddot.
+    lift_accel = lift_curvature*steer_rates**2 + lift_slope*steer_accelerations
+    if np.any(lift_accel):
+        for i in range(4):
+            c = np.array([1.0, y_wheel[i], -x_sprung[i],
+                          *(float(j == i)*-1.0 for j in range(4))])
+            forcing_block += um[i]*c*lift_accel[i]
+    generalized = forcing_block.copy()
     if has_inertance:
         # A varying inerter motion ratio moves 0.5 b_eff' jdot^2 to the right-hand
         # side; the network owns the term (see ``inertial_forcing``).
@@ -553,4 +571,4 @@ def evaluate_vertical_dynamics(vehicle, state: VerticalState, wheel_torques, ste
     return VerticalEvaluation(rr, mass_matrix, np.asarray([x for t in tire_rates for x in dataclasses.astuple(t)]),
                               loads, np.column_stack((fx, fy, mz)), suspension,
                               loads <= 0, int(np.count_nonzero(suspension.out_of_range)), np.array([ax, ay]),
-                              forcing, gen)
+                              forcing, generalized)

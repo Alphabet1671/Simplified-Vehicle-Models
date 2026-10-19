@@ -21,7 +21,7 @@ The inertances of both axles are scalars of the assembly. The compiled value is 
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from simplified_vehicle_models.compiler.capabilities import (
     FRONT_DAMPER_FORCE,
@@ -123,11 +123,19 @@ def _corner_arrays(model: Model) -> dict:
 def compile_suspension_kinematics(model: Model) -> SuspensionKinematics:
     """Compile corner-table kinematics: geometry from the pinned NPZ plus static toe."""
 
-    values = closed_parameters(model, _KINEMATICS_UNITS)
+    optional = {f"steering_lift_{term}_{side}_front": "m"
+                for term in ("sine", "cosine") for side in ("left", "right")}
+    expected = {**_KINEMATICS_UNITS, **{name: unit for name, unit in optional.items()
+                                        if name in model.parameters}}
+    values = closed_parameters(model, expected)
     arrays = _corner_arrays(model)
     try:
+        front = geometry_from_arrays(arrays, "front", static_toe=values["static_toe_front"])
+        front = replace(front, **{f"steering_lift_{term}_{side}": values.get(
+            f"steering_lift_{term}_{side}_front", 0.0)
+            for term in ("sine", "cosine") for side in ("left", "right")})
         return SuspensionKinematics(
-            front=geometry_from_arrays(arrays, "front", static_toe=values["static_toe_front"]),
+            front=front,
             rear=geometry_from_arrays(arrays, "rear", static_toe=values["static_toe_rear"]),
         )
     except ValueError as error:

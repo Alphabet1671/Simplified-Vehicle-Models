@@ -41,6 +41,7 @@ from simplified_vehicle_models.solvers.vertical_equilibrium import (  # noqa: E4
     solve_steady_corner,
 )
 from simplified_vehicle_models.solvers.vertical_forward import VerticalForwardPlant  # noqa: E402
+from simplified_vehicle_models.suspension.monotone_spline import MonotoneSpline  # noqa: E402
 
 FORMULATION = ROOT / "models/formulations/iem24_murphy_real_14dof_simple.xml"
 FIXTURE = ROOT / "tests/fixtures/suspension_baseline.json"
@@ -54,7 +55,20 @@ _CACHE: dict = {}
 
 def vehicle():
     if "vehicle" not in _CACHE:
-        _CACHE["vehicle"] = compile_formulation(FORMULATION).model
+        compiled = compile_formulation(FORMULATION).model
+        # The baseline pins refactor invariance, so it runs with steering lift and
+        # bump steer switched off; the IEM24 model itself carries the derived curves.
+        kinematics = compiled.suspension.kinematics
+        for axle in (0, 1):
+            limits = kinematics.axle(axle).jounce_limits
+            flat = MonotoneSpline([limits[0], 0.0, limits[1]], [0.0, 0.0, 0.0])
+            kinematics = kinematics.with_axle(axle, jounce_steer=flat)
+        kinematics = kinematics.with_axle(
+            0, steering_lift_sine_left=0.0, steering_lift_cosine_left=0.0,
+            steering_lift_sine_right=0.0, steering_lift_cosine_right=0.0)
+        suspension = replace(compiled.suspension, kinematics=kinematics,
+                             network=compiled.suspension.network.with_kinematics(kinematics))
+        _CACHE["vehicle"] = replace(compiled, suspension=suspension)
     return _CACHE["vehicle"]
 
 

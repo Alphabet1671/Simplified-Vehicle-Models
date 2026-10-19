@@ -93,13 +93,14 @@ radius is measured, and no radius was invented to hide the inconsistency.
 
 * **Static toe is 0° at both axles** (DSS cells C26 and F26 give 0). `static_toe_front` and
   `static_toe_rear` are both 0 rad in the suspension XML.
-* **The jounce-steer curves are a zero baseline placeholder.** Front and rear knots are
-  (−31.8 mm, 0°), (0 mm, 0°), (+31.8 mm, 0°): the source is recorded as *"baseline, no measured
-  jounce-steer data"* in the NPZ metadata and the XML comment. The schema accepts measured nonzero knots
-  later; the generator enforces strictly rising jounce, finite values, an explicit 0 mm / 0° reference and
-  a knot at each travel limit.
-* With this baseline `corner_toe_angles` returns four zeros, so the 14DoF wheel angles equal the planar
-  Ackermann/driver angles plus zero. A synthetic +0.5° front toe-in curve at +20 mm is tested to change
+* **The jounce-steer curves are derived from the suspension hardpoints** (from real car data) and are small:
+  front -0.205° to +0.005°, rear -0.103° to +0.026° over -31.8 to +31.8 mm, with an exact 0° at 0 mm.
+  Each axle has 13 knots, and the NPZ metadata and XML comments record the source as *"from real car data"*.
+  The derivation reproduces the tabulated camber gains (25.1 and 45.3 deg/m), which cross-checks the points. The
+  generator still writes a zero curve when it is given no knots, and it enforces strictly rising jounce, finite
+  values, an explicit 0 mm / 0° reference and a knot at each travel limit.
+* At rest `corner_toe_angles` returns four zeros; in motion the 14DoF wheel angles equal the planar
+  Ackermann/driver angles plus the derived bump steer, at most about 0.2°. A synthetic +0.5° front toe-in curve at +20 mm is tested to change
   only the FL wheel angle, its contact velocity, its slip angle and the rotation of its force
   (`tests/test_vertical_14dof.py`).
 

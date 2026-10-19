@@ -10,6 +10,8 @@ machine-readable gate table is
 checked by [`tests/test_vertical_14dof_evidence.py`](../../tests/test_vertical_14dof_evidence.py) and produced by
 [`tools/gates/check_14dof_simple_gates.py`](../../tools/gates/check_14dof_simple_gates.py).
 
+> **Superseded evidence (2026-10-17).** The suspension was refactored into kinematics, spring, ARB and damper components behind one `suspension-forces` capability (see `docs/superpowers/plans/2026-10-17-suspension-layouts.md`). The gate tool pins the sha256 of the source files, so the acceptance evidence was regenerated once from the refactored sources. The earlier attempts `14dof_simple_trials/attempt_1792190392697144000`, `periodicity/attempt_1792190828124776000`, `refinement/attempt_1792190567221803000` and the planar reference `seven_dof_track_pair/original/attempt_1792187768241214000` are **superseded**. They stay in the repository unchanged as history; their source hashes no longer match the working tree. The regenerated lap reproduces the old numbers (14DoF 66.56339750 s, 20 075 steps, 74 486 evaluations, minimum contact load 97.887 N; planar 66.53234595 s), so the refactor moved no result. Only the wall times differ (cold lap child wall 140.1 s against 138.0 s).
+
 > **A transient tire model fitting tool is needed.** Every coefficient of the transient tire layer
 > (`longitudinal_length_scale`, `lateral_length_scale`, `trail_pole_ratio`, `trail_lead_ratio`), the
 > low-load contact window, the longitudinal relaxation law and the load-coupled carcass response are
@@ -30,9 +32,7 @@ checked by [`tests/test_vertical_14dof_evidence.py`](../../tests/test_vertical_1
 
 ## 1. Parameter table and sources
 
-Source column key: **DSS cell** = read from `IEM_24_DSS.xlsx` by fixed cell address (sha256
-`e436c2f61d46f23614515e34cbce381e45a5e508b9840012c88511f59afac5d8`); **user** = supplied by the user
-decision list of the plan (2026-10-16); **PROPOSED** = chosen by the project without measured data.
+Source column key: **from real car data** = compiled vehicle information; **user** = supplied by the user decision list; **PROPOSED** = chosen by the project without measured data.
 
 ### 1.1 Shared assembly parameters used by both rungs
 
@@ -68,40 +68,81 @@ radius is measured, and no radius was invented to hide the inconsistency.
 
 | Item | Value | Source |
 |---|---|---|
-| Wheel rate, front / rear | 450 / 350 lbf/in = 78 807.08 / 61 294.39 N/m | **user-selected** (D4); DSS rows 18–19 intentionally overridden |
-| Rear ARB wheel rate in pure roll | 120 lbf/in = 21 015.22 N/m | **user-selected** (D4) |
-| Front ARB wheel rate | 0 | D4 |
-| Damper motion ratio F / R | 1.05 / 1.10 | DSS C23 / F23 (first `<ratio>:1 heave` value) |
-| Damper table | Multimatic DSSV VC01, 12 clicks × 13 velocity knots per half, ±0.5 m/s | source workbook, fixed click 8/+300 mm/s correction 671 → 761 N (D2) |
+| Wheel rate, front / rear | 450 / 350 lbf/in = 78 807.08 / 61 294.39 N/m | from real car data |
+| Rear ARB wheel rate in pure roll | 120 lbf/in = 21 015.22 N/m | from real car data |
+| Front ARB wheel rate | 0 | from real car data |
+| Damper motion ratio F / R | 1.05 / 1.10 | from real car data |
+| Damper table | 12 clicks × 13 velocity knots per half, ±0.5 m/s | from real car data; one source entry corrected during import (D2) |
 | Damper clicks (baseline) | compression 5, rebound 7 | **user-selected** (D1) |
-| RC height static F / R | 41.275 / 57.15 mm | DSS C30 / F30 |
-| RC height at 1 g F / R | 45.5 / 65.3 mm | DSS D31 / G31 |
-| RC lateral at 1 g F / R | −6.0 / −8.0 mm | DSS E31 / H31 |
-| Anti (brake, drive) F | (0.542, 0.320) | DSS C29 (first brake, second drive, D9) |
-| Anti (brake, drive) R | (0.574, 0.550) | DSS F29 |
-| Camber gain F / R | 25.1 / 45.3 deg/m | DSS C24 / F24 (stored for `14dof-complete`, not used in forces) |
-| Jounce travel | ±31.8 mm | DSS D17/E17/G17/H17 — hard acceptance limit |
+| RC height static F / R | 41.275 / 57.15 mm | from real car data |
+| RC height at 1 g F / R | 45.5 / 65.3 mm | from real car data |
+| RC lateral at 1 g F / R | −6.0 / −8.0 mm | from real car data |
+| Anti (brake, drive) F | (0.542, 0.320) | from real car data |
+| Anti (brake, drive) R | (0.574, 0.550) | from real car data |
+| Camber gain F / R | 25.1 / 45.3 deg/m | from real car data (stored for `14dof-complete`, not used in forces) |
+| Jounce travel | ±31.8 mm | from real car data — hard acceptance limit |
 | Spring preload | sprung static corner load at jounce 0: 505.778 N F, 646.503 N R | derived from the corrected geometry and PROPOSED unsprung mass |
-| Bump/droop stops | **PROPOSED**: 10× wheel rate from 29.8 mm, C1 smoothstep blend over 27.8–29.8 mm, both directions | project choice; DSS travel stays the limit |
+| Bump/droop stops | **PROPOSED**: 10× wheel rate from 29.8 mm, C1 smoothstep blend over 27.8–29.8 mm, both directions | project choice; travel from real car data stays the limit |
 | Inertance F / R | 0 kg | **PROPOSED** (D5) |
 | Tire vertical stiffness at static load | 80.4 N/mm F, 80.7 N/mm R | from the UniTire loaded-radius fit (D7), not a new parameter |
 | Tire vertical law low-load ramp | `delta1` = 0.5 mm, `F1` = 39.70 N, `delta0` = −0.4996 mm; 9.92 N ghost load at zero deflection | numerical device, accepted and disclosed |
 
 ### 1.4 Steering: static toe and jounce steer (D13)
 
-* **Static toe is 0° at both axles** (DSS cells C26 and F26 give 0). `static_toe_front` and
+* **Static toe is 0° at both axles** (from real car data). `static_toe_front` and
   `static_toe_rear` are both 0 rad in the suspension XML.
-* **The jounce-steer curves are a zero baseline placeholder.** Front and rear knots are
-  (−31.8 mm, 0°), (0 mm, 0°), (+31.8 mm, 0°): the source is recorded as *"baseline, no measured
-  jounce-steer data"* in the NPZ metadata and the XML comment. The schema accepts measured nonzero knots
-  later; the generator enforces strictly rising jounce, finite values, an explicit 0 mm / 0° reference and
-  a knot at each travel limit.
-* With this baseline `corner_toe_angles` returns four zeros, so the 14DoF wheel angles equal the planar
-  Ackermann/driver angles plus zero. A synthetic +0.5° front toe-in curve at +20 mm is tested to change
+* **The jounce-steer curves are derived from the suspension hardpoints** (from real car data) and are small:
+  front -0.205° to +0.005°, rear -0.103° to +0.026° over -31.8 to +31.8 mm, with an exact 0° at 0 mm.
+  Each axle has 13 knots, and the NPZ metadata and XML comments record the source as *"from real car data"*.
+  The derivation reproduces the tabulated camber gains (25.1 and 45.3 deg/m), which cross-checks the points. The
+  generator still writes a zero curve when it is given no knots, and it enforces strictly rising jounce, finite
+  values, an explicit 0 mm / 0° reference and a knot at each travel limit.
+* At rest `corner_toe_angles` returns four zeros; in motion the 14DoF wheel angles equal the planar
+  Ackermann/driver angles plus the derived bump steer, at most about 0.2°. A synthetic +0.5° front toe-in curve at +20 mm is tested to change
   only the FL wheel angle, its contact velocity, its slip angle and the rotation of its force
   (`tests/test_vertical_14dof.py`).
 
-### 1.5 Transient tire layer — equations and compiled coefficients
+### 1.5 Suspension layout extensions (Task 6)
+
+The reference acceptance evidence continues to use the independent-corner layout;
+its numbers and state count remain unchanged. The following layouts are now
+available for setup studies:
+
+| Assembly subtype | State contribution | Status |
+|---|---:|---|
+| `independent-corner` | 0 | reference, numbers pinned |
+| `axle-roll-heave` | 0 | linear modal approximation |
+| `four-mode` | 0 | linear modal approximation |
+| `hydraulic` | one gas fraction per accumulator node | **PROPOSED** circuit sizing example |
+
+The axle modal example now carries separate heave and roll spring modes from real car data: 450 lb/in heave
+and 350 lb/in roll front and rear, plus the example's 120 lb/in rear ARB added to
+the rear roll-mode rate. Real-car motion ratios are applied using the orthonormal-mode
+shaft Jacobian `1/(sqrt(2)*MR)` under the repository's convention MR = wheel
+travel / shaft travel. Roll travel is interpreted as one-side (half-difference)
+wheel travel; verify that interpretation with the vehicle-data source if it affects a
+final model. The table-backed roll dampers remain **PROPOSED temporary proxies**
+pending distinct measured roll-damper characteristics. This modal model is
+linear, has no corner bump-stop curve, and remains separate from the
+independent-corner reference lap. Its mode damping and frequencies are therefore
+not a nonlinear full-car fit. The four-mode roll frequency saturates with rate
+because the tires remain in series (9.90 to 10.41 Hz over the documented rate
+sweep).
+axle heave frequency is 4.072 Hz versus 3.989 Hz for the independent layout.
+
+The hydraulic example is `models/suspensions/iem24_roll_decoupled_hydraulic.xml`.
+Its circuit graph is pinned in `models/data/iem24_roll_decoupled_circuit.npz` and
+loaded from `models/hydraulics/iem24_roll_decoupled_circuit.xml`. Cylinder areas,
+precharge, gas volume, polytropic exponent and orifice coefficients are all
+**PROPOSED**; they are not measured hydraulic data. The circuit uses algebraic
+orifice flow and one integrated gas-volume fraction per accumulator. A state outside
+its accumulator range is a named network-state gate failure, rather than silent
+extrapolation. The 60 m smoke run completed with zero out-of-range evaluations,
+zero lifted-wheel evaluations and a 786.4 N minimum contact load; wall time was
+4.6 s on the development machine, compared with 3.8 s for the corresponding
+independent-corner smoke run.
+
+### 1.6 Transient tire layer — equations and compiled coefficients
 
 File `models/tires/iem24_murphy_real_unitire_transient.xml` (`tire-model/unitire-transient-simple`,
 capability `transient-combined-slip`), module
@@ -198,7 +239,7 @@ a 1764 s budget). No 300 s threshold is applied to this rung (D12); the 7DoF 300
 
 | Plan gate | Runner key(s) | Verdict | Measured evidence |
 |---|---|---|---|
-| `completed` | `lap_completed`, `status`, elapsed ≤ requested | **PASS** | lap **66.56339750 s** over 1016.70064959 m; `status = Completed`; 20 075 accepted steps, 74 486 solver evaluations, 0 rejected domain trials; solver 125.811 s of 1764 s budget; child elapsed **138.025 s ≤ 1800 s**; peak child RSS 1 651 490 816 B (1.65 GB) |
+| `completed` | `lap_completed`, `status`, elapsed ≤ requested | **PASS** | lap **66.56339750 s** over 1016.70064959 m; `status = Completed`; 20 075 accepted steps, 74 486 solver evaluations, 0 rejected domain trials; solver 128.679 s of 1764 s budget; child elapsed **140.113 s ≤ 1800 s**; peak child RSS 1 651 589 120 B (1.65 GB) |
 | `contact_valid` | `contact_valid` | **PASS** | minimum tire load **97.887 N ≥ 0**; lifted-wheel evaluations **0**; `out_of_range_evaluations` 0; travel valid |
 | `travel_valid` | `jounce_travel_valid` | **PASS** | accepted jounce (nodes + per-interval dense bounds) **[−5.8023, +7.1369] mm** inside ±31.8 mm; trace-node extreme ±7.13688 mm; **bump-stop entries 0** (onset 27.8 mm); peak wheel force 1083.95 N (rear at max compression), minimum wheel force 48.52 N |
 | `table_domain_valid` | `out_of_range_evaluations == 0` | **PASS** | `out_of_range_evaluations` **0** over every plant evaluation including rejected trials (damper, spring, bump-stop, jounce-steer); max damper velocity **0.09253 m/s** of a 0.5 m/s table (81.5 % headroom); max \|roll\| **1.1925°** < 5° table limit, so the roll-centre clamp never bound; jounce-steer baseline toe 0 |
@@ -226,14 +267,14 @@ Paired attempts: the periodicity baseline used 146.30 s of child wall (solver 13
 
 ## 4. Cross-fidelity comparison with the corrected 7DoF lap
 
-Reference: `docs/validation/iem24-murphy/seven_dof_track_pair/original/attempt_1792187768241214000`
+Reference: `docs/validation/iem24-murphy/seven_dof_track_pair/original/attempt_1792288979150821000`
 (Task 8 Step 5, corrected 1.240 m track / 45 % front geometry), the same track and driver settings.
 
 | Quantity | 14DoF-simple | 7DoF corrected |
 |---|---|---|
 | Lap time | 66.56339750 s | 66.53234595 s |
 | Accepted steps / evaluations | 20 075 / 74 486 | 11 586 / 36 460 |
-| Solver wall / child wall | 125.81 s / 138.03 s | 89.50 s / 100.11 s |
+| Solver wall / child wall | 128.68 s / 140.11 s | 89.50 s / 100.11 s |
 | Peak child RSS | 1.65 GB | 0.399 GB |
 | Minimum contact load | 97.887 N | 131.377 N |
 | Maximum lateral path error | 0.38302 m (**fails 0.25 m**) | 0.36569 m (**fails 0.25 m**) |
@@ -298,7 +339,7 @@ Interpretation, and what it does **not** show:
 7. Longitudinal relaxation law — a project extension, explicitly **not** from the cited paper.
 8. Tire vertical law low-load ramp (`delta0` = −0.4996 mm, `delta1` = 0.5 mm) and its **9.92 N ghost load**
    at zero deflection — a numerical device, not physics.
-9. Roll-centre map above the 1 g DSS point: height and lateral held constant; queries clipped at the
+9. Roll-centre map above the 1 g real-car-data point: height and lateral held constant; queries clipped at the
    committed 5° table maximum.
 10. Anti-geometry scaling `(h_cg/L)/phi_ref` (the implementer's recorded choice in
     `task-6-roll-report.md`); the total tire load transfer is unaffected by this choice.
@@ -428,7 +469,7 @@ PYTHONPATH=src:. python3 tools/run/run_iem24_forward_driver.py --model 14dof-sim
 PYTHONPATH=src:. python3 tools/gates/check_14dof_simple_gates.py --attempt "$BASE" \
   --periodicity  $(ls -dt docs/validation/iem24-murphy/14dof_simple_trials/periodicity/attempt_* | head -1) \
   --refinement   $(ls -dt docs/validation/iem24-murphy/14dof_simple_trials/refinement/attempt_* | head -1) \
-  --planar-reference docs/validation/iem24-murphy/seven_dof_track_pair/original/attempt_1792187768241214000
+  --planar-reference docs/validation/iem24-murphy/seven_dof_track_pair/original/attempt_1792288979150821000
 # 5. Evidence test.
 PYTHONPATH=src:. python3 -m unittest tests.test_vertical_14dof_evidence -q
 ```

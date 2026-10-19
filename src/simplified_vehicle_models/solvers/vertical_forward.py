@@ -14,6 +14,12 @@ The plant owns 38 first-order states:
      deformation, and trail angle
 ===  ==========================================================
 
+A suspension network with its own states (a hydraulic circuit) appends them after
+the 38 rows: ``vertical_plant_class(vehicle)`` returns a subclass with
+``state_size = 38 + n_states`` and the network's state names, tolerances and
+bounds. A stateless network keeps this class, so every earlier layout, trace
+header and committed evidence is unchanged.
+
 The mechanical rows come from ``evaluate_vertical_dynamics`` through
 ``RateSystem(out.forcing, out.mass_matrix)``; the plant never re-solves
 ``out.rates``. When the compiled inertance is zero the evaluator returns
@@ -49,7 +55,6 @@ from simplified_vehicle_models.solvers.forward_powertrain import (
     ForwardPowertrain, evaluate_forward_powertrain,
 )
 from simplified_vehicle_models.solvers.vertical_equilibrium import solve_static_equilibrium
-from simplified_vehicle_models.suspension.corner import corner_toe_angles
 from simplified_vehicle_models.suspension.errors import DomainError
 from simplified_vehicle_models.tires.unitire_simple import loaded_radius
 from simplified_vehicle_models.tires.unitire_transient import (
@@ -93,6 +98,8 @@ VERTICAL_POSITION_INDEX: tuple[int, ...] = (6, 7, 8, 13, 14, 15, 16)
 JOUNCE_TRIAL_MARGIN = 0.010
 
 _CONTACT_SPEED_FLOOR = 1.0
+#: First column of the suspension network's own states.
+NETWORK_OFFSET = TIRE_OFFSET + 3 * _CORNER_COUNT
 
 
 def _periodic_tolerance(name: str) -> float:
@@ -130,6 +137,8 @@ def _periodic_tolerances(names: tuple[str, ...], indices: tuple[int, ...]) -> np
 def body_accelerations(state: np.ndarray, rates: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """Return road-plane body-axis accelerations from 38-state rows.
 
+    A plant with network states has more columns; only the first 38 are read.
+
     This mirrors ``planar_forward.body_accelerations`` for the vertical layout:
     the velocity derivatives alone omit the rotating-frame terms, so a steady
     corner has ``v_y_dot == 0`` yet ``a_y == yaw_rate * v_x``. The road is flat,
@@ -137,7 +146,7 @@ def body_accelerations(state: np.ndarray, rates: np.ndarray) -> tuple[np.ndarray
     """
     state = np.asarray(state, dtype=float)
     rates = np.asarray(rates, dtype=float)
-    if state.shape != rates.shape or state.shape[-1] != 38:
+    if state.shape != rates.shape or state.shape[-1] < 38:
         raise ValueError("vertical states and rates must have matching 38-state layouts")
     return (rates[..., 3] - state[..., 8] * state[..., 4],
             rates[..., 4] + state[..., 8] * state[..., 3])
@@ -147,6 +156,8 @@ class VerticalForwardPlant:
     """Own the 38-state vertical 14-DoF plant of the forward driver."""
 
     state_size = 38
+    #: Number of suspension-network states appended after the 38 rows.
+    network_states = 0
     state_names: tuple[str, ...] = (
         *PATH_NAMES,
         *MECHANICAL_NAMES,
@@ -167,11 +178,7 @@ class VerticalForwardPlant:
         self.vehicle = vehicle
         self.plan = plan
         self.driven, self.gearing, self.gear_efficiency = _drivetrain_context(vehicle.planar)
-        limits = np.array(
-            [vehicle.suspension.front.jounce_limits] * 2
-            + [vehicle.suspension.rear.jounce_limits] * 2,
-            dtype=float,
-        )
+        limits = vehicle.suspension.kinematics.jounce_limits
         self.jounce_minimum = limits[:, 0] - JOUNCE_TRIAL_MARGIN
         self.jounce_maximum = limits[:, 1] + JOUNCE_TRIAL_MARGIN
         # Diagnostic counters and extremes, matching ``PlanarForwardPlant`` names.
@@ -199,6 +206,10 @@ class VerticalForwardPlant:
         self.maximum_jounce = -float("inf")
         self.minimum_jounce = float("inf")
         self.maximum_damper_velocity = 0.0
+        #: Range reached by the network's own states over every evaluation, one
+        #: entry per state (empty for a stateless network).
+        self.network_state_minimum = np.full(self.network_states, np.inf)
+        self.network_state_maximum = np.full(self.network_states, -np.inf)
         #: Road-plane body accelerations ``(ax, ay)`` of the last evaluation,
         #: which the driver layer reads from the plant. ``DriverObservation``
         #: has no acceleration fields, so they are exposed here, exactly as the
@@ -216,6 +227,14 @@ class VerticalForwardPlant:
 
         values = np.asarray(state, dtype=float)
         return VerticalState.from_vector(values[list(MECHANICAL_INDEX)])
+
+    def network_state(self, state):
+        """Return the suspension-network states of the plant vector, or None."""
+
+        if self.network_states == 0:
+            return None
+        values = np.asarray(state, dtype=float)
+        return values[NETWORK_OFFSET:NETWORK_OFFSET + self.network_states]
 
     def tire_states(self, state) -> tuple[TransientTireState, ...]:
         """Return the four transient tire states of the plant vector."""
@@ -265,8 +284,8 @@ class VerticalForwardPlant:
             )
             loads = np.asarray(evaluation.normal_loads, dtype=float)
             radii = loaded_radius(planar.tire, loads)
-            angles = wheel_steering_angles(steering, _CORNER_COUNT) + corner_toe_angles(
-                vehicle.suspension, q[13:17]
+            angles = wheel_steering_angles(steering, _CORNER_COUNT) + (
+                vehicle.suspension.kinematics.toe(q[13:17])
             )
             longitudinal, lateral = contact_velocities(
                 PlanarState(q[0], q[1], q[5], q[9:13]), wheel_positions(planar), angles
@@ -285,6 +304,8 @@ class VerticalForwardPlant:
                 break
 
         state = np.zeros(self.state_size)
+        if self.network_states:
+            state[NETWORK_OFFSET:] = vehicle.suspension.network.initial_state(q[13:17])
         state[2] = -np.arctan2(q[1], q[0])
         state[list(MECHANICAL_INDEX)] = q
         state[SOC_INDEX] = planar.storage.initial_state_of_charge
@@ -405,10 +426,14 @@ class VerticalForwardPlant:
         point = self.powertrain(values, command)
         mechanical = self.mechanical_state(values)
         tires = self.tire_states(values)
+        # The driver supplies steering rate but not acceleration. The omitted
+        # unsprung inertial term m_u*h'*steer_accel is below 1 N for the supported
+        # lift magnitudes (h' <~ 5 mm, steer_accel ~ 10 rad/s^2, m_u ~ 13 kg).
         try:
             evaluation = evaluate_vertical_dynamics(
                 self.vehicle, mechanical, point.wheel_torques,
-                float(values[STEERING_INDEX]), tires
+                float(values[STEERING_INDEX]), tires, self.network_state(values),
+                steering_rate=float(command.steering_rate),
             )
         except DomainError as error:
             # A trial outside a spring, bump-stop, or jounce-steer table is the
@@ -435,6 +460,12 @@ class VerticalForwardPlant:
         forcing[SOC_INDEX] = -point.current / self.vehicle.planar.storage.pack_capacity
         forcing[STEERING_INDEX] = command.steering_rate
         forcing[list(TIRE_INDEX)] = evaluation.tire_state_rates
+        if self.network_states:
+            forcing[NETWORK_OFFSET:] = evaluation.corner_forces.ds_dt
+            self.network_state_minimum = np.minimum(self.network_state_minimum,
+                                                    self.network_state(values))
+            self.network_state_maximum = np.maximum(self.network_state_maximum,
+                                                    self.network_state(values))
         mass_matrix = None
         if evaluation.mass_matrix is not None:
             mass_matrix = np.eye(self.state_size)
@@ -469,6 +500,34 @@ class VerticalForwardPlant:
         return RateSystem(forcing, mass_matrix)
 
 
+def vertical_plant_class(vehicle) -> type:
+    """Return the plant class whose state layout matches the vehicle's suspension.
+
+    A stateless network (every layout but the hydraulic one) returns
+    ``VerticalForwardPlant`` itself. A stateful network returns a subclass that
+    appends the network's states: names, periodic indices and tolerances are
+    class attributes, as the runner, the gates and the reports read them there.
+    """
+
+    network = vehicle.suspension.network
+    count = int(network.n_states)
+    if count == 0:
+        return VerticalForwardPlant
+    names = (*VerticalForwardPlant.state_names, *network.state_names)
+    if len(names) != VerticalForwardPlant.state_size + count:
+        raise ValueError("the network must name each of its states")
+    size = len(names)
+    indices = tuple(index for index in range(size) if index not in (0, SOC_INDEX))
+    tolerances = np.concatenate((
+        _periodic_tolerances(VerticalForwardPlant.state_names,
+                             VerticalForwardPlant.periodic_indices),
+        np.asarray(network.state_tolerances, dtype=float)))
+    return type("NetworkVerticalForwardPlant", (VerticalForwardPlant,), {
+        "state_size": size, "network_states": count, "state_names": names,
+        "periodic_indices": indices, "periodic_tolerances": tolerances,
+    })
+
+
 def _drivetrain_context(planar):
     """Return ``(driven, gearing, gear_efficiency)`` of the compiled planar vehicle.
 
@@ -485,4 +544,4 @@ def _drivetrain_context(planar):
     return driven, planar.motor.gear_ratio * gear_efficiency, gear_efficiency
 
 
-__all__ = ["VerticalForwardPlant", "body_accelerations"]
+__all__ = ["VerticalForwardPlant", "body_accelerations", "vertical_plant_class"]

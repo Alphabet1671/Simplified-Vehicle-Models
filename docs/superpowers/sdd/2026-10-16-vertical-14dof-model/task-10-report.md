@@ -370,7 +370,7 @@ scalar; the suspension XML exposes only ARB, inertance and static toe per Task 4
 "spring setup" wording is met only for the compiled spring-adjacent scalars — cost
 if wrong: a user who asks for a spring-rate sweep must regenerate
 `models/data/iem24_murphy_real_corners.npz` with `tools/model_data/generate_suspension_lut.py`
-(which needs the DSS workbook) or the suspension model must gain a spring scale
+(which requires private suspension source data) or the suspension model must gain a spring scale
 parameter in a later task; neither is in Task 10's file list.
 
 Ruling: the per-axle ride frequency is the lower mode of the **exact two-DoF**
@@ -507,7 +507,7 @@ probe M4b confirms the missing-override case).
 1. **No spring-rate override.** The plan's task title names springs, but the
    compiled 14DoF model exposes no spring scalar: the wheel-rate curve ships inside
    `models/data/iem24_murphy_real_corners.npz` (sha256 `04bb06c9…f0f0`). A spring
-   sweep needs either a regeneration of that NPZ (DSS workbook required) or a new
+   sweep needs either a regeneration of that NPZ (private suspension source data required) or a new
    `spring_rate_scale_front/rear` parameter in the suspension XML and component —
    a Task 4/5-scope change, deliberately not made here.
 2. **The step study is linear.** Absolute first-peak values differ from a

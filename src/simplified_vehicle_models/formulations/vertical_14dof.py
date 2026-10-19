@@ -39,9 +39,7 @@ from typing import TYPE_CHECKING
 
 from simplified_vehicle_models.compiler.adapters import ResolutionResult
 from simplified_vehicle_models.compiler.capabilities import (
-    FRONT_DAMPER_FORCE,
-    REAR_DAMPER_FORCE,
-    SUSPENSION_CORNER,
+    SUSPENSION_FORCES,
     TRANSIENT_COMBINED_SLIP,
 )
 from simplified_vehicle_models.formulations.planar_7dof import (
@@ -53,8 +51,7 @@ from simplified_vehicle_models.formulations.planar_7dof import (
     compile_planar_7dof_vehicle,
 )
 from simplified_vehicle_models.parameters.vehicle import PlanarVehicleParameters
-from simplified_vehicle_models.suspension.components import CompiledDamper
-from simplified_vehicle_models.suspension.corner import SuspensionModel, corner_forces, corner_toe_angles
+from simplified_vehicle_models.suspension.network import CompiledSuspension, NetworkForces
 from simplified_vehicle_models.tires.unitire_simple import loaded_radius
 from simplified_vehicle_models.tires.unitire_transient import (
     TransientTireParameters,
@@ -77,10 +74,8 @@ import numpy as np
 
 VERTICAL_14DOF_REQUESTED_CAPABILITIES: tuple[str, ...] = (
     *PLANAR_7DOF_REQUESTED_CAPABILITIES,
-    SUSPENSION_CORNER,
+    SUSPENSION_FORCES,
     TRANSIENT_COMBINED_SLIP,
-    FRONT_DAMPER_FORCE,
-    REAR_DAMPER_FORCE,
 )
 
 #: Assembly parameters that only the vertical model consumes.
@@ -111,8 +106,7 @@ class VerticalVehicleParameters:
     roll_radius_of_gyration: float
     pitch_radius_of_gyration: float
     tire_vertical_damping: float
-    suspension: SuspensionModel
-    dampers: tuple[CompiledDamper, CompiledDamper]
+    suspension: CompiledSuspension
     transient_tire: TransientTireParameters
     sprung_mass: float
     sprung_cg_height: float
@@ -158,9 +152,7 @@ def compile_vertical_14dof_vehicle(
     values, _ = required_parameters(assembly, VERTICAL_14DOF_ONLY_PARAMETER_UNITS)
     require_positive(assembly, values, *VERTICAL_14DOF_ONLY_PARAMETER_UNITS)
 
-    suspension = _capability_value(assembly, resolutions, SUSPENSION_CORNER, SuspensionModel)
-    front_damper = _capability_value(assembly, resolutions, FRONT_DAMPER_FORCE, CompiledDamper)
-    rear_damper = _capability_value(assembly, resolutions, REAR_DAMPER_FORCE, CompiledDamper)
+    suspension = _capability_value(assembly, resolutions, SUSPENSION_FORCES, CompiledSuspension)
     transient = _capability_value(
         assembly, resolutions, TRANSIENT_COMBINED_SLIP, TransientTireParameters
     )
@@ -203,7 +195,6 @@ def compile_vertical_14dof_vehicle(
         pitch_radius_of_gyration=values["pitch_radius_of_gyration"],
         tire_vertical_damping=values["tire_vertical_damping"],
         suspension=suspension,
-        dampers=(front_damper, rear_damper),
         transient_tire=transient,
         sprung_mass=sprung_mass,
         sprung_cg_height=sprung_cg_height,
@@ -283,8 +274,8 @@ class VerticalEvaluation:
 
     ``generalized_forces`` is the 7-vector Q for [heave (+down), roll
     (right-down), pitch (nose-up), jounce x4 (+compression)] before any
-    inertance velocity term, i.e. the forcing that ``M0 @ a = Q`` solves when
-    inertance is zero.
+    inertance velocity term, including prescribed steering-lift acceleration;
+    it is the forcing that ``M0 @ a = Q`` solves when inertance is zero.
     """
 
     rates: np.ndarray
@@ -292,7 +283,7 @@ class VerticalEvaluation:
     tire_state_rates: np.ndarray
     normal_loads: np.ndarray
     tire_forces: np.ndarray
-    corner_forces: object
+    corner_forces: NetworkForces | None
     lifted: np.ndarray
     out_of_range_count: int
     body_accelerations: np.ndarray
@@ -366,17 +357,25 @@ def vertical_mass_block(vehicle, jounce) -> np.ndarray:
         c[:3] = (1.0, pos[i, 1], -pos[i, 0])
         c[3 + i] = -1.0
         block += um[i] * np.outer(c, c)
-    for i in range(4):
-        axle = vehicle.suspension.front if i < 2 else vehicle.suspension.rear
-        if axle.inertance > 0.0:
-            ratio = float(axle.motion_ratio_damper(z[i]))
-            block[3 + i, 3 + i] += axle.inertance / ratio**2
+    network = vehicle.suspension.network
+    if network.has_inertia:
+        block[3:, 3:] += network.inertia_block(z)
     return block
 
 
 def evaluate_vertical_dynamics(vehicle, state: VerticalState, wheel_torques, steering: float,
-                               tire_states: tuple[TransientTireState, ...]) -> VerticalEvaluation:
-    """Evaluate the vertical 14-DOF equations in FL, FR, RL, RR order."""
+                               tire_states: tuple[TransientTireState, ...],
+                               network_state=None, *, steering_rate: float = 0.0,
+                               steering_acceleration: float = 0.0) -> VerticalEvaluation:
+    """Evaluate the vertical 14-DOF equations in FL, FR, RL, RR order.
+
+    ``network_state`` holds the suspension network's own states (hydraulic gas
+    fractions). It is ``None`` for a stateless layout; for a stateful one,
+    ``None`` means the network at rest at the evaluated jounces, and the rates of
+    the states are returned in ``corner_forces.ds_dt``. Prescribed steering
+    rate/acceleration are derivatives of the road-wheel command in rad/s and
+    rad/s²; a changing steer trajectory must supply both for dynamic lift.
+    """
     p = vehicle.planar
     torques = np.asarray(wheel_torques, dtype=float)
     if torques.shape != (4,) or len(tire_states) != 4:
@@ -394,12 +393,18 @@ def evaluate_vertical_dynamics(vehicle, state: VerticalState, wheel_torques, ste
     # Heave is the sprung CG's motion, so the body-point arms are measured from it.
     z_body = state.heave + state.roll * pos_s[:, 1] - state.pitch * pos_s[:, 0]
     z_dot = state.v_z + state.roll_rate * pos_s[:, 1] - state.pitch_rate * pos_s[:, 0]
-    hub_down = z_body - jounce
-    hub_rate = z_dot - jounce_rate
+    commanded_angles = wheel_steering_angles(steering, 4)
+    lift, lift_slope, lift_curvature = vehicle.suspension.kinematics.steering_lift(commanded_angles)
+    if not np.isfinite(steering_rate) or not np.isfinite(steering_acceleration):
+        raise ValueError("steering rate and acceleration must be finite")
+    steer_rates = wheel_steering_angles(steering_rate, 4)
+    steer_accelerations = wheel_steering_angles(steering_acceleration, 4)
+    hub_down = z_body - jounce - lift
+    hub_rate = z_dot - jounce_rate - lift_slope * steer_rates
     tire_vertical = tire_deflection_load(p.tire, hub_down, hub_rate,
                                          vehicle.tire_vertical_damping)
     loads = np.maximum(np.asarray(tire_vertical.load), 0.0)
-    angles = wheel_steering_angles(steering, 4) + corner_toe_angles(vehicle.suspension, jounce)
+    angles = commanded_angles + vehicle.suspension.kinematics.toe(jounce)
     planar_state = PlanarState(state.v_x, state.v_y, state.yaw_rate, q[9:13])
     vx, vy = contact_velocities(planar_state, pos, angles)
     radii = loaded_radius(p.tire, loads)
@@ -414,7 +419,8 @@ def evaluate_vertical_dynamics(vehicle, state: VerticalState, wheel_torques, ste
     mz = np.array([f.aligning_moment for f in forces])
     bfx, bfy = rotate_tire_forces_to_body(fx, fy, angles)
     drag_down, drag = aerodynamic_forces(p, float(np.hypot(state.v_x, state.v_y)))
-    suspension = corner_forces(vehicle.suspension, jounce, jounce_rate, vehicle.dampers)
+    kinematics = vehicle.suspension.kinematics
+    suspension = vehicle.suspension.network.forces(jounce, jounce_rate, network_state)
     total_force = np.array([suspension.total[i] for i in range(4)])
     # Body Newton-Euler; include gravity, aero, RC jacking and anti-dive/squat.
     # Roll-centre curves are queried at absolute roll capped to measured range.
@@ -422,8 +428,8 @@ def evaluate_vertical_dynamics(vehicle, state: VerticalState, wheel_torques, ste
     # RC height is even under roll reversal (y -> -y): a mirrored vehicle has the
     # same RC height, so it is not sign-flipped with roll. The lateral jacking
     # below signs itself through bfy and sign(y_i).
-    rc_front = float(vehicle.suspension.front.roll_centre_height(roll_query))
-    rc_rear = float(vehicle.suspension.rear.roll_centre_height(roll_query))
+    rc_front = kinematics.roll_centre_height(0, roll_query)
+    rc_rear = kinematics.roll_centre_height(1, roll_query)
     mass = vehicle.sprung_mass
     ax = (np.sum(bfx) - drag) / p.total_mass
     ay = np.sum(bfy) / p.total_mass
@@ -454,15 +460,14 @@ def evaluate_vertical_dynamics(vehicle, state: VerticalState, wheel_torques, ste
     front_brake_share = float(p.brake_bias)
     anti = np.zeros(4)
     for axle, ix, sign, brake_share, drive_share in (
-        (vehicle.suspension.front, (0, 1), -1.0,
-         front_brake_share, front_drive_share),
-        (vehicle.suspension.rear, (2, 3), 1.0,
-         1.0 - front_brake_share, rear_drive_share),
+        (0, (0, 1), -1.0, front_brake_share, front_drive_share),
+        (1, (2, 3), 1.0, 1.0 - front_brake_share, rear_drive_share),
     ):
         for i in ix:
             driving = bfx[i] >= 0.0
             share = drive_share if driving else brake_share
-            percentage = axle.anti_drive if driving else axle.anti_brake
+            percentage = (kinematics.anti_drive(axle) if driving
+                          else kinematics.anti_brake(axle))
             if share <= 0.0:
                 # An axle that carries none of the reference force has no
                 # geometry force to generate; dividing by its zero share would
@@ -532,22 +537,22 @@ def evaluate_vertical_dynamics(vehicle, state: VerticalState, wheel_torques, ste
               + vehicle.sprung_cg_height * np.sum(link_longitudinal))
     gen[3:] = -hub_force
 
-    inertance = np.array([vehicle.suspension.front.inertance] * 2
-                         + [vehicle.suspension.rear.inertance] * 2)
-    has_inertance = bool(np.any(inertance > 0.0))
+    has_inertance = bool(vehicle.suspension.network.has_inertia)
     block = vertical_mass_block(vehicle, jounce)
     forcing_block = gen.copy()
-    if has_inertance:
-        # Inerter kinetic energy T = 0.5 b_eff(j) jdot^2 with b_eff = b/MR(j)^2.
-        # Lagrange: b_eff jddot + 0.5 b_eff'(j) jdot^2 = Q, so a variable motion
-        # ratio moves 0.5 b_eff' jdot^2 to the right-hand side (zero for MR const).
+    # Prescribed steering subtracts h(delta) from hub-down position, so the
+    # known h_ddot=h''*delta_dot^2+h'*delta_ddot enters M*a=Q+m*c*h_ddot.
+    lift_accel = lift_curvature*steer_rates**2 + lift_slope*steer_accelerations
+    if np.any(lift_accel):
         for i in range(4):
-            if inertance[i] > 0.0:
-                axle = vehicle.suspension.front if i < 2 else vehicle.suspension.rear
-                ratio = float(axle.motion_ratio_damper(jounce[i]))
-                ratio_slope = float(axle.motion_ratio_damper.derivative(jounce[i]))
-                b_slope = -2.0 * inertance[i] * ratio_slope / ratio**3
-                forcing_block[3 + i] -= 0.5 * b_slope * jounce_rate[i] ** 2
+            c = np.array([1.0, y_wheel[i], -x_sprung[i],
+                          *(float(j == i)*-1.0 for j in range(4))])
+            forcing_block += um[i]*c*lift_accel[i]
+    generalized = forcing_block.copy()
+    if has_inertance:
+        # A varying inerter motion ratio moves 0.5 b_eff' jdot^2 to the right-hand
+        # side; the network owns the term (see ``inertial_forcing``).
+        forcing_block[3:] += vehicle.suspension.network.inertial_forcing(jounce, jounce_rate)
     accel = np.linalg.solve(block, forcing_block)
     rr = np.zeros(21)
     rr[:2] = (ax + state.yaw_rate*state.v_y, ay - state.yaw_rate*state.v_x)
@@ -566,4 +571,4 @@ def evaluate_vertical_dynamics(vehicle, state: VerticalState, wheel_torques, ste
     return VerticalEvaluation(rr, mass_matrix, np.asarray([x for t in tire_rates for x in dataclasses.astuple(t)]),
                               loads, np.column_stack((fx, fy, mz)), suspension,
                               loads <= 0, int(np.count_nonzero(suspension.out_of_range)), np.array([ax, ay]),
-                              forcing, gen)
+                              forcing, generalized)

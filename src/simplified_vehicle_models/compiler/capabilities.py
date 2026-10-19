@@ -32,7 +32,7 @@ TORQUE_TRANSMISSION = "torque-transmission"
 DAMPER_FORCE = "damper-force"
 FRONT_DAMPER_FORCE = "front-damper-force"
 REAR_DAMPER_FORCE = "rear-damper-force"
-SUSPENSION_CORNER = "suspension-corner"
+SUSPENSION_FORCES = "suspension-forces"
 
 
 @runtime_checkable
@@ -128,14 +128,16 @@ class DamperForceSource(Protocol):
 
 
 @runtime_checkable
-class SuspensionCornerSource(Protocol):
-    """Provide the front and rear corner suspension of a vertical vehicle model.
+class SuspensionSource(Protocol):
+    """Provide the suspension of a vertical vehicle model: kinematics plus a force network.
 
-    ``front`` and ``rear`` are axle suspensions (spring, ARB, damper motion ratio,
-    roll centre, anti, toe, and jounce steer). Zero jounce is the static
-    equilibrium at the design ride height, named by ``preload_reference``.
+    ``kinematics`` holds the per-wheel geometry (motion ratio, roll centre, anti,
+    toe, jounce steer, travel limits). ``network`` maps jounces, jounce rates and
+    internal states to four wheel-referred corner forces. ``layout`` names the
+    suspension layout. Zero jounce is the static equilibrium at the design ride
+    height, named by ``kinematics.preload_reference``.
     """
 
-    front: object
-    rear: object
-    preload_reference: str
+    kinematics: object
+    network: object
+    layout: str

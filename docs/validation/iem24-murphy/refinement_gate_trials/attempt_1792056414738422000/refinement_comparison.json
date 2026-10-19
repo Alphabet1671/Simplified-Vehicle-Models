@@ -1,0 +1,27 @@
+{
+  "reference": "docs/validation/iem24-murphy/warm_start_trials/attempt_1792056136192670000",
+  "refined": "docs/validation/iem24-murphy/refinement_gate_trials/attempt_1792056414738422000",
+  "reference_rtol": 1e-05,
+  "refined_rtol": 5e-06,
+  "reference_maximum_step_s": 0.02,
+  "refined_maximum_step_s": 0.01,
+  "maximum_absolute_differences": {
+    "lap_time_s": 1.3578277204828737e-05,
+    "body_speed_mps": 0.00023466972802488328,
+    "lateral_error_m": 2.5773357028466455e-05,
+    "heading_error_rad": 1.159505571673991e-05,
+    "yaw_rate_rad_s": 0.000160934435717075,
+    "wheel_speed_rad_s": 0.010920577482110616,
+    "steering_rad": 2.0864435616954613e-05
+  },
+  "limits": {
+    "lap_time_s": 0.02,
+    "body_speed_mps": 0.03,
+    "lateral_error_m": 0.01,
+    "heading_error_rad": 0.01,
+    "yaw_rate_rad_s": 0.02,
+    "wheel_speed_rad_s": 0.3,
+    "steering_rad": 0.01
+  },
+  "refinement_validated": true
+}

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Front roll mode damper table from real car data; baseline setting: click 5. -->
+<model schema-version="1.0" id="iem24-mode-roll-front-damper" type="damper-model" subtype="table-mode">
+  <parameters>
+    <parameter name="click_compression" value="5" unit="1"/>
+    <parameter name="click_rebound" value="5" unit="1"/>
+  </parameters>
+  <data role="damper-table" path="../data/iem24_roll_damper_vc01.npz" format="npz" sha256="e2c599622460fdf2e514d214b396428147b5e9b161b7ef4ee4d81b20b5d5578c"/>
+</model>

@@ -22,6 +22,11 @@ __pycache__/
 .ipynb_checkpoints/
 .DS_Store
 
+# Private real-car source files; never commit this directory.
+/IEM24 Files/
+*.xlsx
+*.xls
+
 # Heavy per-attempt run artifacts. Ignoring only affects untracked files: already
 # tracked attempt files stay tracked, and summary.json, parent.json, *certificate*.json
 # and *_summary.json are deliberately not matched.

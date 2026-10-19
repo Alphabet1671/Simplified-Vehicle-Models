@@ -61,6 +61,7 @@ from tools.run.sweep_vertical_setup import (
 ROOT = Path(__file__).resolve().parents[1]
 FORMULATION_XML = ROOT / "models/formulations/iem24_murphy_real_14dof_simple.xml"
 VEHICLE_XML = ROOT / "models/vehicles/iem24_murphy_real_planar.xml"
+SUSPENSION_XML = ROOT / "models/suspensions/iem24_murphy_real_suspension.xml"
 MODELS = ROOT / "models"
 
 #: Plan "Reference numbers" D7: damping ratio at 25 mm/s, bump click 5 / rebound click 7.
@@ -82,7 +83,7 @@ def compiled_vehicle():
 def baseline_clicks(axle_index: int, compression: int, rebound: int) -> DamperSetting:
     """Return the click setting that matches each valve half of one compiled damper."""
 
-    damper = compiled_vehicle().dampers[axle_index]
+    damper = compiled_vehicle().suspension.network.dampers[axle_index]
     return DamperSetting(
         {
             valve.name: (compression if valve.half == "compression" else rebound)
@@ -101,11 +102,10 @@ def hand_corner_damping_ratio(axle_index: int, compression: int, rebound: int) -
     """
 
     vehicle = compiled_vehicle()
-    damper = vehicle.dampers[axle_index]
-    axle = vehicle.suspension.front if axle_index == 0 else vehicle.suspension.rear
+    damper = vehicle.suspension.network.dampers[axle_index]
     setting = baseline_clicks(axle_index, compression, rebound)
     force = float(np.asarray(damper_force(damper.table, setting, np.array([REFERENCE_DAMPER_VELOCITY])).force)[0])
-    ratio = float(axle.motion_ratio_damper(0.0))
+    ratio = vehicle.suspension.kinematics.motion_ratio(2 * axle_index, 0.0)
     c_wheel = (force / REFERENCE_DAMPER_VELOCITY) / ratio**2
     q0 = solve_static_equilibrium(vehicle).as_vector()
     x0 = np.asarray(q0)[list(POSITION_ROWS)]
@@ -115,7 +115,7 @@ def hand_corner_damping_ratio(axle_index: int, compression: int, rebound: int) -
         tire_deflection_load(vehicle.planar.tire, body - x0[3:], np.zeros(4), 0.0).stiffness,
         dtype=float,
     )
-    spring = float(axle.wheel_rate_spring.derivative(0.0))
+    spring = float(vehicle.suspension.network.springs.axle(axle_index).derivative(0.0))
     fraction = vehicle.sprung_front_fraction if axle_index == 0 else 1.0 - vehicle.sprung_front_fraction
     sprung_corner = vehicle.sprung_mass * fraction / 2.0
     unsprung = vehicle.unsprung_mass_front if axle_index == 0 else vehicle.unsprung_mass_rear
@@ -199,17 +199,30 @@ def _synthetic_four_valve_formulation(directory: Path) -> Path:
             "</model>\n"
         )
         damper_xmls[axle] = path
+    # The dampers are children of the suspension assembly: write a tmp copy of it
+    # with the two damper roles pointed at the synthetic files.
+    suspension_text = SUSPENSION_XML.read_text()
+    suspension_text = suspension_text.replace('ref="../', f'ref="{MODELS}/')
+    suspension_text = suspension_text.replace('path="../', f'path="{MODELS}/')
+    suspension_text = suspension_text.replace(
+        'id="iem24-murphy-real-suspension"', 'id="synthetic-four-valve-suspension"'
+    )
+    for axle in ("front", "rear"):
+        real = f'{MODELS}/dampers/multimatic_dssv_vc01_{axle}.xml'
+        self_check = f'ref="{real}"'
+        assert self_check in suspension_text, self_check
+        suspension_text = suspension_text.replace(self_check, f'ref="{damper_xmls[axle]}"')
+    suspension_path = directory / "synthetic_four_valve_suspension.xml"
+    suspension_path.write_text(suspension_text)
     assembly_text = VEHICLE_XML.read_text()
     assembly_text = assembly_text.replace('ref="../', f'ref="{MODELS}/')
     assembly_text = assembly_text.replace('path="../', f'path="{MODELS}/')
     assembly_text = assembly_text.replace(
         'id="iem24-murphy-real-planar"', 'id="synthetic-four-valve-assembly"'
     )
-    for axle in ("front", "rear"):
-        real = f'{MODELS}/dampers/multimatic_dssv_vc01_{axle}.xml'
-        self_check = f'ref="{real}"'
-        assert self_check in assembly_text, self_check
-        assembly_text = assembly_text.replace(self_check, f'ref="{damper_xmls[axle]}"')
+    real_suspension = f'ref="{MODELS}/suspensions/iem24_murphy_real_suspension.xml"'
+    assert real_suspension in assembly_text, real_suspension
+    assembly_text = assembly_text.replace(real_suspension, f'ref="{suspension_path}"')
     assembly_path = directory / "synthetic_four_valve_assembly.xml"
     assembly_path.write_text(assembly_text)
     formulation_text = FORMULATION_XML.read_text()
@@ -266,20 +279,20 @@ class OverrideValidationTests(unittest.TestCase):
             compiled_vehicle(),
             {"click_compression": 3, "rear.click_rebound": 2, "arb_wheel_rate_rear": 1000.0},
         )
-        self.assertEqual(vehicle.dampers[0].setting.clicks["compression"], 3.0)
-        self.assertEqual(vehicle.dampers[0].setting.clicks["rebound"], 7.0)
-        self.assertEqual(vehicle.dampers[1].setting.clicks["compression"], 3.0)
-        self.assertEqual(vehicle.dampers[1].setting.clicks["rebound"], 2.0)
-        self.assertEqual(vehicle.suspension.rear.arb_wheel_rate, 1000.0)
-        self.assertEqual(vehicle.suspension.front.arb_wheel_rate, 0.0)
+        self.assertEqual(vehicle.suspension.network.dampers[0].setting.clicks["compression"], 3.0)
+        self.assertEqual(vehicle.suspension.network.dampers[0].setting.clicks["rebound"], 7.0)
+        self.assertEqual(vehicle.suspension.network.dampers[1].setting.clicks["compression"], 3.0)
+        self.assertEqual(vehicle.suspension.network.dampers[1].setting.clicks["rebound"], 2.0)
+        self.assertEqual(vehicle.suspension.network.arb.rear, 1000.0)
+        self.assertEqual(vehicle.suspension.network.arb.front, 0.0)
 
     def test_axle_qualified_click_names_are_independent(self):
         vehicle = apply_overrides(
             compiled_vehicle(),
             {"front.click_compression": 1, "rear.click_compression": 9},
         )
-        self.assertEqual(vehicle.dampers[0].setting.clicks["compression"], 1.0)
-        self.assertEqual(vehicle.dampers[1].setting.clicks["compression"], 9.0)
+        self.assertEqual(vehicle.suspension.network.dampers[0].setting.clicks["compression"], 1.0)
+        self.assertEqual(vehicle.suspension.network.dampers[1].setting.clicks["compression"], 9.0)
 
 
 class BaselineClickSweepTests(unittest.TestCase):
@@ -591,7 +604,7 @@ class FrequencyResponseTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.baseline = sweep_vertical_setup(FORMULATION_XML, [{}], "frequency-response")[0]
-        rear = compiled_vehicle().suspension.rear.arb_wheel_rate
+        rear = compiled_vehicle().suspension.network.arb.rear
         cls.factors = (0.0, 1.0, 3.0, 5.0, 10.0)
         cls.arb_results = sweep_vertical_setup(
             FORMULATION_XML,
@@ -666,10 +679,10 @@ class FourValveDamperTests(unittest.TestCase):
             {"click_lsc": 2, "click_hsc": 1, "click_lsr": 3, "click_hsr": 0},
         )
         self.assertEqual(
-            dict(vehicle.dampers[0].setting.clicks),
+            dict(vehicle.suspension.network.dampers[0].setting.clicks),
             {"lsc": 2.0, "hsc": 1.0, "lsr": 3.0, "hsr": 0.0},
         )
-        self.assertEqual(dict(vehicle.dampers[1].setting.clicks), dict(vehicle.dampers[0].setting.clicks))
+        self.assertEqual(dict(vehicle.suspension.network.dampers[1].setting.clicks), dict(vehicle.suspension.network.dampers[0].setting.clicks))
         # A valve name that the table does not have is an unknown override here.
         with self.assertRaises(ValueError):
             apply_overrides(self.vehicle, {"click_compression": 5})

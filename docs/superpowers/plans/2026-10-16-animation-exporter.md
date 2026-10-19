@@ -202,6 +202,8 @@ direction(horizon, screen) = ( 1,         0         )
 ```
 
 The screen-right unit vector is body `+x` and the screen-up unit vector is body
+`-z`, because the view looks along body `+y`. A positive pitch is then nose-down
+in the SAE sense, and the body `x` line is above the horizon at the rear.
 `-z`, because the view looks along body `+y`. Positive pitch is **nose up**: the
 repository's 14-DoF plant fixes "pitch positive nose up (`x` forward)" in
 `formulations/vertical_14dof.py`, which is also the right-handed rotation about
@@ -847,6 +849,7 @@ arrows, four `Fz` bars, and the input readout.
 The ratio is the useful figure, because it does not depend on the length of the
 run. The lap is 73.56 s of simulated time, which holds 8 828 frames, so at 4.30×
 that lap renders in 316 s = **5.3 min**. The 5.3 min and the ratio are the same
+measurement:
 measurement. **Superseded by the real export (Task 9): 9.68x, 80.6 ms per frame, 644 s
 for a 66.57 s lap.** The prototype and the real figure disagree by 2.3×; the cause was
 not isolated (the real figure has more artists than the prototype, and includes the

@@ -1,6 +1,5 @@
-# Raw copy of the 12 x 25 damper force table of the Multimatic DSSV VC01 damper, for CI.
-# Source workbook: Vertical Dynamics/DamperTable.xlsx in the FSAE-VD-Personal-Scripts repository, sheet Multimatic_DSSV_VC01, range A1:Z13.
-# Source workbook sha256: 1b6322caaeaf83f507a5d2256ca4652932c1b1bf05e06d8212f60e6114011d32
+# Damper force table fixture from real car data, retained for CI.
+# Private source workbook identifiers and hashes are intentionally not stored in Git.
 # Layout: sheet layout. Row 1 holds the damper velocity axis in mm/s (B1:Z1). Column A holds the click, 0..11 (A2:A13). Cells hold the force in N.
 # Sign: positive velocity is compression with positive force; negative velocity is rebound with negative force.
 # Values are RAW and uncorrected. The generator, not this file, applies corrections.

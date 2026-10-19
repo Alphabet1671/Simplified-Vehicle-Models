@@ -1,0 +1,4 @@
+Traceback (most recent call last):
+  File "/Users/alphabet1671/Dev/Simplified-Vehicle-Models/tools/run/run_iem24_forward_driver.py", line 647, in child
+    raise ValueError("warm start requires a completed lap with matching planner, speed cap, track and source hashes")
+ValueError: warm start requires a completed lap with matching planner, speed cap, track and source hashes

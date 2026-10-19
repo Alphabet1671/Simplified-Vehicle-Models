@@ -193,12 +193,12 @@ def component_table(role: str) -> Path:
 
 def load_corner_tables() -> dict:
     """Return the compiled corner LUT arrays (spring curves and domains)."""
-    return dict(np.load(component_table("suspension"), allow_pickle=False))
+    return dict(np.load(component_table("suspension/kinematics"), allow_pickle=False))
 
 
 def load_damper_tables() -> dict:
     """Return the compiled damper LUT arrays (velocity axes)."""
-    return dict(np.load(component_table("damper-front"), allow_pickle=False))
+    return dict(np.load(component_table("suspension/damper-front"), allow_pickle=False))
 
 
 def body_speed(trace: np.ndarray, plant_class) -> np.ndarray:
@@ -397,9 +397,14 @@ def table_domain_gate(directory, summary, tables: dict, damper: dict) -> dict:
                        float(np.max(np.abs(damper["velocity_rebound"]))))
     maximum_damper = summary.get("maximum_damper_velocity")
     roll_limit_deg = 5.0
+    has_network = "network_state_valid" in summary
+    network_valid = summary.get("network_state_valid", True)
     return gate(
-        summary.get("out_of_range_evaluations") == 0,
-        "out_of_range_evaluations == 0 for dampers, springs and the roll-centre table.",
+        summary.get("out_of_range_evaluations") == 0 and network_valid is True,
+        ("out_of_range_evaluations == 0 for dampers, springs and the roll-centre table, and "
+         "every suspension-network state (gas volume) inside its physical bounds."
+         if has_network else
+         "out_of_range_evaluations == 0 for dampers, springs and the roll-centre table."),
         relative_attempt(directory),
         {"out_of_range_evaluations": summary.get("out_of_range_evaluations")},
         {"out_of_range_evaluations": summary.get("out_of_range_evaluations"),
@@ -418,6 +423,11 @@ def table_domain_gate(directory, summary, tables: dict, damper: dict) -> dict:
                                         summary.get("jounce_accepted_maximum_m")],
          "jounce_steer_baseline_toe_rad": float(np.max(np.abs(
              tables["jounce_steer_toe_front"]))),
+         **({"network_state_names": summary.get("network_state_names"),
+             "network_state_minimum": summary.get("network_state_minimum"),
+             "network_state_maximum": summary.get("network_state_maximum"),
+             "network_state_bounds": summary.get("network_state_bounds"),
+             "network_state_valid": network_valid} if has_network else {}),
          "roll_centre_table_limit_deg": roll_limit_deg,
          "maximum_absolute_roll_deg": maximum_roll_deg,
          "roll_centre_query_clipped": bool(maximum_roll_deg > roll_limit_deg),

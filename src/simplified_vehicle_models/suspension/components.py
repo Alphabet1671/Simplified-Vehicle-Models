@@ -5,26 +5,41 @@ per valve. A 2-valve damper (Multimatic DSSV VC01) uses ``click_compression``
 and ``click_rebound``. A damper with more valves uses ``click_<valve_name>``.
 The compiled value is a ``CompiledDamper`` that evaluates ``force(velocity)``.
 
-A corner-table suspension XML names one corner-table NPZ (sha256 pinned) and the
-scalar ARB rates, inertances, and static toe of both axles. The compiled value is
-a ``SuspensionModel``.
+A suspension is a ``suspension-assembly`` that nests its parts. The
+``independent-corner`` layout nests five children:
+
+* ``kinematics`` (``suspension-kinematics/corner-table``): the geometry from one
+  corner-table NPZ (sha256 pinned) and the static toe of both axles.
+* ``spring`` (``spring-model/corner-table``): the spring curves from the same NPZ.
+* ``arb`` (``arb-model/axle-rate``): one anti-roll-bar wheel rate per axle.
+* ``damper-front`` and ``damper-rear`` (``damper-model``).
+
+The inertances of both axles are scalars of the assembly. The compiled value is a
+``CompiledSuspension`` (kinematics plus force network).
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, replace
 
 from simplified_vehicle_models.compiler.capabilities import (
     FRONT_DAMPER_FORCE,
     REAR_DAMPER_FORCE,
-    SUSPENSION_CORNER,
+    SUSPENSION_FORCES,
 )
 from simplified_vehicle_models.compiler.registry import register_component
 from simplified_vehicle_models.suspension.corner import (
-    SuspensionModel,
-    axle_from_arrays,
+    geometry_from_arrays,
     load_corner_arrays,
+    spring_from_arrays,
 )
+from simplified_vehicle_models.suspension.elements import AxleArbRates, CornerSprings
+from simplified_vehicle_models.suspension.kinematics import SuspensionKinematics
+from simplified_vehicle_models.suspension.layouts.independent_corner import (
+    build_independent_corner,
+)
+from simplified_vehicle_models.suspension.network import CompiledSuspension
 from simplified_vehicle_models.suspension.damper_table import (
     DamperForce,
     DamperSetting,
@@ -42,14 +57,9 @@ from simplified_vehicle_models.xml.schema import (
 DAMPER_TABLE_ROLE = "damper-table"
 CORNER_TABLE_ROLE = "corner-table"
 _CLICK_PREFIX = "click_"
-_CORNER_UNITS = {
-    "arb_wheel_rate_front": "N/m",
-    "arb_wheel_rate_rear": "N/m",
-    "inertance_front": "kg",
-    "inertance_rear": "kg",
-    "static_toe_front": "rad",
-    "static_toe_rear": "rad",
-}
+_KINEMATICS_UNITS = {"static_toe_front": "rad", "static_toe_rear": "rad"}
+_ARB_UNITS = {"arb_wheel_rate_front": "N/m", "arb_wheel_rate_rear": "N/m"}
+_INDEPENDENT_UNITS = {"inertance_front": "kg", "inertance_rear": "kg"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,46 +107,115 @@ def compile_damper(model: Model) -> CompiledDamper:
     return CompiledDamper(table=table, setting=setting)
 
 
-def compile_suspension_corner(model: Model) -> SuspensionModel:
-    """Compile a corner-table suspension: load the pinned NPZ and bind the XML scalars."""
+def _corner_arrays(model: Model) -> dict:
+    """Load the one corner-table NPZ that ``model`` declares."""
 
     require_no_references(model)
     references = [item for item in model.data if item.role == CORNER_TABLE_ROLE]
     if len(references) != 1 or len(model.data) != 1 or references[0].format != "npz":
-        raise ValueError(f"{model.path}: suspension requires one corner-table NPZ declaration")
+        raise ValueError(f"{model.path}: requires one corner-table NPZ declaration")
     reference = references[0]
     if not reference.sha256:
         raise ValueError(f"{model.path}: corner-table declaration requires sha256")
-    values = closed_parameters(model, _CORNER_UNITS)
-    require_nonnegative(
-        model, values,
-        "arb_wheel_rate_front", "arb_wheel_rate_rear", "inertance_front", "inertance_rear",
-    )
-    arrays = load_corner_arrays(reference.path, reference.sha256)
+    return load_corner_arrays(reference.path, reference.sha256)
+
+
+def compile_suspension_kinematics(model: Model) -> SuspensionKinematics:
+    """Compile corner-table kinematics: geometry from the pinned NPZ plus static toe."""
+
+    optional = {f"steering_lift_{term}_{side}_front": "m"
+                for term in ("sine", "cosine") for side in ("left", "right")}
+    expected = {**_KINEMATICS_UNITS, **{name: unit for name, unit in optional.items()
+                                        if name in model.parameters}}
+    values = closed_parameters(model, expected)
+    arrays = _corner_arrays(model)
     try:
-        return SuspensionModel(
-            front=axle_from_arrays(
-                arrays, "front",
-                arb_wheel_rate=values["arb_wheel_rate_front"],
-                inertance=values["inertance_front"],
-                static_toe=values["static_toe_front"],
-            ),
-            rear=axle_from_arrays(
-                arrays, "rear",
-                arb_wheel_rate=values["arb_wheel_rate_rear"],
-                inertance=values["inertance_rear"],
-                static_toe=values["static_toe_rear"],
-            ),
+        front = geometry_from_arrays(arrays, "front", static_toe=values["static_toe_front"])
+        front = replace(front, **{f"steering_lift_{term}_{side}": values.get(
+            f"steering_lift_{term}_{side}_front", 0.0)
+            for term in ("sine", "cosine") for side in ("left", "right")})
+        return SuspensionKinematics(
+            front=front,
+            rear=geometry_from_arrays(arrays, "rear", static_toe=values["static_toe_rear"]),
         )
     except ValueError as error:
         raise ValueError(f"{model.path}: {error}") from error
 
 
+def compile_corner_springs(model: Model) -> CornerSprings:
+    """Compile corner-table springs: the wheel-referred spring curve of each axle."""
+
+    closed_parameters(model, {})
+    arrays = _corner_arrays(model)
+    try:
+        return CornerSprings(
+            front=spring_from_arrays(arrays, "front"),
+            rear=spring_from_arrays(arrays, "rear"),
+        )
+    except ValueError as error:
+        raise ValueError(f"{model.path}: {error}") from error
+
+
+def compile_axle_arb(model: Model) -> AxleArbRates:
+    """Compile an anti-roll bar given as one wheel rate per axle."""
+
+    require_no_references(model)
+    values = closed_parameters(model, _ARB_UNITS)
+    require_nonnegative(model, values, *_ARB_UNITS)
+    return AxleArbRates(front=values["arb_wheel_rate_front"], rear=values["arb_wheel_rate_rear"])
+
+
+def compile_independent_corner(model: Model, children: Mapping[str, object]) -> CompiledSuspension:
+    """Compile the independent-corner suspension from its five compiled children."""
+
+    values = closed_parameters(model, _INDEPENDENT_UNITS)
+    require_nonnegative(model, values, *_INDEPENDENT_UNITS)
+    try:
+        return build_independent_corner(
+            kinematics=_child(model, children, "kinematics", SuspensionKinematics),
+            springs=_child(model, children, "spring", CornerSprings),
+            arb=_child(model, children, "arb", AxleArbRates),
+            damper_front=_child(model, children, "damper-front", CompiledDamper),
+            damper_rear=_child(model, children, "damper-rear", CompiledDamper),
+            inertance_front=values["inertance_front"],
+            inertance_rear=values["inertance_rear"],
+        )
+    except ValueError as error:
+        raise ValueError(f"{model.path}: {error}") from error
+
+
+def _child(model: Model, children: Mapping[str, object], role: str, expected: type):
+    value = children[role]
+    if not isinstance(value, expected):
+        raise ValueError(
+            f"{model.path}: child {role!r} must compile to {expected.__name__}, "
+            f"received {type(value).__name__}"
+        )
+    return value
+
+
 register_component(
-    "suspension-model",
+    "suspension-kinematics",
     "corner-table",
-    capability=SUSPENSION_CORNER,
-    compile_function=compile_suspension_corner,
+    compile_function=compile_suspension_kinematics,
+)
+register_component(
+    "spring-model",
+    "corner-table",
+    compile_function=compile_corner_springs,
+)
+register_component(
+    "arb-model",
+    "axle-rate",
+    compile_function=compile_axle_arb,
+)
+register_component(
+    "suspension-assembly",
+    "independent-corner",
+    capability=SUSPENSION_FORCES,
+    compile_function=compile_independent_corner,
+    nests_components=True,
+    child_roles=("kinematics", "spring", "arb", "damper-front", "damper-rear"),
 )
 register_component(
     "damper-model",

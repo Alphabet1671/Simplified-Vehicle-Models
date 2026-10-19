@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Rear roll-mode rate combines the 350 lbf/in roll spring with the 120 lbf/in rear ARB equivalent (82 309.612566 N/m). Spring and ARB values are from real car data. -->
+<model schema-version="1.0" id="iem24-mode-roll-rear" type="spring-model" subtype="mode-rate">
+  <parameters>
+    <parameter name="rate" value="82309.61256584385" unit="N/m"/>
+  </parameters>
+</model>

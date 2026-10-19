@@ -21,7 +21,7 @@ Per-model differences (all on the same canonical track):
 |---|---|---|---|
 | Degrees of freedom | 3 (path speed, rear-drive force, energy) | 7 planar (v_x, v_y, yaw, four wheel speeds) | 14 (planar 7 + heave, roll, pitch, four jounces) |
 | Tire model | peak/sliding pure-slip envelope from the UniTire lab fit | steady UniTire combined slip with four wheel-speed states | the same steady UniTire plus the PROPOSED transient (relaxation) layer |
-| Suspension / vertical load | none; a quasi-static load-transfer-free grip limit | none; per-wheel load from quasi-static lateral/longitudinal transfer | four-corner springs, bump stops, ARB, dampers (5/7 clicks), jounce travel -0.0318–0.0318 m, DSS roll-centre table |
+| Suspension / vertical load | none; a quasi-static load-transfer-free grip limit | none; per-wheel load from quasi-static lateral/longitudinal transfer | four-corner springs, bump stops, ARB, dampers (5/7 clicks), jounce travel -0.0318–0.0318 m, roll-centre table from real car data |
 | Driver | prescribed-path minimum-time optimum (no driver) | preview driver on the live point-mass speed plan | same preview driver and plan as the 7DoF |
 | Solver | energy-coupled forward/backward profile iterations | BDF, rtol 2.5e-06, maximum step 0.005 s | BDF, rtol 1.25e-06, maximum step 0.000625 s |
 | Path spacing | 0.5 m mesh, 2020 nodes | 0.5 m plan | 0.5 m plan |

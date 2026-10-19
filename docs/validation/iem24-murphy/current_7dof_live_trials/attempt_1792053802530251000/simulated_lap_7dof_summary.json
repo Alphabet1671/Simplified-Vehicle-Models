@@ -1,0 +1,12 @@
+{
+  "source_attempt": "docs/validation/iem24-murphy/current_7dof_live_trials/attempt_1792053802530251000",
+  "method": "transient_forward_driver",
+  "status": "Completed",
+  "lap_completed": true,
+  "usable": false,
+  "minimum_time_optimum": false,
+  "lap_time_s": 78.311340901278,
+  "accepted_steps": 25338,
+  "power_source": "replayed per-wheel motor torque and wheel speed, with drivetrain and motor efficiency",
+  "validation_warning": "Driven non-optimal transient; not usable as validated lap until all acceptance gates pass."
+}

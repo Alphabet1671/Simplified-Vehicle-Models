@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Decoupled spring rates and heave/roll damper tables/settings are from real car data. Heave dampers: click 6 front/rear; roll dampers: front click 5, rear click 8. Motion ratios: heave 1.05 F/1.10 R; roll 1.20 F/1.30 R. The rear roll mode rate includes a 120 lb/in equivalent rear ARB. This linear modal model does not include corner bump stops and is not the active 14DoF acceptance model. -->
+<model schema-version="1.0" id="iem24-axle-roll-heave" type="suspension-assembly" subtype="axle-roll-heave">
+  <parameters>
+    <!-- DSS wheel/shaft motion ratios; roll travel is interpreted as per-side (half-difference) wheel travel. -->
+    <parameter name="motion_ratio_heave_front" value="1.05" unit="1"/>
+    <parameter name="motion_ratio_roll_front" value="1.20" unit="1"/>
+    <parameter name="motion_ratio_heave_rear" value="1.10" unit="1"/>
+    <parameter name="motion_ratio_roll_rear" value="1.30" unit="1"/>
+  </parameters>
+  <components>
+    <component role="kinematics" ref="../suspension-kinematics/iem24_murphy_real_suspension_kinematics.xml"/>
+    <component role="heave-spring-front" ref="../springs/iem24_mode_heave_front.xml"/>
+    <component role="heave-damper-front" ref="../dampers/iem24_mode_heave_damper.xml"/>
+    <component role="roll-spring-front" ref="../springs/iem24_mode_roll_front.xml"/>
+    <component role="roll-damper-front" ref="../dampers/iem24_mode_roll_front_damper.xml"/>
+    <component role="heave-spring-rear" ref="../springs/iem24_mode_heave_rear.xml"/>
+    <component role="heave-damper-rear" ref="../dampers/iem24_mode_heave_damper.xml"/>
+    <component role="roll-spring-rear" ref="../springs/iem24_mode_roll_rear.xml"/>
+    <component role="roll-damper-rear" ref="../dampers/iem24_mode_roll_rear_damper.xml"/>
+  </components>
+</model>

@@ -86,6 +86,34 @@ def compiled_vehicle():
     return _VEHICLE_CACHE["vehicle"]
 
 
+def without_bump_steer(vehicle):
+    """Return ``vehicle`` with flat (zero) jounce-steer curves, keeping everything else.
+
+    These tests check identities that hold for any bump steer only when the toe
+    change is zero (exact static rates, oracle force balances), so they isolate the
+    physics under test from the derived curves, which have their own tests.
+    """
+
+    from dataclasses import replace
+    from simplified_vehicle_models.suspension.monotone_spline import MonotoneSpline
+
+    kinematics = vehicle.suspension.kinematics
+    for axle in (0, 1):
+        low, high = kinematics.axle(axle).jounce_limits
+        kinematics = kinematics.with_axle(axle, jounce_steer=MonotoneSpline([low, 0.0, high], [0.0, 0.0, 0.0]))
+    suspension = replace(vehicle.suspension, kinematics=kinematics,
+                         network=vehicle.suspension.network.with_kinematics(kinematics))
+    return replace(vehicle, suspension=suspension)
+
+
+def flat_vehicle():
+    """Return the compiled IEM24 vehicle with flat bump steer, cached across the module."""
+
+    if "flat" not in _VEHICLE_CACHE:
+        _VEHICLE_CACHE["flat"] = without_bump_steer(compiled_vehicle())
+    return _VEHICLE_CACHE["flat"]
+
+
 def straight_plan(speed: float = TRIAL_SPEED, distance: float = TRIAL_DISTANCE) -> SpeedPlan:
     """Return a straight closed plan at a constant requested speed."""
 
@@ -114,11 +142,7 @@ def with_inertance(vehicle, inertance: float = STEP_INERTANCE):
     suspension = vehicle.suspension
     return replace(
         vehicle,
-        suspension=replace(
-            suspension,
-            front=replace(suspension.front, inertance=inertance),
-            rear=replace(suspension.rear, inertance=inertance),
-        ),
+        suspension=suspension.with_network(suspension.network.with_inertance(inertance, inertance)),
     )
 
 
@@ -137,10 +161,10 @@ def closed_form_mass(vehicle) -> np.ndarray:
         column[3 + index] = -1.0
         matrix += masses[index] * np.outer(column, column)
     for index in range(4):
-        axle = vehicle.suspension.front if index < 2 else vehicle.suspension.rear
-        if axle.inertance > 0.0:
-            ratio = float(axle.motion_ratio_damper(0.0))
-            matrix[3 + index, 3 + index] += axle.inertance / ratio**2
+        inertance = vehicle.suspension.network.inertance[0 if index < 2 else 1]
+        if inertance > 0.0:
+            ratio = vehicle.suspension.kinematics.motion_ratio(index, 0.0)
+            matrix[3 + index, 3 + index] += inertance / ratio**2
     return matrix
 
 
@@ -161,9 +185,9 @@ def closed_form_stiffness(vehicle, x0) -> np.ndarray:
         dtype=float,
     )
     spring = np.empty(4)
-    for axle, (left, right) in ((vehicle.suspension.front, (0, 1)),
-                                (vehicle.suspension.rear, (2, 3))):
-        spring[[left, right]] = axle.wheel_rate_spring.derivative(x0[3:][[left, right]])
+    network = vehicle.suspension.network
+    for axle, (left, right) in ((0, (0, 1)), (1, (2, 3))):
+        spring[[left, right]] = network.springs.axle(axle).derivative(x0[3:][[left, right]])
     matrix = np.zeros((7, 7))
     for index in range(4):
         column = np.zeros(7)
@@ -173,9 +197,8 @@ def closed_form_stiffness(vehicle, x0) -> np.ndarray:
         column[3 + index] = -1.0
         matrix += tire[index] * np.outer(column, column)
         matrix[3 + index, 3 + index] += spring[index]
-    for axle, (left, right) in ((vehicle.suspension.front, (0, 1)),
-                                (vehicle.suspension.rear, (2, 3))):
-        half = 0.5 * axle.arb_wheel_rate
+    for axle, (left, right) in ((0, (0, 1)), (1, (2, 3))):
+        half = 0.5 * network.arb.axle(axle)
         matrix[3 + left, 3 + left] += half
         matrix[3 + left, 3 + right] -= half
         matrix[3 + right, 3 + left] -= half
@@ -202,9 +225,8 @@ def closed_form_damping(vehicle) -> np.ndarray:
         column[3 + index] = -1.0
         matrix += vehicle.tire_vertical_damping * np.outer(column, column)
     for index in range(4):
-        axle = vehicle.suspension.front if index < 2 else vehicle.suspension.rear
-        damper = vehicle.dampers[0] if index < 2 else vehicle.dampers[1]
-        ratio = float(axle.motion_ratio_damper(0.0))
+        damper = vehicle.suspension.network.dampers[0 if index < 2 else 1]
+        ratio = vehicle.suspension.kinematics.motion_ratio(index, 0.0)
         slope = float(np.asarray(damper.force(np.zeros(1)).slope)[0])
         matrix[3 + index, 3 + index] += slope / ratio**2
     return matrix
@@ -228,6 +250,19 @@ class VerticalForwardLayoutTests(unittest.TestCase):
         cls.vehicle = compiled_vehicle()
         cls.plan = straight_plan()
         cls.plant = VerticalForwardPlant(cls.vehicle, cls.plan)
+
+    def test_lift_configuration_uses_steer_rate_for_hub_velocity(self):
+        from dataclasses import replace
+        kin = self.vehicle.suspension.kinematics.with_axle(0, steering_lift_sine_left=.002)
+        suspension = replace(self.vehicle.suspension, kinematics=kin,
+                             network=self.vehicle.suspension.network.with_kinematics(kin))
+        plant = VerticalForwardPlant(replace(self.vehicle, suspension=suspension), self.plan)
+        state = plant.initial_state(15.0)
+        state[STEERING_INDEX] = 0.2
+        still = plant.evaluate(0.0, state, DriverCommand(0.0, 0.0, 0.0)).forcing
+        moving = plant.evaluate(0.0, state, DriverCommand(0.0, 0.0, 0.3)).forcing
+        self.assertTrue(np.all(np.isfinite(moving)))
+        self.assertFalse(np.array_equal(still, moving))
 
     def test_forward_plant_protocol_is_checked_the_same_way_as_the_planar_plant(self):
         planar = PlanarForwardPlant(
@@ -403,7 +438,7 @@ class VerticalForwardInitialStateTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.vehicle = compiled_vehicle()
+        cls.vehicle = flat_vehicle()
 
     def _assert_steady(self, speed: float, curvature: float = 0.0):
         plan = SpeedPlan(np.array([0.0, 200.0]), np.full(2, speed), np.full(2, curvature))
@@ -458,7 +493,7 @@ class VerticalForwardTireStateTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.vehicle = compiled_vehicle()
+        cls.vehicle = flat_vehicle()
         cls.plant = VerticalForwardPlant(cls.vehicle, straight_plan(20.0))
         cls.state = cls.plant.initial_state(20.0)
 

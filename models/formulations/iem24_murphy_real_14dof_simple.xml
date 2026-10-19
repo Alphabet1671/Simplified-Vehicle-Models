@@ -5,8 +5,6 @@
     <requires capability="steady-combined-slip" />
     <requires capability="aero-loads" />
     <requires capability="drive-force-limit" />
-    <requires capability="suspension-corner" />
+    <requires capability="suspension-forces" />
     <requires capability="transient-combined-slip" />
-    <requires capability="front-damper-force" />
-    <requires capability="rear-damper-force" />
 </model>

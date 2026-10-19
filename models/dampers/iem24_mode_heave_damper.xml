@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Heave mode damper table from real car data; baseline front/rear setting: click 6. -->
+<model schema-version="1.0" id="iem24-mode-heave-damper" type="damper-model" subtype="table-mode">
+  <parameters>
+    <parameter name="click_compression" value="6" unit="1"/>
+    <parameter name="click_rebound" value="6" unit="1"/>
+  </parameters>
+  <data role="damper-table" path="../data/iem24_heave_damper_vc01.npz" format="npz" sha256="f0783363fc0fc30a45f15e1a9ecedecd505d0ee215b4156b87b1ba72d962ae41"/>
+</model>

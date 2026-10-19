@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Wheel-referred roll-mode spring rate: IEM24 physical roll spring 350 lbf/in (61 294.392336 N/m), front and rear. Source: from real car data. -->
+<model schema-version="1.0" id="iem24-mode-roll-front" type="spring-model" subtype="mode-rate">
+  <parameters>
+    <parameter name="rate" value="61294.39233626669" unit="N/m"/>
+  </parameters>
+</model>

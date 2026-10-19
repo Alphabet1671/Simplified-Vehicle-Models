@@ -548,6 +548,36 @@ def source_line(extraction: dict, summary: dict) -> str:
             "earlier runs")
 
 
+
+def suspension_description(suspension) -> str:
+    """Return the report's one-line description of the compiled suspension layout.
+
+    The independent-corner text is the wording the stored reports use. A modal
+    layout lists its mode springs and the click setting of each mode damper,
+    read through the network, not from a fixed corner-damper attribute.
+    """
+    network = suspension.network
+    dampers = tuple(network.dampers)
+
+    def setting(damper) -> str:
+        clicks = damper.setting.clicks
+        return "/".join(f"{float(clicks[name]):g}" for name in sorted(clicks))
+
+    if suspension.layout == "independent-corner":
+        clicks = dampers[0].setting.clicks
+        return (
+            "four-corner springs, bump stops, ARB, dampers "
+            f"({float(clicks['compression']):g}/{float(clicks['rebound']):g} clicks)"
+        )
+    names = tuple(getattr(network, "mode_names", ()))
+    if not names:
+        return f"{suspension.layout} suspension"
+    modes = ", ".join(f"{name} {setting(damper)}" for name, damper in zip(names, dampers))
+    return (
+        f"{suspension.layout} linear mode springs (no bump stops), "
+        f"mode dampers, compression/rebound clicks ({modes})"
+    )
+
 def write_report(output: Path, result: dict, runs: dict, measured: dict, *, root: Path = ROOT) -> None:
     from simplified_vehicle_models.compiler.compile import compile_formulation
 
@@ -621,8 +651,7 @@ def write_report(output: Path, result: dict, runs: dict, measured: dict, *, root
             hash_rows.append(f"| {role} ({who}) | `{path}` | `{digest}` |")
 
     limit = drive_torque_limit_nm(planar)
-    clicks = vertical.dampers[0].setting.clicks
-    damper_clicks, damper_rebound = float(clicks["compression"]), float(clicks["rebound"])
+    suspension_text = suspension_description(vertical.suspension)
     initial = {model: runs[model]["data"] for model in MODELS}
     aero = planar.aero
     motor = planar.motor
@@ -705,7 +734,7 @@ Per-model differences (all on the same canonical track):
 |---|---|---|---|
 | Degrees of freedom | 3 (path speed, rear-drive force, energy) | 7 planar (v_x, v_y, yaw, four wheel speeds) | 14 (planar 7 + heave, roll, pitch, four jounces) |
 | Tire model | peak/sliding pure-slip envelope from the UniTire lab fit | steady UniTire combined slip with four wheel-speed states | the same steady UniTire plus the PROPOSED transient (relaxation) layer |
-| Suspension / vertical load | none; a quasi-static load-transfer-free grip limit | none; per-wheel load from quasi-static lateral/longitudinal transfer | four-corner springs, bump stops, ARB, dampers ({damper_clicks:g}/{damper_rebound:g} clicks), jounce travel {gates_14.get('jounce_travel_limits_m', [0, 0])[0]:g}–{gates_14.get('jounce_travel_limits_m', [0, 0])[1]:g} m, DSS roll-centre table |
+| Suspension / vertical load | none; a quasi-static load-transfer-free grip limit | none; per-wheel load from quasi-static lateral/longitudinal transfer | {suspension_text}, jounce travel {gates_14.get('jounce_travel_limits_m', [0, 0])[0]:g}–{gates_14.get('jounce_travel_limits_m', [0, 0])[1]:g} m, DSS roll-centre table |
 | Driver | prescribed-path minimum-time optimum (no driver) | preview driver on the live point-mass speed plan | same preview driver and plan as the 7DoF |
 | Solver | energy-coupled forward/backward profile iterations | BDF, rtol {settings['planar_7dof']['rtol']:g}, maximum step {settings['planar_7dof']['maximum_step']:g} s | BDF, rtol {settings['vertical_14dof']['rtol']:g}, maximum step {settings['vertical_14dof']['maximum_step']:g} s |
 | Path spacing | {point['spacing_m']:g} m mesh, {point['nodes']} nodes | {settings['planar_7dof']['spacing']:g} m plan | {settings['vertical_14dof']['spacing']:g} m plan |

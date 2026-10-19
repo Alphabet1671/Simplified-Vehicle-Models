@@ -60,9 +60,14 @@ _VERTICAL_SOURCES = _SOLVER_SOURCES + (
     Path("src/simplified_vehicle_models/tires/unitire_transient.py"),
     Path("src/simplified_vehicle_models/tires/vertical.py"),
     Path("src/simplified_vehicle_models/tires/unitire_simple.py"),
+    Path("src/simplified_vehicle_models/suspension/components.py"),
     Path("src/simplified_vehicle_models/suspension/corner.py"),
     Path("src/simplified_vehicle_models/suspension/damper_table.py"),
+    Path("src/simplified_vehicle_models/suspension/elements.py"),
+    Path("src/simplified_vehicle_models/suspension/kinematics.py"),
+    Path("src/simplified_vehicle_models/suspension/layouts/independent_corner.py"),
     Path("src/simplified_vehicle_models/suspension/monotone_spline.py"),
+    Path("src/simplified_vehicle_models/suspension/network.py"),
 )
 
 
@@ -110,8 +115,7 @@ MODELS: dict[str, ModelSpec] = {
         plant_module="simplified_vehicle_models.solvers.vertical_forward",
         plant_class="VerticalForwardPlant",
         solver_sources=_VERTICAL_SOURCES,
-        component_roles=("tire", "tire-transient", "suspension",
-                         "damper-front", "damper-rear"),
+        component_roles=("tire", "tire-transient", "suspension"),
         planar_dense_certificate=False,
         wall_margin_fraction=.02,
     ),
@@ -123,6 +127,45 @@ MODEL_NAMES: tuple[str, ...] = tuple(MODELS)
 #: ``wheel_speed_*``.
 _WHEEL_SPEED_PATTERNS = ("omega_{}", "wheel_speed_{}")
 _WHEELS = ("fl", "fr", "rl", "rr")
+
+
+def plant_class_for(spec: ModelSpec, vehicle):
+    """Return the plant class for a compiled vehicle.
+
+    A vertical vehicle whose suspension network carries its own states (the
+    hydraulic layout) needs a plant class with those states appended; every
+    other vehicle uses the spec's plant class unchanged.
+    """
+    module = importlib.import_module(spec.plant_module)
+    factory = getattr(module, "vertical_plant_class", None)
+    if factory is not None and hasattr(vehicle, "suspension"):
+        network = getattr(vehicle.suspension, "network", None)
+        if network is not None and int(getattr(network, "n_states", 0)) > 0:
+            return factory(vehicle)
+    return spec.plant
+
+
+def network_state_ranges(vehicle, plant, accepted_state):
+    """Return the summary entries for the suspension network's own states.
+
+    The range covers every plant evaluation (rejected Newton trials included) and
+    the accepted trajectory. A state outside the network's physical bounds, for
+    example a gas volume beyond an accumulator stop, makes ``network_state_valid``
+    false, which the ``table_domain_valid`` gate reads.
+    """
+    network = vehicle.suspension.network
+    count = int(getattr(plant, "network_states", 0))
+    if count == 0:
+        return {}
+    bounds = np.asarray(network.state_bounds, dtype=float)
+    offset = plant.state_size - plant.network_states
+    accepted = accepted_state[offset:]
+    low = np.minimum(plant.network_state_minimum, accepted.min(axis=1))
+    high = np.maximum(plant.network_state_maximum, accepted.max(axis=1))
+    valid = bool(np.all(low >= bounds[:, 0]) and np.all(high <= bounds[:, 1]))
+    return {"network_state_names": list(network.state_names),
+            "network_state_minimum": low.tolist(), "network_state_maximum": high.tolist(),
+            "network_state_bounds": bounds.tolist(), "network_state_valid": valid}
 
 
 def model_spec(model: str) -> ModelSpec:
@@ -161,13 +204,19 @@ def canonical_path(path):
 
 
 def component_xml(vehicle_xml, role):
-    """Resolve one component role of an assembly to its XML path."""
+    """Resolve one component role of an assembly to its XML path.
+
+    A role path such as ``suspension/damper-front`` descends into the children of
+    a component that nests others.
+    """
     vehicle_xml = Path(vehicle_xml)
+    head, _, rest = role.partition("/")
     root = ElementTree.parse(vehicle_xml).getroot()
     for component in root.findall("./components/component"):
-        if component.get("role") == role:
-            return canonical_path(vehicle_xml.parent / component.get("ref"))
-    raise ValueError(f"{vehicle_xml}: no component with role {role!r}")
+        if component.get("role") == head:
+            path = canonical_path(vehicle_xml.parent / component.get("ref"))
+            return component_xml(path, rest) if rest else path
+    raise ValueError(f"{vehicle_xml}: no component with role {head!r}")
 
 
 def component_data_paths(component_xml_path):
@@ -183,8 +232,11 @@ def model_inputs(model: str, track_xml):
 
     The track, its referenced CSV, the vehicle assembly, the formulation and
     the steady tire XML are always present. A model with extra component roles
-    (the vertical 14DoF suspension, both dampers and the transient tire) also
-    records each of those component XMLs and every data table they reference.
+    (the vertical 14DoF suspension and the transient tire) also records each of
+    those component XMLs and every data table they reference. A component that
+    nests children (the suspension assembly: kinematics, spring, ARB, dampers)
+    also records each child under its role path, for example
+    ``suspension_damper_front_xml``.
     """
     spec = model_spec(model)
     track_xml, track_csv = track_files(track_xml)
@@ -194,12 +246,19 @@ def model_inputs(model: str, track_xml):
     for role in spec.component_roles:
         if role == "tire":
             continue  # already recorded as ``tire_xml``
-        xml = component_xml(spec.vehicle, role)
-        key = role.replace("-", "_")
-        inputs[f"{key}_xml"] = xml
-        for index, data in enumerate(component_data_paths(xml)):
-            inputs[f"{key}_data" if index == 0 else f"{key}_data_{index}"] = data
+        _record_component(inputs, role.replace("-", "_"), component_xml(spec.vehicle, role))
     return inputs
+
+
+def _record_component(inputs, key, xml):
+    """Record one component XML, its data tables, and (recursively) its children."""
+    inputs[f"{key}_xml"] = xml
+    for index, data in enumerate(component_data_paths(xml)):
+        inputs[f"{key}_data" if index == 0 else f"{key}_data_{index}"] = data
+    root = ElementTree.parse(xml).getroot()
+    for child in root.findall("./components/component"):
+        _record_component(inputs, f"{key}_{child.get('role').replace('-', '_')}",
+                          canonical_path(Path(xml).parent / child.get("ref")))
 
 
 def source_files(model: str, track_xml):
@@ -306,9 +365,8 @@ def jounce_travel_limits(vehicle):
     intersection of the front and rear axle limits, so a state inside it is
     inside every corner's travel without needing per-corner extremes.
     """
-    axles = (vehicle.suspension.front.jounce_limits, vehicle.suspension.rear.jounce_limits)
-    return (max(float(limits[0]) for limits in axles),
-            min(float(limits[1]) for limits in axles))
+    limits = vehicle.suspension.kinematics.jounce_limits
+    return (float(np.max(limits[:, 0])), float(np.min(limits[:, 1])))
 
 
 def finite_or_none(value):
@@ -596,8 +654,13 @@ def child(args):
         summary["model_inputs"] = {key: str(path) for key, path in physical_inputs.items()}
         snapshot = root / "source_snapshot"
         snapshot.mkdir()
+        source_names = {}
         for path in sources:
-            (snapshot / path.name).write_bytes(path.read_bytes())
+            name = path.name
+            if name in source_names:
+                name = str(path).replace("/", "__")
+            source_names[name] = path
+            (snapshot / name).write_bytes(path.read_bytes())
         summary["environment"] = {"python": sys.version, "numpy": np.__version__,
                                   "scipy": scipy.__version__, "platform": platform.platform()}
         vehicle = compile_formulation(str(spec.formulation)).model
@@ -619,7 +682,7 @@ def child(args):
                                 lateral_cap, 1., 2.,
                                 vehicle=control if live_limit else None,
                                 live_limit=live_limit)
-        plant_class = spec.plant
+        plant_class = plant_class_for(spec, vehicle)
         # The plant publishes its layout; every column index below is derived
         # from it instead of being repeated as a literal.
         names = tuple(plant_class.state_names)
@@ -761,10 +824,13 @@ def child(args):
             summary["jounce_evaluation_maximum_m"] = finite_or_none(plant.maximum_jounce)
             summary["out_of_range_evaluations"] = plant.out_of_range_evaluations
             summary["jounce_travel_valid"] = travel_valid
+            if getattr(plant, "network_states", 0):
+                summary.update(network_state_ranges(vehicle, plant, result.state))
             summary["contact_valid"] = bool(result.lap_completed
                 and math.isfinite(plant.minimum_contact_load)
                 and plant.minimum_contact_load >= 0.
                 and plant.out_of_range_evaluations == 0
+                and summary.get("network_state_valid", True)
                 and travel_valid)
         # Interval-wide evidence that is narrower than between-step validation:
         # it bounds the BDF dense interpolant (not the true trajectory) for the

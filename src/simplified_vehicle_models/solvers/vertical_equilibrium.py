@@ -15,7 +15,6 @@ from simplified_vehicle_models.formulations.vertical_14dof import (
     VerticalEvaluation, VerticalVehicleParameters, VerticalState,
     evaluate_vertical_dynamics, sprung_wheel_positions,
 )
-from simplified_vehicle_models.suspension.corner import corner_toe_angles
 from simplified_vehicle_models.tires.unitire_simple import loaded_radius
 from simplified_vehicle_models.tires.unitire_transient import steady_rolling_state
 from simplified_vehicle_models.tires.vertical import tire_deflection_load
@@ -440,7 +439,12 @@ def _corner_point(
     body_vertical = heave + body_positions[:, 1] * roll - body_positions[:, 0] * pitch
     loads = np.maximum(
         np.asarray(
-            tire_deflection_load(planar.tire, body_vertical - jounce, np.zeros(4), 0.0).load
+            tire_deflection_load(
+                planar.tire,
+                body_vertical - jounce - vehicle.suspension.kinematics.steering_lift(
+                    wheel_steering_angles(steering, 4))[0],
+                np.zeros(4), 0.0,
+            ).load
         ),
         0.0,
     )
@@ -448,7 +452,7 @@ def _corner_point(
         raise _RejectedTrial("a tire left the admissible load window")
 
     radii = loaded_radius(planar.tire, loads)
-    angles = wheel_steering_angles(steering, 4) + corner_toe_angles(vehicle.suspension, jounce)
+    angles = wheel_steering_angles(steering, 4) + vehicle.suspension.kinematics.toe(jounce)
     longitudinal, lateral = contact_velocities(
         PlanarState(v_x, v_y, yaw_rate, np.zeros(4)), positions, angles
     )
@@ -645,13 +649,5 @@ def _validate_solution(
 
 
 def _spring_forces(vehicle: VerticalVehicleParameters, jounce: np.ndarray) -> np.ndarray:
-    """Evaluate only the preload-bearing spring and ARB contribution."""
-    result = np.empty(4)
-    for axle, (left, right) in ((vehicle.suspension.front, (0, 1)),
-                                 (vehicle.suspension.rear, (2, 3))):
-        pair = jounce[[left, right]]
-        result[[left, right]] = axle.wheel_rate_spring(pair)
-        arb = 0.5 * axle.arb_wheel_rate * (pair[0] - pair[1])
-        result[left] += arb
-        result[right] -= arb
-    return result
+    """Evaluate only the preload-bearing (rate-free) corner forces of the network."""
+    return vehicle.suspension.network.static_forces(jounce)

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Four-mode example: PROPOSED mode rates and dampers; there is no measured four-mode data for this car. -->
+<model schema-version="1.0" id="iem24-four-mode" type="suspension-assembly" subtype="four-mode">
+  <components>
+    <component role="kinematics" ref="../suspension-kinematics/iem24_murphy_real_suspension_kinematics.xml"/>
+    <component role="heave-spring" ref="../springs/iem24_fourmode_heave.xml"/>
+    <component role="heave-damper" ref="../dampers/multimatic_dssv_vc01_mode.xml"/>
+    <component role="roll-spring" ref="../springs/iem24_fourmode_roll.xml"/>
+    <component role="roll-damper" ref="../dampers/multimatic_dssv_vc01_mode.xml"/>
+    <component role="pitch-spring" ref="../springs/iem24_fourmode_pitch.xml"/>
+    <component role="pitch-damper" ref="../dampers/multimatic_dssv_vc01_mode.xml"/>
+    <component role="warp-spring" ref="../springs/iem24_fourmode_warp.xml"/>
+    <component role="warp-damper" ref="../dampers/multimatic_dssv_vc01_mode.xml"/>
+  </components>
+</model>

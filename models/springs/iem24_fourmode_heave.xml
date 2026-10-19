@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Wheel-referred mode spring rate (orthonormal mode coordinate). PROPOSED example: mean of the front and rear corner rates. -->
+<model schema-version="1.0" id="iem24-fourmode-heave" type="spring-model" subtype="mode-rate">
+  <parameters>
+    <parameter name="rate" value="70050.7340985905" unit="N/m"/>
+  </parameters>
+</model>

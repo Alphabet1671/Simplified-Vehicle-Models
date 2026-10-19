@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Wheel-referred mode spring rate (orthonormal mode coordinate). PROPOSED example: half the corner rate (soft warp). -->
+<model schema-version="1.0" id="iem24-fourmode-warp" type="spring-model" subtype="mode-rate">
+  <parameters>
+    <parameter name="rate" value="35025.36704929525" unit="N/m"/>
+  </parameters>
+</model>

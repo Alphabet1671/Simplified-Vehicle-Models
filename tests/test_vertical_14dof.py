@@ -66,15 +66,16 @@ def anti_forces(vehicle, bfx):
     drive_front, drive_rear = axle_drive_shares(vehicle)
     result = np.zeros(4)
     for axle, ix, sign, brake_share, drive_share in (
-        (vehicle.suspension.front, (0, 1), -1.0, bias, drive_front),
-        (vehicle.suspension.rear, (2, 3), 1.0, 1.0 - bias, drive_rear),
+        (0, (0, 1), -1.0, bias, drive_front),
+        (1, (2, 3), 1.0, 1.0 - bias, drive_rear),
     ):
         for i in ix:
             driving = bfx[i] >= 0.0
             share = drive_share if driving else brake_share
             if share <= 0.0:
                 continue
-            percentage = axle.anti_drive if driving else axle.anti_brake
+            kin = vehicle.suspension.kinematics
+            percentage = kin.anti_drive(axle) if driving else kin.anti_brake(axle)
             result[i] = sign * percentage * (float(p.cg_height) / float(p.wheelbase)) * bfx[i] / share
     return result
 
@@ -131,9 +132,9 @@ def roll_stiffness_front_share(vehicle, static_state):
     tire_rate = np.asarray(tire_deflection_load(p.tire, deflection, np.zeros(4), 0.0).stiffness)
     track = 2.0 * p.half_track
     stiffness = []
-    for axle, jounce, index in ((vehicle.suspension.front, 0.0, 0),
-                                (vehicle.suspension.rear, 0.0, 2)):
-        rate = float(axle.wheel_rate_spring.derivative(jounce)) + float(axle.arb_wheel_rate)
+    network = vehicle.suspension.network
+    for axle, jounce, index in ((0, 0.0, 0), (1, 0.0, 2)):
+        rate = float(network.springs.axle(axle).derivative(jounce)) + float(network.arb.axle(axle))
         series = rate * float(tire_rate[index]) / (rate + float(tire_rate[index]))
         stiffness.append(0.5 * track**2 * series)
     return stiffness[0] / sum(stiffness)
@@ -152,10 +153,9 @@ def braking_state(vehicle, kappa, speed=30.0, loads=None, anti=True):
     from simplified_vehicle_models.tires.unitire_simple import loaded_radius
     if not anti:
         s = vehicle.suspension
-
-        def zeroed(axle):
-            return replace(axle, anti_brake=0.0, anti_drive=0.0)
-        vehicle = replace(vehicle, suspension=replace(s, front=zeroed(s.front), rear=zeroed(s.rear)))
+        for axle in (0, 1):
+            s = s.with_axle_geometry(axle, anti_brake=0.0, anti_drive=0.0)
+        vehicle = replace(vehicle, suspension=s)
     p = vehicle.planar
     q = solve_static_equilibrium(vehicle).as_vector()
     q[0] = speed
@@ -174,11 +174,81 @@ def braking_state(vehicle, kappa, speed=30.0, loads=None, anti=True):
     return vehicle, state, tires, out
 
 
+def without_bump_steer(vehicle):
+    """Return ``vehicle`` with flat (zero) jounce-steer curves, keeping everything else.
+
+    These tests check identities that hold for any bump steer only when the toe
+    change is zero (exact static rates, oracle force balances), so they isolate the
+    physics under test from the derived curves, which have their own tests.
+    """
+
+    from dataclasses import replace
+    from simplified_vehicle_models.suspension.monotone_spline import MonotoneSpline
+
+    kinematics = vehicle.suspension.kinematics
+    for axle in (0, 1):
+        low, high = kinematics.axle(axle).jounce_limits
+        kinematics = kinematics.with_axle(axle, jounce_steer=MonotoneSpline([low, 0.0, high], [0.0, 0.0, 0.0]))
+    suspension = replace(vehicle.suspension, kinematics=kinematics,
+                         network=vehicle.suspension.network.with_kinematics(kinematics))
+    return replace(vehicle, suspension=suspension)
+
 
 class VerticalStateTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.vehicle = compile_formulation(ROOT / "models/formulations/iem24_murphy_real_14dof_simple.xml").model
+        cls.vehicle = without_bump_steer(
+            compile_formulation(ROOT / "models/formulations/iem24_murphy_real_14dof_simple.xml").model)
+
+    def test_geometric_steering_lift_changes_tire_load_and_velocity(self):
+        from dataclasses import replace
+        from simplified_vehicle_models.tires.vertical import tire_deflection_load
+        kin = self.vehicle.suspension.kinematics.with_axle(
+            0, steering_lift_sine_left=0.002, steering_lift_sine_right=-0.002,
+            steering_lift_cosine_left=0.004, steering_lift_cosine_right=0.004)
+        vehicle = replace(self.vehicle, suspension=replace(
+            self.vehicle.suspension, kinematics=kin,
+            network=self.vehicle.suspension.network.with_kinematics(kin)))
+        state = VerticalState(heave=0.012)
+        tires = (TransientTireState(0.0, 0.0, 0.0),) * 4
+        delta, rate = 0.2, 0.3
+        out = evaluate_vertical_dynamics(vehicle, state, np.zeros(4), delta, tires,
+                                         steering_rate=rate)
+        lift, slope, _ = kin.steering_lift([delta, delta, 0.0, 0.0])
+        expected = tire_deflection_load(vehicle.planar.tire, 0.012-lift,
+                                        -slope*np.array([rate, rate, 0.0, 0.0]),
+                                        vehicle.tire_vertical_damping)
+        np.testing.assert_allclose(out.normal_loads, expected.load, atol=1e-10)
+        self.assertGreater(abs(out.normal_loads[0]-out.normal_loads[1]), 0.01)
+        opposite = evaluate_vertical_dynamics(vehicle, state, np.zeros(4), -delta, tires)
+        opposite_lift = kin.steering_lift([-delta, -delta, 0.0, 0.0])[0]
+        opposite_expected = tire_deflection_load(vehicle.planar.tire, 0.012-opposite_lift,
+                                                 np.zeros(4), vehicle.tire_vertical_damping)
+        np.testing.assert_allclose(opposite.normal_loads, opposite_expected.load, atol=1e-10)
+        np.testing.assert_allclose(out.normal_loads[2:], opposite.normal_loads[2:])
+
+    def test_geometric_steering_lift_acceleration_enters_mass_balance(self):
+        from dataclasses import replace
+        kin = self.vehicle.suspension.kinematics.with_axle(
+            0, steering_lift_sine_right=0.0, steering_lift_cosine_left=0.0,
+            steering_lift_cosine_right=0.0, steering_lift_sine_left=0.003)
+        vehicle = replace(self.vehicle, suspension=replace(
+            self.vehicle.suspension, kinematics=kin,
+            network=self.vehicle.suspension.network.with_kinematics(kin)))
+        state = VerticalState(heave=0.01)
+        tires = (TransientTireState(0.0, 0.0, 0.0),) * 4
+        stationary = evaluate_vertical_dynamics(vehicle, state, np.zeros(4), 0.0, tires)
+        driven = evaluate_vertical_dynamics(vehicle, state, np.zeros(4), 0.0, tires,
+                                            steering_acceleration=2.0)
+        m = vehicle.unsprung_mass_front
+        from simplified_vehicle_models.formulations.vertical_14dof import vertical_mass_block
+        diff = vertical_mass_block(vehicle, np.zeros(4)) @ (
+            driven.rates[[2, 3, 4, 17, 18, 19, 20]] -
+            stationary.rates[[2, 3, 4, 17, 18, 19, 20]])
+        positions = sprung_wheel_positions(vehicle)
+        np.testing.assert_allclose(diff, m*0.003*2.0*
+                                   np.array([1, positions[0,1], -positions[0,0], -1, 0, 0, 0]),
+                                   atol=1e-8)
 
     def test_evaluator_smoke_has_documented_shapes(self):
         state = VerticalState()
@@ -206,15 +276,15 @@ class VerticalStateTests(unittest.TestCase):
         from simplified_vehicle_models.suspension.monotone_spline import MonotoneSpline
 
         suspension = self.vehicle.suspension
-        front = suspension.front
+        front = suspension.kinematics.front
         # Synthetic, isolated FL toe-in at the current 20 mm jounce; FR and
         # both rear wheels retain zero incremental toe.
         low, high = front.jounce_limits
         toe = 0.5*np.pi/180.0
         steer_curve = MonotoneSpline(np.array([low, 0.0, 0.02, high]),
                                      np.array([0.0, 0.0, toe, toe]))
-        front = replace(front, jounce_steer=steer_curve)
-        vehicle = replace(self.vehicle, suspension=replace(suspension, front=front))
+        vehicle = replace(self.vehicle, suspension=suspension.with_axle_geometry(
+            0, jounce_steer=steer_curve))
         # Jounce is positive in compression (hub up relative to body), so the hub
         # is at heave - jounce below the body point; add 0.03 m heave to keep FL loaded.
         state = VerticalState(v_x=8.0, v_y=0.2, heave=0.03, wheel_speed_fl=8.0 / 0.32,
@@ -241,8 +311,8 @@ class VerticalStateTests(unittest.TestCase):
 
         def wheel_angles(model):
             angles = np.empty(4)
-            for index, axle in enumerate((model.front, model.front,
-                                          model.rear, model.rear)):
+            kin = model.kinematics
+            for index, axle in enumerate((kin.front, kin.front, kin.rear, kin.rear)):
                 sign = 1.0 if index in (0, 2) else -1.0
                 angles[index] = sign*(axle.static_toe + float(axle.jounce_steer(jounce[index])))
             return angles
@@ -335,9 +405,7 @@ class VerticalStateTests(unittest.TestCase):
         # total wheel angles the toe-curve vehicle defines.
         from simplified_vehicle_models.formulations.planar_7dof import (
             aerodynamic_forces, wheel_steering_angles)
-        from simplified_vehicle_models.suspension.corner import corner_toe_angles
-        total_angles = wheel_steering_angles(0.0, 4) + corner_toe_angles(vehicle.suspension,
-                                                                        jounce)
+        total_angles = wheel_steering_angles(0.0, 4) + vehicle.suspension.kinematics.toe(jounce)
         tire_fx, tire_fy = out.tire_forces[:, 0], out.tire_forces[:, 1]
         expected_total_fx = np.sum(tire_fx*np.cos(total_angles) - tire_fy*np.sin(total_angles))
         _, drag = aerodynamic_forces(vehicle.planar, float(np.hypot(state.v_x, state.v_y)))
@@ -440,7 +508,10 @@ class VerticalStateTests(unittest.TestCase):
                 mir.tire_state_rates.reshape(4, 3),
                 out.tire_state_rates.reshape(4, 3)[swap]*np.array([1.0, -1.0, -1.0]), **tol)
         with self.subTest("suspension corner forces"):
-            for name in ("spring", "arb", "damper", "total", "damper_velocity"):
+            for name in ("spring", "arb", "damper"):
+                np.testing.assert_allclose(mir.corner_forces.elements[name],
+                                           out.corner_forces.elements[name][swap], err_msg=name, **tol)
+            for name in ("total", "damper_velocity"):
                 np.testing.assert_allclose(getattr(mir.corner_forces, name),
                                            getattr(out.corner_forces, name)[swap], err_msg=name, **tol)
         # Body parity: even v_x_dot, v_z_dot, pitch accel, heave_dot, pitch_dot;
@@ -554,7 +625,7 @@ class VerticalStateTests(unittest.TestCase):
         out = self._perturbed(v_z=0.1, jounce_rate_fl=0.1, jounce_rate_fr=0.1,
                               jounce_rate_rl=0.1, jounce_rate_rr=0.1)
         np.testing.assert_allclose(out.normal_loads, base.normal_loads, rtol=0.0, atol=1e-9)
-        self.assertTrue(np.all(out.corner_forces.damper > base.corner_forces.damper))
+        self.assertTrue(np.all(out.corner_forces.elements["damper"] > base.corner_forces.elements["damper"]))
         self.assertLess(out.rates[2], -1e-3)
 
     def test_heave_rate_down_alone_increases_tire_load(self):
@@ -603,7 +674,7 @@ class VerticalStateTests(unittest.TestCase):
         base = self._perturbed()
         out = self._perturbed(jounce_rate_rr=0.1)
         self.assertLess(out.normal_loads[3], base.normal_loads[3])
-        self.assertGreater(out.corner_forces.damper[3], base.corner_forces.damper[3])
+        self.assertGreater(out.corner_forces.elements["damper"][3], base.corner_forces.elements["damper"][3])
         self.assertLess(out.rates[2], base.rates[2])
         self.assertLess(out.rates[3], base.rates[3])  # right side pushed up: negative roll
         self.assertLess(out.rates[4], base.rates[4])  # rear pushed up: nose down (negative pitch)
@@ -690,14 +761,14 @@ class VerticalMassMatrixTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.vehicle = compile_formulation(ROOT / "models/formulations/iem24_murphy_real_14dof_simple.xml").model
+        cls.vehicle = without_bump_steer(
+            compile_formulation(ROOT / "models/formulations/iem24_murphy_real_14dof_simple.xml").model)
 
     @staticmethod
     def _with_inertance(vehicle, front, rear):
         from dataclasses import replace
         s = vehicle.suspension
-        return replace(vehicle, suspension=replace(
-            s, front=replace(s.front, inertance=front), rear=replace(s.rear, inertance=rear)))
+        return replace(vehicle, suspension=s.with_network(s.network.with_inertance(front, rear)))
 
     def _static_tires(self, vehicle, speed=0.0):
         from simplified_vehicle_models.solvers.vertical_equilibrium import solve_static_equilibrium
@@ -747,9 +818,7 @@ class VerticalMassMatrixTests(unittest.TestCase):
         z = np.array([0.004, -0.002, 0.006, -0.001])
         m0, mb = vertical_mass_block(v0, z), vertical_mass_block(vb, z)
         delta = mb - m0
-        s = vb.suspension
-        mr = [float(s.front.motion_ratio_damper(z[0])), float(s.front.motion_ratio_damper(z[1])),
-              float(s.rear.motion_ratio_damper(z[2])), float(s.rear.motion_ratio_damper(z[3]))]
+        mr = [vb.suspension.kinematics.motion_ratio(i, z[i]) for i in range(4)]
         expected = np.zeros((7, 7))
         for i, (b, ratio) in enumerate(zip((b_f, b_f, b_r, b_r), mr)):
             expected[3 + i, 3 + i] = b / ratio**2
@@ -931,17 +1000,17 @@ class VerticalMassMatrixTests(unittest.TestCase):
         from dataclasses import replace
         from simplified_vehicle_models.suspension.monotone_spline import MonotoneSpline
         v = self._with_inertance(self.vehicle, 3.0, 5.0)
-        front = v.suspension.front
+        front = v.suspension.kinematics.front
         low, high = front.jounce_limits
         knots = np.array([low, 0.0, high])
         # Strictly varying but smooth motion ratio around the constant baseline.
         varying = MonotoneSpline(knots, 1.05 * np.array([0.94, 1.0, 1.07]))
-        vv = replace(v, suspension=replace(v.suspension, front=replace(front, motion_ratio_damper=varying)))
+        vv = replace(v, suspension=v.suspension.with_axle_geometry(0, motion_ratio=varying))
         state, tires = self._perturbed_state(vv)
         q = state.as_vector()
         out = evaluate_vertical_dynamics(vv, state, np.zeros(4), 0.0, tires)
         for i in (0, 1):
-            j, jd, b = q[13 + i], q[17 + i], front.inertance
+            j, jd, b = q[13 + i], q[17 + i], 3.0
             h = 1e-7
             b_eff = lambda x: b / float(varying(x)) ** 2
             slope = (b_eff(j + h) - b_eff(j - h)) / (2 * h)
@@ -968,7 +1037,8 @@ class LateralLoadTransferTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.vehicle = compile_formulation(ROOT / "models/formulations/iem24_murphy_real_14dof_simple.xml").model
+        cls.vehicle = without_bump_steer(
+            compile_formulation(ROOT / "models/formulations/iem24_murphy_real_14dof_simple.xml").model)
 
     def _lateral_setup(self, speed=30.0, sideslip=0.36):
         """Return (state, tire states) for a sideslip at the static equilibrium.
@@ -980,7 +1050,6 @@ class LateralLoadTransferTests(unittest.TestCase):
         from simplified_vehicle_models.formulations.planar_7dof import (
             PlanarState, contact_velocities, slip_quantities)
         from simplified_vehicle_models.solvers.vertical_equilibrium import solve_static_equilibrium
-        from simplified_vehicle_models.suspension.corner import corner_toe_angles
         from simplified_vehicle_models.tires.unitire_simple import loaded_radius
         from simplified_vehicle_models.tires.vertical import tire_deflection_load
 
@@ -993,7 +1062,7 @@ class LateralLoadTransferTests(unittest.TestCase):
         deflection = z_body - q[13:17]
         loads = tire_deflection_load(p.tire, deflection, np.zeros(4), 0.0).load
         q[9:13] = speed / loaded_radius(p.tire, loads)
-        angles = corner_toe_angles(vehicle.suspension, q[13:17])
+        angles = vehicle.suspension.kinematics.toe(q[13:17])
         vx, vy = contact_velocities(PlanarState(q[0], q[1], 0.0, q[9:13]), wheel_positions(p), angles)
         _, sa = slip_quantities(q[9:13], loaded_radius(p.tire, loads), vx, vy, 1.0)
         tires = tuple(steady_rolling_state(p.tire, vehicle.transient_tire, float(alpha), 0.0,
@@ -1013,10 +1082,9 @@ class LateralLoadTransferTests(unittest.TestCase):
         """Rebuild body-frame tire forces and the Form B vertical force arrays."""
         from simplified_vehicle_models.formulations.planar_7dof import (
             rotate_tire_forces_to_body, wheel_steering_angles)
-        from simplified_vehicle_models.suspension.corner import corner_toe_angles
         vehicle = self.vehicle
         j = jounce if jounce is not None else np.zeros(4)
-        total = wheel_steering_angles(steering, 4) + corner_toe_angles(vehicle.suspension, j)
+        total = wheel_steering_angles(steering, 4) + vehicle.suspension.kinematics.toe(j)
         bfx, bfy = rotate_tire_forces_to_body(out.tire_forces[:, 0], out.tire_forces[:, 1], total)
         return bfx, bfy
 
@@ -1029,8 +1097,8 @@ class LateralLoadTransferTests(unittest.TestCase):
         um = unsprung_masses(vehicle)
         y_wheel = sprung_wheel_positions(vehicle)[:, 1]
         roll = 0.0
-        rc = np.array([float(vehicle.suspension.front.roll_centre_height(roll))] * 2
-                      + [float(vehicle.suspension.rear.roll_centre_height(roll))] * 2)
+        kin = vehicle.suspension.kinematics
+        rc = np.array([kin.roll_centre_height(0, roll)] * 2 + [kin.roll_centre_height(1, roll)] * 2)
         sign_y = np.where(y_wheel > 0.0, 1.0, -1.0)
         track = 2.0 * p.half_track
         link = bfy - um * ay
@@ -1150,8 +1218,9 @@ class LateralLoadTransferTests(unittest.TestCase):
         y_wheel = sprung_wheel_positions(vehicle)[:, 1]
         track = 2.0 * p.half_track
         roll_query = float(np.clip(abs(relaxed.roll), 0.0, 5.0 * np.pi / 180.0))
-        rc = np.array([float(vehicle.suspension.front.roll_centre_height(roll_query))] * 2
-                      + [float(vehicle.suspension.rear.roll_centre_height(roll_query))] * 2)
+        kin = vehicle.suspension.kinematics
+        rc = np.array([kin.roll_centre_height(0, roll_query)] * 2
+                      + [kin.roll_centre_height(1, roll_query)] * 2)
         sign_y = np.where(y_wheel > 0.0, 1.0, -1.0)
         link = bfy - um * ay
         d = -sign_y * 2.0 * rc * link / track
@@ -1251,9 +1320,10 @@ class LateralLoadTransferTests(unittest.TestCase):
             def scale(spline):
                 return MonotoneSpline(spline.x, factor * spline.y)
             s = vehicle.suspension
-            return replace(vehicle, suspension=replace(
-                s, front=replace(s.front, roll_centre_height=scale(s.front.roll_centre_height)),
-                rear=replace(s.rear, roll_centre_height=scale(s.rear.roll_centre_height))))
+            for axle in (0, 1):
+                s = s.with_axle_geometry(
+                    axle, roll_centre_height=scale(s.kinematics.axle(axle).roll_centre_height))
+            return replace(vehicle, suspension=s)
 
         state, tires, out = self._rightward()
         doubled = scaled(self.vehicle, 2.0)
@@ -1312,7 +1382,8 @@ class LongitudinalLoadTransferTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.vehicle = compile_formulation(ROOT / "models/formulations/iem24_murphy_real_14dof_simple.xml").model
+        cls.vehicle = without_bump_steer(
+            compile_formulation(ROOT / "models/formulations/iem24_murphy_real_14dof_simple.xml").model)
 
     def _braking_at(self, delta_ax, anti=True, speed=None):
         """Solve for the braking slip that changes ax by ``delta_ax`` from coasting."""
@@ -1378,10 +1449,10 @@ class LongitudinalLoadTransferTests(unittest.TestCase):
         # With anti-dive the link carries part of the front transfer, so the front
         # spring force is lower and the dive is smaller; the rear spring force is
         # correspondingly higher (the pair pushes the rear body down).
-        self.assertLess(float(np.sum(out_on.corner_forces.spring[:2])),
-                        float(np.sum(out_off.corner_forces.spring[:2])))
-        self.assertGreater(float(np.sum(out_on.corner_forces.spring[2:])),
-                           float(np.sum(out_off.corner_forces.spring[2:])))
+        self.assertLess(float(np.sum(out_on.corner_forces.elements["spring"][:2])),
+                        float(np.sum(out_off.corner_forces.elements["spring"][:2])))
+        self.assertGreater(float(np.sum(out_on.corner_forces.elements["spring"][2:])),
+                           float(np.sum(out_off.corner_forces.elements["spring"][2:])))
         self.assertLess(abs(state_on.pitch), abs(state_off.pitch))
 
     def _anti_pair(self, vehicle, state, tires, out):
@@ -1397,12 +1468,9 @@ class LongitudinalLoadTransferTests(unittest.TestCase):
         """
         from dataclasses import replace
         s = vehicle.suspension
-
-        def zeroed(axle):
-            return replace(axle, anti_brake=0.0, anti_drive=0.0)
-
-        without = replace(vehicle, suspension=replace(
-            s, front=zeroed(s.front), rear=zeroed(s.rear)))
+        for axle in (0, 1):
+            s = s.with_axle_geometry(axle, anti_brake=0.0, anti_drive=0.0)
+        without = replace(vehicle, suspension=s)
         out_without = evaluate_vertical_dynamics(without, state, np.zeros(4), 0.0, tires)
         return out_without.generalized_forces - out.generalized_forces
 
@@ -1434,20 +1502,20 @@ class LongitudinalLoadTransferTests(unittest.TestCase):
         wheelbase = float(p.wheelbase)
         h_over_L = float(p.cg_height) / wheelbase
         for i in (0, 1):
-            expected = -v.suspension.front.anti_brake * h_over_L * float(bfx[i]) / bias
+            expected = -v.suspension.kinematics.anti_brake(0) * h_over_L * float(bfx[i]) / bias
             self.assertAlmostEqual(float(anti[i]), expected, delta=1e-6)
         for i in (2, 3):
-            expected = v.suspension.rear.anti_brake * h_over_L * float(bfx[i]) / (1.0 - bias)
+            expected = v.suspension.kinematics.anti_brake(1) * h_over_L * float(bfx[i]) / (1.0 - bias)
             self.assertAlmostEqual(float(anti[i]), expected, delta=1e-6)
         # The ratio is h_cg, not h_s: the two heights are 7% apart (0.300 vs
         # 0.321 m), so the 1e-6 scale checks above already exclude a mutant that
         # used h_s; this states the distinction explicitly.
-        h_s_predict = (v.suspension.front.anti_brake * (v.sprung_cg_height / wheelbase)
+        h_s_predict = (v.suspension.kinematics.anti_brake(0) * (v.sprung_cg_height / wheelbase)
                        * float(bfx[0]) / bias)
         self.assertGreater(abs(h_s_predict - float(anti[0])), 0.04 * abs(h_s_predict))
         # The old pro-dive expression (h_s and no reference share, as in the
         # previous implementation) is a different number again.
-        old = float(v.suspension.front.anti_brake) * (v.sprung_cg_height / wheelbase) * float(bfx[0])
+        old = float(v.suspension.kinematics.anti_brake(0)) * (v.sprung_cg_height / wheelbase) * float(bfx[0])
         self.assertGreater(abs(float(anti[0]) / old), 1.2)
         # Drive branch: an undriven front axle carries no anti-squat reference.
         drive_shares = axle_drive_shares(v)
@@ -1463,15 +1531,15 @@ class LongitudinalLoadTransferTests(unittest.TestCase):
         # Anti-squat pushes the rear body up under traction (+).
         self.assertTrue(np.all(driven[2:] > 0.0), driven)
         for i in (2, 3):
-            expected = (v.suspension.rear.anti_drive * h_over_L
+            expected = (v.suspension.kinematics.anti_drive(1) * h_over_L
                         * float(drive.tire_forces[i, 0]) / drive_shares[1])
             self.assertAlmostEqual(float(driven[i]), expected, delta=1e-6)
         # The sign is a body-attitude effect: with anti-squat the rear springs
         # carry less, so the rear body sits up (and the rear spring force drops).
         _, drive_off_state, _, drive_off = braking_state(v, 0.02, speed=self.SPEED,
                                                          anti=False)
-        self.assertLess(float(np.sum(drive.corner_forces.spring[2:])),
-                        float(np.sum(drive_off.corner_forces.spring[2:])))
+        self.assertLess(float(np.sum(drive.corner_forces.elements["spring"][2:])),
+                        float(np.sum(drive_off.corner_forces.elements["spring"][2:])))
         self.assertLess(drive_state.pitch, drive_off_state.pitch)  # less squat
 
     def test_pitch_squats_under_traction_and_dives_under_braking(self):

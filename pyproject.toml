@@ -11,6 +11,7 @@ dependencies = ["numpy>=2.0"]
 
 [project.optional-dependencies]
 forward = ["scipy>=1.11"]
+gui = ["PyQt6>=6.5"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

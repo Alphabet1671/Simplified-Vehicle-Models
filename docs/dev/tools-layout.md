@@ -10,7 +10,8 @@ Run a tool from the repository root by its file path, for example `PYTHONPATH=sr
 |---|---|
 | `tools/data/` | Import and condition measured data: telemetry, vehicle spec sheets |
 | `tools/tracks/` | Build closed track geometry |
-| `tools/model_data/` | Generate or export model data: motor map, tire, legacy powertrain |
+| `tools/model_data/` | Generate or export model data: motor map, tire, legacy powertrain; `generate_component_sweep.py` writes one component file per value for a GUI sweep |
+| `tools/sim_gui/` | Run simulations from a GUI: component swaps, sweeps, run records. See [simulation-gui.md](simulation-gui.md) |
 | `tools/run/` | Run the forward driver and the paired point-mass solver |
 | `tools/gates/` | Acceptance, refinement, tube, and between-step checks |
 | `tools/reports/` | Comparison tools, report writers, plots, correlation export |

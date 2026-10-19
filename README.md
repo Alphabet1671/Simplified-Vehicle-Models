@@ -6,6 +6,7 @@ Python models for point-mass laps and driven planar 7-DoF transients. **Simulati
 - [Model-data provenance](docs/model-data/provenance.md)
 - [Validation reports and generated artifacts](docs/validation/)
 - [Tools and reproducibility commands](docs/dev/tools-layout.md)
+- [Simulation GUI](docs/dev/simulation-gui.md)
 - [MIS report standard](docs/standards/mis-2024-report-standard.md)
 
 Install from the repository root with `python -m pip install -e '.[forward]'`. Run the point-mass example with `PYTHONPATH=src python examples/run_mis_point_mass.py`. Run the bounded 7-DoF forward driver with `PYTHONPATH=src:. python -m tools.run.run_iem24_forward_driver --help`. Every generated report defaults to a path under `docs/validation/`; `tools/` contains programs, not documentation.

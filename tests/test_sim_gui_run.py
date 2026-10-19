@@ -74,6 +74,65 @@ class HeadlessRunnerUnitTests(unittest.TestCase):
                 self.assertEqual(run_study_main(["--definition", str(path), "--output-root", str(self.root)]), 0)
             self.assertEqual(run.call_args.args[2], 4)
 
+    def test_interrupt_in_one_run_does_not_stop_another_run(self):
+        import threading
+        items = {}
+        for name in ("conc-a", "conc-b"):
+            directory = self.root / name / "case_000"
+            directory.mkdir(parents=True)
+            items[name] = PreparedCase(directory, directory / "f", directory / "v", [], timeout_seconds=60)
+        a_started = threading.Event()
+        processes = {}
+        real_popen = subprocess.Popen
+
+        def prepare(_directory, definition, _case):
+            return items[definition.name]
+
+        def command(item, _attempt):
+            if item is items["conc-b"]:
+                self.assertTrue(a_started.wait(10))
+                raise KeyboardInterrupt()
+            return [sys.executable, "-c", "import time; time.sleep(4)"]
+
+        def capture_popen(*args, **kwargs):
+            process = real_popen(*args, **kwargs)
+            # Popen is patched module-wide; keep only run A's sleep child.
+            if "time.sleep(4)" in " ".join(map(str, args[0])):
+                processes["a"] = process
+                a_started.set()
+            return process
+
+        cases = (CaseSpec("case_000", "only", "point-mass", "", {}, {}),)
+        errors = []
+
+        def run_a():
+            try:
+                run_study(self.definition("conc-a"), output_root=self.root, parallel=1)
+            except BaseException as error:  # recorded and checked below
+                errors.append(error)
+
+        with mock.patch("tools.sim_gui.run_study.expand", return_value=cases), \
+             mock.patch("tools.sim_gui.run_study.prepare_case", side_effect=prepare), \
+             mock.patch("tools.sim_gui.run_study.validate_case", return_value=None), \
+             mock.patch("tools.sim_gui.run_study.child_command", side_effect=command), \
+             mock.patch("tools.sim_gui.run_study.subprocess.Popen", side_effect=capture_popen):
+            thread = threading.Thread(target=run_a)
+            thread.start()
+            try:
+                with self.assertRaises(KeyboardInterrupt):
+                    run_study(self.definition("conc-b"), output_root=self.root, parallel=1)
+                # Run A's child must survive run B's interrupt.
+                self.assertIsNone(processes["a"].poll())
+            finally:
+                thread.join(30)
+                if processes.get("a") is not None and processes["a"].poll() is None:
+                    processes["a"].kill()
+                    processes["a"].wait()
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(errors, [])
+        a_status = json.loads(next(self.root.glob("conc-a_*/study.json")).read_text())["cases"][0]["status"]
+        self.assertNotEqual(a_status, "cancelled")
+
     def test_keyboard_interrupt_stops_child_and_cancels_cases(self):
         definition = self.definition("interrupt")
         fake_items = [

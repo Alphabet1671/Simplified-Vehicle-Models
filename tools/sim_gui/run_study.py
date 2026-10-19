@@ -17,35 +17,43 @@ from .execute import (PreparedCase, child_command, finish_case, new_attempt,
                       prepare_case, validate_case)
 from .study import StudyDefinition, StudyIndex, expand
 
-_ACTIVE_PROCESSES = set()
-_PROCESS_LOCK = threading.Lock()
-_STOP_REQUESTED = threading.Event()
+class _ProcessRegistry:
+    """Live child processes and the stop flag of one run_study call."""
 
+    def __init__(self) -> None:
+        self._processes = set()
+        self._lock = threading.Lock()
+        self.stop = threading.Event()
 
-def _register_process(process):
-    with _PROCESS_LOCK:
-        _ACTIVE_PROCESSES.add(process)
-
-
-def _unregister_process(process):
-    with _PROCESS_LOCK:
-        _ACTIVE_PROCESSES.discard(process)
-
-
-def _stop_processes():
-    with _PROCESS_LOCK:
-        processes = tuple(_ACTIVE_PROCESSES)
-    for process in processes:
-        if process.poll() is None:
+    def add(self, process) -> None:
+        """Track a child; terminate it at once if the run is already stopping."""
+        with self._lock:
+            self._processes.add(process)
+            stopping = self.stop.is_set()
+        if stopping and process.poll() is None:
+            # A worker can start its child after terminate_all() took its snapshot.
             process.terminate()
-    deadline = time.monotonic() + 5
-    for process in processes:
-        remaining = max(0, deadline - time.monotonic())
-        try:
-            process.wait(timeout=remaining)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait()
+
+    def discard(self, process) -> None:
+        with self._lock:
+            self._processes.discard(process)
+
+    def terminate_all(self) -> None:
+        """Terminate every live child, then kill the ones still alive after 5 s."""
+        with self._lock:
+            self.stop.set()
+            processes = tuple(self._processes)
+        for process in processes:
+            if process.poll() is None:
+                process.terminate()
+        deadline = time.monotonic() + 5
+        for process in processes:
+            remaining = max(0, deadline - time.monotonic())
+            try:
+                process.wait(timeout=remaining)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
 
 
 def default_parallel() -> int:
@@ -74,6 +82,7 @@ def run_study(definition: StudyDefinition, output_root: Path = REPOSITORY_ROOT /
     cases = expand(definition)
     index = StudyIndex.create(study_dir, definition, cases)
     lock = threading.Lock()
+    registry = _ProcessRegistry()
 
     def update(case_id: str, **fields):
         with lock:
@@ -95,14 +104,14 @@ def run_study(definition: StudyDefinition, output_root: Path = REPOSITORY_ROOT /
             prepared.append((item, case))
 
     def worker(item: PreparedCase, case):
-        if _STOP_REQUESTED.is_set():
+        if registry.stop.is_set():
             update(case.id, status="cancelled", error="cancelled by interrupt")
             return {"status": "cancelled"}
         update(case.id, status="running")
         try:
             attempt = new_attempt(item)
             command = child_command(item, attempt)
-            if _STOP_REQUESTED.is_set():
+            if registry.stop.is_set():
                 update(case.id, status="cancelled", error="cancelled by interrupt")
                 return {"status": "cancelled"}
             started = time.perf_counter()
@@ -111,7 +120,7 @@ def run_study(definition: StudyDefinition, output_root: Path = REPOSITORY_ROOT /
             with (attempt / "run.log").open("w") as log:
                 process = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT,
                                            cwd=REPOSITORY_ROOT, env=child_environment())
-                _register_process(process)
+                registry.add(process)
                 try:
                     return_code = process.wait(timeout=item.timeout_seconds)
                 except subprocess.TimeoutExpired:
@@ -119,34 +128,35 @@ def run_study(definition: StudyDefinition, output_root: Path = REPOSITORY_ROOT /
                     process.kill()
                     return_code = process.wait()
                 finally:
-                    _unregister_process(process)
+                    registry.discard(process)
             fields = finish_case(item, attempt, return_code=return_code,
-                                 timed_out=timed_out, cancelled=_STOP_REQUESTED.is_set(),
+                                 timed_out=timed_out, cancelled=registry.stop.is_set(),
                                  wall_seconds=time.perf_counter() - started, command=command)
         except Exception as error:
             fields = {"status": "failed", "error": f"{type(error).__name__}: {error}"}
         update(case.id, **fields)
         return fields
 
-    _STOP_REQUESTED.clear()
     pool = ThreadPoolExecutor(max_workers=parallel)
     futures = []
     for item, case in prepared:
-        if _STOP_REQUESTED.is_set():
+        if registry.stop.is_set():
             break
         futures.append(pool.submit(worker, item, case))
     try:
         for future in as_completed(futures):
             future.result()
     except BaseException:
-        _STOP_REQUESTED.set()
-        _stop_processes()
+        registry.stop.set()
+        registry.terminate_all()
         pool.shutdown(wait=True, cancel_futures=True)
-        for item, case in prepared:
-            payload = json.loads((study_dir / "study.json").read_text())
-            current = next(row for row in payload["cases"] if row["id"] == case.id)
-            if current.get("status") in {"pending", "running"}:
-                update(case.id, status="cancelled", error="cancelled by interrupt")
+        # The pool has stopped, so no worker writes any more. Cancel only the
+        # cases that no worker finished; a case a worker cancelled stays as is.
+        with lock:
+            unfinished = [row["id"] for row in index.cases
+                          if row.get("status") in {"pending", "running"}]
+        for case_id in unfinished:
+            update(case_id, status="cancelled", error="cancelled by interrupt")
         raise
     else:
         pool.shutdown(wait=True)

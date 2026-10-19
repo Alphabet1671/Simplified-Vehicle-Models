@@ -1,6 +1,9 @@
 import json
+import os
 import shutil
 import subprocess
+import sys
+import time
 import unittest
 from unittest import mock
 from pathlib import Path
@@ -9,7 +12,7 @@ from tools.sim_gui import REPOSITORY_ROOT, child_environment
 from tools.sim_gui.execute import child_command, new_attempt, prepare_case
 from tools.sim_gui.settings import RunSettings
 from tools.sim_gui.study import CaseSpec, StudyDefinition, StudyIndex, expand
-from tools.sim_gui.run_study import run_study, main as run_study_main, _study_directory
+from tools.sim_gui.run_study import run_study, main as run_study_main, _study_directory, default_parallel
 from tools.sim_gui.execute import PreparedCase
 from tools.sim_gui.vehicle import VehicleConfiguration
 
@@ -56,6 +59,59 @@ class HeadlessRunnerUnitTests(unittest.TestCase):
         path.write_text(json.dumps(definition.to_json()))
         with mock.patch("tools.sim_gui.run_study.validate_case", return_value="bad"):
             self.assertEqual(run_study_main(["--definition", str(path), "--output-root", str(self.root)]), 1)
+
+    def test_default_parallel_uses_bounded_cpu_half_and_cli_default(self):
+        with mock.patch("tools.sim_gui.run_study.os.cpu_count", side_effect=[1, 2, 8, 32, None]):
+            self.assertEqual([default_parallel() for _ in range(5)], [1, 1, 4, 4, 1])
+        definition = self.definition("parallel-cli")
+        path = self.root / "definition.study.json"
+        self.root.mkdir(parents=True)
+        path.write_text(json.dumps(definition.to_json()))
+        with mock.patch("tools.sim_gui.run_study.run_study", return_value=self.root / "out") as run:
+            (self.root / "out").mkdir()
+            (self.root / "out" / "study.json").write_text(json.dumps({"cases": [{"status": "completed"}]}))
+            with mock.patch("tools.sim_gui.run_study.os.cpu_count", return_value=8):
+                self.assertEqual(run_study_main(["--definition", str(path), "--output-root", str(self.root)]), 0)
+            self.assertEqual(run.call_args.args[2], 4)
+
+    def test_keyboard_interrupt_stops_child_and_cancels_cases(self):
+        definition = self.definition("interrupt")
+        fake_items = [
+            PreparedCase(self.root / "case_000", self.root / "f0", self.root / "v0", [], timeout_seconds=60),
+            PreparedCase(self.root / "case_001", self.root / "f1", self.root / "v1", [], timeout_seconds=60),
+        ]
+        for item in fake_items:
+            item.directory.mkdir(parents=True)
+        child = {}
+        def prepare(_directory, _definition, case):
+            return fake_items[int(case.id[-1])]
+        cases = (CaseSpec("case_000", "running", "point-mass", "", {}, {}), CaseSpec("case_001", "pending", "point-mass", "", {}, {}))
+        commands = iter([
+            [sys.executable, "-c", "import time; time.sleep(60)"],
+            KeyboardInterrupt(),
+        ])
+        def command(_item, _attempt):
+            value = next(commands)
+            if isinstance(value, BaseException):
+                raise value
+            return value
+        real_popen = subprocess.Popen
+        def capture_popen(*args, **kwargs):
+            process = real_popen(*args, **kwargs)
+            child["process"] = process
+            return process
+        with mock.patch("tools.sim_gui.run_study.expand", return_value=cases), \
+             mock.patch("tools.sim_gui.run_study.prepare_case", side_effect=prepare), \
+             mock.patch("tools.sim_gui.run_study.validate_case", return_value=None), \
+             mock.patch("tools.sim_gui.run_study.child_command", side_effect=command), \
+             mock.patch("tools.sim_gui.run_study.subprocess.Popen", side_effect=capture_popen), \
+             self.assertRaises(KeyboardInterrupt):
+            run_study(definition, output_root=self.root, parallel=2)
+        self.assertIsNotNone(child["process"].poll())
+        outputs = list(self.root.glob("interrupt_*/study.json"))
+        self.assertTrue(outputs)
+        statuses = {row["id"]: row["status"] for row in json.loads(outputs[0].read_text())["cases"]}
+        self.assertEqual(set(statuses.values()), {"cancelled"})
 
 
 @unittest.skipUnless(SCIPY_AVAILABLE, "scipy is required for the forward-driver integration test")

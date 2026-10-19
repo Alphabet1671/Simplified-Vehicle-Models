@@ -222,6 +222,12 @@ class StudyTabTests(unittest.TestCase):
         self.tab._refresh_preview()
         self.assertIn("maximum", self.tab.preview_count.text())
 
+    def test_parallel_cases_spinbox_defaults_and_range(self):
+        from tools.sim_gui.run_study import default_parallel
+        self.assertEqual(self.tab.parallel_cases.minimum(), 1)
+        self.assertEqual(self.tab.parallel_cases.maximum(), os.cpu_count() or 1)
+        self.assertEqual(self.tab.parallel_cases.value(), default_parallel())
+
 
 @unittest.skipIf(QApplication is None, "PyQt6 is not installed")
 class ValidationWorkerTests(unittest.TestCase):
@@ -330,6 +336,15 @@ class CaseQueueTests(unittest.TestCase):
             process = next(iter(queue._running.values())).process
             queue.shutdown()
             self.assertEqual(process.state(), process.ProcessState.NotRunning)
+
+    def test_parallel_cases_spinbox_defaults_and_range(self):
+        from tools.sim_gui.run_study import default_parallel
+        cfg = VehicleConfiguration.open(REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_planar_7dof.xml")
+        tab = StudyTab(cfg, RunSettings())
+        self.addCleanup(tab.deleteLater)
+        self.assertEqual(tab.parallel_cases.minimum(), 1)
+        self.assertEqual(tab.parallel_cases.maximum(), os.cpu_count() or 1)
+        self.assertEqual(tab.parallel_cases.value(), default_parallel())
 
     def test_add_dimension_menu_and_checklist(self):
         cfg = VehicleConfiguration.open(REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_planar_7dof.xml")
@@ -611,6 +626,23 @@ class MainWindowTests(unittest.TestCase):
         directory = Path(root) / name
         directory.mkdir(parents=True)
         return PreparedCase(directory, directory / "formulation.xml", directory / "vehicle.xml", [], timeout_seconds=timeout)
+
+    def test_running_status_persisted_before_process_finishes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            from tools.sim_gui.study import StudyIndex
+            definition = StudyDefinition("queue", "", "", "point-mass", {}, RunSettings(), "one-at-a-time", ())
+            index = StudyIndex.create(root / "study", definition, (CaseSpec("case_000", "x", "point-mass", "", {}, {}),))
+            prepared = PreparedCase(index.directory / "cases" / "case_000", root / "f", root / "v", [], timeout_seconds=5)
+            prepared.directory.mkdir(parents=True)
+            queue = CaseQueue(study_index=index, command_factory=lambda _p, _a: [sys.executable, "-c", "import time; time.sleep(30)"])
+            queue.start([prepared], 1)
+            app.processEvents()
+            payload = json.loads((index.directory / "study.json").read_text())
+            self.assertEqual(payload["cases"][0]["status"], "running")
+            self.assertIn("attempt", payload["cases"][0])
+            queue.stop()
+            queue.shutdown()
 
     def test_parallel_limit_legacy(self):
         with tempfile.TemporaryDirectory() as tmp:

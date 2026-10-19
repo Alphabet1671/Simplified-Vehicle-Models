@@ -102,6 +102,9 @@ def run_study(definition: StudyDefinition, output_root: Path = REPOSITORY_ROOT /
         try:
             attempt = new_attempt(item)
             command = child_command(item, attempt)
+            if _STOP_REQUESTED.is_set():
+                update(case.id, status="cancelled", error="cancelled by interrupt")
+                return {"status": "cancelled"}
             started = time.perf_counter()
             timed_out = False
             return_code = None
@@ -118,7 +121,7 @@ def run_study(definition: StudyDefinition, output_root: Path = REPOSITORY_ROOT /
                 finally:
                     _unregister_process(process)
             fields = finish_case(item, attempt, return_code=return_code,
-                                 timed_out=timed_out, cancelled=False,
+                                 timed_out=timed_out, cancelled=_STOP_REQUESTED.is_set(),
                                  wall_seconds=time.perf_counter() - started, command=command)
         except Exception as error:
             fields = {"status": "failed", "error": f"{type(error).__name__}: {error}"}
@@ -138,12 +141,12 @@ def run_study(definition: StudyDefinition, output_root: Path = REPOSITORY_ROOT /
     except BaseException:
         _STOP_REQUESTED.set()
         _stop_processes()
+        pool.shutdown(wait=True, cancel_futures=True)
         for item, case in prepared:
             payload = json.loads((study_dir / "study.json").read_text())
             current = next(row for row in payload["cases"] if row["id"] == case.id)
             if current.get("status") in {"pending", "running"}:
                 update(case.id, status="cancelled", error="cancelled by interrupt")
-        pool.shutdown(wait=False, cancel_futures=True)
         raise
     else:
         pool.shutdown(wait=True)

@@ -107,6 +107,13 @@ class CaseQueue(QObject):
         timer.setSingleShot(True)
         running = _Running(prepared, process, attempt, command, timer, time.perf_counter())
         self._running[prepared.directory.name] = running
+        if self.study_index is not None:
+            self.study_index.update(
+                prepared.directory.name,
+                status="running",
+                attempt=attempt.relative_to(self.study_index.directory).as_posix(),
+            )
+            self.update_callback and self.update_callback(prepared.directory.name, {"status": "running", "attempt": attempt.relative_to(self.study_index.directory).as_posix()})
         process.readyReadStandardOutput.connect(lambda *_, key=prepared.directory.name: self._read(key))
         process.finished.connect(lambda code, status, *_, key=prepared.directory.name: self._finished(key, code, status))
         process.errorOccurred.connect(lambda error, *_, key=prepared.directory.name: self._error(key, error))

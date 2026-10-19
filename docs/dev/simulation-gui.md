@@ -91,7 +91,7 @@ The GUI supports two modes:
 
 The GUI warns when a study has more than 50 cases. It refuses a study above 500 cases. The study name must contain 1 to 40 ASCII letters, numbers, `_`, or `-` characters.
 
-Select **Run** or press `F5`. Select **Stop** to cancel pending cases and terminate active cases. The GUI validates each generated formulation before it starts the case. It writes the case status as `pending`, `invalid`, `running`, `completed`, `rejected`, `timed_out`, `cancelled`, or `failed`.
+Select **Run** or press `F5`. Set **Parallel cases** to choose the maximum concurrent cases. Select **Stop** to cancel pending cases and terminate active cases. The GUI validates each generated formulation before it starts the case. It writes the case status as `pending`, `invalid`, `running`, `completed`, `rejected`, `timed_out`, `cancelled`, or `failed`.
 
 A planar run has a wall limit of 300 s. The GUI passes the timeout to the runner. The runner rejects a planar timeout above 300 s. The `14dof-simple` model can use a longer user-selected timeout.
 
@@ -100,7 +100,7 @@ A planar run has a wall limit of 300 s. The GUI passes the timeout to the runner
 The default output root is `runs/`. Each study uses a directory named `<study-name>_<YYYYMMDD-HHMMSS>`. The GUI creates these paths:
 
 ```text
-runs/<study>/
+runs/<study-name>_<YYYYmmdd-HHMMSS>/
 ├── definition.study.json
 ├── study.json
 └── cases/

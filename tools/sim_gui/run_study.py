@@ -9,12 +9,47 @@ from pathlib import Path
 import subprocess
 import threading
 import time
+import os
 from typing import Callable
 
 from . import REPOSITORY_ROOT, child_environment
 from .execute import (PreparedCase, child_command, finish_case, new_attempt,
                       prepare_case, validate_case)
 from .study import StudyDefinition, StudyIndex, expand
+
+_ACTIVE_PROCESSES = set()
+_PROCESS_LOCK = threading.Lock()
+_STOP_REQUESTED = threading.Event()
+
+
+def _register_process(process):
+    with _PROCESS_LOCK:
+        _ACTIVE_PROCESSES.add(process)
+
+
+def _unregister_process(process):
+    with _PROCESS_LOCK:
+        _ACTIVE_PROCESSES.discard(process)
+
+
+def _stop_processes():
+    with _PROCESS_LOCK:
+        processes = tuple(_ACTIVE_PROCESSES)
+    for process in processes:
+        if process.poll() is None:
+            process.terminate()
+    deadline = time.monotonic() + 5
+    for process in processes:
+        remaining = max(0, deadline - time.monotonic())
+        try:
+            process.wait(timeout=remaining)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+
+
+def default_parallel() -> int:
+    return max(1, min(4, (os.cpu_count() or 2) // 2))
 
 
 def _study_directory(output_root: Path, definition: StudyDefinition) -> Path:
@@ -60,6 +95,9 @@ def run_study(definition: StudyDefinition, output_root: Path = REPOSITORY_ROOT /
             prepared.append((item, case))
 
     def worker(item: PreparedCase, case):
+        if _STOP_REQUESTED.is_set():
+            update(case.id, status="cancelled", error="cancelled by interrupt")
+            return {"status": "cancelled"}
         update(case.id, status="running")
         try:
             attempt = new_attempt(item)
@@ -70,12 +108,15 @@ def run_study(definition: StudyDefinition, output_root: Path = REPOSITORY_ROOT /
             with (attempt / "run.log").open("w") as log:
                 process = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT,
                                            cwd=REPOSITORY_ROOT, env=child_environment())
+                _register_process(process)
                 try:
                     return_code = process.wait(timeout=item.timeout_seconds)
                 except subprocess.TimeoutExpired:
                     timed_out = True
                     process.kill()
                     return_code = process.wait()
+                finally:
+                    _unregister_process(process)
             fields = finish_case(item, attempt, return_code=return_code,
                                  timed_out=timed_out, cancelled=False,
                                  wall_seconds=time.perf_counter() - started, command=command)
@@ -84,10 +125,28 @@ def run_study(definition: StudyDefinition, output_root: Path = REPOSITORY_ROOT /
         update(case.id, **fields)
         return fields
 
-    with ThreadPoolExecutor(max_workers=parallel) as pool:
-        futures = [pool.submit(worker, item, case) for item, case in prepared]
+    _STOP_REQUESTED.clear()
+    pool = ThreadPoolExecutor(max_workers=parallel)
+    futures = []
+    for item, case in prepared:
+        if _STOP_REQUESTED.is_set():
+            break
+        futures.append(pool.submit(worker, item, case))
+    try:
         for future in as_completed(futures):
             future.result()
+    except BaseException:
+        _STOP_REQUESTED.set()
+        _stop_processes()
+        for item, case in prepared:
+            payload = json.loads((study_dir / "study.json").read_text())
+            current = next(row for row in payload["cases"] if row["id"] == case.id)
+            if current.get("status") in {"pending", "running"}:
+                update(case.id, status="cancelled", error="cancelled by interrupt")
+        pool.shutdown(wait=False, cancel_futures=True)
+        raise
+    else:
+        pool.shutdown(wait=True)
     return study_dir
 
 
@@ -96,7 +155,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description="Run a simulation GUI study")
     parser.add_argument("--definition", type=Path, required=True)
     parser.add_argument("--output-root", type=Path, default=REPOSITORY_ROOT / "runs")
-    parser.add_argument("--parallel", type=int, default=1)
+    parser.add_argument("--parallel", type=int, default=default_parallel())
     args = parser.parse_args(argv)
     if args.parallel < 1:
         parser.error("--parallel must be at least 1")

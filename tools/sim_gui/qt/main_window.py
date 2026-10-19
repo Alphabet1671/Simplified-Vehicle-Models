@@ -238,11 +238,20 @@ class MainWindow(QMainWindow):
         self._refresh_status()
         if self._run_requested:
             self._run_requested = False
-            self.run_cases()
+            if self._prepared:
+                self.run_cases()
+            else:
+                self.status.showMessage("No valid cases to run")
+                self.run_action.setEnabled(self.configuration is not None and self.configuration.runnable)
 
     def _case_ready(self, prepared, error) -> None:
         if error is None:
             self._prepared.append(prepared)
+            return
+        if prepared is not None and self.study_index is not None:
+            self.study_index.update(prepared.directory.name, status="invalid", error=error)
+            self.queue_table.set_cases(self.study_index.cases)
+            self._refresh_status()
 
     def run_cases(self) -> None:
         """Build a baseline if needed and start the process queue."""
@@ -255,7 +264,8 @@ class MainWindow(QMainWindow):
             self.run_action.setEnabled(False)
             self.stop_action.setEnabled(True)
             self._log_timer.start()
-            self._queue.start(self._prepared, 1)
+            parallel = self.study_tab.parallel_cases.value() if self.study_tab is not None else 1
+            self._queue.start(self._prepared, parallel)
 
     def stop_cases(self) -> None:
         """Stop all running cases."""

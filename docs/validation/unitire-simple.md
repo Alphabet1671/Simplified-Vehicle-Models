@@ -12,10 +12,7 @@ capability from the envelope.
 
 ## Sources
 
-| Role | File | SHA-256 |
-|---|---|---|
-| Solver | `~/Dev/FSAE-VD-Personal-Scripts/Yaw Dynamics/Tire Model/unitire_simple_solve.m` | `6959fce78741a3bde7189b9dbfa20c881a6304216f35c2e9400f1ecf09e15f1e` |
-| Parameters | `~/Dev/FSAE-VD-Personal-Scripts/Yaw Dynamics/Tire Model/Hoosier_R20_Combined_Simple.mat` | `ed46ac5c5eb19ceeca359a10a5c4b279b26e468dec00bec229df3033848f1500` |
+The tire parameters and solver reference are from real car data. The private source files and their hashes are intentionally not identified in Git.
 
 The Python artifact is `models/tires/hoosier-43075-r20-simple.xml`. It carries
 both hashes in its header comments. `tools/model_data/export_unitire_simple_tire.py`
@@ -152,7 +149,7 @@ Regenerate the reference fixture with the committed MATLAB driver:
 addpath('tools/model_data');
 generate_unitire_reference( ...
     'tests/fixtures/hoosier_43075_r20_reference.csv', ...
-    '/path/to/FSAE-VD-Personal-Scripts/Yaw Dynamics/Tire Model');
+    '<private-real-car-data-source>');
 ```
 
 The committed driver reproduces the committed fixture byte for byte. The

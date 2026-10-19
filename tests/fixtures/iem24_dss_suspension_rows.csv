@@ -1,7 +1,6 @@
-# Raw copy of rows 17-31, columns A-J, of the IEM24 DSS workbook for CI.
-# Source workbook: /Users/alphabet1671/Desktop/IEM_24_DSS.xlsx, sheet FSAE_Specs_EV, range A17:J31
-# Source workbook sha256: e436c2f61d46f23614515e34cbce381e45a5e508b9840012c88511f59afac5d8
-# Layout: first column is the sheet row; later columns are sheet columns A, B, C, ... as stored. Numbers that the sheet stores as text stay text.
+# Suspension parameter fixture from real car data, rows 17-31, columns A-J, for CI.
+# The private source workbook is intentionally not identified in this repository.
+# Layout: first column is the source row index; remaining columns encode fixture fields in a stable tabular layout.
 # Rows 18-19 (wheel and roll rates) are present but intentionally unused by the generator.
 17,Suspension design travel,mm,Jounce (col D): Rebound (col E):,31.8,31.8,Jounce (col G): Rebound (col H):,31.8,31.8,,
 18,Wheel rate (chassis to wheel center),N/mm,43.4315,,,47.6345,,,,

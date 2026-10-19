@@ -32,9 +32,7 @@ checked by [`tests/test_vertical_14dof_evidence.py`](../../tests/test_vertical_1
 
 ## 1. Parameter table and sources
 
-Source column key: **DSS cell** = read from `IEM_24_DSS.xlsx` by fixed cell address (sha256
-`e436c2f61d46f23614515e34cbce381e45a5e508b9840012c88511f59afac5d8`); **user** = supplied by the user
-decision list of the plan (2026-10-16); **PROPOSED** = chosen by the project without measured data.
+Source column key: **from real car data** = compiled vehicle information; **user** = supplied by the user decision list; **PROPOSED** = chosen by the project without measured data.
 
 ### 1.1 Shared assembly parameters used by both rungs
 
@@ -70,28 +68,28 @@ radius is measured, and no radius was invented to hide the inconsistency.
 
 | Item | Value | Source |
 |---|---|---|
-| Wheel rate, front / rear | 450 / 350 lbf/in = 78 807.08 / 61 294.39 N/m | **user-selected** (D4); DSS rows 18–19 intentionally overridden |
-| Rear ARB wheel rate in pure roll | 120 lbf/in = 21 015.22 N/m | **user-selected** (D4) |
-| Front ARB wheel rate | 0 | D4 |
-| Damper motion ratio F / R | 1.05 / 1.10 | DSS C23 / F23 (first `<ratio>:1 heave` value) |
-| Damper table | Multimatic DSSV VC01, 12 clicks × 13 velocity knots per half, ±0.5 m/s | source workbook, fixed click 8/+300 mm/s correction 671 → 761 N (D2) |
+| Wheel rate, front / rear | 450 / 350 lbf/in = 78 807.08 / 61 294.39 N/m | from real car data |
+| Rear ARB wheel rate in pure roll | 120 lbf/in = 21 015.22 N/m | from real car data |
+| Front ARB wheel rate | 0 | from real car data |
+| Damper motion ratio F / R | 1.05 / 1.10 | from real car data |
+| Damper table | 12 clicks × 13 velocity knots per half, ±0.5 m/s | from real car data; one source entry corrected during import (D2) |
 | Damper clicks (baseline) | compression 5, rebound 7 | **user-selected** (D1) |
-| RC height static F / R | 41.275 / 57.15 mm | DSS C30 / F30 |
-| RC height at 1 g F / R | 45.5 / 65.3 mm | DSS D31 / G31 |
-| RC lateral at 1 g F / R | −6.0 / −8.0 mm | DSS E31 / H31 |
-| Anti (brake, drive) F | (0.542, 0.320) | DSS C29 (first brake, second drive, D9) |
-| Anti (brake, drive) R | (0.574, 0.550) | DSS F29 |
-| Camber gain F / R | 25.1 / 45.3 deg/m | DSS C24 / F24 (stored for `14dof-complete`, not used in forces) |
-| Jounce travel | ±31.8 mm | DSS D17/E17/G17/H17 — hard acceptance limit |
+| RC height static F / R | 41.275 / 57.15 mm | from real car data |
+| RC height at 1 g F / R | 45.5 / 65.3 mm | from real car data |
+| RC lateral at 1 g F / R | −6.0 / −8.0 mm | from real car data |
+| Anti (brake, drive) F | (0.542, 0.320) | from real car data |
+| Anti (brake, drive) R | (0.574, 0.550) | from real car data |
+| Camber gain F / R | 25.1 / 45.3 deg/m | from real car data (stored for `14dof-complete`, not used in forces) |
+| Jounce travel | ±31.8 mm | from real car data — hard acceptance limit |
 | Spring preload | sprung static corner load at jounce 0: 505.778 N F, 646.503 N R | derived from the corrected geometry and PROPOSED unsprung mass |
-| Bump/droop stops | **PROPOSED**: 10× wheel rate from 29.8 mm, C1 smoothstep blend over 27.8–29.8 mm, both directions | project choice; DSS travel stays the limit |
+| Bump/droop stops | **PROPOSED**: 10× wheel rate from 29.8 mm, C1 smoothstep blend over 27.8–29.8 mm, both directions | project choice; travel from real car data stays the limit |
 | Inertance F / R | 0 kg | **PROPOSED** (D5) |
 | Tire vertical stiffness at static load | 80.4 N/mm F, 80.7 N/mm R | from the UniTire loaded-radius fit (D7), not a new parameter |
 | Tire vertical law low-load ramp | `delta1` = 0.5 mm, `F1` = 39.70 N, `delta0` = −0.4996 mm; 9.92 N ghost load at zero deflection | numerical device, accepted and disclosed |
 
 ### 1.4 Steering: static toe and jounce steer (D13)
 
-* **Static toe is 0° at both axles** (DSS cells C26 and F26 give 0). `static_toe_front` and
+* **Static toe is 0° at both axles** (from real car data). `static_toe_front` and
   `static_toe_rear` are both 0 rad in the suspension XML.
 * **The jounce-steer curves are derived from the suspension hardpoints** (from real car data) and are small:
   front -0.205° to +0.005°, rear -0.103° to +0.026° over -31.8 to +31.8 mm, with an exact 0° at 0 mm.
@@ -117,13 +115,19 @@ available for setup studies:
 | `four-mode` | 0 | linear modal approximation |
 | `hydraulic` | one gas fraction per accumulator node | **PROPOSED** circuit sizing example |
 
-The modal examples use wheel-referred mode rates and mode damper velocities with
-no additional motion ratio. Consequently their per-axle ride frequencies and
-corner damping ratios are diagonal approximations, not a nonlinear full-car mode
-fit. The four-mode roll frequency saturates with rate because the tires remain in
-series (9.90 to 10.41 Hz over the documented rate sweep). The axle example's
-front ride frequency is 4.283 Hz; its rear ride frequency is 3.74 Hz versus 3.59
-Hz for the independent layout because the diagonal includes the rear ARB. Its
+The axle modal example now carries separate heave and roll spring modes from real car data: 450 lb/in heave
+and 350 lb/in roll front and rear, plus the example's 120 lb/in rear ARB added to
+the rear roll-mode rate. Real-car motion ratios are applied using the orthonormal-mode
+shaft Jacobian `1/(sqrt(2)*MR)` under the repository's convention MR = wheel
+travel / shaft travel. Roll travel is interpreted as one-side (half-difference)
+wheel travel; verify that interpretation with the vehicle-data source if it affects a
+final model. The table-backed roll dampers remain **PROPOSED temporary proxies**
+pending distinct measured roll-damper characteristics. This modal model is
+linear, has no corner bump-stop curve, and remains separate from the
+independent-corner reference lap. Its mode damping and frequencies are therefore
+not a nonlinear full-car fit. The four-mode roll frequency saturates with rate
+because the tires remain in series (9.90 to 10.41 Hz over the documented rate
+sweep).
 axle heave frequency is 4.072 Hz versus 3.989 Hz for the independent layout.
 
 The hydraulic example is `models/suspensions/iem24_roll_decoupled_hydraulic.xml`.
@@ -335,7 +339,7 @@ Interpretation, and what it does **not** show:
 7. Longitudinal relaxation law — a project extension, explicitly **not** from the cited paper.
 8. Tire vertical law low-load ramp (`delta0` = −0.4996 mm, `delta1` = 0.5 mm) and its **9.92 N ghost load**
    at zero deflection — a numerical device, not physics.
-9. Roll-centre map above the 1 g DSS point: height and lateral held constant; queries clipped at the
+9. Roll-centre map above the 1 g real-car-data point: height and lateral held constant; queries clipped at the
    committed 5° table maximum.
 10. Anti-geometry scaling `(h_cg/L)/phi_ref` (the implementer's recorded choice in
     `task-6-roll-report.md`); the total tire load transfer is unaffected by this choice.

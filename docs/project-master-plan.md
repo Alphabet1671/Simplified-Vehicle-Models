@@ -531,8 +531,7 @@ A steady-state UniTire source can be compiled into the same capability by sweepi
 Used by Models 2 and 3. The Python implementation should be a validated port of:
 
 ```text
-~/Dev/FSAE-VD-Personal-Scripts/
-  Yaw Dynamics/Tire Model/unitire_simple_solve.m
+Private real-car tire-model source, not identified in Git documentation
 ```
 
 Its main inputs are slip angle, slip ratio, normal load, wheel speed, tire parameters, and road-friction parameters. It computes steady-state combined-slip forces and selected moments with zero inclination angle.
@@ -544,8 +543,7 @@ No relaxation-length state is integrated even if the model reports a relaxation-
 Used only by Model 4. Its steady-state target should be based on the behavior and fitted parameters associated with:
 
 ```text
-~/Dev/FSAE-VD-Personal-Scripts/
-  Yaw Dynamics/Tire Model/unitire_solve.m
+Private real-car tire-model source, not identified in Git documentation
 ```
 
 The transient formulation must explicitly define:
@@ -569,7 +567,7 @@ The suspension input should be a coherent per-corner dataset indexed primarily b
 
 Optimal-control solvers require useful derivatives. Raw piecewise-linear tables have discontinuous derivatives, so optimization-facing LUTs should use validated differentiable interpolation, such as shape-preserving or constrained smooth splines. Extrapolation beyond physical jounce limits should normally be prohibited by constraints rather than silently continued.
 
-**Implemented for `14dof-simple`.** The per-corner dataset is one NPZ (`suspension-corner-v1`) read by a kinematics, a spring and an ARB component that a `suspension-assembly` XML nests (with the two damper components) behind one `suspension-forces` capability; it holds: C1 monotone (Fritsch–Carlson) splines for the spring/bump-stop/droop-stop curve, the damper motion ratio, the roll-centre height and lateral maps, and the front/rear jounce-steer curves; scalar ARB rates, anti fractions, static toe and inertance. The damper is a separate `damper-table-v1` NPZ with one valve row per half (the Multimatic DSSV VC01 uses one `full`-band valve per half, 12 clicks, ±0.5 m/s) and linear extension outside the table with a counted out-of-range flag. Roll-centre height and lateral position are held constant above the 1 g measured point and the queried roll is clipped at the 5° table maximum. Jounce steer has a zero baseline (no measured data) and static toe is the measured 0° at both axles. Bump-stop onset and every unsprung/transient-tire coefficient are PROPOSED, not measured; see [14dof-simple-parameters.md](validation/14dof-simple-parameters.md).
+**Implemented for `14dof-simple`.** The per-corner dataset is one NPZ (`suspension-corner-v1`) read by a kinematics, a spring and an ARB component that a `suspension-assembly` XML nests (with the two damper components) behind one `suspension-forces` capability; it holds: C1 monotone (Fritsch–Carlson) splines for the spring/bump-stop/droop-stop curve, the damper motion ratio, the roll-centre height and lateral maps, and the front/rear jounce-steer curves; scalar ARB rates, anti fractions, static toe and inertance. The damper is a separate `damper-table-v1` NPZ with one valve row per half (the damper table uses one valve band per half, 12 clicks, ±0.5 m/s) and linear extension outside the table with a counted out-of-range flag. Roll-centre height and lateral position are held constant above the 1 g measured point and the queried roll is clipped at the 5° table maximum. Jounce steer has a zero baseline (no measured data) and static toe is 0° at both axles from real car data. Bump-stop onset and every unsprung/transient-tire coefficient are PROPOSED, not measured; see [14dof-simple-parameters.md](validation/14dof-simple-parameters.md).
 
 The layout-specific examples are `iem24_axle_roll_heave`, `iem24_four_mode` and
 `iem24_roll_decoupled_hydraulic`. The modal rates and mode dampers are

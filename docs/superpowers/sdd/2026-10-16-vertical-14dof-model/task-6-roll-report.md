@@ -143,7 +143,7 @@ Verified at 30 m/s with anti zeroed, solved to a steady state at
 
 ### 3. Ruling: anti-dive/anti-squat sign and scale
 
-**Ruling: the DSS "anti" percentage is the share of the whole-vehicle
+**Ruling: the real-car "anti" percentage is the share of the whole-vehicle
 longitudinal load transfer `m*ax*h_cg/L` that the suspension link reacts, so the
 per-axle coefficient is `k = anti*(h_cg/L)/share`, with `share` the axle's brake
 bias under braking and its driven-axle share under drive; the body-side force is
@@ -341,9 +341,9 @@ absolute oracle was added.
   the unsprung share of the longitudinal couple is split half per wheel rather
   than by axle unsprung mass. The total couple (and therefore the total transfer,
   825.101 N) is exact either way; the split is a modelling choice.
-- **Anti sign and scale** rest on the ruling above plus the DSS workbook cell
-  C29/F29 semantics ("first value brake (anti-dive), second drive (anti-squat)").
-  No independent measurement of the thrust-line angles was available.
+- **Anti sign and scale** rest on the ruling above plus the real-car anti-geometry
+  convention (braking and drive values are distinct). No independent measurement of
+  the thrust-line angles was available.
 - **Anti-dive does not change the tire load transfer** (internal pair). If a
   later task expects geometry to alter LLTD or total transfer, that expectation
   is inconsistent with this force path and needs its own review.

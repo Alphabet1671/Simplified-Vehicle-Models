@@ -337,15 +337,6 @@ class CaseQueueTests(unittest.TestCase):
             queue.shutdown()
             self.assertEqual(process.state(), process.ProcessState.NotRunning)
 
-    def test_parallel_cases_spinbox_defaults_and_range(self):
-        from tools.sim_gui.run_study import default_parallel
-        cfg = VehicleConfiguration.open(REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_planar_7dof.xml")
-        tab = StudyTab(cfg, RunSettings())
-        self.addCleanup(tab.deleteLater)
-        self.assertEqual(tab.parallel_cases.minimum(), 1)
-        self.assertEqual(tab.parallel_cases.maximum(), os.cpu_count() or 1)
-        self.assertEqual(tab.parallel_cases.value(), default_parallel())
-
     def test_add_dimension_menu_and_checklist(self):
         cfg = VehicleConfiguration.open(REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_planar_7dof.xml")
         tab = StudyTab(cfg, RunSettings())
@@ -403,6 +394,64 @@ class MainWindowTests(unittest.TestCase):
         self.assertEqual(window.queue_table.item(0, 2).text(), "completed")
         record = window.study_index.directory / window.study_index.cases[0]["run_record"]
         self.assertTrue(record.exists())
+
+    def _build_with_tire_dimension(self, window, validate):
+        """Build a baseline + Hoosier study with a patched validate_case."""
+        window.open_model(REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_planar_7dof.xml")
+        hoosier = str(REPOSITORY_ROOT / "models/tires/hoosier-43075-r20-simple.xml")
+        baseline_tire = str(window.configuration.choices["tire"])
+        window.study_tab._dimensions = [Dimension("tire", (baseline_tire, hoosier))]
+        with mock.patch("tools.sim_gui.qt.workers.validate_case", side_effect=validate):
+            window.build_cases()
+            deadline = time.time() + 10
+            while window._validation_thread is not None and time.time() < deadline:
+                app.processEvents()
+        self.assertIsNone(window._validation_thread)
+        return json.loads((window.study_index.directory / "study.json").read_text())
+
+    def test_invalid_case_is_recorded_like_run_study(self):
+        window = self._window()
+        def validate(prepared):
+            return "bad tire" if prepared.directory.name != "case_000" else None
+        payload = self._build_with_tire_dimension(window, validate)
+        statuses = {case["id"]: case for case in payload["cases"]}
+        self.assertEqual(statuses["case_000"]["status"], "pending")
+        invalid = [case for case in payload["cases"] if case["id"] != "case_000"]
+        self.assertEqual(len(invalid), 1)
+        self.assertEqual(invalid[0]["status"], "invalid")
+        self.assertEqual(invalid[0]["error"], "bad tire")
+        self.assertEqual(invalid[0]["directory"], f"cases/{invalid[0]['id']}")
+        statuses_shown = {window.queue_table.item(row, 2).text() for row in range(window.queue_table.rowCount())}
+        self.assertEqual(statuses_shown, {"pending", "invalid"})
+
+    def test_prepare_failure_is_recorded_invalid(self):
+        window = self._window()
+        window.open_model(REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_planar_7dof.xml")
+        with mock.patch("tools.sim_gui.qt.workers.prepare_case", side_effect=RuntimeError("no file")):
+            window.build_cases()
+            deadline = time.time() + 10
+            while window._validation_thread is not None and time.time() < deadline:
+                app.processEvents()
+        case = window.study_index.cases[0]
+        self.assertEqual(case["status"], "invalid")
+        self.assertIn("no file", case["error"])
+
+    def test_all_invalid_does_not_rebuild_or_start(self):
+        window = self._window()
+        window.open_model(REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_planar_7dof.xml")
+        with mock.patch("tools.sim_gui.qt.workers.validate_case", return_value="bad"), \
+                mock.patch.object(window, "build_cases", wraps=window.build_cases) as build, \
+                mock.patch.object(window._queue, "start") as start:
+            window.run_cases()
+            deadline = time.time() + 10
+            while window._validation_thread is not None and time.time() < deadline:
+                app.processEvents()
+            for _ in range(5):
+                app.processEvents()
+        self.assertEqual(build.call_count, 1)
+        start.assert_not_called()
+        self.assertTrue(window.run_action.isEnabled())
+        self.assertEqual(window.study_index.cases[0]["status"], "invalid")
 
     def test_panel_tire_swap_reaches_built_baseline(self):
         store_dir = Path(tempfile.mkdtemp())

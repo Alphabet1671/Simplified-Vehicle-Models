@@ -12,6 +12,9 @@ class ValidationWorker(QObject):
 
     progress = pyqtSignal(int, int)
     caseReady = pyqtSignal(object, object)
+    # Case id and error text for a case that prepare_case could not build
+    # (caseReady then carries no PreparedCase, so it has no id).
+    casePrepareFailed = pyqtSignal(str, str)
     finished = pyqtSignal()
 
     def __init__(self, study_dir, definition: StudyDefinition, cases: tuple[CaseSpec, ...], parent=None) -> None:
@@ -44,6 +47,8 @@ class ValidationWorker(QObject):
             except Exception as exc:
                 prepared = None
                 error = f"{type(exc).__name__}: {exc}"
+            if prepared is None:
+                self.casePrepareFailed.emit(case.id, error)
             self.caseReady.emit(prepared, error)
             self.progress.emit(index, total)
         self.finished.emit()

@@ -196,6 +196,7 @@ class MainWindow(QMainWindow):
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.caseReady.connect(self._case_ready)
+        worker.casePrepareFailed.connect(self._mark_invalid)
         worker.progress.connect(self._validation_progress)
         dialog = QProgressDialog("Building cases…", "Cancel", 0, len(cases), self)
         dialog.setAutoClose(False)
@@ -245,13 +246,25 @@ class MainWindow(QMainWindow):
                 self.run_action.setEnabled(self.configuration is not None and self.configuration.runnable)
 
     def _case_ready(self, prepared, error) -> None:
+        """Keep a valid case, or record an invalid one as run_study does."""
+        if prepared is None:
+            return  # casePrepareFailed records it, because only it knows the case id.
+        case_id = prepared.directory.name
         if error is None:
             self._prepared.append(prepared)
+            self._update_case(case_id, directory=f"cases/{case_id}", status="pending", error=None)
+        else:
+            self._mark_invalid(case_id, error)
+
+    def _mark_invalid(self, case_id: str, error: str) -> None:
+        self._update_case(case_id, directory=f"cases/{case_id}", status="invalid", error=error)
+
+    def _update_case(self, case_id: str, **fields) -> None:
+        if self.study_index is None:
             return
-        if prepared is not None and self.study_index is not None:
-            self.study_index.update(prepared.directory.name, status="invalid", error=error)
-            self.queue_table.set_cases(self.study_index.cases)
-            self._refresh_status()
+        self.study_index.update(case_id, **fields)
+        self.queue_table.set_cases(self.study_index.cases)
+        self._refresh_status()
 
     def run_cases(self) -> None:
         """Build a baseline if needed and start the process queue."""

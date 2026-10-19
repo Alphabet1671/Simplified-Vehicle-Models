@@ -32,7 +32,13 @@ class _ProcessRegistry:
             stopping = self.stop.is_set()
         if stopping and process.poll() is None:
             # A worker can start its child after terminate_all() took its snapshot.
+            # Reap it here so pool.shutdown() cannot wait for the full run timeout.
             process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
 
     def discard(self, process) -> None:
         with self._lock:

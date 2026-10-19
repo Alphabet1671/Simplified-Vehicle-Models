@@ -6,17 +6,43 @@ from pathlib import Path
 
 from PyQt6.QtCore import QRegularExpression, Qt
 from PyQt6.QtGui import QRegularExpressionValidator
-from PyQt6.QtWidgets import QLineEdit, QFileDialog, QToolButton, QMenu, QFormLayout, QLabel, QListWidget, QListWidgetItem, QMessageBox, QPushButton, QRadioButton, QSpinBox, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import (
+    QLineEdit,
+    QFileDialog,
+    QToolButton,
+    QMenu,
+    QFormLayout,
+    QLabel,
+    QListWidget,
+    QListWidgetItem,
+    QMessageBox,
+    QPushButton,
+    QRadioButton,
+    QSpinBox,
+    QTableWidget,
+    QTableWidgetItem,
+    QVBoxLayout,
+    QWidget,
+)
 
 from tools.sim_gui import REPOSITORY_ROOT
 from tools.sim_gui.catalogue import candidates, read_entry, scan_catalogue, tracks
 from tools.sim_gui.run_study import default_parallel
-from tools.sim_gui.study import Dimension, StudyDefinition, TooManyCases, WARNING_CASES, dimension_from_sweep, expand
+from tools.sim_gui.study import (
+    Dimension,
+    StudyDefinition,
+    TooManyCases,
+    WARNING_CASES,
+    dimension_from_sweep,
+    expand,
+)
 
 
 class StudyTab(QWidget):
     """Edit study dimensions and preview expanded cases."""
+
     def __init__(self, configuration, settings, parent=None) -> None:
+        """Create a study tab based on a vehicle configuration and settings."""
         super().__init__(parent)
         self.configuration = configuration
         self.settings = settings
@@ -24,6 +50,7 @@ class StudyTab(QWidget):
         self._dimensions: list[Dimension] = []
         self._dimension_values: dict[str, tuple[str, ...]] = {}
         self._dimension_labels: dict[str, tuple[str, ...]] = {}
+
         self.one_at_a_time = QRadioButton("One-at-a-time")
         self.full_factorial = QRadioButton("Full factorial")
         self.one_at_a_time.setChecked(True)
@@ -42,6 +69,7 @@ class StudyTab(QWidget):
         self.preview_count = QLabel()
         self.preview = QTableWidget(0, 2)
         self.preview.setHorizontalHeaderLabels(("ID", "Label"))
+
         add = QToolButton()
         add.setText("Add dimension")
         add.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
@@ -53,6 +81,7 @@ class StudyTab(QWidget):
         add_sweep.clicked.connect(self._add_sweep)
         remove = QPushButton("Remove")
         remove.clicked.connect(self._remove_dimension)
+
         form = QFormLayout()
         form.addRow("Study name", self.study_name)
         form.addRow("Parallel cases", self.parallel_cases)
@@ -69,6 +98,7 @@ class StudyTab(QWidget):
         layout.addWidget(self.preview)
 
     def _sanitize_name(self, text: str) -> None:
+        """Keep the study name within its documented character set."""
         sanitized = "".join(char for char in text if char.isascii() and (char.isalnum() or char in "_-") )[:40]
         if sanitized != text:
             self.study_name.blockSignals(True)
@@ -76,9 +106,16 @@ class StudyTab(QWidget):
             self.study_name.blockSignals(False)
 
     def definition(self, base) -> StudyDefinition:
-        return StudyDefinition(self.study_name.text(), str(base.source), base.track if hasattr(base, "track") else "", base.model, {key: str(value) for key, value in base.choices.items()}, self.settings, "one-at-a-time" if self.one_at_a_time.isChecked() else "full-factorial", tuple(self._dimensions))
+        """Return a study definition using the selected dimensions."""
+        return StudyDefinition(
+            self.study_name.text(), str(base.source), base.track if hasattr(base, "track") else "",
+            base.model, {key: str(value) for key, value in base.choices.items()}, self.settings,
+            "one-at-a-time" if self.one_at_a_time.isChecked() else "full-factorial",
+            tuple(self._dimensions),
+        )
 
     def set_definition(self, definition: StudyDefinition) -> None:
+        """Replace the tab's controls from a serialized definition."""
         self.study_name.setText(definition.name)
         self.one_at_a_time.setChecked(definition.mode == "one-at-a-time")
         self.full_factorial.setChecked(definition.mode == "full-factorial")
@@ -89,7 +126,8 @@ class StudyTab(QWidget):
     def _refresh_dimension_menu(self) -> None:
         self._dimension_menu.clear()
         swept = {dimension.key for dimension in self._dimensions}
-        for key in [slot.key for slot in self.configuration.slots()] + ["model", "track"]:
+        keys = [slot.key for slot in self.configuration.slots()] + ["model", "track"]
+        for key in keys:
             if key not in swept:
                 action = self._dimension_menu.addAction(key)
                 action.triggered.connect(lambda *_, value=key: self._add_dimension(value))
@@ -97,17 +135,20 @@ class StudyTab(QWidget):
     def _add_dimension(self, key: str) -> None:
         if key in {dimension.key for dimension in self._dimensions}:
             return
-        self._dimensions.append(self._dimension_for_key(key))
+        dimension = self._dimension_for_key(key)
+        self._dimensions.append(dimension)
         self._rebuild_dimension_list()
         self._refresh_dimension_menu()
         self._refresh_preview()
 
     def _dimension_for_key(self, key: str) -> Dimension:
         if key == "model":
-            return Dimension(key, ("planar-7dof", "14dof-simple"))
+            values = ("planar-7dof", "14dof-simple")
+            return Dimension(key, values)
         if key == "track":
             entries = tracks(self._catalogue)
-            return Dimension(key, tuple(str(entry.path) for entry in entries), tuple(entry.path.stem for entry in entries))
+            values = tuple(str(entry.path) for entry in entries)
+            return Dimension(key, values, tuple(entry.path.stem for entry in entries))
         current = read_entry(self.configuration.choices[key])
         entries = candidates(current, self._catalogue)
         return Dimension(key, tuple(str(entry.path) for entry in entries), tuple(entry.path.stem for entry in entries))
@@ -145,7 +186,8 @@ class StudyTab(QWidget):
     def _select_dimension(self, row: int) -> None:
         self.member_list.clear()
         if 0 <= row < len(self._dimensions):
-            for label in self._dimensions[row].labels:
+            dimension = self._dimensions[row]
+            for label in dimension.labels:
                 item = QListWidgetItem(label, self.member_list)
                 item.setCheckState(Qt.CheckState.Checked)
         self.member_list.itemChanged.connect(self._members_changed)
@@ -155,14 +197,25 @@ class StudyTab(QWidget):
         if not 0 <= row < len(self._dimensions):
             return
         dimension = self._dimensions[row]
-        items = self.member_list.findItems("", Qt.MatchFlag.MatchContains)
-        self._dimensions[row] = Dimension(dimension.key, tuple(value for value, item in zip(dimension.values, items) if item.checkState() == Qt.CheckState.Checked), tuple(dimension.labels[i] for i, item in enumerate(items) if item.checkState() == Qt.CheckState.Checked), dimension.sweep, dimension.points)
+        checked = tuple(
+            value for value, item in zip(dimension.values, self.member_list.findItems("", Qt.MatchFlag.MatchContains))
+            if item.checkState() == Qt.CheckState.Checked
+        )
+        self._dimensions[row] = Dimension(
+            dimension.key, checked, tuple(dimension.labels[i] for i, item in enumerate(self.member_list.findItems("", Qt.MatchFlag.MatchContains)) if item.checkState() == Qt.CheckState.Checked), dimension.sweep, dimension.points
+        )
         self._refresh_preview()
 
     def _refresh_preview(self, *_args) -> None:
         try:
-            cases = expand(self.definition(self.configuration))
-        except (TooManyCases, ValueError, TypeError) as error:
+            definition = self.definition(self.configuration)
+            cases = expand(definition)
+        except TooManyCases as error:
+            self.preview_count.setText(str(error))
+            self.preview_count.setStyleSheet("color: red")
+            self.preview.setRowCount(0)
+            return
+        except (ValueError, TypeError) as error:
             self.preview_count.setText(str(error))
             self.preview_count.setStyleSheet("color: red")
             self.preview.setRowCount(0)

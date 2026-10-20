@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import numpy as np
 
@@ -56,6 +57,13 @@ class ClosedTrackTests(unittest.TestCase):
                     ClosedSettings(self.mat, 0.0, float("nan")), ClosedSettings(self.folder / "no.mat", 0.0, 60.0)):
             with self.assertRaises(ValueError):
                 build_closed(bad)
+
+    def test_invalid_settings_do_not_probe_scipy(self):
+        bad = ClosedSettings(self.mat, 10.0, 5.0)
+        with mock.patch("tools.track_gui.closed.scipy_available") as available:
+            with self.assertRaises(ValueError):
+                build_closed(bad)
+        available.assert_not_called()
 
     def test_window_with_too_few_samples_is_refused(self):
         with self.assertRaisesRegex(ValueError, "too few samples"):

@@ -11,7 +11,7 @@ from pathlib import Path
 
 from simplified_vehicle_models.tracks.profile import load_track
 from tools.gui_common.files import check_name
-from tools.track_gui.export import SavedTrack, SaveRefused, _guard_targets, _install, check_model_id, check_title
+from tools.track_gui.export import SavedTrack, _guard_targets, _install, check_model_id, check_title
 
 
 def scipy_available() -> bool:
@@ -45,11 +45,11 @@ class ClosedSettings:
 
 def build_closed(settings: ClosedSettings) -> dict:
     """Return the geometry dict of ``build_closed_track.build_geometry``."""
+    settings.check()
     if not scipy_available():
         raise ValueError("SciPy is not installed; install it with: pip install -e .[forward]")
     from tools.tracks.build_closed_track import build_geometry
 
-    settings.check()
     return build_geometry(Path(settings.telemetry).expanduser().resolve(), settings.start_time,
                           settings.end_time, settings.spacing, settings.smoothing)
 

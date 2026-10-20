@@ -6,7 +6,7 @@ Implemented the animation exporter GUI main window and application entry point.
 ## Files
 - `tools/anim_gui/qt/__init__.py`
 - `tools/anim_gui/qt/main_window.py`
-- `tools/anim_gui/app.py`
+- `tools/anim_gui/animation_gui_app.py`
 - `tests/test_anim_gui_qt.py`
 
 ## Implementation

@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 class AnimGuiDocsTests(unittest.TestCase):
     def test_the_guide_names_the_start_command(self):
         text = (ROOT / "docs" / "dev" / "animation-gui.md").read_text(encoding="utf-8")
-        self.assertIn("python3 tools/anim_gui/app.py", text)
+        self.assertIn("python3 tools/anim_gui/animation_gui_app.py", text)
 
     def test_tools_layout_lists_the_package_and_links_the_guide(self):
         text = (ROOT / "docs" / "dev" / "tools-layout.md").read_text(encoding="utf-8")

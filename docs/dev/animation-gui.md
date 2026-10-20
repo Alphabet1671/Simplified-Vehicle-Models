@@ -17,8 +17,8 @@ The exporter needs matplotlib. An MP4 file also needs `ffmpeg` on `PATH`. See [a
 Start the application from the repository root. The optional argument is a run record:
 
 ```bash
-PYTHONPATH=src:. python3 tools/anim_gui/app.py
-PYTHONPATH=src:. python3 tools/anim_gui/app.py runs/my_study_20261019-120000/cases/case_000/attempt_1/run_record.npz
+PYTHONPATH=src:. python3 tools/anim_gui/animation_gui_app.py
+PYTHONPATH=src:. python3 tools/anim_gui/animation_gui_app.py runs/my_study_20261019-120000/cases/case_000/attempt_1/run_record.npz
 ```
 
 ## Choose a record

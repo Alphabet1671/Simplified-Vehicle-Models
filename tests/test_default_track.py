@@ -27,6 +27,17 @@ def track_option_defaults(name):
 
 
 class DefaultTrackTests(unittest.TestCase):
+    def test_new_animation_tool_basenames_are_glob_unambiguous(self):
+        animation_files = sorted((ROOT / "tools" / "anim_gui").glob("*.py"))
+        all_tool_files = [path for path in (ROOT / "tools").glob("*") if path.is_dir()
+                          for path in path.glob("*.py")]
+        animation_files = [path for path in animation_files if path.name != "__init__.py"]
+        basenames = {}
+        for path in all_tool_files:
+            basenames.setdefault(path.name, []).append(path)
+        for path in animation_files:
+            self.assertEqual(basenames[path.name], [path], path.name)
+
     def test_runner_default_is_canonical_and_legacy_is_original(self):
         self.assertEqual(str(DEFAULT_TRACK), CANONICAL)
         self.assertEqual(str(LEGACY_TRACK), ORIGINAL)

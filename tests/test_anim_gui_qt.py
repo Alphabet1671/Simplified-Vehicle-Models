@@ -312,11 +312,42 @@ class WindowTests(unittest.TestCase):
         unrelated.write_text("keep")
         self.window.output.setText(str(output))
         self.window._active_output = output
+        self.window._active_format = "mp4"
         self.window.mode = "export"
         self.window._finished(2, "done")
         self.assertFalse(partial.exists())
         self.assertTrue(unrelated.exists())
         self.assertEqual(self.window.mode, "idle")
+
+    def test_failed_export_cleans_partial_beside_preexisting_mp4(self):
+        self.open(self.real)
+        self.window.format.setCurrentIndex(self.window.format.findData("mp4"))
+        output = Path(self.out.name) / "existing.mp4"
+        output.write_bytes(b"finished")
+        partial = output.with_name("existing.partial.mp4")
+        partial.write_bytes(b"unfinished")
+        self.window._active_output = output
+        self.window._active_format = "mp4"
+        self.window._preexisting_output = True
+        self.window.mode = "export"
+        self.window._finished(2, "done")
+        self.assertTrue(output.exists())
+        self.assertFalse(partial.exists())
+
+    def test_cancelled_export_cleans_partial_beside_preexisting_mp4(self):
+        self.open(self.real)
+        self.window.format.setCurrentIndex(self.window.format.findData("mp4"))
+        output = Path(self.out.name) / "cancelled.mp4"
+        output.write_bytes(b"finished")
+        partial = output.with_name("cancelled.partial.mp4")
+        partial.write_bytes(b"unfinished")
+        self.window._active_output = output
+        self.window._active_format = "mp4"
+        self.window._preexisting_output = True
+        self.window.mode = "export"
+        self.window._finished(-1, "cancelled")
+        self.assertTrue(output.exists())
+        self.assertFalse(partial.exists())
 
     def test_the_synthetic_record_fails_with_the_exporters_message(self):
         # A synthetic record names no track, so a real render exits 2 and the GUI must say why.
@@ -353,7 +384,7 @@ class WindowTests(unittest.TestCase):
         self.assertFalse(video.with_name("v.partial.mp4").exists())
 
     def test_app_main_quits_after_the_hook(self):
-        from tools.anim_gui import app as app_module
+        from tools.anim_gui import animation_gui_app as app_module
         os.environ["ANIM_GUI_QUIT_AFTER_MS"] = "50"
         self.addCleanup(os.environ.pop, "ANIM_GUI_QUIT_AFTER_MS", None)
         self.assertEqual(app_module.main([str(self.synthetic)]), 0)

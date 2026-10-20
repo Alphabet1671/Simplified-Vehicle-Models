@@ -6,7 +6,7 @@ from pathlib import Path
 
 from tests.test_animation_cli import record_file
 from tests.test_animation_panels import BASE, DYNAMIC, WHEEL
-from tools.anim_gui import settings as S
+from tools.anim_gui import animation_gui_settings as S
 from tools.gui_common import REPOSITORY_ROOT
 
 

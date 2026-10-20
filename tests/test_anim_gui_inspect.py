@@ -11,7 +11,7 @@ from tests.test_animation_cli import record_file
 from tests.test_animation_panels import BASE, DYNAMIC, WHEEL
 from tools.anim import export_animation as cli
 from tools.anim.encode import EncoderUnavailable
-from tools.anim_gui import inspect_plan, settings as S
+from tools.anim_gui import inspect_plan, animation_gui_settings as S
 
 
 def make_settings(record, **changes):

@@ -1,4 +1,4 @@
-"""Start the animation GUI: ``PYTHONPATH=src:. python3 tools/anim_gui/app.py [run_record.npz]``."""
+"""Start the animation GUI: ``PYTHONPATH=src:. python3 tools/anim_gui/animation_gui_app.py [run_record.npz]``."""
 from __future__ import annotations
 
 import os

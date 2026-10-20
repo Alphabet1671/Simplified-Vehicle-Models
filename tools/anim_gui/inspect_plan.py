@@ -7,7 +7,7 @@ from pathlib import Path
 
 from tools.anim import export_animation as cli
 from tools.anim.encode import EncoderUnavailable, find_ffmpeg
-from tools.anim_gui.settings import ExportSettings
+from tools.anim_gui.animation_gui_settings import ExportSettings
 
 
 @dataclass(frozen=True, slots=True)

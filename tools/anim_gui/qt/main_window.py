@@ -11,7 +11,7 @@ from PyQt6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, 
                              QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMessageBox, QPlainTextEdit,
                              QProgressBar, QPushButton, QSlider, QSpinBox, QSplitter, QVBoxLayout, QWidget)
 
-from tools.anim_gui import inspect_plan, progress, records, settings as S
+from tools.anim_gui import inspect_plan, progress, records, animation_gui_settings as S
 from tools.gui_common import REPOSITORY_ROOT
 from tools.gui_common.files import protected_directory_problem
 from tools.gui_common.qt.process import ProcessJob, python_command
@@ -57,6 +57,7 @@ class MainWindow(QMainWindow):
         self.span = (0.0, 1.0)
         self._preview_folder: tempfile.TemporaryDirectory | None = None
         self._active_output: Path | None = None
+        self._active_format: str | None = None
         self._preexisting_output = False
         self._closing = False
 
@@ -367,6 +368,7 @@ class MainWindow(QMainWindow):
     def _run(self, settings: S.ExportSettings, mode: str, timeout: float) -> None:
         self.mode, self.errors = mode, []
         self._active_output = settings.output
+        self._active_format = settings.format
         self.bar.setValue(0)
         self.speed.setText("")
         self.log.clear()
@@ -468,8 +470,11 @@ class MainWindow(QMainWindow):
     def _finished(self, code: int, state: str) -> None:
         mode, output = self.mode, self._active_output
         self.mode = "idle"
-        if (code != 0 or state != "done") and mode == "export" and output is not None and not self._preexisting_output:
-            records.remove_partials(output)
+        if (code != 0 or state != "done") and mode == "export" and output is not None:
+            if self._active_format == "mp4":
+                records.remove_partials(output)
+            elif not self._preexisting_output:
+                records.remove_partials(output)
         message = progress.describe_result(code, state, self.errors)
         if mode == "preview":
             self._show_preview(code, state, message)

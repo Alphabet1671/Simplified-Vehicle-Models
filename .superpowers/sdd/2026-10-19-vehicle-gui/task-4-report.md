@@ -21,7 +21,7 @@ Focused command:
 MPLCONFIGDIR=/tmp/mplcfg PYTHONPATH=src:. QT_QPA_PLATFORM=offscreen python3 -m unittest tests.test_vehicle_gui_save -v
 ```
 
-Result: `Ran 5 tests ... OK`.
+Result: `Ran 20 tests in 0.546s ... OK` (20 vehicle/component tests, including all supplied fidelity, compiler, protection, component, and transaction cases).
 
 Existing Task 2/3 regression command:
 
@@ -31,4 +31,4 @@ MPLCONFIGDIR=/tmp/mplcfg PYTHONPATH=src:. QT_QPA_PLATFORM=offscreen python3 -m u
 
 Result: `Ran 17 tests ... OK`.
 
-The required staging-write failure, later commit failure with byte-for-byte restoration, and rollback-restore failure/recovery-path cases are covered. No files under `models/` were modified.
+The supplied 20 tests are present and passing, including render fidelity, nested chains, swaps, generated-copy behavior, compiler rejection, manifest reporting, overwrite/name/models protections, stale outputs, unchanged copies, all three save-component cases, staging-write failure, later commit failure with byte-for-byte restoration, and rollback-restore failure/recovery-path cases. No files under `models/` were modified.

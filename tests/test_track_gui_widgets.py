@@ -54,6 +54,19 @@ class PlotTests(unittest.TestCase):
         self.assertEqual(nice_step(100.0), 20.0)
         self.assertEqual(nice_step(0.0), 1.0)
         self.assertEqual(nice_step(float("nan")), 1.0)
+        with self.assertRaises(ValueError):
+            nice_step(10.0, 0)
+
+    def test_plot_setters_reject_bad_data(self):
+        plot, curve = CoursePlot(), CurvaturePlot()
+        with self.assertRaises(ValueError):
+            plot.set_course([0, 1], [0])
+        with self.assertRaises(ValueError):
+            plot.set_course([0, float("nan")], [0, 1])
+        with self.assertRaises(ValueError):
+            curve.set_course([0, 1], [0])
+        with self.assertRaises(ValueError):
+            curve.set_course([0, 1], [0, float("inf")])
 
     def test_plots_render_to_an_image(self):
         design = skidpad_design(0.0)

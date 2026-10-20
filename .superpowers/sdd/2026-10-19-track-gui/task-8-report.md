@@ -35,3 +35,9 @@ Failed as expected before implementation: `ModuleNotFoundError: No module named 
 The table now rejects non-finite numeric edits (`nan`, `inf`, and `-inf`) using `math.isfinite`, preserving `SectionSpec` and serialization invariants. Regression coverage was added for all three values.
 
 Focused suite rerun after the fix: `Ran 5 tests ... OK`.
+
+## Additional review hardening
+
+Plot setters now reject mismatched array lengths, non-one-dimensional arrays, and non-finite coordinates/data with `ValueError`. `nice_step` rejects non-positive targets. Regression tests cover these cases.
+
+Expanded focused suite: `Ran 6 tests ... OK`.

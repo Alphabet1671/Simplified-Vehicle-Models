@@ -12,6 +12,8 @@ LINE = QColor(20, 90, 170)
 MARK = QColor(200, 60, 30)
 
 def nice_step(span: float, target: int = 5) -> float:
+    if target <= 0:
+        raise ValueError("target must be positive")
     if not math.isfinite(span) or span <= 0.0: return 1.0
     raw = span / target
     power = 10.0 ** math.floor(math.log10(raw))
@@ -33,8 +35,15 @@ class CoursePlot(_Plot):
     def __init__(self, parent=None):
         super().__init__(parent); self.north=np.zeros(0); self.east=np.zeros(0); self.boundary_points=[]
     def set_course(self, north, east, boundary_points=()):
-        self.north,self.east=np.asarray(north,float),np.asarray(east,float); self.boundary_points=list(boundary_points)
-        self.message="no course" if self.north.size==0 else ""; self.update()
+        north, east = np.asarray(north, float), np.asarray(east, float)
+        if north.ndim != 1 or east.ndim != 1 or north.size != east.size:
+            raise ValueError("north and east must be equal-length one-dimensional arrays")
+        if not np.isfinite(north).all() or not np.isfinite(east).all():
+            raise ValueError("north and east must contain only finite values")
+        self.north, self.east = north, east
+        self.boundary_points = list(boundary_points)
+        self.message = "no course" if self.north.size == 0 else ""
+        self.update()
     def transform(self, rect):
         e0,e1=float(self.east.min()),float(self.east.max()); n0,n1=float(self.north.min()),float(self.north.max())
         span_e,span_n=max(e1-e0,1e-6),max(n1-n0,1e-6); scale=min(rect.width()/span_e,rect.height()/span_n)
@@ -64,9 +73,16 @@ class CoursePlot(_Plot):
 class CurvaturePlot(_Plot):
     def __init__(self,parent=None):
         super().__init__(parent); self.distance=np.zeros(0); self.curvature=np.zeros(0); self.boundaries=[]
-    def set_course(self,distance,curvature,boundaries=()):
-        self.distance,self.curvature=np.asarray(distance,float),np.asarray(curvature,float); self.boundaries=[float(b) for b in boundaries]
-        self.message="no course" if self.distance.size==0 else ""; self.update()
+    def set_course(self, distance, curvature, boundaries=()):
+        distance, curvature = np.asarray(distance, float), np.asarray(curvature, float)
+        if distance.ndim != 1 or curvature.ndim != 1 or distance.size != curvature.size:
+            raise ValueError("distance and curvature must be equal-length one-dimensional arrays")
+        if not np.isfinite(distance).all() or not np.isfinite(curvature).all():
+            raise ValueError("distance and curvature must contain only finite values")
+        self.distance, self.curvature = distance, curvature
+        self.boundaries = [float(b) for b in boundaries]
+        self.message = "no course" if self.distance.size == 0 else ""
+        self.update()
     def limits(self):
         peak=max(float(np.max(np.abs(self.curvature))),1e-3)
         return float(self.distance[0]),float(self.distance[-1]),-1.1*peak,1.1*peak

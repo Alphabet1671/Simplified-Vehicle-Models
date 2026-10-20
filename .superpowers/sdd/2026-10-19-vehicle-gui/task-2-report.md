@@ -47,3 +47,14 @@ OK
 ```
 
 The full suite was not rerun per review direction.
+
+## Round 1 follow-up
+
+Hardened root model detection with an explicit token boundary and masked comment spans. Root ID replacement now uses the exact computed source span rather than searching repeated text segments. Added a `<models>` negative regression case.
+
+Focused command output:
+
+```text
+Ran 11 tests in 0.030s
+OK
+```

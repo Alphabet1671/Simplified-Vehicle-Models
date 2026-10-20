@@ -85,11 +85,22 @@ def set_parameters(text: str, values: dict[str, float]) -> str:
     return result
 
 
+def _root_model_span(text: str) -> tuple[int, int] | None:
+    masked = _COMMENT.sub(lambda m: " " * len(m.group(0)), text)
+    prefix = re.compile(r"\s*(?:<\?xml\b[^>]*\?>\s*)?")
+    prefix_match = prefix.match(masked)
+    start = prefix_match.end() if prefix_match else 0
+    match = re.match(r"<model\b[^<>]*>", masked[start:])
+    if match is None:
+        return None
+    return start + match.start(), start + match.end()
+
+
 def _root_model_match(text: str) -> re.Match[str] | None:
-    code = _COMMENT.sub("", text)
-    code = re.sub(r"^\s*<\?xml\b[^>]*\?>", "", code).lstrip()
-    match = re.match(r"<model\b[^<>]*>", code)
-    return match
+    span = _root_model_span(text)
+    if span is None:
+        return None
+    return re.compile(r"<model\b[^<>]*>").match(text, span[0], span[1])
 
 
 def model_id(text: str) -> str:
@@ -105,29 +116,10 @@ def model_id(text: str) -> str:
 def set_model_id(text: str, new_id: str) -> str:
     if not new_id or any(c in new_id for c in '"<>&\n'):
         raise ValueError(f"not a usable model id: {new_id!r}")
-    code = _COMMENT.sub("", text)
-    prefix_len = len(code) - len(code.lstrip())
-    stripped = code[prefix_len:]
-    if stripped.startswith("<?xml"):
-        end = stripped.find("?>")
-        if end < 0:
-            raise ValueError("the file has no model id")
-        prefix_len += end + 2
-    while prefix_len < len(code) and code[prefix_len].isspace():
-        prefix_len += 1
-    if not code[prefix_len:].startswith("<model"):
+    span = _root_model_span(text)
+    if span is None:
         raise ValueError("the file has no model id")
-    start = -1
-    for part in _COMMENT.split(text):
-        if part.startswith("<!--"):
-            continue
-        candidate = part.find("<model")
-        if candidate >= 0:
-            start = text.find(part) + candidate
-            break
-    end = text.find(">", start)
-    if start < 0 or end < 0:
-        raise ValueError("the file has no model id")
+    start, end = span
     tag = text[start:end + 1]
     result, changed = _replace_attr(tag, "id", new_id)
     if not changed:

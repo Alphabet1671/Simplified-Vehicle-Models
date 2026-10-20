@@ -74,6 +74,8 @@ class EditorTests(unittest.TestCase):
   <wrapper><model id='nested'/></wrapper>
 </model>"""
         self.assertEqual(X.model_id(text), "root")
+        with self.assertRaises(ValueError):
+            X.model_id("<models id='wrong'/>")
         self.assertIn("<model id='changed'>", X.set_model_id(text, "changed"))
         self.assertEqual(X.parameter_values(text), {"p": "1"})
         self.assertIn("value = '2.0'", X.set_parameters(text, {"p": 2.0}))

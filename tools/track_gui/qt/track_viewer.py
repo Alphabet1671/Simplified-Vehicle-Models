@@ -6,6 +6,7 @@ from PyQt6.QtWidgets import (QWidget,QVBoxLayout,QHBoxLayout,QPushButton,QLabel,
     QFormLayout,QDoubleSpinBox,QSpinBox,QTableWidget,QTableWidgetItem)
 from tools.track_gui.track_ops import load_track_data, reverse_track, save_track_data, save_sections
 from tools.track_gui.export import SaveRefused
+from tools.gui_common.files import generated_by
 from tools.track_gui.qt.plots import CoursePlot, CurvaturePlot
 from tools.track_gui.qt.main_window import SaveBar
 
@@ -73,7 +74,7 @@ class TrackViewer(QWidget):
             if len(set(vals))!=len(vals) or any(not np.isfinite(v) or not 0<=v<=self.track.length for v in vals):raise ValueError
         except (ValueError,AttributeError):
             self.notice.setText("Cuts must be finite, distinct distances within the track."); return
-        self.cuts=sorted(vals); self.render()
+        self.cuts=sorted(vals); self._refresh_cuts()
     def _refresh_cuts(self):
         self.cut_table.blockSignals(True)
         self.cut_table.setRowCount(len(self.cuts))
@@ -122,12 +123,14 @@ class TrackViewer(QWidget):
         existing=[p for p in targets if p.exists()]; overwrite=bool(v.pop("overwrite",False)); generated=False
         if v["allow_models"] and any("models" in p.parts for p in targets):
             if QMessageBox.question(self,"Write inside models/","Confirm writing section files inside models/?")!=QMessageBox.StandardButton.Yes:return
+        existing_generated=[p for p in existing if p.suffix==".xml" and generated_by(p)]
         if existing:
             if not overwrite:
                 QMessageBox.warning(self,"Not saved","Section targets already exist; enable overwrite and confirm before export."); return
             if QMessageBox.question(self,"Replace existing sections?",f"Replace {len(existing)} existing file(s)?")!=QMessageBox.StandardButton.Yes:return
-            if QMessageBox.question(self,"Generated files", "Confirm generated/model replacement permissions?")!=QMessageBox.StandardButton.Yes:return
-            generated=True
+            if existing_generated:
+                if QMessageBox.question(self,"Generated files", "Replace generated track files after this confirmation?")!=QMessageBox.StandardButton.Yes:return
+                generated=True
         try: saved=save_sections(self.track,cuts,**v,overwrite=overwrite,overwrite_generated=generated)
         except Exception as e: QMessageBox.warning(self,"Sections not saved",str(e)); return
         self.notice.setText(f"Exported {len(saved)} sections.")

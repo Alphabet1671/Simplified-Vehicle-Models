@@ -58,3 +58,24 @@ feat: add the record finder for the animation GUI
 - `find_records()` follows the brief's nearest-first ordering by directory depth, then path name; it does not use filesystem modification times.
 - `remove_partials()` intentionally leaves mixed-content frame folders untouched to avoid deleting unrelated user files.
 - An unrelated pre-existing untracked `docs/superpowers/sdd/2026-10-19-animation-gui/task-2-report.md` remains outside this task commit.
+
+## Fix Round 1
+
+Addressed reviewer safety and validation findings:
+
+- `remove_partials()` now rejects symlink and non-regular-file frame entries, does not recurse through symlinked output folders, and safely ignores a directory-shaped `.partial.mp4` path.
+- `study_records()` now raises `ValueError` for non-object top-level JSON, non-object cases, and non-string `run_record` values.
+- `find_records()` now validates `limit` as a non-boolean, non-negative integer; `limit=0` returns no choices.
+- Added regression coverage for all of the above.
+
+Focused rerun:
+
+```text
+MPLCONFIGDIR=/tmp/mplcfg PYTHONPATH=src:. QT_QPA_PLATFORM=offscreen python3 -m unittest tests.test_anim_gui_records -v
+Ran 5 tests in 0.006s
+OK
+```
+
+Diff-check passed again with `git diff --check`.
+
+Ordering ruling: nearest-first ordering remains as specified by the normative reference implementation and exact test; changing it would risk mismatch with the required interface behavior.

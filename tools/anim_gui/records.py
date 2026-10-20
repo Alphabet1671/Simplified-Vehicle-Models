@@ -24,11 +24,18 @@ def study_records(study_json: Path) -> list[RecordChoice]:
         data = json.loads(study_json.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
         raise ValueError(f"cannot read {study_json}: {error}") from error
-    if data.get("schema") != "sim-study-v1" or not isinstance(data.get("cases"), list):
+    if (not isinstance(data, dict) or data.get("schema") != "sim-study-v1"
+            or not isinstance(data.get("cases"), list)):
         raise ValueError(f"{study_json} is not a sim-study-v1 file")
     choices = []
     for case in data["cases"]:
+        if not isinstance(case, dict):
+            raise ValueError(f"{study_json} has an invalid case")
         relative = case.get("run_record")
+        if relative is None:
+            continue
+        if not isinstance(relative, str):
+            raise ValueError(f"{study_json} has an invalid run_record")
         if not relative:
             continue
         path = (study_json.parent / relative).resolve()
@@ -39,6 +46,8 @@ def study_records(study_json: Path) -> list[RecordChoice]:
 
 def find_records(folder: Path, *, limit: int = 500) -> list[RecordChoice]:
     """Every ``run_record.npz`` below ``folder`` (at most ``limit``), nearest first."""
+    if isinstance(limit, bool) or not isinstance(limit, int) or limit < 0:
+        raise ValueError("limit must be a non-negative integer")
     folder = Path(folder).resolve()
     found = sorted(folder.rglob(RECORD_NAME), key=lambda p: (len(p.parts), str(p)))[:limit]
     return [RecordChoice(path.parent.relative_to(folder).as_posix() or ".", path) for path in found]
@@ -55,12 +64,14 @@ def remove_partials(output: Path) -> list[Path]:
     removed: list[Path] = []
     if output.suffix.lower() == ".mp4":
         partial = output.with_name(f"{output.stem}.partial.mp4")
-        if partial.exists():
+        if partial.is_file() and not partial.is_symlink():
             partial.unlink()
             removed.append(partial)
-    elif output.is_dir():
+    elif output.is_dir() and not output.is_symlink():
         entries = list(output.iterdir())
-        if entries and all(p.name.startswith("frame_") and p.suffix == ".png" for p in entries):
+        if (entries and all(p.is_file() and not p.is_symlink()
+                            and p.name.startswith("frame_") and p.suffix == ".png"
+                            for p in entries)):
             shutil.rmtree(output)
             removed.append(output)
     return removed

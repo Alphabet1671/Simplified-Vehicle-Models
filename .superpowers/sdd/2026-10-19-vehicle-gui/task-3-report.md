@@ -25,7 +25,7 @@ Output: `Ran 6 tests in 0.019s` / `OK`.
 
 ## Commit
 
-Commit hash: `177e82c` (amended after recording this report).
+Implementation commit hash: `67847d4` (the final report amendment is a follow-up commit).
 
 ## Concerns
 

@@ -19,6 +19,7 @@ class TrackOpsTests(unittest.TestCase):
         t=load_track_data(TRACKS/"fsae_2026_skidpad.xml")
         self.assertFalse(t.distance.flags.writeable)
         with self.assertRaises(ValueError): t.distance[0]=2
+        self.assertEqual(t.maximum_radius, 100000.)
         r=reverse_track(t); rr=reverse_track(r)
         np.testing.assert_allclose(rr.x_north,t.x_north,atol=1e-9)
         np.testing.assert_allclose(rr.curvature,t.curvature,atol=1e-12)
@@ -26,6 +27,8 @@ class TrackOpsTests(unittest.TestCase):
             r=TrackData(r.distance,r.x_north,r.y_east,r.heading,r.curvature,r.is_closed,r.title,777.)
             out=load_track_data(save_track_data(r,d,"open","open-id","Open & reverse").xml)
             self.assertFalse(out.is_closed); self.assertEqual(out.maximum_radius,777.)
+            from simplified_vehicle_models.tracks.profile import load_track
+            self.assertEqual(float(load_track(saved_xml := Path(d)/"open.xml").radius.max()), 777.)
             np.testing.assert_allclose(out.x_north,r.x_north,atol=1e-8)
 
     def test_closed_save_reverse_curvature_and_double(self):
@@ -44,6 +47,8 @@ class TrackOpsTests(unittest.TestCase):
             out=load_track_data(save_track_data(r,d,"legacy","legacy-id","Unsigned").xml)
             self.assertIsNone(out.x_north); self.assertTrue(out.is_closed); self.assertEqual(out.maximum_radius,777.)
             np.testing.assert_allclose(out.curvature,r.curvature)
+            persisted=load_track_data(save_track_data(reverse_track(out),d,"legacy_twice","legacy-id","Unsigned").xml)
+            np.testing.assert_allclose(persisted.curvature,t.curvature)
 
     def test_both_canonical_sections_exact_seam_and_saved_validation(self):
         for name in ("2024_michigan_endurance_closed.xml","2024_michigan_endurance_multilap_closed.xml"):

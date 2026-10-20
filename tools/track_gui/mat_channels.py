@@ -55,11 +55,12 @@ def _channel(record, name, legacy_time=None):
     if values.ndim != 1 or values.size < 2:
         raise ValueError(f"channel {name!r} Value must be a one-dimensional array with at least two samples")
     try:
-        clock = np.asarray(_field(record, "Time", name), dtype=float)
+        raw_clock = _field(record, "Time", name)
     except ValueError:
         if legacy_time is None:
             raise
-        clock = np.asarray(legacy_time, dtype=float)
+        raw_clock = legacy_time
+    clock = np.asarray(raw_clock, dtype=float)
     if clock.ndim != 1 or clock.size != values.size:
         raise ValueError(f"channel {name!r} Time must be one-dimensional and match Value")
     if not np.all(np.isfinite(clock)) or not np.all(np.isfinite(values)):
@@ -80,7 +81,10 @@ def list_channels(path: str | Path) -> list[ChannelInfo]:
     result = []
     for name, record in data.items():
         try:
-            t, _, units = _channel(record, name)
+            fallback = None
+            if "xtime" in data:
+                fallback = _field(data["xtime"], "Value", "xtime")
+            t, _, units = _channel(record, name, fallback)
         except ValueError:
             continue
         result.append(ChannelInfo(name, units, len(t), float(t[0]), float(t[-1])))
@@ -90,7 +94,7 @@ def list_channels(path: str | Path) -> list[ChannelInfo]:
 def _conversion(units: str, mode: str, scale: float, name: str, allow_unknown: bool = False) -> float:
     if not math.isfinite(scale) or scale == 0:
         raise ValueError(f"channel {name!r} scale must be finite and nonzero")
-    unit = units.strip().lower().replace(" ", "")
+    unit = units.strip().lower().replace(" ", "").replace("°", "deg")
     if mode == "velocity":
         factors = {"m/s": 1.0, "mps": 1.0, "km/h": 1 / 3.6, "kph": 1 / 3.6, "mph": 0.44704, "ft/s": 0.3048}
         if unit in factors:
@@ -140,8 +144,8 @@ def load_coordinates(path: str | Path, selection: ChannelSelection, start_time: 
     lo, hi = max(start_time, tx[0], ty[0]), min(end_time, tx[-1], ty[-1])
     if not lo < hi:
         raise ValueError("selected channels and requested time range have no common interval")
-    mask = (tx >= lo) & (tx <= hi)
-    time = tx[mask]
+    # Include exact clipped boundaries even when neither lands on an x sample.
+    time = np.unique(np.concatenate(([lo], tx[(tx > lo) & (tx < hi)], ty[(ty > lo) & (ty < hi)], [hi])))
     if time.size < 2:
         raise ValueError("common interval contains fewer than two samples")
     xv = np.interp(time, tx, x) * fx

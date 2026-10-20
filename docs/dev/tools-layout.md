@@ -14,6 +14,7 @@ Run a tool from the repository root by its file path, for example `PYTHONPATH=sr
 | `tools/sim_gui/` | Run simulations from a GUI: component swaps, sweeps, run records. See [simulation-gui.md](simulation-gui.md) |
 | `tools/track_gui/` | Design open courses or build closed tracks from a GUI. See [track-gui.md](track-gui.md) |
 | `tools/gui_common/` | Code that the three GUIs share: safe file writes, a cancelable child process |
+| `tools/vehicle_gui/` | Edit vehicle parameters and swap components from a GUI. See [vehicle-gui.md](vehicle-gui.md) |
 | `tools/run/` | Run the forward driver and the paired point-mass solver |
 | `tools/gates/` | Acceptance, refinement, tube, and between-step checks |
 | `tools/reports/` | Comparison tools, report writers, plots, correlation export |

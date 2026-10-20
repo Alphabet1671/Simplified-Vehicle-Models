@@ -47,6 +47,8 @@ docs/validation/**/attempt_*/*_channels.csv
 /runs/
 # Default output folder of tools/track_gui.
 /tracks_out/
+# Default output folder of tools/vehicle_gui.
+/vehicles_out/
 /models/sweeps/
 *.mp4
 *.mov

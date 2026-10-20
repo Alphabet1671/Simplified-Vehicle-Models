@@ -114,7 +114,7 @@ def model_id(text: str) -> str:
 
 
 def set_model_id(text: str, new_id: str) -> str:
-    if not new_id or any(c in new_id for c in '"<>&\n'):
+    if not new_id or any(c in new_id for c in '"\'<>&\n'):
         raise ValueError(f"not a usable model id: {new_id!r}")
     span = _root_model_span(text)
     if span is None:

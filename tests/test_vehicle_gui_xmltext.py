@@ -52,9 +52,13 @@ class EditorTests(unittest.TestCase):
     def test_model_id(self):
         self.assertEqual(X.model_id(SAMPLE), "one")
         self.assertIn('id="two"', X.set_model_id(SAMPLE, "two"))
-        for bad in ("", 'a"b', "a<b", "a&b"):
+        single_quoted = "<model id='one' type='vehicle-assembly'/>"
+        self.assertIn("id='two'", X.set_model_id(single_quoted, "two"))
+        for bad in ("", 'a"b', "a'b", "a<b", "a&b"):
             with self.assertRaises(ValueError):
                 X.set_model_id(SAMPLE, bad)
+            with self.assertRaises(ValueError):
+                X.set_model_id(single_quoted, bad)
 
     def test_component_and_source_refs(self):
         new = X.set_component_ref(SAMPLE, "aero", "../aero/c.xml")

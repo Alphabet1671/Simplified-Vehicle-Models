@@ -134,7 +134,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"saved {saved.entry}", 10000)
 
     def save_component(self, *, model_id: str | None = None) -> None:
-        if self.edit is None or self.key == ASSEMBLY and self.edit.generator(ASSEMBLY): return
+        if self.edit is None or self.key == ASSEMBLY: return
         from PyQt6.QtWidgets import QInputDialog
         if model_id is None:
             model_id, accepted = QInputDialog.getText(self, "New component", "Model id of the new component:", text=f"{self.edit.file(self.key).stem.replace('_', '-')}-copy")

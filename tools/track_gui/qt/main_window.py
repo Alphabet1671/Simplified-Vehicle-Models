@@ -460,6 +460,11 @@ class ClosedTab(QWidget):
         self.course_plot.set_overlaps([], [])
         self.course_plot.set_course([], [])
         self.report.clear()
+        for combo in (self.x_channel, self.y_channel):
+            combo.clear()
+        self._discovery_path = None
+        self._discovery_required = True
+        self.channel_info.setText("Discovering channels for the selected telemetry file.")
         path = self._canonical_path(self.telemetry.text())
         self._discovery_generation += 1
         generation = self._discovery_generation
@@ -482,6 +487,11 @@ class ClosedTab(QWidget):
         self._release_discovery()
         current = self._canonical_path(self.telemetry.text())
         if generation != self._discovery_generation or current != path:
+            for combo in (self.x_channel, self.y_channel):
+                combo.clear()
+            self._discovery_path = None
+            self._discovery_required = True
+            self.channel_info.setText("Channel discovery was discarded. Discover channels for this file before building.")
             self.notice.setText("Discarded channel discovery because the telemetry path changed.")
             return
         self.set_channels(channels, path)
@@ -494,6 +504,11 @@ class ClosedTab(QWidget):
         self._release_discovery()
         current = self._canonical_path(self.telemetry.text())
         if path and (generation != self._discovery_generation or current != path):
+            for combo in (self.x_channel, self.y_channel):
+                combo.clear()
+            self._discovery_path = None
+            self._discovery_required = True
+            self.channel_info.setText("Channel discovery was discarded. Discover channels for this file before building.")
             self.notice.setText("Discarded channel discovery because the telemetry path changed.")
             return
         for combo in (self.x_channel, self.y_channel):

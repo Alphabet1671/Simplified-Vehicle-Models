@@ -1,6 +1,7 @@
 import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -110,6 +111,32 @@ class TrackGuiToolsQtTests(unittest.TestCase):
         self.assertEqual(tab.y_channel.currentData(), "VEast")
         self.assertFalse(tab._discovery_required)
         self.assertIn("Discovered 2 channels", tab.notice.text())
+
+    def test_initial_discovery_stale_after_path_change_cannot_fall_back_to_legacy(self):
+        tab = self.window.closed_tab
+        release = threading.Event()
+
+        def delayed_discovery(path):
+            release.wait(5)
+            return [ChannelInfo("VNorth", "m/s", 100, 0, 10), ChannelInfo("VEast", "m/s", 100, 0, 10)]
+
+        try:
+            with patch("tools.track_gui.qt.main_window.list_channels", side_effect=delayed_discovery):
+                tab.telemetry.setText("/tmp/initial-discovery.mat")
+                tab.discover_channels()
+                self.assertIsNotNone(tab.discovery_thread)
+                tab.telemetry.setText("/tmp/replaced-telemetry.mat")
+                release.set()
+                self.assertTrue(wait_until(lambda: tab.discovery_thread is None))
+        finally:
+            release.set()
+        self.assertEqual(tab.x_channel.count(), 0)
+        self.assertTrue(tab._discovery_required)
+        with self.assertRaisesRegex(ValueError, "Discover channels"):
+            tab._selection()
+        tab.build()
+        self.assertIsNone(tab.thread)
+        self.assertIn("Discover channels", tab.notice.text())
 
     def test_out_of_date_discovery_result_is_discarded(self):
         tab = self.window.closed_tab

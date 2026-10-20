@@ -13,7 +13,7 @@
 
 ```text
 PYTHONPATH=src:. QT_QPA_PLATFORM=offscreen python3 -m unittest tests.test_track_gui_tools_qt tests.test_track_gui_qt tests.test_track_gui_widgets -q
-Ran 41 tests — OK
+Ran 42 tests — OK
 
 PYTHONPATH=src:. QT_QPA_PLATFORM=offscreen python3 -m unittest discover -s tests -p 'test_track_gui*.py' -q
 Ran 106 tests — OK
@@ -26,6 +26,7 @@ The Task 4 Qt tests include:
 
 - A synthetic MAT file discovered through the actual async worker, including metadata and default VNorth/VEast selection.
 - Selector clearing after a path change, failure clearing, and discard of an out-of-date discovery result.
+- An initial discovery that becomes stale after a path change cannot fall back to legacy defaults; a subsequent build is refused with a rediscovery message.
 - Settings snapshot, invalid-result clearing and build/discovery close lifecycle.
 - A real `QTest.mouseClick` on a 400-node plotted circle that adds the nearest-node cut and updates markers on both plots.
 - Actual equal-N, table edit and remove button operations with map and curvature markers.

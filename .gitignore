@@ -45,6 +45,8 @@ docs/validation/**/attempt_*/*_channels.csv
 # tools/anim/export_animation.py (see docs/dev/animation-export.md). Keep them in videos/.
 /videos/
 /runs/
+# Default output folder of tools/track_gui.
+/tracks_out/
 /models/sweeps/
 *.mp4
 *.mov

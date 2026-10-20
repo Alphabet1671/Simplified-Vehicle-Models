@@ -46,3 +46,25 @@ New tests cover mismatched clocks, m/s and km/h conversion, position units, GPS 
 - The tangent plane is appropriate for local track-sized GPS paths, not large geographic extents.
 - Degenerate paths are rejected for velocity and position as well as GPS because a usable track geometry requires nonzero displacement.
 - No MAT files, canonical models, unrelated source files, pushes, or publications were changed.
+
+## Fix round 1 (review follow-up)
+
+- `load_coordinates` now constructs the union timestamp grid from both channel clocks plus exact clipped `lo`/`hi` endpoints. This preserves higher-rate events from either channel and supports valid intervals between source samples without extrapolation.
+- Degree-symbol units (`°`) normalize to degrees, matching the actual FSC fixture spelling.
+- `list_channels` now validates legacy channels through `xtime.Value` fallback, consistent with the loader.
+- Added tests for nonaligned and narrow intervals; a higher-rate y-channel triangular velocity pulse with analytically expected integrated displacement; legacy discovery; `°`; decreasing and malformed/mismatched clocks; too-short values; no overlap; invalid GPS latitude; unknown position units. The test file handles missing SciPy via `skipIf`.
+
+Exact validation evidence:
+
+```text
+PYTHONPATH=src:. python3 -m unittest tests.test_track_gui_channels -q
+Ran 9 tests in 0.015s
+OK
+
+PYTHONPATH=src:. python3 -m unittest tests.test_track_gui_closed -q
+Ran 7 tests in 0.030s
+OK
+
+git diff --check
+(exit code 0; no output)
+```

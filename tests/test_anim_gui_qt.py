@@ -181,6 +181,19 @@ class WindowTests(unittest.TestCase):
         self.assertEqual(self.window.mode, "idle")
         self.assertFalse(target.exists())
 
+    def test_relative_output_is_rooted_at_repository(self):
+        self.open(self.real)
+        self.window.format.setCurrentIndex(self.window.format.findData("png"))
+        relative = "videos/__anim_gui_relative_test__"
+        self.window.output.setText(relative)
+        with mock.patch("tools.anim_gui.qt.main_window.REPOSITORY_ROOT", Path(self.out.name)):
+            with mock.patch("tools.anim_gui.qt.main_window.Path.cwd", return_value=Path(self.out.name) / "other"):
+                with mock.patch.object(self.window, "_run") as run:
+                    self.window.start_export()
+        run.assert_called_once()
+        actual = run.call_args.args[0]
+        self.assertEqual(actual.output, (Path(self.out.name) / relative).resolve())
+
     def test_ancestor_symlink_outputs_are_refused(self):
         self.open(self.real)
         for fmt, suffix in (("png", "frames"), ("mp4", "video.mp4")):

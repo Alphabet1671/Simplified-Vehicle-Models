@@ -52,3 +52,16 @@ MPLCONFIGDIR=/tmp/mplcfg PYTHONPATH=src:. QT_QPA_PLATFORM=offscreen python3 -m u
 Ran 18 tests in 7.918s
 OK
 ```
+
+## Fix round 3
+- Normalize relative record, output, and STL paths against `REPOSITORY_ROOT` before inspection, safety checks, directory creation, or exporter argument construction.
+- Added a regression proving a GUI working-directory mismatch still produces the repository-rooted absolute output path passed downstream.
+
+Focused fix-round-three verification:
+```text
+MPLCONFIGDIR=/tmp/mplcfg PYTHONPATH=src:. QT_QPA_PLATFORM=offscreen python3 -m unittest tests.test_anim_gui_qt -q
+Ran 19 tests in 7.792s
+OK
+```
+
+`git diff --check` passed.

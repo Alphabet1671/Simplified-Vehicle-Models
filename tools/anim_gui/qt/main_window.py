@@ -245,8 +245,10 @@ class MainWindow(QMainWindow):
         output = self.output.text().strip()
         fmt = self.current_format()
         optional = lambda widget: Path(widget.text().strip()) if widget.text().strip() else None  # noqa: E731
+        record_path = self._root_path(Path(text))
+        output_path = self._root_path(Path(output)) if output else S.default_output(record_path, fmt)
         return S.ExportSettings(
-            record=Path(text), output=Path(output) if output else S.default_output(Path(text), fmt), format=fmt,
+            record=record_path, output=output_path, format=fmt,
             frame_rate=self.rate.value(), width=self.width.value(), height=self.height.value(), crf=self.crf.value(),
             preset=self.preset.currentText(),
             time_range=(self.start.value(), self.end.value()) if self.use_range.isChecked() else None,
@@ -299,7 +301,7 @@ class MainWindow(QMainWindow):
             self._buttons()
             return
         try:
-            self.span = inspect_plan.record_span(Path(text))
+            self.span = inspect_plan.record_span(self._root_path(Path(text)))
         except ValueError as error:
             self.problem.setText(str(error))
             self.plan_text.clear()
@@ -350,6 +352,15 @@ class MainWindow(QMainWindow):
         return low + (high - low) * self.time_slider.value() / 1000.0
 
     # -- running ----------------------------------------------------------------------------
+    def _root_path(self, path: Path) -> Path:
+        return path if path.is_absolute() else (REPOSITORY_ROOT / path).resolve(strict=False)
+
+    def _normalized_settings(self) -> S.ExportSettings:
+        settings = self.current_settings()
+        return replace(settings, record=self._root_path(settings.record), output=self._root_path(settings.output),
+                       stl_body=self._root_path(settings.stl_body) if settings.stl_body else None,
+                       stl_wheel=self._root_path(settings.stl_wheel) if settings.stl_wheel else None)
+
     def _run(self, settings: S.ExportSettings, mode: str, timeout: float) -> None:
         self.mode, self.errors = mode, []
         self._active_output = settings.output
@@ -364,13 +375,16 @@ class MainWindow(QMainWindow):
     def start_export(self) -> None:
         if self.mode != "idle" or self.summary is None:
             return
-        settings = self.current_settings()
+        settings = self._normalized_settings()
         try:
             settings.check()
         except ValueError as error:
             QMessageBox.warning(self, "Not exported", str(error))
             return
         target = settings.output
+        if not target.is_absolute():
+            target = (REPOSITORY_ROOT / target).resolve(strict=False)
+            settings = replace(settings, output=target)
         unsafe = _unsafe_symlink_path(target)
         if unsafe is not None:
             QMessageBox.warning(self, "Not exported", f"Refusing to write through output path symlink: {unsafe}")

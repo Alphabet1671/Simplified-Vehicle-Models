@@ -126,6 +126,16 @@ class WindowTests(unittest.TestCase):
                 self.tab.store_design()
             self.assertEqual(path.read_text(encoding="utf-8"), "old")
 
+    def test_design_store_checked_overwrite_still_requires_confirmation(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "design.json"
+            path.write_text("old", encoding="utf-8")
+            self.tab.save_bar.overwrite.setChecked(True)
+            with patch("tools.track_gui.qt.main_window.QFileDialog.getSaveFileName", return_value=(str(path), "")), \
+                    patch("tools.track_gui.qt.main_window.QMessageBox.question", return_value=QMessageBox.StandardButton.No):
+                self.tab.store_design()
+            self.assertEqual(path.read_text(encoding="utf-8"), "old")
+
     def test_design_store_allows_confirmed_overwrite(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "design.json"
@@ -155,6 +165,7 @@ class WindowTests(unittest.TestCase):
             tab.save()
         self.assertEqual(save.call_count, 2)
         self.assertTrue(save.call_args.kwargs["overwrite_generated"])
+        self.assertTrue(save.call_args.kwargs["overwrite"])
 
     def test_closed_save_declines_generated_replacement(self):
         tab = self.window.closed_tab

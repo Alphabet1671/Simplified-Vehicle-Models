@@ -17,7 +17,7 @@ The 29 normalized failure/error entries match the previous merged-main baseline 
 
 The existing failures concern animation render fixtures and vertical-model evidence/domain checks. They are not track GUI test failures. The final branch test run must be compared with these named entries, not described as an entirely passing suite.
 
-The raw local log is `/tmp/track-tools-main-baseline.log`. The normalized entry list is `/tmp/track-tools-main-baseline-failures.txt`. These temporary files are evidence for this local run, not repository dependencies.
+The raw local log is `/tmp/track-tools-main-baseline.log`. The normalized entry list is also preserved in [baseline-entries.txt](baseline-entries.txt). The temporary copy is `/tmp/track-tools-main-baseline-failures.txt`. Temporary files are evidence for this local run, not repository dependencies.
 
 ## Existing focused track GUI tests
 

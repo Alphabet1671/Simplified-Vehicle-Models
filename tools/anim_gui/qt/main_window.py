@@ -354,7 +354,9 @@ class MainWindow(QMainWindow):
 
     # -- running ----------------------------------------------------------------------------
     def _root_path(self, path: Path) -> Path:
-        return path if path.is_absolute() else (REPOSITORY_ROOT / path).resolve(strict=False)
+        # Anchor relative paths to the child process cwd without resolving symlinks;
+        # output safety must inspect lexical ancestor components first.
+        return path if path.is_absolute() else (REPOSITORY_ROOT / path)
 
     def _normalized_settings(self) -> S.ExportSettings:
         settings = self.current_settings()
@@ -387,7 +389,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Not exported", f"Refusing unsafe directory output: {target}")
             return
         if not target.is_absolute():
-            target = (REPOSITORY_ROOT / target).resolve(strict=False)
+            target = REPOSITORY_ROOT / target
             settings = replace(settings, output=target)
         unsafe = _unsafe_symlink_path(target)
         if unsafe is not None:

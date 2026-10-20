@@ -200,9 +200,9 @@ class WindowTests(unittest.TestCase):
             with mock.patch.object(self.window, "_run") as run:
                 self.window.start_preview()
         expected = (Path(self.out.name) / "shapes/body.stl").resolve()
-        self.assertEqual(settings.stl_body, expected)
-        self.assertEqual(inspect.call_args.args[0].stl_body, expected)
-        self.assertEqual(run.call_args.args[0].stl_body, expected)
+        self.assertEqual(settings.stl_body, Path(self.out.name) / "shapes/body.stl")
+        self.assertEqual(inspect.call_args.args[0].stl_body, settings.stl_body)
+        self.assertEqual(run.call_args.args[0].stl_body, settings.stl_body)
 
     def test_relative_output_is_rooted_at_repository(self):
         self.open(self.real)
@@ -215,7 +215,42 @@ class WindowTests(unittest.TestCase):
                     self.window.start_export()
         run.assert_called_once()
         actual = run.call_args.args[0]
-        self.assertEqual(actual.output, (Path(self.out.name) / relative).resolve())
+        self.assertEqual(actual.output, Path(self.out.name) / relative)
+
+    def test_relative_models_output_requires_confirmation(self):
+        self.open(self.real)
+        self.window.format.setCurrentIndex(self.window.format.findData("png"))
+        self.window.output.setText("models/__anim_gui_relative_frames__")
+        original = QMessageBox.question
+        QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.StandardButton.No)
+        self.addCleanup(lambda: setattr(QMessageBox, "question", original))
+        with mock.patch("tools.anim_gui.qt.main_window.REPOSITORY_ROOT", Path(__file__).resolve().parents[1]):
+            self.window.start_export()
+        self.assertEqual(self.window.mode, "idle")
+        self.assertFalse((Path(__file__).resolve().parents[1] / "models" / "__anim_gui_relative_frames__").exists())
+
+    def test_relative_ancestor_symlinks_are_refused(self):
+        self.open(self.real)
+        link = Path(__file__).resolve().parents[1] / "relative-link"
+        real_dir = Path(self.out.name) / "relative-target"
+        real_dir.mkdir()
+        link.symlink_to(real_dir, target_is_directory=True)
+        self.addCleanup(lambda: link.unlink(missing_ok=True))
+        self.window.format.setCurrentIndex(self.window.format.findData("png"))
+        self.window.output.setText("relative-link/frames")
+        self.window.start_export()
+        self.assertEqual(self.window.mode, "idle")
+        self.assertFalse((real_dir / "frames").exists())
+
+    def test_relative_dangling_ancestor_symlink_is_refused(self):
+        self.open(self.real)
+        link = Path(__file__).resolve().parents[1] / "relative-dangling"
+        link.symlink_to(Path(self.out.name) / "missing", target_is_directory=True)
+        self.addCleanup(lambda: link.unlink(missing_ok=True))
+        self.window.format.setCurrentIndex(self.window.format.findData("png"))
+        self.window.output.setText("relative-dangling/frames")
+        self.window.start_export()
+        self.assertEqual(self.window.mode, "idle")
 
     def test_ancestor_symlink_outputs_are_refused(self):
         self.open(self.real)

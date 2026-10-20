@@ -80,3 +80,16 @@ OK
 ```
 
 `git diff --check` passed.
+
+## Fix round 5
+- Preserved lexical absolute output paths while anchoring relative paths to `REPOSITORY_ROOT`, preventing symlink resolution from hiding unsafe ancestor components.
+- Added regressions for relative direct and dangling ancestor symlinks and relative `models/` output requiring explicit confirmation.
+
+Focused fix-round-five verification:
+```text
+MPLCONFIGDIR=/tmp/mplcfg PYTHONPATH=src:. QT_QPA_PLATFORM=offscreen python3 -m unittest tests.test_anim_gui_qt -q
+Ran 25 tests in 7.740s
+OK
+```
+
+`git diff --check` passed.

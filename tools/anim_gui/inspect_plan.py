@@ -48,9 +48,11 @@ def inspect(settings: ExportSettings) -> PlanSummary:
         plan = cli.Plan(args)
     except cli.CliError as error:
         raise ValueError(str(error)) from error
+    has_wheel_data = any(name.startswith(("wheel-", "tire-"))
+                         for name in plan.source.channel_names)
     return PlanSummary(cli.describe(plan), plan.source.count, float(plan.record.time[0]),
                        float(plan.record.time[-1]), tuple(plan.visibility.visible), tuple(plan.visibility.hidden),
-                       tuple(plan.warning_lines()), plan.source.model_name, "top" in plan.visibility.visible)
+                       tuple(plan.warning_lines()), plan.source.model_name, has_wheel_data)
 
 
 def record_span(path: Path) -> tuple[float, float]:
@@ -60,4 +62,6 @@ def record_span(path: Path) -> tuple[float, float]:
         record = load_run_record(Path(path), verify_sources=False)
     except (RunRecordError, OSError, ValueError) as error:
         raise ValueError(f"{path} is not a valid run record: {error}") from error
+    if len(record.time) == 0:
+        raise ValueError(f"{path} is not a valid run record: it has no time samples")
     return float(record.time[0]), float(record.time[-1])

@@ -31,3 +31,21 @@ A full-suite attempt was started but remained running for over four minutes with
 
 ## Commit
 `feat: add the dry-run inspection for the animation GUI`
+
+## Fix Round 1 Review Findings
+
+Addressed the reviewer findings:
+- `has_wheel_data` now derives directly from source channel names beginning with `wheel-` or `tire-`, matching the exporter layout convention; `--force-top-view` no longer falsely reports wheel data.
+- Expanded focused coverage to compare the complete summary text and all metadata fields against the exporter `Plan`/`describe()` output.
+- Added a no-wheel record regression using `force_top_view`, with the renderer patched to fail if called, proving inspection remains planning-only.
+- `record_span()` now rejects empty time arrays with a clear `ValueError` instead of raising `IndexError`, with regression coverage.
+
+Focused verification:
+
+```text
+MPLCONFIGDIR=/tmp/mplcfg PYTHONPATH=src:. QT_QPA_PLATFORM=offscreen python3 -m unittest tests.test_anim_gui_inspect -v
+Ran 8 tests in 0.048s
+OK
+```
+
+The full suite remains inconclusive; no full-suite pass is claimed.

@@ -2,7 +2,7 @@
 from __future__ import annotations
 import math
 import numpy as np
-from PyQt6.QtCore import QPointF, QRectF, Qt
+from PyQt6.QtCore import QPointF, QRectF, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PyQt6.QtWidgets import QWidget
 
@@ -32,8 +32,9 @@ class _Plot(QWidget):
         painter.setPen(QColor(120,120,120)); painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self.message)
 
 class CoursePlot(_Plot):
+    nodeClicked = pyqtSignal(int)
     def __init__(self, parent=None):
-        super().__init__(parent); self.north=np.zeros(0); self.east=np.zeros(0); self.boundary_points=[]
+        super().__init__(parent); self.north=np.zeros(0); self.east=np.zeros(0); self.boundary_points=[]; self.overlaps_north=[]; self.overlaps_east=[]
     def set_course(self, north, east, boundary_points=()):
         north, east = np.asarray(north, float), np.asarray(east, float)
         if north.ndim != 1 or east.ndim != 1 or north.size != east.size:
@@ -44,11 +45,20 @@ class CoursePlot(_Plot):
         self.boundary_points = list(boundary_points)
         self.message = "no course" if self.north.size == 0 else ""
         self.update()
+    def set_overlaps(self,north,east):
+        self.overlaps_north=np.asarray(north,float); self.overlaps_east=np.asarray(east,float); self.update()
     def transform(self, rect):
         e0,e1=float(self.east.min()),float(self.east.max()); n0,n1=float(self.north.min()),float(self.north.max())
         span_e,span_n=max(e1-e0,1e-6),max(n1-n0,1e-6); scale=min(rect.width()/span_e,rect.height()/span_n)
         left=rect.left()+(rect.width()-span_e*scale)/2; bottom=rect.bottom()-(rect.height()-span_n*scale)/2
         return lambda n,e: QPointF(left+(e-e0)*scale,bottom-(n-n0)*scale),scale
+    def mousePressEvent(self, event):
+        if self.north.size:
+            rect=QRectF(MARGIN,8,max(self.width()-MARGIN-8,10),max(self.height()-MARGIN-8,10))
+            to_point,_=self.transform(rect); pos=event.position(); distances=[(to_point(n,e)-pos).manhattanLength() for n,e in zip(self.north,self.east)]
+            index=int(np.argmin(distances))
+            if distances[index] <= 12: self.nodeClicked.emit(index); return
+        super().mousePressEvent(event)
     def paintEvent(self, _event):
         painter=QPainter(self); painter.setRenderHint(QPainter.RenderHint.Antialiasing); rect=self._frame(painter)
         if self.north.size<2: self._empty(painter); return
@@ -65,9 +75,23 @@ class CoursePlot(_Plot):
             e+=step
         path=QPainterPath(to_point(self.north[0],self.east[0]))
         for n_value,e_value in zip(self.north[1:],self.east[1:]): path.lineTo(to_point(n_value,e_value))
-        painter.setPen(QPen(LINE,2)); painter.drawPath(path); painter.setPen(QPen(MARK,1)); painter.setBrush(MARK)
+        if len(self.overlaps_north):
+            painter.setPen(QPen(QColor(120,170,210,110),1))
+            for ns,es in zip(self.overlaps_north,self.overlaps_east):
+                if len(ns)<2:continue
+                op=QPainterPath(to_point(ns[0],es[0]))
+                for nn,ee in zip(ns[1:],es[1:]):op.lineTo(to_point(nn,ee))
+                painter.drawPath(op)
+        painter.setPen(QPen(LINE,2)); painter.drawPath(path)
+        painter.setPen(QPen(MARK,1)); painter.setBrush(MARK)
         for n_value,e_value in self.boundary_points: painter.drawEllipse(to_point(n_value,e_value),3,3)
         painter.setBrush(Qt.GlobalColor.darkGreen); painter.drawEllipse(to_point(self.north[0],self.east[0]),5,5)
+        if self.north.size>1:
+            a=to_point(self.north[0],self.east[0]); next_point=to_point(self.north[min(1,len(self.north)-1)],self.east[min(1,len(self.east)-1)])
+            angle=math.atan2(next_point.y()-a.y(),next_point.x()-a.x()); tip=QPointF(a.x()+20*math.cos(angle),a.y()+20*math.sin(angle)); size=8
+            painter.setPen(QPen(QColor(20,120,40),2)); painter.drawLine(a,tip)
+            painter.drawLine(tip,QPointF(tip.x()-size*math.cos(angle-.55),tip.y()-size*math.sin(angle-.55)))
+            painter.drawLine(tip,QPointF(tip.x()-size*math.cos(angle+.55),tip.y()-size*math.sin(angle+.55)))
         painter.setPen(QColor(90,90,90)); painter.drawText(QPointF(rect.left()+4,rect.top()+12),"east →, north ↑ (m)")
 
 class CurvaturePlot(_Plot):

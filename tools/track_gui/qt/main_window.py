@@ -9,7 +9,7 @@ import numpy as np
 from PyQt6.QtCore import QSettings, Qt, QThread, QObject, pyqtSignal
 from PyQt6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout, QGroupBox,
                              QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton,
-                             QSplitter, QTableView, QTabWidget, QVBoxLayout, QWidget, QPlainTextEdit)
+                             QSplitter, QTableView, QTabWidget, QVBoxLayout, QWidget, QPlainTextEdit, QScrollArea)
 
 from tools.gui_common import REPOSITORY_ROOT
 from tools.gui_common.files import protected_directory_problem
@@ -18,6 +18,7 @@ from tools.track_gui.design import KINDS, PRESETS, CourseDesign
 from tools.track_gui.export import SaveRefused, describe_course, save_open_course
 from tools.track_gui.qt.plots import CoursePlot, CurvaturePlot
 from tools.track_gui.qt.section_table import SectionTableModel
+from tools.track_gui.mat_channels import ChannelSelection, list_channels
 
 DEFAULT_OUTPUT = REPOSITORY_ROOT / "tracks_out"
 
@@ -204,6 +205,7 @@ class DesignTab(QWidget):
             self.course_plot.set_course([], [])
             self.curvature_plot.set_course([], [])
             self.save_button.setEnabled(False)
+            if hasattr(self,"transfer_button"): self.transfer_button.setEnabled(False)
             return
         figures = describe_course(self.course)
         self.problem.setText("")
@@ -217,6 +219,7 @@ class DesignTab(QWidget):
         self.course_plot.set_course(course.x_north, course.y_east, marks)
         self.curvature_plot.set_course(course.distance, course.curvature, course.boundaries)
         self.save_button.setEnabled(True)
+        if hasattr(self,"transfer_button"): self.transfer_button.setEnabled(True)
 
     def save(self) -> None:
         if self.course is None:
@@ -301,6 +304,20 @@ class ClosedTab(QWidget):
         self.spacing = _spin(0.05, 10.0, 0.5, 2, 0.1)
         self.smoothing = _spin(0.0, 50.0, 2.0, 2, 0.5)
         self.max_radius = _spin(1.0, 1e5, 300.0, 1, 10.0)
+        self.x_channel, self.y_channel = QComboBox(), QComboBox()
+        self.mode = QComboBox(); self.mode.addItems(["velocity", "position", "gps"])
+        self.x_scale, self.y_scale = _spin(-1e6,1e6,1.0,6,0.1), _spin(-1e6,1e6,1.0,6,0.1)
+        self.x_unknown, self.y_unknown = QCheckBox("Allow unknown x units"), QCheckBox("Allow unknown y units")
+        self.channel_info = QLabel("Legacy defaults: VNorth / VEast; use Discover to inspect MAT metadata.")
+        self.channel_info.setWordWrap(True)
+        self.discover_button = QPushButton("Discover channels")
+        self.discover_button.clicked.connect(self.discover_channels)
+        self.multi_lap = QCheckBox("Detect and average multiple laps")
+        self.return_radius = _spin(.1,1e4,12.,2,1.)
+        self.minimum_travel = _spin(1,1e6,100.,1,10.)
+        self.minimum_duration = _spin(.1,1e5,15.,1,1.)
+        self.maximum_duration = _spin(.2,1e5,240.,1,5.)
+        self.deviation_limit = _spin(.01,1e4,8.,2,1.)
         self.build_button = QPushButton("Build")
         self.build_button.clicked.connect(self.build)
         self.report = QPlainTextEdit()
@@ -311,6 +328,7 @@ class ClosedTab(QWidget):
         self.save_bar = SaveBar("my_closed_track")
         self.save_button = QPushButton("Save track")
         self.save_button.setEnabled(False)
+        self.transfer_button=QPushButton("Send to viewer"); self.transfer_button.setEnabled(False)
         self.save_button.clicked.connect(self.save)
         form = QFormLayout()
         row = QHBoxLayout()
@@ -322,6 +340,13 @@ class ClosedTab(QWidget):
         form.addRow("Node spacing (m)", self.spacing)
         form.addRow("Smoothing length (m)", self.smoothing)
         form.addRow("Maximum radius (m)", self.max_radius)
+        form.addRow(self.discover_button)
+        form.addRow("North/x channel", self.x_channel); form.addRow("East/y channel", self.y_channel)
+        form.addRow("Coordinate mode", self.mode); form.addRow("x scale", self.x_scale); form.addRow("y scale", self.y_scale)
+        form.addRow(self.x_unknown); form.addRow(self.y_unknown); form.addRow(self.channel_info)
+        form.addRow(self.multi_lap); form.addRow("Return radius (m)", self.return_radius)
+        form.addRow("Minimum travel (m)", self.minimum_travel); form.addRow("Minimum lap (s)", self.minimum_duration)
+        form.addRow("Maximum lap (s)", self.maximum_duration); form.addRow("Deviation limit (m)", self.deviation_limit)
         left = QVBoxLayout()
         left.addLayout(form)
         left.addWidget(self.build_button)
@@ -329,37 +354,86 @@ class ClosedTab(QWidget):
         left.addWidget(self.report, 1)
         left.addWidget(self.save_bar)
         left.addWidget(self.save_button)
+        left.addWidget(self.transfer_button)
+        self.transfer_button.clicked.connect(self.transfer_to_viewer)
         layout = QHBoxLayout(self)
         left_widget = QWidget()
         left_widget.setLayout(left)
-        layout.addWidget(left_widget, 1)
+        scroll=QScrollArea(); scroll.setWidgetResizable(True); scroll.setWidget(left_widget); scroll.setMinimumWidth(390)
+        layout.addWidget(scroll, 1)
+        self.course_plot.setMinimumSize(400,360)
         layout.addWidget(self.course_plot, 1)
+        self._build_controls=[self.telemetry,self.start,self.end,self.spacing,self.smoothing,self.max_radius,self.x_channel,self.y_channel,self.mode,self.x_scale,self.y_scale,self.x_unknown,self.y_unknown,self.multi_lap,self.return_radius,self.minimum_travel,self.minimum_duration,self.maximum_duration,self.deviation_limit]
+        for control in self._build_controls:
+            signal=getattr(control,"textChanged",None) or getattr(control,"valueChanged",None) or getattr(control,"currentIndexChanged",None) or getattr(control,"toggled",None)
+            if signal is not None: signal.connect(self._invalidate_result)
         if not closed.scipy_available():
             self.build_button.setEnabled(False)
             self.notice.setText("SciPy is not installed, so telemetry tracks cannot be built. "
                                 "Install it with: pip install -e .[forward]")
+
+    def _invalidate_result(self,*_):
+        if self.geometry is not None:
+            self.geometry=None; self.save_button.setEnabled(False); self.transfer_button.setEnabled(False)
+            self.course_plot.set_overlaps([],[]); self.course_plot.set_course([],[])
+            self.report.clear(); self.notice.setText("Build settings changed. Rebuild before saving or transfer.")
 
     def _browse(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "Telemetry", "", "MATLAB files (*.mat)")
         if path:
             self.telemetry.setText(path)
 
+    def set_channels(self,channels):
+        for combo in (self.x_channel,self.y_channel): combo.clear()
+        for channel in channels:
+            label=f"{channel.name} — {channel.units or 'unknown units'} ({channel.samples}, {channel.start_time:g}–{channel.end_time:g} s)"
+            self.x_channel.addItem(label,channel.name); self.y_channel.addItem(label,channel.name)
+        if channels:
+            nx=self.x_channel.findData("VNorth"); ey=self.y_channel.findData("VEast")
+            if nx>=0:self.x_channel.setCurrentIndex(nx)
+            if ey>=0:self.y_channel.setCurrentIndex(ey)
+        self.channel_info.setText(f"Discovered {len(channels)} usable channels. Choose axes explicitly; only known default channels are preselected.")
+
+    def discover_channels(self):
+        try: channels=list_channels(self.telemetry.text())
+        except Exception as error:
+            self.geometry=None; self.save_button.setEnabled(False); self.course_plot.set_course([],[]); self.report.clear(); self.notice.setText(str(error)); return
+        self.set_channels(channels)
+        if not channels:self.channel_info.setText("No usable channels found.")
+
+    def _selection(self):
+        # Preserve the old Value-only path only for untouched legacy defaults.
+        if self.x_channel.count()==0 and self.y_channel.count()==0:
+            if (self.mode.currentText()!="velocity" or self.x_scale.value()!=1.0 or self.y_scale.value()!=1.0
+                    or self.x_unknown.isChecked() or self.y_unknown.isChecked()):
+                raise ValueError("Discover channels before using explicit modes, scales, or unit overrides.")
+            return None
+        x=self.x_channel.currentData(); y=self.y_channel.currentData()
+        if not x or not y: raise ValueError("Discover channels and select valid x and y channels.")
+        return ChannelSelection(x,y,self.mode.currentText(),self.x_scale.value(),self.y_scale.value(),self.x_unknown.isChecked(),self.y_unknown.isChecked())
+
     def build(self) -> None:
         if self.thread is not None:
             return
         self.geometry = None
         self.save_button.setEnabled(False)
+        self.transfer_button.setEnabled(False)
+        self.course_plot.set_overlaps([],[])
         self.course_plot.set_course([], [])
         self.report.clear()
-        self.settings = closed.ClosedSettings(Path(self.telemetry.text()), self.start.value(), self.end.value(),
-                                              self.spacing.value(), self.smoothing.value(), self.max_radius.value())
         try:
+            selection=self._selection()
+            self.settings = closed.ClosedSettings(Path(self.telemetry.text()), self.start.value(), self.end.value(),
+                self.spacing.value(), self.smoothing.value(), self.max_radius.value(), selection,
+                self.multi_lap.isChecked(), self.return_radius.value(), self.minimum_travel.value(),
+                self.minimum_duration.value(), self.maximum_duration.value(), self.deviation_limit.value(), selection is None)
             self.settings.check()
         except ValueError as error:
             self.notice.setText(str(error))
             return
         self.notice.setText("building…")
         self.build_button.setEnabled(False)
+        self._build_token=(self.telemetry.text(),self.start.value(),self.end.value(),self.spacing.value(),self.smoothing.value(),self.max_radius.value(),self.mode.currentText(),self.x_scale.value(),self.y_scale.value(),self.x_unknown.isChecked(),self.y_unknown.isChecked(),self.multi_lap.isChecked(),self.return_radius.value(),self.minimum_travel.value(),self.minimum_duration.value(),self.maximum_duration.value(),self.deviation_limit.value(),self.x_channel.currentData(),self.y_channel.currentData())
         self.thread = QThread(self)
         worker = _BuildWorker(self.settings)
         worker.moveToThread(self.thread)
@@ -367,6 +441,7 @@ class ClosedTab(QWidget):
         worker.done.connect(self._built)
         worker.failed.connect(self._failed)
         self._worker = worker
+        for control in self._build_controls: control.setEnabled(False)
         self.thread.start()
 
     def _release(self) -> None:
@@ -375,21 +450,38 @@ class ClosedTab(QWidget):
             self.thread.wait()
             self.thread = None
         self.build_button.setEnabled(closed.scipy_available())
+        for control in self._build_controls: control.setEnabled(True)
 
     def _built(self, geometry) -> None:
         self._release()
+        current=(self.telemetry.text(),self.start.value(),self.end.value(),self.spacing.value(),self.smoothing.value(),self.max_radius.value(),self.mode.currentText(),self.x_scale.value(),self.y_scale.value(),self.x_unknown.isChecked(),self.y_unknown.isChecked(),self.multi_lap.isChecked(),self.return_radius.value(),self.minimum_travel.value(),self.minimum_duration.value(),self.maximum_duration.value(),self.deviation_limit.value(),self.x_channel.currentData(),self.y_channel.currentData())
+        if current!=self._build_token:
+            self.geometry=None; self.course_plot.set_course([],[]); self.save_button.setEnabled(False); self.transfer_button.setEnabled(False); self.notice.setText("Discarded build because its inputs changed."); return
         self.geometry = geometry
         figures = closed.summarize(geometry)
         self.report.setPlainText("\n".join(f"{key}: {value:.6g}" for key, value in figures.items()))
         self.course_plot.set_course(geometry["north"], geometry["east"])
+        self.course_plot.set_overlaps(geometry.get("overlap_north",[]),geometry.get("overlap_east",[]))
+        if geometry.get("lap_diagnostics"):
+            diag=geometry["lap_diagnostics"]
+            self.report.appendPlainText("\nlap_diagnostics: "+str(diag))
         self.notice.setText("built")
         self.save_button.setEnabled(True)
+        self.transfer_button.setEnabled(True)
 
     def _failed(self, message: str) -> None:
         self._release()
         self.geometry = None
         self.save_button.setEnabled(False)
+        self.course_plot.set_course([],[])
+        self.transfer_button.setEnabled(False)
         self.notice.setText(message)
+
+    def transfer_to_viewer(self):
+        if self.geometry is None:return
+        from tools.track_gui.track_ops import from_closed_geometry
+        self.window().viewer_tab.set_track(from_closed_geometry(self.geometry,maximum_radius=self.settings.maximum_radius))
+        self.window().tabs.setCurrentWidget(self.window().viewer_tab)
 
     def save(self) -> None:
         if self.geometry is None:
@@ -425,8 +517,15 @@ class MainWindow(QMainWindow):
         self.tabs = QTabWidget()
         self.design_tab = DesignTab()
         self.closed_tab = ClosedTab()
+        from tools.track_gui.qt.track_viewer import TrackViewer
+        self.viewer_tab=TrackViewer()
+        self.design_tab.transfer_button=QPushButton("Send to viewer")
+        self.design_tab.transfer_button.clicked.connect(self.transfer_design_to_viewer)
+        self.design_tab.transfer_button.setEnabled(self.design_tab.course is not None)
+        self.design_tab.save_button.parentWidget().layout().addWidget(self.design_tab.transfer_button)
         self.tabs.addTab(self.design_tab, "Design an open course")
         self.tabs.addTab(self.closed_tab, "Closed track from telemetry")
+        self.tabs.addTab(self.viewer_tab,"Track viewer")
         self.setCentralWidget(self.tabs)
         for tab in (self.design_tab, self.closed_tab):
             tab.status.connect(self.statusBar().showMessage)
@@ -435,6 +534,13 @@ class MainWindow(QMainWindow):
             self.restoreGeometry(geometry)
         else:
             self.resize(1200, 760)
+
+    def transfer_design_to_viewer(self):
+        if self.design_tab.course is None:return
+        from tools.tracks.open_course import OpenCourse
+        c=self.design_tab.course
+        self.viewer_tab.set_track(__import__('tools.track_gui.track_ops',fromlist=['from_open_course']).from_open_course(c))
+        self.tabs.setCurrentWidget(self.viewer_tab)
 
     def closeEvent(self, event) -> None:
         if self.closed_tab.thread is not None:

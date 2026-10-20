@@ -37,11 +37,12 @@ Result: **Ran 54 tests in 1.850s — OK**.
 
 ## Self-review
 
-- The guide uses the required startup command and exact reviewed behavior.
-- Documentation tests cover all three required discoverability changes.
+- Each corrected behavior statement was checked against current source: `_revert_slot` removes parameter edits only; `render_files` always includes the assembly; component save uses the save-bar stem and a separate model id; `models/sweeps/` is exempt from folder protection.
+- The guide uses short, one-idea sentences for the reviewed behavior and save warnings.
+- Documentation tests cover the three required discoverability changes and corrected behavior statements without parsing the full document.
 - PyQt6, `src/`, `tools/sim_gui/`, `models/`, and `pyproject` were not modified.
-- Pre-existing untracked documentation was left untouched.
-- No unrelated files were changed.
+- Pre-existing untracked planning/spec documentation was left untouched.
+- The ignored task brief was amended with an implementation-corrections ledger and ruling that source behavior wins where the brief conflicts; it was not staged because it is intentionally ignored.
 
 ## Commit
 

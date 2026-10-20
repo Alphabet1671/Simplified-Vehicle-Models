@@ -17,6 +17,20 @@ class VehicleGuiDocsTests(unittest.TestCase):
         lines = (ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
         self.assertIn("/vehicles_out/", lines)
 
+    def test_the_guide_matches_reviewed_save_and_revert_behavior(self):
+        text = (ROOT / "docs" / "dev" / "vehicle-gui.md").read_text(encoding="utf-8")
+        self.assertIn("It does not restore a previous component choice.", text)
+        self.assertIn("This file is always written.", text)
+        self.assertIn("The save bar's file name sets the output stem.", text)
+        self.assertIn("The model id is stored inside that file.", text)
+        self.assertIn("The `models/sweeps/` folder is exempt.", text)
+        self.assertNotIn("und[o]es the edits and the swap", text)
+        self.assertNotIn("when it or a component below it changed", text)
+
+    def test_the_guide_splits_the_save_failure_warning(self):
+        text = (ROOT / "docs" / "dev" / "vehicle-gui.md").read_text(encoding="utf-8")
+        self.assertIn("If rollback itself fails, cleanup continues. The original error remains raised.", text)
+
 
 if __name__ == "__main__":
     unittest.main()

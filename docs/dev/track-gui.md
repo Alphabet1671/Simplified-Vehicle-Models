@@ -48,6 +48,27 @@ The two plots update after each edit. The first plot shows the centerline. The s
 
 Use the tab **Closed track from telemetry**. Select the MAT file, the lap start and end times, the node spacing and the smoothing length. The maximum-radius value is saved into the output XML metadata; it is not passed to the geometry builder and does not constrain the built geometry. Select **Build**. The build runs in a background thread, so the window stays usable. The result box lists the length, the node count, the closure gap, the winding error, the minimum radius, the minimum self-distance and the largest smoothing move. Check these figures before you save.
 
+## Import MAT telemetry
+
+Choose north/X and east/Y channels explicitly. Velocity channels use m/s (or a supported velocity unit); position channels use metres; GPS channels use latitude and longitude in degrees. The GUI synchronizes selected channels over their common time interval. GPS coordinates become local north/east metres. Do not assume that empty-looking channels contain data. In the FSC fixture, Latitude_MTI and Longitude_MTI contain GPS; several plausible Pos*/GPS_* names are empty or nearly empty. For FSC vehicle-frame velocity checks, velY_MTI is north and velX_MTI is east. For MIS velocity, VNorth is north and VEast is east.
+
+Multi-lap mode detects spatial returns. It does not require a lap counter. Select a window that contains complete moving laps. A constant lap counter or unreliable lap trigger is not a reliable boundary source. The detector applies return-radius, travel, duration and heading limits, then rejects stopped, pit or dissimilar laps. A window with too few supported laps fails rather than creating a track. Check accepted and rejected lap counts, time boundaries, point clipping, registration residuals and overlap support before saving. Smoothing and spacing affect the resulting geometry; do not treat example circuit lengths as targets.
+
+A reproducible private-fixture acceptance run uses explicit paths:
+
+```bash
+PYTHONPATH=src:. python3 tools/track_gui/validate_track_imports.py \\
+  --mis /path/to/0615CompEndurance.mat \\
+  --fsc "/path/to/FSC-2026-May-Endurance.mat" \\
+  --output /tmp/track-import-acceptance
+```
+
+The command writes `acceptance.json` and one overlap PNG for each source. It does not discover private files by default. Set `TRACK_GUI_MIS_MAT` and `TRACK_GUI_FSC_MAT` to run the optional actual-data unit tests. Missing private data makes those tests skip; a selected CLI path that does not exist is an error.
+
+## View, reverse and cut a track
+
+The existing-track viewer loads repository track XML. Signed XY tracks show the map, start/direction and curvature. Legacy unsigned distance/radius tracks have no recoverable XY map and show an explicit unsigned-geometry notice; reversal still works without inventing a turn direction. Reverse changes distance order and direction while retaining a closed start. Double reversal should restore geometry, with headings compared modulo 2π. Closed tracks can be split at editable distances or into equal sections. Use the cut controls to add, edit or remove cut distances. Check every section endpoint and the start/finish wrap before saving. Each reconstructed section must remain within the 0.02 m source-position tolerance and pass the strict track loader. Section export can fail if the geometry cannot meet both checks, if it reaches the 100,000-node resource cap, or if the target set fails a safety check. Do not weaken loader validation to force an export.
+
 ## Save a track
 
 The save bar has a folder, a file name, a model id and a title. The GUI writes `<file name>.xml` and `<file name>.csv`. It writes them in a temporary folder first, reads them back with `load_track`, and only then moves them to the folder. If the read-back fails, nothing reaches the folder.
@@ -73,10 +94,12 @@ The package `tools/gui_common/` holds the code that the track, vehicle and anima
 MPLCONFIGDIR=/tmp/mplcfg PYTHONPATH=src:. QT_QPA_PLATFORM=offscreen python3 -m unittest \
   tests.test_gui_common tests.test_gui_common_qt tests.test_track_tool_patches \
   tests.test_track_gui_design tests.test_track_gui_export tests.test_track_gui_closed \
-  tests.test_track_gui_widgets tests.test_track_gui_qt tests.test_track_gui_docs -v
+  tests.test_track_gui_channels tests.test_track_gui_laps tests.test_track_gui_ops \
+  tests.test_track_gui_real_data tests.test_track_gui_widgets tests.test_track_gui_qt \
+  tests.test_track_gui_tools_qt tests.test_track_gui_docs -v
 ```
 
-Qt tests skip when PyQt6 is not installed. The closed-track tests skip when SciPy is not installed. The environment variable `TRACK_GUI_QUIT_AFTER_MS` closes the window after that many milliseconds. A smoke test uses it.
+Qt tests skip when PyQt6 is not installed. The closed-track tests skip when SciPy is not installed. Real-data acceptance tests skip with a path hint when either private MAT fixture is absent; set `TRACK_GUI_MIS_MAT` and `TRACK_GUI_FSC_MAT` to use alternate local copies. Those tests also skip when SciPy or matplotlib is not installed. The environment variable `TRACK_GUI_QUIT_AFTER_MS` closes the window after that many milliseconds. A smoke test uses it.
 
 ## Limits
 

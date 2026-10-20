@@ -1,6 +1,6 @@
 # Manual checks for the track, vehicle and animation GUIs
 
-The unit tests run the GUIs offscreen. They do not show a window. Do these checks once on a desktop before you trust a GUI for real work. Each check takes a few minutes.
+The unit tests run the GUIs offscreen. They do not show a window. Do these checks once on a desktop before you trust a GUI for real work. Each check takes a few minutes. These desktop checks have not been performed for this acceptance report; generated overlap figures were also not visually inspected.
 
 Do the checks from the repository root. Install the GUI extra first:
 
@@ -27,7 +27,11 @@ Guide: [track-gui.md](track-gui.md).
 6. Select **Save track** again with the same name. Check that the GUI refuses, or asks before it replaces the file.
 7. Set the folder to `models/tracks/` and select **Save track**. Check that the GUI refuses unless **Allow writing inside models/** is ticked. Do not tick it.
 8. Optional, needs SciPy: build a closed track from MAT telemetry. Check that the plots update and that the build can be cancelled.
-9. Close the window. Delete the test files:
+9. In the viewer, open a signed closed XY track. Check that the map and curvature appear. Reverse it, save to `tracks_out/`, reload it, and reverse it again. Compare the map and curvature with the original. Do not compare heading values without allowing a 2π offset.
+10. Open a legacy unsigned distance/radius track. Check that the GUI shows the unsigned-geometry notice and does not show a fabricated XY map. Reverse and save/load it; check that curvature magnitudes remain unsigned.
+11. Open a signed closed track and add at least three cuts, including a cut close to the finish. Check the marks on both plots, save the sections, and load each open result. Check that section endpoints meet the selected cuts and that the final section wraps to the start.
+12. Check overwrite protection: generated output needs the overwrite option and the second confirmation. Do not use a canonical model for this check. Check that model-directory writes are refused unless explicitly allowed.
+13. Close the window. Delete the test files:
 
    ```bash
    rm tracks_out/skidpad_check.*

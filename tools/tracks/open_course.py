@@ -29,6 +29,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import math
 from pathlib import Path
+from xml.sax.saxutils import escape
 
 import numpy as np
 
@@ -248,6 +249,20 @@ def csv_text(course: OpenCourse) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _attribute(value: object) -> str:
+    """Escape ``value`` for use inside a double-quoted XML attribute."""
+
+    return escape(str(value), {'"': "&quot;"})
+
+
+def _comment(text: str) -> str:
+    """Return ``text`` when an XML comment can hold it, else raise ``ValueError``."""
+
+    if "--" in text or text.endswith("-"):
+        raise ValueError(f"an XML comment must not contain '--' or end with '-': {text!r}")
+    return text
+
+
 def xml_text(
     course: OpenCourse,
     model_id: str,
@@ -264,27 +279,27 @@ def xml_text(
 
     def parameter(name: str, value: object, unit: str | None = None) -> str:
         text = value if isinstance(value, str) else repr(float(value))
-        suffix = f' unit="{unit}"' if unit else ""
-        return f'        <parameter name="{name}" value="{text}"{suffix} />'
+        suffix = f' unit="{_attribute(unit)}"' if unit else ""
+        return f'        <parameter name="{_attribute(name)}" value="{_attribute(text)}"{suffix} />'
 
     lines = [
         '<?xml version="1.0" encoding="UTF-8"?>',
-        f'<model schema-version="1.0" id="{model_id}" type="track-model" '
+        f'<model schema-version="1.0" id="{_attribute(model_id)}" type="track-model" '
         'subtype="open-xy-profile">',
         "    <!-- Open signed centerline with a start and an end. World frame X north, Y east, "
         "Z down. A right turn has positive curvature. Built by tools/tracks/open_course.py "
         "from sections of linearly varying curvature. -->",
     ]
-    lines += [f"    <!-- {comment} -->" for comment in comments]
+    lines += [f"    <!-- {_comment(comment)} -->" for comment in comments]
     if course.curvature_jumps:
         jumps = "; ".join(f"{step:+.6g} 1/m at {at:.4f} m" for at, step in course.curvature_jumps)
         lines.append(f"    <!-- Curvature jumps, not smoothed: {jumps}. -->")
-    lines += ["    <metadata>", f"        <title>{title}</title>"]
+    lines += ["    <metadata>", f"        <title>{escape(title)}</title>"]
     if source is not None:
-        lines.append(f'        <source sha256="{source[0]}">{source[1]}</source>')
+        lines.append(f'        <source sha256="{_attribute(source[0])}">{escape(source[1])}</source>')
     lines += [
         "    </metadata>",
-        f'    <data ref="{csv_name}" />',
+        f'    <data ref="{_attribute(csv_name)}" />',
         "    <parameters>",
         parameter("is_closed", "false"),
         parameter("terminal_segment_is_duplicate", "false"),

@@ -47,6 +47,7 @@ from simplified_vehicle_models.core.conventions import (
 SOURCE_MAT = Path("/Users/alphabet1671/Desktop/0615CompEndurance.mat")
 
 MODEL_ID = "2024-michigan-endurance-closed"
+TRACK_TITLE = "2024 Michigan Endurance Closed"
 TRACK_SUBTYPE = "closed-xy-profile"
 
 #: The legacy lap window for the fastest recorded lap.
@@ -344,14 +345,21 @@ def write_xml(
     maximum_radius: float,
     spacing: float,
     smoothing: float,
+    *,
+    model_id: str = MODEL_ID,
+    title: str = TRACK_TITLE,
 ) -> None:
-    """Write the track model that references the geometry table."""
+    """Write the track model that references the geometry table.
+
+    ``model_id`` and ``title`` default to the 2024 Michigan endurance values, so a call
+    without them writes the same file as before.
+    """
 
     model = ElementTree.Element(
         "model",
         {
             "schema-version": "1.0",
-            "id": MODEL_ID,
+            "id": model_id,
             "type": "track-model",
             "subtype": TRACK_SUBTYPE,
         },
@@ -382,8 +390,8 @@ def write_xml(
     ))
 
     metadata = ElementTree.SubElement(model, "metadata")
-    title = ElementTree.SubElement(metadata, "title")
-    title.text = "2024 Michigan Endurance Closed"
+    title_element = ElementTree.SubElement(metadata, "title")
+    title_element.text = title
     ElementTree.SubElement(metadata, "source", {
         "sha256": _sha256(telemetry),
     }).text = telemetry.name

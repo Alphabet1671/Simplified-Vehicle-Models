@@ -49,9 +49,16 @@ class ExportSettings:
                              ("wheel width", self.wheel_width), ("scale", self.transform_scale)):
             if not (math.isfinite(value) and value > 0.0):
                 raise ValueError(f"{label} must be a positive number")
+        for label, value in (("transform x", self.transform_x), ("transform z", self.transform_z)):
+            if not math.isfinite(value):
+                raise ValueError(f"{label} must be a finite number")
         for label, value in (("width", self.width), ("height", self.height)):
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise ValueError(f"{label} must be an integer")
             if value <= 0 or value % 2:
                 raise ValueError(f"{label} must be a positive even number of pixels (video needs even sizes)")
+        if isinstance(self.crf, bool) or not isinstance(self.crf, int):
+            raise ValueError("quality (CRF) must be an integer")
         if not 0 <= self.crf <= 51:
             raise ValueError("quality (CRF) must be 0 to 51")
         if self.preset not in PRESETS:
@@ -97,8 +104,11 @@ class ExportSettings:
 
 def default_output(record: Path, fmt: str, directory: Path = VIDEO_DIRECTORY) -> Path:
     """A name under ``videos/`` built from the record's folder and file name."""
+    if fmt not in FORMATS:
+        raise ValueError(f"unknown format {fmt!r}")
     parent = re.sub(r"[^A-Za-z0-9_.-]+", "_", Path(record).parent.name).strip("_.-") or "record"
-    stem = f"{parent}_{Path(record).stem}".strip("_.-")
+    record_stem = re.sub(r"[^A-Za-z0-9_.-]+", "_", Path(record).stem).strip("_.-") or "record"
+    stem = f"{parent}_{record_stem}".strip("_.-")
     check_name(stem, "file name")
     return directory / (f"{stem}_frames" if fmt == "png" else f"{stem}.mp4")
 

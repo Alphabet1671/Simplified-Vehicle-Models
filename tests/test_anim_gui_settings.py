@@ -50,8 +50,10 @@ class SettingsTests(unittest.TestCase):
         self.assertNotIn("--output", arguments)
 
     def test_check_names_the_problem(self):
-        cases = [({"width": 641}, "even"), ({"height": 0}, "even"), ({"frame_rate": 0.0}, "frame rate"),
-                 ({"frame_rate": math.nan}, "frame rate"), ({"crf": 52}, "CRF"), ({"preset": "warp"}, "preset"),
+        cases = [({"width": 641}, "even"), ({"height": 0}, "even"), ({"width": 640.0}, "integer"),
+                 ({"height": 360.0}, "integer"), ({"crf": 18.5}, "integer"), ({"frame_rate": 0.0}, "frame rate"),
+                 ({"frame_rate": math.nan}, "frame rate"), ({"transform_x": math.inf}, "transform x"),
+                 ({"transform_z": math.nan}, "transform z"), ({"crf": 52}, "CRF"), ({"preset": "warp"}, "preset"),
                  ({"time_range": (0.3, 0.1)}, "less than"), ({"body_length": -1.0}, "body length"),
                  ({"format": "gif"}, "format"), ({"output": Path("x.avi")}, ".mp4")]
         for changes, word in cases:
@@ -65,6 +67,9 @@ class SettingsTests(unittest.TestCase):
         path = S.default_output(Path("/a/b/my run (2)/run_record.npz"), "mp4")
         self.assertEqual(path.parent, REPOSITORY_ROOT / "videos")
         self.assertEqual(path.name, "my_run_2_run_record.mp4")
+        self.assertEqual(S.default_output(Path("/a/my run.npz"), "mp4").name, "a_my_run.mp4")
+        with self.assertRaisesRegex(ValueError, "unknown format"):
+            S.default_output(Path("/a/run_record.npz"), "gif")
         self.assertEqual(S.default_output(Path("/a/run_record.npz"), "png").name, "a_run_record_frames")
 
     def test_preview_settings_are_a_small_png_window(self):

@@ -1,6 +1,7 @@
 """The editable section table."""
 from __future__ import annotations
 
+import math
 from dataclasses import fields, replace
 
 from PyQt6.QtCore import QAbstractTableModel, QModelIndex, Qt, pyqtSignal
@@ -80,6 +81,8 @@ class SectionTableModel(QAbstractTableModel):
                 new = replace(row, name=str(value))
             else:
                 number = float(value)
+                if not math.isfinite(number):
+                    return False
                 new = replace(row, **{key: number})
         except (TypeError, ValueError):
             return False

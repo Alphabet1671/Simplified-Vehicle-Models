@@ -31,6 +31,8 @@ class SectionTableTests(unittest.TestCase):
         self.assertTrue(model.setData(model.index(0, 2), "42.5"))
         self.assertEqual(model.sections()[0].length, 42.5)
         self.assertFalse(model.setData(model.index(0, 2), "abc"))
+        for nonfinite in ("nan", "inf", "-inf"):
+            self.assertFalse(model.setData(model.index(0, 2), nonfinite))
         self.assertFalse(model.setData(model.index(0, 0), "spiral"))
         self.assertTrue(model.setData(model.index(0, 0), "arc"))
         self.assertEqual(model.add("arc", after=0), 1)

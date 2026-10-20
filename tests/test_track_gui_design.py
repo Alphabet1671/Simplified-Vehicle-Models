@@ -3,8 +3,8 @@ import unittest
 
 import numpy as np
 
-from tools.track_gui.design import (PRESETS, CourseDesign, SectionSpec, acceleration_design,
-                                    skidpad_design)
+from tools.track_gui.design import (MAXIMUM_LENGTH, PRESETS, CourseDesign, SectionSpec,
+                                    acceleration_design, skidpad_design)
 from tools.tracks import build_fsae_dynamic_tracks as fsae
 
 
@@ -54,6 +54,39 @@ class DesignTests(unittest.TestCase):
     def test_too_long_is_refused(self):
         with self.assertRaisesRegex(ValueError, "longer than"):
             CourseDesign((SectionSpec("straight", length=60000.0),)).build()
+
+    def test_build_rejects_invalid_settings(self):
+        section = (SectionSpec(),)
+        for field in ("start_heading", "start_north", "start_east", "jump_ramp_length"):
+            for value in (float("nan"), float("inf"), "bad"):
+                with self.subTest(field=field, value=value):
+                    with self.assertRaisesRegex(ValueError, field):
+                        CourseDesign(section, **{field: value}).build()
+        with self.assertRaisesRegex(ValueError, "allow_curvature_jumps"):
+            CourseDesign(section, allow_curvature_jumps=1).build()
+
+    def test_jump_ramps_count_toward_maximum_length(self):
+        design = CourseDesign(
+            (SectionSpec("straight", length=MAXIMUM_LENGTH - 0.01),
+             SectionSpec("arc", length=0.01, curvature=0.1)),
+            allow_curvature_jumps=True,
+        )
+        with self.assertRaisesRegex(ValueError, "longer than"):
+            design.build()
+
+    def test_json_rejects_malformed_structure_and_types(self):
+        payload = json.loads(acceleration_design().to_json())
+        cases = [
+            ("unknown", {**payload, "extra": 1}),
+            ("missing sections", {key: value for key, value in payload.items() if key != "sections"}),
+            ("non-object row", {**payload, "sections": [1]}),
+            ("wrong setting type", {**payload, "maximum_spacing": "bad"}),
+            ("wrong section type", {**payload, "sections": [{**payload["sections"][0], "length": "bad"}]}),
+        ]
+        for label, bad in cases:
+            with self.subTest(case=label):
+                with self.assertRaises(ValueError):
+                    CourseDesign.from_json(json.dumps(bad))
 
     def test_start_pose_moves_the_course(self):
         course = CourseDesign((SectionSpec("straight", length=10.0),), start_north=3.0, start_east=-2.0,

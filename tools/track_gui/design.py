@@ -16,6 +16,30 @@ KINDS = ("straight", "arc", "arc-angle", "clothoid")
 MAXIMUM_LENGTH = 50_000.0
 
 
+_SECTION_FIELDS = frozenset((
+    "kind", "name", "length", "radius", "angle_deg", "curvature",
+    "end_curvature", "rate",
+))
+_SETTINGS_FIELDS = frozenset((
+    "maximum_spacing", "start_heading", "start_north", "start_east",
+    "allow_curvature_jumps", "jump_ramp_length",
+))
+
+
+def _finite_number(value: Any, field: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        raise ValueError(f"{field} must be a finite number")
+
+
+def _validate_section_spec(spec: "SectionSpec") -> None:
+    if not isinstance(spec.kind, str):
+        raise ValueError("kind must be a string")
+    if not isinstance(spec.name, str):
+        raise ValueError("name must be a string")
+    for field in ("length", "radius", "angle_deg", "curvature", "end_curvature", "rate"):
+        _finite_number(getattr(spec, field), field)
+
+
 @dataclass(frozen=True, slots=True)
 class SectionSpec:
     """One row of the section table.
@@ -35,6 +59,7 @@ class SectionSpec:
     rate: float = 0.05
 
     def to_section(self) -> Section:
+        _validate_section_spec(self)
         name = self.name or self.kind
         if self.kind == "straight":
             return straight(self.length, name)
@@ -63,15 +88,30 @@ class CourseDesign:
         """Build the course. Raise ``ValueError`` with a message the user can act on."""
         if not self.sections:
             raise ValueError("the course has no sections")
-        if not (math.isfinite(self.maximum_spacing) and self.maximum_spacing > 0.0):
+        _finite_number(self.maximum_spacing, "maximum_spacing")
+        if self.maximum_spacing <= 0.0:
             raise ValueError("the node spacing must be positive")
+        for field in ("start_heading", "start_north", "start_east"):
+            _finite_number(getattr(self, field), field)
+        if not isinstance(self.allow_curvature_jumps, bool):
+            raise ValueError("allow_curvature_jumps must be a bool")
+        _finite_number(self.jump_ramp_length, "jump_ramp_length")
+        if self.jump_ramp_length <= 0.0:
+            raise ValueError("jump_ramp_length must be positive")
         built = []
         for index, spec in enumerate(self.sections, start=1):
             try:
                 built.append(spec.to_section())
             except ValueError as error:
                 raise ValueError(f"section {index} ({spec.name or spec.kind}): {error}") from error
-        if sum(section.length for section in built) > MAXIMUM_LENGTH:
+        length = sum(section.length for section in built)
+        if self.allow_curvature_jumps:
+            length += sum(
+                self.jump_ramp_length
+                for previous, following in zip(built[:-1], built[1:])
+                if abs(following.start_curvature - previous.end_curvature) > 1.0e-9
+            )
+        if length > MAXIMUM_LENGTH:
             raise ValueError(f"the course is longer than {MAXIMUM_LENGTH:g} m")
         return build_course(
             built,
@@ -103,16 +143,40 @@ class CourseDesign:
             raise ValueError(f"not a track design file: {error}") from error
         if not isinstance(payload, dict) or payload.get("schema") != "track-design-v1":
             raise ValueError("not a track design file: the schema must be track-design-v1")
-        names = SectionSpec.__dataclass_fields__
+        allowed = {"schema", "sections"} | _SETTINGS_FIELDS
+        unknown = set(payload) - allowed
+        if unknown:
+            raise ValueError(f"unknown top-level field {sorted(unknown)}")
+        if "sections" not in payload or not isinstance(payload["sections"], list):
+            raise ValueError("sections must be present as a list")
         sections = []
-        for row in payload.get("sections", []):
-            unknown = set(row) - set(names)
+        for index, row in enumerate(payload["sections"], start=1):
+            if not isinstance(row, dict):
+                raise ValueError(f"section {index} must be an object")
+            unknown = set(row) - _SECTION_FIELDS
             if unknown:
                 raise ValueError(f"unknown section field {sorted(unknown)}")
-            sections.append(SectionSpec(**row))
-        settings = {key: payload[key] for key in (
-            "maximum_spacing", "start_heading", "start_north", "start_east",
-            "allow_curvature_jumps", "jump_ramp_length") if key in payload}
+            try:
+                spec = SectionSpec(**row)
+                _validate_section_spec(spec)
+            except (TypeError, ValueError) as error:
+                raise ValueError(f"invalid section {index}: {error}") from error
+            sections.append(spec)
+        settings = {key: payload[key] for key in _SETTINGS_FIELDS if key in payload}
+        for key, value in settings.items():
+            if key == "allow_curvature_jumps":
+                if not isinstance(value, bool):
+                    raise ValueError("allow_curvature_jumps must be a bool")
+            elif key == "maximum_spacing":
+                _finite_number(value, key)
+                if value <= 0.0:
+                    raise ValueError("maximum_spacing must be positive")
+            elif key == "jump_ramp_length":
+                _finite_number(value, key)
+                if value <= 0.0:
+                    raise ValueError("jump_ramp_length must be positive")
+            else:
+                _finite_number(value, key)
         return cls(sections=tuple(sections), **settings)
 
 

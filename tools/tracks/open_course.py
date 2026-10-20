@@ -294,9 +294,9 @@ def xml_text(
     if course.curvature_jumps:
         jumps = "; ".join(f"{step:+.6g} 1/m at {at:.4f} m" for at, step in course.curvature_jumps)
         lines.append(f"    <!-- Curvature jumps, not smoothed: {jumps}. -->")
-    lines += ["    <metadata>", f"        <title>{escape(title)}</title>"]
+    lines += ["    <metadata>", f"        <title>{escape(title, {'\"': '&quot;'})}</title>"]
     if source is not None:
-        lines.append(f'        <source sha256="{_attribute(source[0])}">{escape(source[1])}</source>')
+        lines.append(f'        <source sha256="{_attribute(source[0])}">{escape(source[1], {'\"': '&quot;'})}</source>')
     lines += [
         "    </metadata>",
         f'    <data ref="{_attribute(csv_name)}" />',

@@ -30,6 +30,15 @@ class OpenCourseTextTests(unittest.TestCase):
         self.assertIn('id="t"', self.write())
         self.assertIn("<title>T</title>", self.write())
 
+    def test_quoted_element_text_is_escaped(self):
+        text = self.write(title='A "quoted" & <title>', source=("sha&1", 'A "source" & <description>'))
+        root = ElementTree.fromstring(text)
+        self.assertEqual(root.findtext("./metadata/title"), 'A "quoted" & <title>')
+        source = root.find("./metadata/source")
+        self.assertEqual(source.get("sha256"), "sha&1")
+        self.assertEqual(source.text, 'A "source" & <description>')
+        self.assertIn("&quot;", text)
+
     def test_a_comment_cannot_close_itself(self):
         for bad in ("a -- b", "ends with -"):
             with self.assertRaises(ValueError):

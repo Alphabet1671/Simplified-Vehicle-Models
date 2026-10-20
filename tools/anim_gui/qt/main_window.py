@@ -20,6 +20,20 @@ EXPORT_TIMEOUT_SECONDS = 6 * 3600.0
 PREVIEW_TIMEOUT_SECONDS = 120.0
 
 
+def _unsafe_symlink_path(path: Path) -> Path | None:
+    """Return the first lexical symlink component, without following links."""
+    path = Path(path)
+    current = Path(path.anchor) if path.is_absolute() else Path.cwd()
+    parts = path.parts[1:] if path.is_absolute() else path.parts
+    for part in parts:
+        current /= part
+        # macOS exposes the system temporary directory through /var -> /private/var;
+        # permit this fixed OS alias so normal TemporaryDirectory outputs remain usable.
+        if current.is_symlink() and not (current == Path("/var") and current.resolve() == Path("/private/var")):
+            return current
+    return None
+
+
 def _spin(low, high, value, decimals, step):
     box = QDoubleSpinBox()
     box.setRange(low, high)
@@ -357,6 +371,10 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Not exported", str(error))
             return
         target = settings.output
+        unsafe = _unsafe_symlink_path(target)
+        if unsafe is not None:
+            QMessageBox.warning(self, "Not exported", f"Refusing to write through output path symlink: {unsafe}")
+            return
         if settings.format == "mp4":
             directory = target.parent
         else:

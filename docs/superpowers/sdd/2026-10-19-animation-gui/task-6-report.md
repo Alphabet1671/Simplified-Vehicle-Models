@@ -40,3 +40,15 @@ OK
 ```
 
 `git diff --check` passed.
+
+## Fix round 2
+- Added lexical ancestor-component symlink inspection, including dangling links, before protected-path checks, overwrite prompts, directory creation, and process launch.
+- Preserved direct target/type validation and documented the macOS `/var -> /private/var` system alias exemption required for ordinary temporary test/output paths.
+- Added PNG and MP4 ancestor-symlink regressions plus dangling-ancestor coverage.
+
+Focused fix-round-two verification:
+```text
+MPLCONFIGDIR=/tmp/mplcfg PYTHONPATH=src:. QT_QPA_PLATFORM=offscreen python3 -m unittest tests.test_anim_gui_qt -q
+Ran 18 tests in 7.918s
+OK
+```

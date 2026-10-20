@@ -181,6 +181,29 @@ class WindowTests(unittest.TestCase):
         self.assertEqual(self.window.mode, "idle")
         self.assertFalse(target.exists())
 
+    def test_ancestor_symlink_outputs_are_refused(self):
+        self.open(self.real)
+        for fmt, suffix in (("png", "frames"), ("mp4", "video.mp4")):
+            with self.subTest(fmt=fmt):
+                self.window.format.setCurrentIndex(self.window.format.findData(fmt))
+                real_dir = Path(self.out.name) / f"real-{fmt}"
+                real_dir.mkdir(exist_ok=True)
+                link = Path(self.out.name) / f"link-{fmt}"
+                link.symlink_to(real_dir, target_is_directory=True)
+                self.window.output.setText(str(link / suffix))
+                self.window.start_export()
+                self.assertEqual(self.window.mode, "idle")
+                self.assertFalse((real_dir / suffix).exists())
+
+    def test_dangling_ancestor_symlink_is_refused(self):
+        self.open(self.real)
+        self.window.format.setCurrentIndex(self.window.format.findData("png"))
+        link = Path(self.out.name) / "dangling"
+        link.symlink_to(Path(self.out.name) / "missing", target_is_directory=True)
+        self.window.output.setText(str(link / "frames"))
+        self.window.start_export()
+        self.assertEqual(self.window.mode, "idle")
+
     def test_symlink_output_is_refused(self):
         self.open(self.real)
         self.window.format.setCurrentIndex(self.window.format.findData("png"))

@@ -17,7 +17,7 @@ def setUpModule():
 
 
 if QApplication is not None:
-    from tools.gui_common.qt.process import ProcessJob
+    from tools.gui_common.qt.process import ProcessJob, python_command
 
 
 def run_job(arguments, *, timeout=None, cancel_after_ms=None, wait_ms=20000):
@@ -36,6 +36,14 @@ def run_job(arguments, *, timeout=None, cancel_after_ms=None, wait_ms=20000):
 
 @unittest.skipIf(QApplication is None, "PyQt6 is not installed")
 class ProcessJobTests(unittest.TestCase):
+    def test_python_command_uses_current_interpreter(self):
+        from pathlib import Path
+
+        self.assertEqual(
+            python_command(Path("script.py"), "--flag"),
+            [sys.executable, "script.py", "--flag"],
+        )
+
     def test_lines_and_exit_code(self):
         _, lines, result = run_job(["-c", "import sys; print('a'); print('b', file=sys.stderr); sys.exit(3)"])
         self.assertEqual(result, [(3, "done")])

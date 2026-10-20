@@ -96,4 +96,4 @@ class ProcessJob(QObject):
 
 def python_command(script: Path, *arguments: str) -> list[str]:
     """Return the argument list that runs a repository script under this interpreter."""
-    return [str(script), *arguments]
+    return [sys.executable, str(script), *arguments]

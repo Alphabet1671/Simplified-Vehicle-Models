@@ -85,11 +85,25 @@ class SaveTests(unittest.TestCase):
                 self.assertEqual(VehicleEdit.open(saved.entry).file("suspension"), candidate.path)
 
     def test_copy_of_a_generated_file_is_not_marked_generated(self):
-        edit = self.edit.with_choice("suspension/spring", self.edit.file("suspension/spring"))
-        self.assertFalse(edit.changed)
-        files = dict(render_files(self.edit.with_parameter(ASSEMBLY, "cg_height", 0.3), self.folder, "g2"))
-        for text in files.values():
-            self.assertNotIn("Do not edit", text)
+        # Select a generated suspension assembly as a real swap, so the generated
+        # file itself is copied and its provenance marker is neutralized.
+        generated = MODELS / "suspensions" / "iem24_murphy_real_suspension.xml"
+        # Use a distinct temporary path so the choice is genuinely divergent,
+        # while preserving the generated source text and marker.
+        with tempfile.TemporaryDirectory() as source_dir:
+            root = Path(source_dir)
+            for name in ("suspensions", "suspension-kinematics", "springs", "anti-roll-bars", "dampers"):
+                shutil.copytree(MODELS / name, root / name)
+            copied_source = root / "suspensions" / generated.name
+            from dataclasses import replace
+            choices = dict(self.edit.configuration.choices)
+            choices["suspension"] = copied_source
+            configuration = replace(self.edit.configuration, choices=choices)
+            edit = replace(self.edit, configuration=configuration)
+            files = dict(render_files(edit, self.folder, "g2"))
+        copied = files[self.folder.resolve() / "g2__suspension.xml"]
+        self.assertNotIn("Do not edit", copied)
+        self.assertIn("Derived from output of tools/model_data/generate_suspension_lut.py", copied)
 
     def test_a_value_the_compiler_rejects_writes_nothing(self):
         edit = self.edit.with_parameter(ASSEMBLY, "total_mass", -5.0)

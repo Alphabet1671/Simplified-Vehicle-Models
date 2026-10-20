@@ -21,7 +21,7 @@ Focused command:
 MPLCONFIGDIR=/tmp/mplcfg PYTHONPATH=src:. QT_QPA_PLATFORM=offscreen python3 -m unittest tests.test_vehicle_gui_save -v
 ```
 
-Result: `Ran 20 tests in 0.546s ... OK` (20 vehicle/component tests, including all supplied fidelity, compiler, protection, component, and transaction cases).
+Result: `Ran 20 tests in 0.559s ... OK` (20 vehicle/component tests, including all supplied fidelity, compiler, protection, component, and transaction cases).
 
 Existing Task 2/3 regression command:
 

@@ -3,10 +3,11 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 try:
     from PyQt6.QtCore import QEventLoop, QTimer
-    from PyQt6.QtWidgets import QApplication
+    from PyQt6.QtWidgets import QApplication, QMessageBox
 except ImportError:
     QApplication = None
 
@@ -69,6 +70,52 @@ class WindowTests(unittest.TestCase):
         tab.build()
         self.assertTrue(tab.notice.text())
         self.assertIsNone(tab.thread)
+
+    def test_closed_build_clears_old_geometry_before_starting(self):
+        tab = self.window.closed_tab
+        tab.geometry = {"old": True}
+        tab.save_button.setEnabled(True)
+        tab.telemetry.setText("")
+        tab.build()
+        self.assertIsNone(tab.geometry)
+        self.assertFalse(tab.save_button.isEnabled())
+
+    def test_closed_build_save_handles_export_oserror(self):
+        tab = self.window.closed_tab
+        tab.geometry = {"old": True}
+        tab.settings = object()
+        tab.save_button.setEnabled(True)
+        with patch("tools.track_gui.qt.main_window.closed.save_closed", side_effect=OSError("disk full")), \
+                patch("tools.track_gui.qt.main_window.QMessageBox.warning") as warning:
+            tab.save()
+        warning.assert_called_once()
+        self.assertIn("disk full", warning.call_args.args[2])
+
+    def test_app_reports_bad_design_file(self):
+        from tools.track_gui import app as app_module
+        os.environ["TRACK_GUI_QUIT_AFTER_MS"] = "1"
+        self.addCleanup(os.environ.pop, "TRACK_GUI_QUIT_AFTER_MS", None)
+        self.assertEqual(app_module.main(["/no/such/design.json"]), 0)
+
+    def test_close_event_keeps_window_when_build_thread_will_not_stop(self):
+        tab = self.window.closed_tab
+        thread = type("StuckThread", (), {"quit": lambda self: None, "wait": lambda self, timeout: False})()
+        tab.thread = thread
+        event = type("Event", (), {"ignore": lambda self: setattr(self, "ignored", True), "accept": lambda self: setattr(self, "accepted", True)})()
+        with patch("tools.track_gui.qt.main_window.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes):
+            self.window.closeEvent(event)
+        self.assertTrue(getattr(event, "ignored", False))
+        self.assertFalse(getattr(event, "accepted", False))
+        self.assertIn("still running", tab.notice.text())
+        tab.thread = None
+
+    def test_design_store_handles_oserror(self):
+        with patch("tools.gui_common.files.atomic_write_text", side_effect=OSError("read only")), \
+                patch("tools.track_gui.qt.main_window.QFileDialog.getSaveFileName", return_value=("/tmp/design.json", "")), \
+                patch("tools.track_gui.qt.main_window.QMessageBox.warning") as warning:
+            self.tab.store_design()
+        warning.assert_called_once()
+        self.assertIn("read only", warning.call_args.args[2])
 
     def test_closed_tab_builds_and_saves_a_circle(self):
         if not closed.scipy_available():

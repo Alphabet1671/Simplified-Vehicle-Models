@@ -22,7 +22,12 @@ def main(argv: list[str] | None = None) -> int:
     application.setApplicationName("Track GUI")
     window = MainWindow()
     if arguments:
-        window.design_tab.set_design(CourseDesign.from_json(Path(arguments[0]).read_text(encoding="utf-8")))
+        try:
+            design = CourseDesign.from_json(Path(arguments[0]).read_text(encoding="utf-8"))
+        except (OSError, ValueError) as error:
+            window.statusBar().showMessage(str(error))
+        else:
+            window.design_tab.set_design(design)
     window.show()
     delay = os.environ.get("TRACK_GUI_QUIT_AFTER_MS")
     if delay:

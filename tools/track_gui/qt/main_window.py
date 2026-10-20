@@ -236,7 +236,7 @@ class DesignTab(QWidget):
             else:
                 QMessageBox.warning(self, "Not saved", text)
             return "not saved"
-        except ValueError as error:
+        except (OSError, ValueError) as error:
             QMessageBox.warning(self, "Not saved", str(error))
             return "not saved"
         return f"saved {saved.xml} ({saved.length:.1f} m, {saved.node_count} nodes)"
@@ -252,8 +252,11 @@ class DesignTab(QWidget):
     def store_design(self) -> None:
         path, _ = QFileDialog.getSaveFileName(self, "Save design", str(DEFAULT_OUTPUT / "design.json"), "Track design (*.json)")
         if path:
-            from tools.gui_common.files import atomic_write_text
-            atomic_write_text(Path(path), self.design().to_json())
+            try:
+                from tools.gui_common.files import atomic_write_text
+                atomic_write_text(Path(path), self.design().to_json())
+            except OSError as error:
+                QMessageBox.warning(self, "Not saved", str(error))
 
 
 class _BuildWorker(QObject):
@@ -333,6 +336,10 @@ class ClosedTab(QWidget):
     def build(self) -> None:
         if self.thread is not None:
             return
+        self.geometry = None
+        self.save_button.setEnabled(False)
+        self.course_plot.set_course([], [])
+        self.report.clear()
         self.settings = closed.ClosedSettings(Path(self.telemetry.text()), self.start.value(), self.end.value(),
                                               self.spacing.value(), self.smoothing.value(), self.max_radius.value())
         try:
@@ -379,7 +386,7 @@ class ClosedTab(QWidget):
         values = self.save_bar.values()
         try:
             saved = closed.save_closed(self.geometry, self.settings, **values)
-        except (SaveRefused, ValueError) as error:
+        except (OSError, SaveRefused, ValueError) as error:
             QMessageBox.warning(self, "Not saved", str(error))
             return
         self.status.emit(f"saved {saved.xml} ({saved.length:.1f} m, {saved.node_count} nodes)")
@@ -410,6 +417,9 @@ class MainWindow(QMainWindow):
                 event.ignore()
                 return
             self.closed_tab.thread.quit()
-            self.closed_tab.thread.wait(5000)
+            if not self.closed_tab.thread.wait(5000):
+                self.closed_tab.notice.setText("A track build is still running; wait for it to finish before quitting.")
+                event.ignore()
+                return
         self.settings.setValue("geometry", self.saveGeometry())
         event.accept()

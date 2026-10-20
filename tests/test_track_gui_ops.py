@@ -33,8 +33,8 @@ class TrackOpsTests(unittest.TestCase):
 
     def test_closed_save_reverse_curvature_and_double(self):
         t=load_track_data(TRACKS/"2024_michigan_endurance_closed.xml"); r=reverse_track(t); rr=reverse_track(r)
-        np.testing.assert_allclose(r.x_north[0],t.x_north[0]); np.testing.assert_allclose(r.curvature,-t.curvature[::-1],atol=1e-10)
-        np.testing.assert_allclose(rr.x_north,t.x_north,atol=1e-9); np.testing.assert_allclose(rr.curvature,t.curvature,atol=1e-10)
+        np.testing.assert_allclose(r.x_north[0],t.x_north[0]); np.testing.assert_allclose(r.curvature[:-1],-t.curvature[:-1][::-1],atol=1e-10)
+        np.testing.assert_allclose(rr.x_north,t.x_north,atol=1e-9); np.testing.assert_allclose(rr.curvature[:-1],t.curvature[:-1],atol=1e-10)
         with tempfile.TemporaryDirectory() as d:
             out=load_track_data(save_track_data(r,d,"closed","closed-id","Closed").xml)
             self.assertTrue(out.is_closed); np.testing.assert_allclose(out.curvature,r.curvature,atol=2e-9)

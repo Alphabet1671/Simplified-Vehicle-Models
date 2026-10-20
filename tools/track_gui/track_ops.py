@@ -69,7 +69,8 @@ def reverse_track(track: TrackData) -> TrackData:
     if track.is_closed:
         idx=np.r_[0,np.arange(len(d)-2,0,-1),0]
         nd=np.r_[0.,np.cumsum(np.diff(d)[::-1])]
-        h=np.unwrap(track.heading[idx]+np.pi); c=-track.curvature[idx]; c[-1]=c[0]
+        h=np.unwrap(track.heading[idx]+np.pi)
+        c=np.r_[-track.curvature[:-1][::-1], -track.curvature[-2]]
         return TrackData(nd,track.x_north[idx],track.y_east[idx],h,c,True,track.title,track.maximum_radius)
     idx=np.arange(len(d)-1,-1,-1)
     return TrackData(np.r_[0.,np.cumsum(np.diff(d)[::-1])],track.x_north[idx],track.y_east[idx],np.unwrap(track.heading[idx]+np.pi),-track.curvature[idx],False,track.title,track.maximum_radius)
@@ -121,17 +122,29 @@ def _section_courses(track,cuts):
     if len(raw)<2: raise ValueError("at least two distinct cuts are required")
     sx,sy=_spline(track); bounds=sorted(raw); courses=[]
     for st,en0 in zip(bounds,bounds[1:]+[bounds[0]+L]):
-        span=en0-st; count=max(2,int(math.ceil(span/0.1)))
-        if count+1>MAX_SECTION_NODES: raise ValueError("section exceeds the node resource limit")
-        u=np.linspace(st,en0,count+1); q=u%L
-        n=sx(q); e=sy(q); dn=sx(q,1); de=sy(q,1); ddn=sx(q,2); dde=sy(q,2); speed=np.hypot(dn,de)
-        if np.any(speed<1e-9): raise ValueError("section spline has a stationary point")
-        dist=np.r_[0.,np.cumsum(np.diff(u)*(speed[:-1]+speed[1:])*0.5)]
-        h=np.unwrap(np.arctan2(de,dn)); k=(dn*dde-de*ddn)/speed**3
-        h[-1]=h[-2]+((h[-1]-h[-2]+np.pi)%(2*np.pi)-np.pi)
-        source=_interp_polyline(track,u)
-        departure=float(np.max(np.hypot(n-source[:,0],e-source[:,1])))
-        if departure>MAX_RECONSTRUCTION_DEPARTURE_M: raise ValueError(f"section reconstruction departs {departure:.6g} m, above {MAX_RECONSTRUCTION_DEPARTURE_M:.3g} m tolerance")
+        span=en0-st
+        step=0.1
+        last_error=None
+        while True:
+            count=max(2,int(math.ceil(span/step)))
+            if count+1>MAX_SECTION_NODES: raise ValueError("section exceeds the node resource limit while refining strict-loader geometry")
+            u=np.linspace(st,en0,count+1); q=u%L
+            n=sx(q); e=sy(q); dn=sx(q,1); de=sy(q,1); ddn=sx(q,2); dde=sy(q,2); speed=np.hypot(dn,de)
+            if np.any(speed<1e-9): raise ValueError("section spline has a stationary point")
+            dist=np.r_[0.,np.cumsum(np.diff(u)*(speed[:-1]+speed[1:])*0.5)]
+            h=np.unwrap(np.arctan2(de,dn)); k=(dn*dde-de*ddn)/speed**3
+            h[-1]=h[-2]+((h[-1]-h[-2]+np.pi)%(2*np.pi)-np.pi)
+            source=_interp_polyline(track,u)
+            departure=float(np.max(np.hypot(n-source[:,0],e-source[:,1])))
+            if departure>MAX_RECONSTRUCTION_DEPARTURE_M: raise ValueError(f"section reconstruction departs {departure:.6g} m, above {MAX_RECONSTRUCTION_DEPARTURE_M:.3g} m tolerance")
+            try:
+                from simplified_vehicle_models.tracks.profile import _validate_open_geometry_arrays
+                _validate_open_geometry_arrays(dist,n,e,h,k,Path("section reconstruction"))
+                break
+            except ValueError as exc:
+                last_error=exc
+                if count+1>=MAX_SECTION_NODES: raise ValueError(f"strict-loader validation still fails at the section node limit: {last_error}") from exc
+                step*=0.5
         courses.append((OpenCourse(dist,n,e,h,k,(0.,float(dist[-1])),("section",),()),departure))
     return courses
 

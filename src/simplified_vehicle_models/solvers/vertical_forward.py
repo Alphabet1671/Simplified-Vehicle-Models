@@ -177,6 +177,9 @@ class VerticalForwardPlant:
     def __init__(self, vehicle, plan: SpeedPlan):
         self.vehicle = vehicle
         self.plan = plan
+        #: See ``PlanarForwardPlant``: an open plan may start from rest.
+        self.minimum_speed = 0.25 if plan.is_closed else 0.0
+        self.minimum_progress = 0.25 if plan.is_closed else 0.0
         self.driven, self.gearing, self.gear_efficiency = _drivetrain_context(vehicle.planar)
         limits = vehicle.suspension.kinematics.jounce_limits
         self.jounce_minimum = limits[:, 0] - JOUNCE_TRIAL_MARGIN
@@ -255,8 +258,11 @@ class VerticalForwardPlant:
         opens with no artificial start transient. The remaining path and
         steering values follow the plan at ``s = 0``.
         """
-        if not np.isfinite(speed) or speed <= 1.0:
-            raise ValueError("initial forward speed must exceed 1 m/s")
+        if self.plan.is_closed:
+            if not np.isfinite(speed) or speed <= 1.0:
+                raise ValueError("initial forward speed must exceed 1 m/s")
+        elif not np.isfinite(speed) or speed < 0.0:
+            raise ValueError("initial forward speed must be finite and nonnegative")
         vehicle = self.vehicle
         planar = vehicle.planar
         _, curvature, _ = self.plan.sample(0.0)
@@ -414,7 +420,9 @@ class VerticalForwardPlant:
             raise TrialStateError(
                 f"trial state of charge outside bounds: {values[SOC_INDEX]:.6g}"
             )
-        if values[3] <= 0.25 or np.any(values[list(WHEEL_SPEED_INDEX)] < 0.0):
+        if values[3] < self.minimum_speed or (
+                self.plan.is_closed and values[3] == self.minimum_speed) or np.any(
+                values[list(WHEEL_SPEED_INDEX)] < 0.0):
             raise TrialStateError("prototype requires forward body and wheel motion")
         if abs(values[STEERING_INDEX]) > self.vehicle.planar.steering_maximum_angle + 1.0e-7:
             raise ValueError("steering angle exceeds the physical bound")
@@ -449,7 +457,8 @@ class VerticalForwardPlant:
         if denominator < 0.5:
             raise RuntimeError("path coordinate denominator is invalid")
         progress = (values[3] * np.cos(values[2]) - values[4] * np.sin(values[2])) / denominator
-        if progress <= 0.25:
+        if progress < self.minimum_progress or (
+                self.plan.is_closed and progress == self.minimum_progress):
             raise RuntimeError("positive path progress constraint failed")
 
         forcing = np.zeros(self.state_size)

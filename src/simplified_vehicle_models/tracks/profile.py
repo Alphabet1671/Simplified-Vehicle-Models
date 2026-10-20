@@ -13,6 +13,18 @@ from simplified_vehicle_models.tracks.types import PathCoordinates, TrackProfile
 
 DISTANCE_RADIUS_SUBTYPE = "distance-radius-profile"
 CLOSED_XY_SUBTYPE = "closed-xy-profile"
+OPEN_XY_SUBTYPE = "open-xy-profile"
+
+#: An open course must be self consistent, because it can come from any source.
+#: Across one segment, the heading change must match the mean curvature times
+#: the segment length to within this angle in radians.
+_OPEN_HEADING_TOLERANCE = 2.0e-3
+#: The chord of one segment must point along the mean heading to within this
+#: angle in radians.
+_OPEN_CHORD_ANGLE_TOLERANCE = 2.0e-3
+#: The chord length of one segment must match the segment length to within this
+#: fraction.
+_OPEN_CHORD_LENGTH_TOLERANCE = 1.0e-3
 
 #: Curvature below this value counts as a straight for a radius magnitude.
 _STRAIGHT_CURVATURE = 1.0e-12
@@ -22,7 +34,9 @@ def load_track(path: str | Path) -> TrackProfile:
     """Load one track profile from XML.
 
     A ``distance-radius-profile`` holds a radius magnitude and no turn
-    direction. A ``closed-xy-profile`` holds a signed closed centerline.
+    direction. A ``closed-xy-profile`` holds a signed closed centerline. An
+    ``open-xy-profile`` holds a signed centerline with a start and an end, such
+    as a straight acceleration course. It has no repeated first node.
     """
 
     source_path = Path(path).expanduser().resolve()
@@ -44,6 +58,8 @@ def load_track(path: str | Path) -> TrackProfile:
         return _load_distance_radius(source_path, root)
     if subtype == CLOSED_XY_SUBTYPE:
         return _load_closed_xy(source_path, root)
+    if subtype == OPEN_XY_SUBTYPE:
+        return _load_open_xy(source_path, root)
     raise ValueError(
         f"{source_path}: unsupported track model "
         f"{(root.get('type'), root.get('subtype'))}"
@@ -180,6 +196,150 @@ def _load_closed_xy(
         title=_title(root, source_path),
         path_coordinates=coordinates,
     )
+
+
+def _load_open_xy(
+    source_path: Path,
+    root: ElementTree.Element,
+) -> TrackProfile:
+    """Load a signed open centerline.
+
+    The course runs from the first node to the last node. The last node does
+    not repeat the first node. The point-mass limit solver consumes the radius
+    magnitude. The planar model consumes the signed curvature and the path
+    coordinates.
+    """
+
+    parameters = _read_parameters(root, source_path)
+    # An open track needs no closure flags. Reject a contradicting flag, so a
+    # closed track cannot be mislabelled as open.
+    if "is_closed" in parameters and _parse_boolean(
+        parameters["is_closed"], "is_closed", source_path
+    ):
+        raise ValueError(f"{source_path}: an open-xy-profile must not be closed")
+    if "terminal_segment_is_duplicate" in parameters and _parse_boolean(
+        parameters["terminal_segment_is_duplicate"],
+        "terminal_segment_is_duplicate",
+        source_path,
+    ):
+        raise ValueError(
+            f"{source_path}: an open-xy-profile must not repeat the first node"
+        )
+    maximum_radius = _parse_positive_float(
+        parameters.get("maximum_radius"), "maximum_radius", source_path
+    )
+
+    csv_path = _data_path(root, source_path)
+    distance, x_north, y_east, heading, curvature = _read_geometry_csv(csv_path)
+    _validate_open_geometry_arrays(
+        distance, x_north, y_east, heading, curvature, csv_path
+    )
+
+    physical_segment_length = np.diff(distance)
+    magnitude = np.minimum(
+        np.reciprocal(np.maximum(np.abs(curvature), _STRAIGHT_CURVATURE)),
+        maximum_radius,
+    )
+    coordinates = PathCoordinates(
+        distance=distance,
+        x_north=x_north,
+        y_east=y_east,
+        heading=heading,
+        curvature=curvature,
+        is_closed=False,
+    )
+    arrays = (
+        distance,
+        physical_segment_length,
+        magnitude,
+        curvature,
+        x_north,
+        y_east,
+        heading,
+    )
+    for array in arrays:
+        array.setflags(write=False)
+
+    return TrackProfile(
+        distance=distance,
+        segment_length=physical_segment_length,
+        radius=magnitude,
+        curvature=curvature,
+        is_closed=False,
+        title=_title(root, source_path),
+        path_coordinates=coordinates,
+    )
+
+
+def _validate_open_geometry_arrays(
+    distance: FloatArray,
+    x_north: FloatArray,
+    y_east: FloatArray,
+    heading: FloatArray,
+    curvature: FloatArray,
+    path: Path,
+) -> None:
+    """Validate one signed open centerline table.
+
+    Position, heading, and curvature must describe the same path. The check
+    runs per segment, so one bad row is reported by its row number.
+    """
+
+    if not all(
+        np.all(np.isfinite(array))
+        for array in (distance, x_north, y_east, heading, curvature)
+    ):
+        raise ValueError(f"{path}: track geometry must be finite")
+    if not math.isclose(float(distance[0]), 0.0, abs_tol=1.0e-12):
+        raise ValueError(f"{path}: distance must start at zero")
+    if np.any(np.diff(distance) <= 0.0):
+        raise ValueError(f"{path}: distance must increase")
+
+    segment = np.diff(distance)
+    heading_change = np.diff(heading)
+    expected_change = 0.5 * (curvature[:-1] + curvature[1:]) * segment
+    mismatch = np.abs(heading_change - expected_change)
+    bad = np.flatnonzero(mismatch > _OPEN_HEADING_TOLERANCE)
+    if bad.size:
+        # Row numbers are file lines: line 1 is the header, and a segment is
+        # reported at the line of the node that ends it.
+        row = int(bad[0]) + 3
+        raise ValueError(
+            f"{path}: row {row} heading change does not match the curvature "
+            f"(off by {mismatch[bad[0]]:.3g} rad). The heading must be the "
+            f"integral of the curvature"
+        )
+
+    delta_north = np.diff(x_north)
+    delta_east = np.diff(y_east)
+    chord = np.hypot(delta_north, delta_east)
+    # A segment is a short arc. Its chord is shorter than the arc length by a
+    # relative amount of about (heading change)^2 / 24, which the tolerance covers
+    # for any sensible node spacing.
+    length_error = np.abs(chord - segment) / segment
+    bad = np.flatnonzero(length_error > _OPEN_CHORD_LENGTH_TOLERANCE)
+    if bad.size:
+        # Row numbers are file lines: line 1 is the header, and a segment is
+        # reported at the line of the node that ends it.
+        row = int(bad[0]) + 3
+        raise ValueError(
+            f"{path}: row {row} position step does not match the distance step "
+            f"(off by {100.0 * length_error[bad[0]]:.3g} percent)"
+        )
+    mean_heading = 0.5 * (heading[:-1] + heading[1:])
+    chord_heading = np.arctan2(delta_east, delta_north)
+    angle_error = np.abs(
+        (chord_heading - mean_heading + np.pi) % (2.0 * np.pi) - np.pi
+    )
+    bad = np.flatnonzero(angle_error > _OPEN_CHORD_ANGLE_TOLERANCE)
+    if bad.size:
+        # Row numbers are file lines: line 1 is the header, and a segment is
+        # reported at the line of the node that ends it.
+        row = int(bad[0]) + 3
+        raise ValueError(
+            f"{path}: row {row} position step does not follow the heading "
+            f"(off by {angle_error[bad[0]]:.3g} rad)"
+        )
 
 
 def _read_parameters(root: ElementTree.Element, path: Path) -> dict[str, str]:

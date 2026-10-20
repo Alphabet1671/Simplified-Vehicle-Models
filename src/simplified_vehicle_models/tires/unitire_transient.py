@@ -80,8 +80,10 @@ CONTACT_LOSS_TIME_CONSTANT = 0.01
 #: tangential forces and blends the state rates.
 WINDOW_ZERO_LOAD = 0.5
 WINDOW_FULL_LOAD = 2.0
-#: Speed floor for the relaxation rates (m/s).
-RATE_SPEED_FLOOR = 0.1
+#: Speed floor for the relaxation rates (m/s). Below about 0.15 m/s a launch from
+#: rest stalls the driven wheel: the slip state cannot follow a wheel that spins
+#: up in milliseconds. 0.5 leaves margin and changes nothing above 0.5 m/s.
+RATE_SPEED_FLOOR = 0.5
 
 _EPSILON = float(np.finfo(np.float64).eps)
 _MINIMUM_LENGTH = 1.0e-6

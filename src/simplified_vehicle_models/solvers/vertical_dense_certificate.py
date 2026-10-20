@@ -13,6 +13,7 @@ from .planar_dense_certificate import (
     MIN_PROGRESS,
     MIN_SPEED,
     STEERING_TOLERANCE,
+    plan_domain_limits,
     _cos_range,
     _interval_product,
     _sin_range,
@@ -59,20 +60,29 @@ def certify_vertical_dense_domain(vehicle, plan, bounds, summary=None, pedal_dyn
         return _failure("enclosure lower bound exceeds upper bound")
 
     try:
-        lower, upper = tuple(float(x) for x in vehicle.suspension.front.jounce_limits)
-        rear_lower, rear_upper = tuple(float(x) for x in vehicle.suspension.rear.jounce_limits)
-        # Each corner has an axle-specific limit. Keep per-corner margins.
-        jounce_limits = np.array([[lower, upper], [lower, upper],
-                                  [rear_lower, rear_upper], [rear_lower, rear_upper]])
+        suspension = vehicle.suspension
+        if hasattr(suspension, "kinematics"):
+            # The compiled vehicle stores one (corner, [lower, upper]) array.
+            jounce_limits = np.array(suspension.kinematics.jounce_limits, dtype=float)
+            if jounce_limits.shape != (4, 2):
+                raise ValueError("jounce limits must be four corners by lower and upper")
+        else:
+            lower, upper = tuple(float(x) for x in suspension.front.jounce_limits)
+            rear_lower, rear_upper = tuple(float(x) for x in suspension.rear.jounce_limits)
+            # Each corner has an axle-specific limit. Keep per-corner margins.
+            jounce_limits = np.array([[lower, upper], [lower, upper],
+                                      [rear_lower, rear_upper], [rear_lower, rear_upper]])
     except (AttributeError, TypeError, ValueError):
         return _failure("vehicle has no finite suspension jounce limits")
     if not np.all(np.isfinite(jounce_limits)):
         return _failure("vehicle jounce limits are non-finite")
 
+    # An open plan starts from rest; see ``plan_domain_limits``.
+    enclosure, minimum_speed, minimum_progress, strict_limits, roundoff = plan_domain_limits(plan)
     margins = {
         "soc_floor": float(np.min(lo[:, _SOC])),
         "soc_ceiling": float(np.min(1.0 - hi[:, _SOC])),
-        "speed_over_minimum": float(np.min(lo[:, _VX] - MIN_SPEED)),
+        "speed_over_minimum": float(np.min(lo[:, _VX] - minimum_speed)),
         "wheel_speed_floor": float(np.min(lo[:, _OMEGA])),
         "steering_headroom": float(np.min(
             float(vehicle.planar.steering_maximum_angle) + STEERING_TOLERANCE
@@ -86,8 +96,8 @@ def certify_vertical_dense_domain(vehicle, plan, bounds, summary=None, pedal_dyn
     if plan is None or not hasattr(plan, "distance") or not hasattr(plan, "curvature"):
         return _failure("track plan is required for path-domain checks", margins=margins)
     try:
-        kappa_lo, kappa_hi = curvature_enclosure(plan.distance, plan.curvature,
-                                                  lo[:, _S], hi[:, _S])
+        kappa_lo, kappa_hi = enclosure(plan.distance, plan.curvature,
+                                       lo[:, _S], hi[:, _S])
         product_lo, product_hi = _interval_product(kappa_lo, kappa_hi,
                                                     lo[:, _N], hi[:, _N])
         den_lo, den_hi = 1.0 - product_hi, 1.0 - product_lo
@@ -104,15 +114,18 @@ def certify_vertical_dense_domain(vehicle, plan, bounds, summary=None, pedal_dyn
         worst = np.full_like(numerator_lo, np.nan, dtype=float)
         np.divide(numerator_lo, den_hi, out=worst, where=positive & (den_hi != 0.0))
         np.divide(numerator_lo, den_lo, out=worst, where=(~positive) & (den_lo != 0.0))
-        margins["path_progress_over_minimum"] = float(np.min(worst - MIN_PROGRESS))
+        margins["path_progress_over_minimum"] = float(np.min(worst - minimum_progress))
     except (AttributeError, IndexError, TypeError, ValueError, FloatingPointError):
         return _failure("track plan path enclosure could not be evaluated", margins=margins)
 
-    strict = {"speed_over_minimum", "path_progress_over_minimum"}
+    strict = ({"speed_over_minimum", "path_progress_over_minimum"} if strict_limits else set())
     diagnostic = {"pedal_overshoot_beyond_travel"}
+    slack = {"speed_over_minimum", "wheel_speed_floor", "path_progress_over_minimum"}
     failed = sorted(name for name, value in margins.items()
                     if name not in diagnostic and
-                    (not np.isfinite(value) or (value <= 0.0 if name in strict else value < 0.0)))
+                    (not np.isfinite(value)
+                     or ((value + (roundoff if name in slack else 0.0)) <= 0.0 if name in strict
+                         else (value + (roundoff if name in slack else 0.0)) < 0.0)))
     return {
         "certified": not failed,
         "failed": failed,

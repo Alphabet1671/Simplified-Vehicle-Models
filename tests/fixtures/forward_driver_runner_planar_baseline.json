@@ -42,6 +42,7 @@
     "lap_time": 0.5,
     "last_rhs_distance": 5.0,
     "last_rhs_time": 1.0,
+    "lateral_margin": 1.0,
     "lifted_wheel_evaluations": 0,
     "load_method_counts": {
       "fixed-point": 1,
@@ -97,6 +98,7 @@
     "state_size": 12,
     "status": "Completed",
     "steering_peak": 0.03,
+    "track_is_closed": true,
     "track_length": 1009.19501535,
     "usable": false,
     "wheel_inertia": 0.2064512

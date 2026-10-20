@@ -68,6 +68,11 @@ class PlanarForwardPlant:
     def __init__(self, vehicle, plan: SpeedPlan):
         self.vehicle = vehicle
         self.plan = plan
+        #: A closed lap is a flying lap and needs forward motion above 0.25 m/s.
+        #: An open plan may start from rest, so only reversing is outside the
+        #: domain, and path progress may be zero at the start.
+        self.minimum_speed = 0.25 if plan.is_closed else 0.
+        self.minimum_progress = 0.25 if plan.is_closed else 0.
         transmission = vehicle.drivetrain.drivetrain.transmission
         wheel_index = {name: i for i, name in enumerate(("fl", "fr", "rl", "rr"))}
         self.driven = np.array([wheel_index[name] for name in transmission.driven_wheels])
@@ -104,8 +109,11 @@ class PlanarForwardPlant:
                            np.asarray(state[6:10]), float(state[10]))
 
     def initial_state(self, speed: float) -> np.ndarray:
-        if not np.isfinite(speed) or speed <= 1.:
-            raise ValueError("initial forward speed must exceed 1 m/s")
+        if self.plan.is_closed:
+            if not np.isfinite(speed) or speed <= 1.:
+                raise ValueError("initial forward speed must exceed 1 m/s")
+        elif not np.isfinite(speed) or speed < 0.:
+            raise ValueError("initial forward speed must be finite and nonnegative")
         _, curvature, _ = self.plan.sample(0.)
         state = np.zeros(self.state_size)
         state[3] = speed
@@ -169,7 +177,8 @@ class PlanarForwardPlant:
         self.last_distance = float(state[0])
         if not 0. <= state[10] <= 1.:
             raise TrialStateError(f"trial state of charge outside bounds: {state[10]:.6g}")
-        if state[3] <= 0.25 or np.any(state[6:10] < 0.):
+        if state[3] < self.minimum_speed or (
+                self.plan.is_closed and state[3] == self.minimum_speed) or np.any(state[6:10] < 0.):
             raise TrialStateError("prototype requires forward body and wheel motion")
         if abs(state[11]) > self.vehicle.steering_maximum_angle + 1.e-7:
             raise ValueError("steering angle exceeds the physical bound")
@@ -191,7 +200,8 @@ class PlanarForwardPlant:
         if denominator < 0.5:
             raise RuntimeError("path coordinate denominator is invalid")
         progress = (state[3] * np.cos(state[2]) - state[4] * np.sin(state[2])) / denominator
-        if progress <= 0.25:
+        if progress < self.minimum_progress or (
+                self.plan.is_closed and progress == self.minimum_progress):
             raise RuntimeError("positive path progress constraint failed")
         rate = np.zeros(self.state_size)
         rate[0] = progress

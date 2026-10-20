@@ -18,6 +18,15 @@ import numpy as np
 
 #: Canonical ten-lap MIS endurance track: the active default for new runs.
 DEFAULT_TRACK = Path("models/tracks/2024_michigan_endurance_multilap_closed.xml")
+#: Fraction of the point-mass cornering grip the live planner uses on an open
+#: course when --lateral-margin is not given. At 1 the car is planned at the
+#: steady-state grip limit and cannot change direction: the skidpad's
+#: right-to-left change then leaves the path by about 2 m (7DoF). Measured on the
+#: FSAE skidpad: both models track within 0.25 m at 0.92 and below, the 7DoF also
+#: at 0.95, and neither at 0.97. 0.90 leaves headroom for the 14DoF. The value is
+#: empirical, not derived.
+OPEN_COURSE_LATERAL_MARGIN = 0.90
+
 #: Track of every attempt that predates --track (no settings["track"] recorded).
 #: Historical warm-start matching must keep resolving to this, not DEFAULT_TRACK.
 LEGACY_TRACK = Path("models/tracks/2024_michigan_endurance_closed.xml")
@@ -34,6 +43,9 @@ VEHICLE = Path("models/vehicles/iem24_murphy_real_planar.xml")
 PLANAR_MAXIMUM_WALL_SECONDS = 300.
 #: Maximum path spacing: a coarser plan is not a resolution the driver may run.
 MAXIMUM_PATH_SPACING_METRES = .5
+#: Track subtypes that carry a signed centerline. A closed one is a periodic lap;
+#: an open one is a standing start with no periodicity.
+SIGNED_TRACK_SUBTYPES = ("closed-xy-profile", "open-xy-profile")
 
 #: Sources every model depends on. The powertrain closure moved to
 #: ``forward_powertrain.py`` in Task 7 and both plants call it, so both hash it:
@@ -438,16 +450,18 @@ def peak_memory_bytes():
 def track_files(track_xml):
     """Return (track XML, referenced CSV) paths; raise ValueError if unusable.
 
-    Only a signed ``closed-xy-profile`` track is accepted; a legacy
-    distance-radius profile has no turn direction and cannot drive the 7DoF.
+    Only a signed ``closed-xy-profile`` or ``open-xy-profile`` track is
+    accepted; a legacy distance-radius profile has no turn direction and cannot
+    drive the 7DoF. An open track is run as a standing start.
     """
     track_xml = Path(track_xml)
     try:
         root = ElementTree.parse(track_xml).getroot()
     except (OSError, ElementTree.ParseError) as error:
         raise ValueError(f"cannot read track XML {track_xml}: {error}") from error
-    if root.get("type") != "track-model" or root.get("subtype") != "closed-xy-profile":
-        raise ValueError(f"{track_xml}: track must be a signed closed-xy-profile track-model")
+    if root.get("type") != "track-model" or root.get("subtype") not in SIGNED_TRACK_SUBTYPES:
+        raise ValueError(f"{track_xml}: track must be a signed closed-xy-profile "
+                         "or open-xy-profile track-model")
     data = root.find("./data")
     if data is None or not data.get("ref"):
         raise ValueError(f"{track_xml}: missing track data reference")
@@ -469,13 +483,14 @@ def warm_start_matches(previous, source_hashes, args):
     historical attempt without them cannot warm-start a track-aware run.
     """
     settings = previous.get("settings", {})
-    defaults = {"preview_seconds": .15, "heading_gain": 1.5, "lateral_gain": 1.5}
+    defaults = {"preview_seconds": .15, "heading_gain": 1.5, "lateral_gain": 1.5, "speed_gain": 2.,
+                "lateral_margin": None}
     return bool(previous.get("status") == "Completed" and previous.get("lap_completed")
                 and previous.get("source_hashes") == source_hashes
                 and all(settings.get(key, defaults.get(key)) == getattr(args, key)
                         for key in ("planner", "maximum_speed", "lateral_acceleration",
                                     "pedal_travel_time", "spacing", "preview_seconds",
-                                    "heading_gain", "lateral_gain"))
+                                    "heading_gain", "lateral_gain", "speed_gain", "lateral_margin"))
                 and canonical_path(settings.get("track") or LEGACY_TRACK)
                 == canonical_path(args.track))
 
@@ -497,6 +512,14 @@ def parse_args(argv=None):
                         help="Seconds for a full pedal travel (0-100%% throttle or 0-max brake)")
     parser.add_argument("--preview-seconds", type=float, default=.15,
                          help="Preview horizon used by the shared steering controller")
+    parser.add_argument("--lateral-margin", type=float, default=None,
+                        help="Fraction (above 0, at most 1) of the point-mass cornering grip the live "
+                             "planner uses. 1 plans at the grip limit; a lower value leaves grip for "
+                             "steering changes. Default: 1 on a closed lap, "
+                             f"{OPEN_COURSE_LATERAL_MARGIN} on an open course. Ignored by the "
+                             "conservative planner")
+    parser.add_argument("--speed-gain", type=float, default=2.,
+                        help="Proportional speed-error gain (1/s) of the shared speed controller")
     parser.add_argument("--heading-gain", type=float, default=1.5,
                          help="Heading-error gain used by the shared steering controller")
     parser.add_argument("--lateral-gain", type=float, default=1.5,
@@ -508,8 +531,9 @@ def parse_args(argv=None):
     parser.add_argument("--planner", choices=("conservative", "live"), default="conservative",
                         help="Speed planner: conservative (constant limits) or live (point-mass)")
     parser.add_argument("--track", type=Path, default=DEFAULT_TRACK,
-                        help="Signed closed-xy-profile track XML (default: the canonical "
-                             f"ten-lap MIS track {DEFAULT_TRACK})")
+                        help="Signed closed-xy-profile or open-xy-profile track XML (default: the "
+                             f"canonical ten-lap MIS track {DEFAULT_TRACK}). An open track is run "
+                             "as a standing start from rest")
     parser.add_argument("--warm-start", type=Path,
                         help="Completed previous attempt whose final physical/pedal state starts this lap")
     parser.add_argument("--record", action="store_true",
@@ -526,12 +550,14 @@ def parse_args(argv=None):
     import math
     for name in ("timeout_seconds", "duration", "maximum_speed", "lateral_acceleration",
                  "maximum_step", "rtol", "spacing", "pedal_travel_time", "preview_seconds",
-                 "heading_gain", "lateral_gain"):
+                 "heading_gain", "lateral_gain", "speed_gain", "lateral_margin"):
         value = getattr(args, name)
         if value is None:
             continue
         if not math.isfinite(value) or value <= 0:
             parser.error(f"{name} must be finite and positive")
+    if args.lateral_margin is not None and args.lateral_margin > 1.:
+        parser.error("lateral_margin must be at most 1")
     try:
         track_files(args.track)
     except ValueError as error:
@@ -595,8 +621,46 @@ def write_run_record(sink, args, summary, physical_inputs, spec, result, initial
     summary["run_record_rows"] = int(sink.rows)
 
 
+def event_times(track_xml, time, distance):
+    """Return the elapsed time of every timing window the track XML declares.
+
+    A window is a pair of parameters ``<name>_start_distance`` and
+    ``<name>_end_distance``. Its time is the difference of the times at which the
+    path coordinate ``distance`` reaches the two values. The path coordinate
+    never decreases on an accepted run, so the time is read by interpolation.
+    A window beyond the distance the run reached is reported as ``None``.
+    """
+    root = ElementTree.parse(track_xml).getroot()
+    values = {}
+    for parameter in root.iter("parameter"):
+        try:
+            values[parameter.get("name")] = float(parameter.get("value"))
+        except (TypeError, ValueError):
+            continue
+    time = np.asarray(time, dtype=float)
+    distance = np.maximum.accumulate(np.asarray(distance, dtype=float))
+    result = {}
+    for key, start in values.items():
+        if not key.endswith("_start_distance"):
+            continue
+        name = key[:-len("_start_distance")]
+        end = values.get(f"{name}_end_distance")
+        if end is None:
+            continue
+        if end > distance[-1] + 1.e-9:
+            result[name] = None
+            continue
+        at_start, at_end = np.interp([start, end], distance, time)
+        result[name] = float(at_end - at_start)
+    return result
+
+
 def acceptance_gate(summary):
-    """Return true only when every required lap-validity gate is established."""
+    """Return true only when every required lap-validity gate is established.
+
+    A closed lap must also close its periodic state. An open course
+    (``track_is_closed`` false) must reach the end of the course instead.
+    """
     delta = summary.get("periodic_state_delta")
     tolerances = summary.get("periodic_state_tolerances")
     def finite_real_vector(values):
@@ -604,14 +668,19 @@ def acceptance_gate(summary):
                 and all(isinstance(value, Real) and math.isfinite(value)
                         for value in values))
 
-    periodic = (summary.get("lap_completed") is True
-                and finite_real_vector(delta)
-                and finite_real_vector(tolerances)
-                and len(delta) == len(tolerances)
-                and all(tolerance >= 0 and abs(value) <= tolerance
-                        for value, tolerance in zip(delta, tolerances)))
+    if summary.get("track_is_closed", True) is False:
+        periodic = summary.get("lap_completed") is True
+        periodicity_ok = True
+    else:
+        periodic = (summary.get("lap_completed") is True
+                    and finite_real_vector(delta)
+                    and finite_real_vector(tolerances)
+                    and len(delta) == len(tolerances)
+                    and all(tolerance >= 0 and abs(value) <= tolerance
+                            for value, tolerance in zip(delta, tolerances)))
+        periodicity_ok = summary.get("periodicity_valid") is True
     return bool(periodic
-                and summary.get("periodicity_valid") is True
+                and periodicity_ok
                 and summary.get("integration_completed") is True
                 and summary.get("path_tracking_valid") is True
                 and summary.get("resolution_valid") is True
@@ -678,10 +747,19 @@ def child(args):
         lateral_cap = args.lateral_acceleration
         if lateral_cap is None and not live_limit:
             lateral_cap = 2.
+        # An open course is a standing start: the plan begins at rest and does
+        # not wrap, and the run has no periodicity to check.
+        open_course = not track.is_closed
+        lateral_margin = args.lateral_margin
+        if lateral_margin is None:
+            lateral_margin = OPEN_COURSE_LATERAL_MARGIN if open_course else 1.
+        summary["lateral_margin"] = float(lateral_margin)
+        summary["track_is_closed"] = bool(track.is_closed)
         plan = build_speed_plan(distance, curvature, args.maximum_speed,
                                 lateral_cap, 1., 2.,
                                 vehicle=control if live_limit else None,
-                                live_limit=live_limit)
+                                live_limit=live_limit, open_course=open_course,
+                                lateral_margin=lateral_margin)
         plant_class = plant_class_for(spec, vehicle)
         # The plant publishes its layout; every column index below is derived
         # from it instead of being repeated as a literal.
@@ -706,12 +784,17 @@ def child(args):
         driver = PreviewDriver(plan, control.wheelbase, control.steering_maximum_angle,
                                control.steering_maximum_rate, control.maximum_pedal_force,
                                 preview_seconds=args.preview_seconds,
+                                speed_gain=args.speed_gain,
                                 heading_gain=args.heading_gain,
                                 lateral_gain=args.lateral_gain,
                                live_limit=live_limit,
                                pedal_travel_time=args.pedal_travel_time)
         initial = plant.initial_state(float(plan.speed[0]))
-        initial_pedal = None
+        # A flying lap starts with the foot where the driver wants it. A standing
+        # start begins with the foot off the pedal: the driver then presses the
+        # throttle through the pedal lag instead of dropping full torque on a
+        # wheel at rest.
+        initial_pedal = 0. if open_course else None
         if args.warm_start is not None:
             previous = json.loads((args.warm_start / "summary.json").read_text())
             previous_settings = previous.get("settings", {})
@@ -772,6 +855,12 @@ def child(args):
         closure = (result.state[list(periodic_indices), -1]
                    - initial[list(periodic_indices)])
         periodic = bool(result.lap_completed and np.all(np.abs(closure) <= tolerances))
+        if open_course:
+            # An open course ends away from where it started, so closure is not
+            # a validity test. The delta is still recorded, with no periodicity claim.
+            periodic = None
+            summary["event_times"] = event_times(
+                args.track, result.time, result.state[state_index(plant, "s")])
         summary.update(status="Completed" if result.lap_completed else "Duration_Limit",
                        lap_completed=result.lap_completed,
                        simulated_seconds=float(result.time[-1]),

@@ -335,7 +335,7 @@ Interpretation, and what it does **not** show:
 5. Transient tire: `longitudinal_length_scale` **1.0**, `lateral_length_scale` **1.0**,
    `trail_pole_ratio` **1.0**, `trail_lead_ratio` **0.25**.
 6. Transient tire contact window **0.5–2 N** (cubic smoothstep), low-load state relaxation **0.01 s**,
-   rate speed floor **0.1 m/s**.
+   rate speed floor **0.5 m/s** (0.1 m/s before the standing-start work; 0.1 stalls a launch from rest).
 7. Longitudinal relaxation law — a project extension, explicitly **not** from the cited paper.
 8. Tire vertical law low-load ramp (`delta0` = −0.4996 mm, `delta1` = 0.5 mm) and its **9.92 N ghost load**
    at zero deflection — a numerical device, not physics.

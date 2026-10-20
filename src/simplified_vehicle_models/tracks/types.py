@@ -7,12 +7,21 @@ from simplified_vehicle_models.core.types import FloatArray
 
 @dataclass(frozen=True, slots=True)
 class PathCoordinates:
-    """Store the signed geometry of one closed prescribed path.
+    """Store the signed geometry of one prescribed path.
 
     The world frame is ``X`` north, ``Y`` east, and ``Z`` down.
     That frame is right handed, so a right turn has positive curvature.
-    The heading is unwrapped and falls by one full turn across a lap.
-    The last node repeats the first position, so the path is periodic.
+    The heading is unwrapped. It is measured from north toward east, so its
+    derivative along the path is the signed curvature.
+
+    A closed path (``is_closed`` true) repeats the first position at the last
+    node, so the path is periodic. Its heading changes by one full turn across
+    a lap.
+
+    An open path (``is_closed`` false) has a start and an end. Its last node is
+    the end of the course and is not a repeat of the first node. Outside the
+    course, ``evaluate_path`` continues the path as a straight line along the
+    end tangents.
     """
 
     distance: FloatArray
@@ -20,10 +29,11 @@ class PathCoordinates:
     y_east: FloatArray
     heading: FloatArray
     curvature: FloatArray
+    is_closed: bool = True
 
     @property
     def lap_length(self) -> float:
-        """Return the represented lap length."""
+        """Return the represented lap length, or the course length if open."""
 
         return float(self.distance[-1] - self.distance[0])
 
@@ -37,7 +47,11 @@ class TrackProfile:
     A legacy ``distance-radius-profile`` track stores a radius magnitude only.
     Its turn direction is unknown, so its per-wheel left and right split is not
     a turn direction. ``path_coordinates`` holds the signed geometry of a
-    ``closed-xy-profile`` track and is ``None`` for a legacy track.
+    ``closed-xy-profile`` or ``open-xy-profile`` track and is ``None`` for a
+    legacy track.
+
+    ``is_closed`` is false for an open course. An open course has no wrap at
+    the end, so a consumer that assumes a periodic lap must check this flag.
     """
 
     distance: FloatArray

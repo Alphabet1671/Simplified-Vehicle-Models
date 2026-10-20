@@ -112,22 +112,52 @@ def _smooth_along_distance(distance: np.ndarray, values: np.ndarray) -> np.ndarr
     return np.r_[smoothed, smoothed[0]]
 
 
+def _smooth_open_along_distance(distance: np.ndarray, values: np.ndarray) -> np.ndarray:
+    """Return an arc-length moving average of ``values`` along an open path.
+
+    The window is symmetric and shrinks towards each end of the course so it
+    never reaches past the first or last node. The end nodes keep their own
+    value, so the average introduces no one-sided bias there.
+    """
+
+    length = float(distance[-1] - distance[0])
+    half_window = _ACCELERATION_SMOOTHING_HALF_WINDOW_M
+    if length <= 4. * half_window:
+        return np.array(values, dtype=float, copy=True)
+    smoothed = np.empty_like(values, dtype=float)
+    for index, position in enumerate(distance):
+        reach = min(half_window, position - distance[0], distance[-1] - position)
+        smoothed[index] = np.mean(values[np.abs(distance - position) <= reach + 1.e-12])
+    return smoothed
+
+
 @dataclass(frozen=True)
 class SpeedPlan:
-    """Store a requested speed envelope, not a proven vehicle capability."""
+    """Store a requested speed envelope, not a proven vehicle capability.
+
+    A closed plan is one periodic lap: ``sample`` wraps and every speed is
+    positive. An open plan (``is_closed=False``) is a course with a start and an
+    end: ``sample`` holds the end values outside the course, and the first
+    speed may be zero for a standing start.
+    """
 
     distance: np.ndarray
     speed: np.ndarray
     curvature: np.ndarray
+    is_closed: bool = True
 
     def __post_init__(self):
         arrays = [np.array(value, dtype=float, copy=True)
                   for value in (self.distance, self.speed, self.curvature)]
         distance, speed, curvature = arrays
+        if self.is_closed:
+            speed_valid = not np.any(speed <= 0)
+        else:
+            speed_valid = speed.size > 0 and speed[0] >= 0. and not np.any(speed[1:] <= 0)
         if (distance.ndim != 1 or distance.size < 2 or distance[0] != 0.
                 or speed.shape != distance.shape or curvature.shape != distance.shape
                 or any(not np.all(np.isfinite(a)) for a in arrays)
-                or np.any(np.diff(distance) <= 0) or np.any(speed <= 0)):
+                or np.any(np.diff(distance) <= 0) or not speed_valid):
             raise ValueError("plan needs increasing distance and positive finite speed")
         for name, array in zip(("distance", "speed", "curvature"), arrays):
             array.setflags(write=False)
@@ -147,19 +177,27 @@ class SpeedPlan:
         # which then trips the forward plant's domain guard. Smooth the
         # feedforward with a short arc-length moving average so it varies
         # continuously, the way a real driver's brake application does.
-        acceleration = _smooth_along_distance(distance, acceleration)
+        if self.is_closed:
+            acceleration = _smooth_along_distance(distance, acceleration)
+        else:
+            acceleration = _smooth_open_along_distance(distance, acceleration)
         acceleration.setflags(write=False)
         object.__setattr__(self, "acceleration", acceleration)
 
     def sample(self, distance: float) -> tuple[float, float, float]:
-        position = float(distance) % self.distance[-1]
+        if self.is_closed:
+            position = float(distance) % self.distance[-1]
+        else:
+            # An open course does not repeat: np.interp holds the end values.
+            position = float(distance)
         return tuple(float(np.interp(position, self.distance, array))
                      for array in (self.speed, self.curvature, self.acceleration))
 
 
 def _build_live_limit_speed_plan(distance, curvature, vehicle, storage_state=None,
                                  lateral_acceleration=None, tolerance=1.0e-8,
-                                 maximum_speed=60.0) -> SpeedPlan:
+                                 maximum_speed=60.0, open_course=False,
+                                 lateral_margin=1.0) -> SpeedPlan:
     """Build a speed plan from the point-mass lap solution of the same vehicle.
 
     A planar 7DoF vehicle is reduced with ``point_mass_view_of_planar``: same
@@ -176,6 +214,19 @@ def _build_live_limit_speed_plan(distance, curvature, vehicle, storage_state=Non
     ``lateral_acceleration`` is an optional explicit cap on the planned
     cornering acceleration. ``None`` (the default) applies no cap beyond the
     vehicle's own limits. ``maximum_speed`` caps the plan.
+
+    ``lateral_margin`` (above 0, at most 1; default 1) is the fraction of the
+    vehicle's point-mass cornering grip that the plan uses. The point-mass limit
+    is a steady-state limit, so a car planned at 100 % has no grip left to
+    change direction or to recover from a transient. The corner speed is solved
+    on the corner radius multiplied by the margin, so it falls roughly with the
+    square root of the margin and the lateral acceleration used falls roughly
+    with the margin itself. The acceleration and braking limits are re-solved
+    on that profile and straights are unchanged. At 1 the plan is what it was.
+
+    ``open_course=True`` plans a standing start on an open course instead: the
+    point-mass ``STANDING_START`` profile, with speed 0 at the first node, a free
+    finish speed, and a non-periodic ``SpeedPlan``.
     """
     from simplified_vehicle_models.formulations.point_mass import point_mass_view_of_planar
     from simplified_vehicle_models.parameters.vehicle import PointMassVehicleParameters
@@ -194,6 +245,8 @@ def _build_live_limit_speed_plan(distance, curvature, vehicle, storage_state=Non
     if lateral_acceleration is not None and (
             not np.isfinite(lateral_acceleration) or lateral_acceleration <= 0):
         raise ValueError("live-limit planner lateral acceleration cap must be finite and positive")
+    if not np.isfinite(lateral_margin) or not 0. < lateral_margin <= 1.:
+        raise ValueError("live-limit planner lateral margin must be above 0 and at most 1")
 
     if isinstance(vehicle, PointMassVehicleParameters):
         point_mass = vehicle
@@ -201,20 +254,25 @@ def _build_live_limit_speed_plan(distance, curvature, vehicle, storage_state=Non
         point_mass = point_mass_view_of_planar(vehicle)
     magnitude = np.abs(curvature)
     # The point-mass solver consumes a finite radius magnitude.
-    radius = 1. / np.maximum(magnitude, 1. / _PLANNER_MAXIMUM_RADIUS_M)
+    radius = lateral_margin / np.maximum(magnitude, 1. / _PLANNER_MAXIMUM_RADIUS_M)
     track = TrackProfile(distance=distance, segment_length=np.diff(distance),
-                         radius=radius, curvature=curvature, is_closed=True,
+                         radius=radius, curvature=curvature, is_closed=not open_course,
                          title="forward-driver plan")
     storage_trace = None
     if storage_state is not None:
         storage_trace = np.full(distance.size, float(storage_state.state_of_charge))
-    lap = solve_lap(point_mass, track, LapMode.FLYING, root_tolerance=tolerance,
+    mode = LapMode.STANDING_START if open_course else LapMode.FLYING
+    lap = solve_lap(point_mass, track, mode, root_tolerance=tolerance,
                     _storage_trace=storage_trace)
     if not lap.converged:
         raise RuntimeError("live-limit speed plan did not converge")
     speed = np.minimum(np.asarray(lap.speed, dtype=float), maximum_speed)
     if lateral_acceleration is not None:
         speed = np.minimum(speed, np.sqrt(lateral_acceleration / np.maximum(magnitude, 1.e-12)))
+    if open_course:
+        # A standing start begins at rest and the finish speed is free.
+        speed[0] = 0.
+        return SpeedPlan(distance, speed, curvature, is_closed=False)
     speed[-1] = speed[0] = min(speed[0], speed[-1])
     return SpeedPlan(distance, speed, curvature)
 
@@ -225,13 +283,21 @@ _PLANNER_MAXIMUM_RADIUS_M = 1.0e4
 
 def build_speed_plan(distance, curvature, maximum_speed=8., lateral_acceleration=None,
                       drive_acceleration=2., brake_acceleration=3., vehicle=None,
-                      storage_state=None, live_limit=False) -> SpeedPlan:
-    """Propagate a speed request around a closed path.
+                      storage_state=None, live_limit=False, open_course=False,
+                      lateral_margin=1.0) -> SpeedPlan:
+    """Propagate a speed request around a closed path, or along an open course.
 
     With live_limit=False, use constant kinematic acceleration limits.
     With live_limit=True, use the vehicle's point-mass lap solution (see
     ``_build_live_limit_speed_plan``); ``lateral_acceleration`` is then an
     optional cap and ``None`` applies none.
+
+    ``lateral_margin`` is the fraction of the point-mass cornering grip a
+    live-limit plan uses (see ``_build_live_limit_speed_plan``); the constant
+    planner takes its limit from ``lateral_acceleration`` and ignores it.
+
+    ``open_course=True`` plans a standing start: speed 0 at the first node, no
+    wrap at the end, and a free finish speed. The result is not periodic.
 
     The forward plant must validate the requested trajectory independently.
     """
@@ -240,7 +306,9 @@ def build_speed_plan(distance, curvature, maximum_speed=8., lateral_acceleration
             raise ValueError("live_limit=True requires a vehicle parameter object")
         return _build_live_limit_speed_plan(distance, curvature, vehicle, storage_state,
                                              lateral_acceleration=lateral_acceleration,
-                                            maximum_speed=maximum_speed)
+                                            maximum_speed=maximum_speed,
+                                            open_course=open_course,
+                                            lateral_margin=lateral_margin)
 
     if lateral_acceleration is None:
         lateral_acceleration = 3.
@@ -252,6 +320,20 @@ def build_speed_plan(distance, curvature, maximum_speed=8., lateral_acceleration
     curvature = np.asarray(curvature, dtype=float)
     initial = np.minimum(maximum_speed, np.sqrt(
         lateral_acceleration / np.maximum(np.abs(curvature), 1.e-12)))
+    if open_course:
+        if np.any(np.diff(distance) <= 0.) or distance.size < 2:
+            raise ValueError("plan needs increasing distance and positive finite speed")
+        speed_squared = initial**2
+        speed_squared[0] = 0.
+        spacing = np.diff(distance)
+        for index in range(speed_squared.size - 1):
+            speed_squared[index + 1] = min(speed_squared[index + 1],
+                speed_squared[index] + 2 * drive_acceleration * spacing[index])
+        for index in range(speed_squared.size - 2, -1, -1):
+            speed_squared[index] = min(speed_squared[index],
+                speed_squared[index + 1] + 2 * brake_acceleration * spacing[index])
+        speed_squared[0] = 0.
+        return SpeedPlan(distance, np.sqrt(speed_squared), curvature, is_closed=False)
     plan = SpeedPlan(distance, initial, curvature)
     speed_squared = plan.speed[:-1].copy()**2
     speed_squared[0] = min(speed_squared[0], plan.speed[-1]**2)

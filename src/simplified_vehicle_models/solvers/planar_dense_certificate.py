@@ -85,6 +85,43 @@ def curvature_enclosure(distance, curvature, lower, upper):
     return lows, highs
 
 
+#: Roundoff allowed below a zero limit on an open (standing-start) plan only.
+#: A dense interpolant that starts at rest can dip by ~1e-19 below zero; a real
+#: reversal is many orders of magnitude larger.
+OPEN_PLAN_ROUNDOFF = 1.e-9
+
+
+def open_curvature_enclosure(distance, curvature, lower, upper):
+    """Return min/max of the non-wrapping piecewise-linear curvature on [lower, upper].
+
+    This matches ``SpeedPlan.sample`` of an open plan: ``np.interp`` holds the end
+    values outside the course. Extrema sit at the interval ends or at nodes.
+    """
+    distance = np.asarray(distance, dtype=float)
+    curvature = np.asarray(curvature, dtype=float)
+    count = np.asarray(lower).size
+    lows = np.empty(count)
+    highs = np.empty(count)
+    for index in range(count):
+        a, b = float(lower[index]), float(upper[index])
+        inside = (distance > a) & (distance < b)
+        sample = np.concatenate([np.interp([a, b], distance, curvature), curvature[inside]])
+        lows[index], highs[index] = sample.min(), sample.max()
+    return lows, highs
+
+
+def plan_domain_limits(plan):
+    """Return (enclosure, minimum speed, minimum progress, strict?, roundoff) of a plan.
+
+    A closed plan keeps the flying-lap limits: strictly more than 0.25 m/s and
+    0.25 m/s of path progress. An open plan starts from rest, so only reversing
+    (below zero, within roundoff) is outside its domain.
+    """
+    if getattr(plan, "is_closed", True):
+        return curvature_enclosure, MIN_SPEED, MIN_PROGRESS, True, 0.
+    return open_curvature_enclosure, 0., 0., False, OPEN_PLAN_ROUNDOFF
+
+
 def certify_planar_dense_domain(vehicle, plan, bounds, pedal_dynamics):
     """Check every plant domain inequality on every dense interval.
 
@@ -104,7 +141,8 @@ def certify_planar_dense_domain(vehicle, plan, bounds, pedal_dynamics):
     margins = {}
     margins["soc_floor"] = float(np.min(lo[:, _SOC]))
     margins["soc_ceiling"] = float(np.min(1. - hi[:, _SOC]))
-    margins["speed_over_minimum"] = float(np.min(lo[:, _VX] - MIN_SPEED))
+    enclosure, minimum_speed, minimum_progress, strict_limits, roundoff = plan_domain_limits(plan)
+    margins["speed_over_minimum"] = float(np.min(lo[:, _VX] - minimum_speed))
     margins["wheel_speed_floor"] = float(np.min(lo[:, _OMEGA]))
     margins["steering_headroom"] = float(np.min(
         vehicle.steering_maximum_angle + STEERING_TOLERANCE
@@ -112,8 +150,7 @@ def certify_planar_dense_domain(vehicle, plan, bounds, pedal_dynamics):
     omega_cr = float(getattr(vehicle.tire, "omega_cr", np.inf))
     margins["wheel_speed_below_rolling_pole"] = float(np.min(omega_cr - hi[:, _OMEGA]))
 
-    kappa_lo, kappa_hi = curvature_enclosure(plan.distance, plan.curvature,
-                                             lo[:, _S], hi[:, _S])
+    kappa_lo, kappa_hi = enclosure(plan.distance, plan.curvature, lo[:, _S], hi[:, _S])
     product_lo, product_hi = _interval_product(kappa_lo, kappa_hi, lo[:, _N], hi[:, _N])
     den_lo, den_hi = 1. - product_hi, 1. - product_lo
     margins["path_denominator_over_minimum"] = float(np.min(den_lo - MIN_DENOMINATOR))
@@ -127,7 +164,7 @@ def certify_planar_dense_domain(vehicle, plan, bounds, pedal_dynamics):
     # positive numerator by the largest denominator, a negative one by the
     # smallest.
     worst = np.where(numerator_lo >= 0., numerator_lo / den_hi, numerator_lo / den_lo)
-    margins["path_progress_over_minimum"] = float(np.min(worst - MIN_PROGRESS))
+    margins["path_progress_over_minimum"] = float(np.min(worst - minimum_progress))
 
     if pedal_dynamics:
         margins["pedal_overshoot_beyond_travel"] = float(np.max(
@@ -137,9 +174,12 @@ def certify_planar_dense_domain(vehicle, plan, bounds, pedal_dynamics):
     limits = {name: value for name, value in margins.items()
               if name != "pedal_overshoot_beyond_travel"}
     # A zero margin passes only for ">=" limits; strict ones need > 0.
-    strict = {"speed_over_minimum", "path_progress_over_minimum"}
+    strict = ({"speed_over_minimum", "path_progress_over_minimum"} if strict_limits else set())
+    # An open plan tolerates ``roundoff`` below zero on the rest-start limits only.
+    slack = {"speed_over_minimum", "wheel_speed_floor", "path_progress_over_minimum"}
     failed = sorted(name for name, value in limits.items()
-                    if (value <= 0. if name in strict else value < 0.))
+                    if ((value + (roundoff if name in slack else 0.)) <= 0. if name in strict
+                        else (value + (roundoff if name in slack else 0.)) < 0.))
     return {
         "certified": not failed,
         "failed": failed,

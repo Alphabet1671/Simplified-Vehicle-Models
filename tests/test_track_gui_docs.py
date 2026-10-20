@@ -18,7 +18,8 @@ class TrackGuiDocsTests(unittest.TestCase):
         text = (ROOT / "docs" / "dev" / "track-gui.md").read_text(encoding="utf-8")
         self.assertIn("open-course mode", text)
         self.assertIn("closed-track mode", text)
-        self.assertIn("does not pass overwrite or generated-file confirmation flags", text)
+        self.assertIn("passes that overwrite choice but does not pass generated-file confirmation", text)
+        self.assertIn("can overwrite an existing non-generated track", text)
         self.assertIn("does not constrain the built geometry", text)
         self.assertIn("tests.test_track_gui_docs", text)
 

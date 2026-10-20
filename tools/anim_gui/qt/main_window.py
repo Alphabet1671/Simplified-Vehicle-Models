@@ -57,6 +57,7 @@ class MainWindow(QMainWindow):
         self.span = (0.0, 1.0)
         self._preview_folder: tempfile.TemporaryDirectory | None = None
         self._active_output: Path | None = None
+        self._preexisting_output = False
         self._closing = False
 
         # record
@@ -244,7 +245,7 @@ class MainWindow(QMainWindow):
         text = self.record.text().strip()
         output = self.output.text().strip()
         fmt = self.current_format()
-        optional = lambda widget: Path(widget.text().strip()) if widget.text().strip() else None  # noqa: E731
+        optional = lambda widget: self._root_path(Path(widget.text().strip())) if widget.text().strip() else None  # noqa: E731
         record_path = self._root_path(Path(text))
         output_path = self._root_path(Path(output)) if output else S.default_output(record_path, fmt)
         return S.ExportSettings(
@@ -312,13 +313,13 @@ class MainWindow(QMainWindow):
             box.setRange(self.span[0], self.span[1])
             box.setValue(value)
             box.blockSignals(False)
-        self.output.setText(str(S.default_output(Path(text), self.current_format())))
+        self.output.setText(str(S.default_output(self._root_path(Path(text)), self.current_format())))
         self.refresh_plan()
 
     def _format_changed(self) -> None:
         text = self.record.text().strip()
         if text:
-            self.output.setText(str(S.default_output(Path(text), self.current_format())))
+            self.output.setText(str(S.default_output(self._root_path(Path(text)), self.current_format())))
         self.refresh_plan()
 
     def _browse_output(self) -> None:
@@ -382,6 +383,9 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Not exported", str(error))
             return
         target = settings.output
+        if settings.format == "png" and target in {REPOSITORY_ROOT, REPOSITORY_ROOT / "models"}:
+            QMessageBox.warning(self, "Not exported", f"Refusing unsafe directory output: {target}")
+            return
         if not target.is_absolute():
             target = (REPOSITORY_ROOT / target).resolve(strict=False)
             settings = replace(settings, output=target)
@@ -415,6 +419,10 @@ class MainWindow(QMainWindow):
                 return
             if QMessageBox.question(self, "Confirm overwrite", f"Replace existing export {target} and its contents?") != QMessageBox.StandardButton.Yes:
                 return
+            if settings.format == "png" and any(target.iterdir()):
+                QMessageBox.warning(self, "Not exported", "Refusing to overwrite a non-empty frames directory; choose an empty directory.")
+                return
+        self._preexisting_output = target.exists()
         try:
             target.parent.mkdir(parents=True, exist_ok=True) if settings.format == "mp4" else target.mkdir(parents=True, exist_ok=True)
         except OSError as error:
@@ -458,7 +466,7 @@ class MainWindow(QMainWindow):
     def _finished(self, code: int, state: str) -> None:
         mode, output = self.mode, self._active_output
         self.mode = "idle"
-        if (code != 0 or state != "done") and mode == "export" and output is not None:
+        if (code != 0 or state != "done") and mode == "export" and output is not None and not self._preexisting_output:
             records.remove_partials(output)
         message = progress.describe_result(code, state, self.errors)
         if mode == "preview":

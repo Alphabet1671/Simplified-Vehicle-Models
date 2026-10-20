@@ -65,3 +65,18 @@ OK
 ```
 
 `git diff --check` passed.
+
+## Fix round 4
+- Canonicalized default-output derivation from normalized relative record paths in `load_record` and `_format_changed`.
+- Canonicalized optional STL paths in `current_settings`, ensuring dry-run inspection, preview, and export receive identical rooted paths.
+- Refused PNG output at repository/model roots and preserved pre-existing output directories during failure cleanup; non-empty PNG directories are rejected after confirmation rather than broadly deleted.
+- Added cwd-mismatch tests for default output and STL paths across plan/preview settings, plus preservation coverage for existing frame-only directories.
+
+Focused fix-round-four verification:
+```text
+MPLCONFIGDIR=/tmp/mplcfg PYTHONPATH=src:. QT_QPA_PLATFORM=offscreen python3 -m unittest tests.test_anim_gui_qt -q
+Ran 22 tests in 7.885s
+OK
+```
+
+`git diff --check` passed.

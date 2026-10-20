@@ -181,6 +181,29 @@ class WindowTests(unittest.TestCase):
         self.assertEqual(self.window.mode, "idle")
         self.assertFalse(target.exists())
 
+    def test_relative_record_defaults_are_repo_rooted(self):
+        record = Path(self.out.name) / "run_record.npz"
+        shutil.copy(self.real, record)
+        self.window.record.setText("run_record.npz")
+        with mock.patch("tools.anim_gui.qt.main_window.REPOSITORY_ROOT", Path(self.out.name)):
+            with mock.patch("tools.anim_gui.qt.main_window.Path.cwd", return_value=Path(self.out.name) / "other"):
+                self.window.load_record()
+        self.assertEqual(Path(self.window.output.text()).parent, (Path(__file__).resolve().parents[1] / "videos").resolve())
+
+    def test_relative_stl_is_rooted_in_plan_and_preview_settings(self):
+        self.open(self.real)
+        self.window.stl_body.setText("shapes/body.stl")
+        with mock.patch("tools.anim_gui.qt.main_window.REPOSITORY_ROOT", Path(self.out.name)):
+            settings = self.window.current_settings()
+            with mock.patch("tools.anim_gui.qt.main_window.inspect_plan.inspect", return_value=self.window.summary) as inspect:
+                self.window.refresh_plan()
+            with mock.patch.object(self.window, "_run") as run:
+                self.window.start_preview()
+        expected = (Path(self.out.name) / "shapes/body.stl").resolve()
+        self.assertEqual(settings.stl_body, expected)
+        self.assertEqual(inspect.call_args.args[0].stl_body, expected)
+        self.assertEqual(run.call_args.args[0].stl_body, expected)
+
     def test_relative_output_is_rooted_at_repository(self):
         self.open(self.real)
         self.window.format.setCurrentIndex(self.window.format.findData("png"))
@@ -228,6 +251,21 @@ class WindowTests(unittest.TestCase):
         self.window.start_export()
         self.assertEqual(self.window.mode, "idle")
         self.assertTrue(real_target.is_dir())
+
+    def test_failed_export_preserves_preexisting_png_frames(self):
+        self.open(self.real)
+        self.window.format.setCurrentIndex(self.window.format.findData("png"))
+        frames = Path(self.out.name) / "existing-frames"
+        frames.mkdir()
+        sentinel = frames / "frame_000001.png"
+        sentinel.write_bytes(b"existing")
+        self.window.output.setText(str(frames))
+        self.window._active_output = frames
+        self.window._preexisting_output = True
+        self.window.mode = "export"
+        self.window._finished(2, "done")
+        self.assertTrue(sentinel.exists())
+        self.assertTrue(frames.exists())
 
     def test_nonzero_done_export_removes_only_partial_outputs(self):
         self.open(self.real)

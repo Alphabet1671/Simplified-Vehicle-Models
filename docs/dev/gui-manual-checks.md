@@ -26,10 +26,10 @@ Guide: [track-gui.md](track-gui.md).
 5. Open `tracks_out/skidpad_check.xml` in a text editor. Check that it holds `subtype="open-xy-profile"`.
 6. Select **Save track** again with the same name. Check that the GUI refuses, or asks before it replaces the file.
 7. Set the folder to `models/tracks/` and select **Save track**. Check that the GUI refuses unless **Allow writing inside models/** is ticked. Do not tick it.
-8. Optional, needs SciPy: build a closed track from MAT telemetry. Check that the plots update and that the build can be cancelled.
+8. Optional, needs SciPy: build a closed track from MIS MAT telemetry with VNorth/VEast. Check that the plots update and that the build can be cancelled. For an FSC GPS build, use Latitude_MTI/Longitude_MTI and start after the invalid interval near 237.25–276.46 s.
 9. In the viewer, open a signed closed XY track. Check that the map and curvature appear. Reverse it, save to `tracks_out/`, reload it, and reverse it again. Compare the map and curvature with the original. Do not compare heading values without allowing a 2π offset.
 10. Open a legacy unsigned distance/radius track. Check that the GUI shows the unsigned-geometry notice and does not show a fabricated XY map. Reverse and save/load it; check that curvature magnitudes remain unsigned.
-11. Open a signed closed track and add at least three cuts, including a cut close to the finish. Check the marks on both plots, save the sections, and load each open result. Check that section endpoints meet the selected cuts and that the final section wraps to the start.
+11. Open a signed closed track and add at least three cuts, including a cut close to the finish. Type one cut in the cut-distance field and select **Add cut**. Add another by clicking a map node; check that the marker lands on a geometry node. Add the third near the finish. Check the marks on both plots, save the sections, and load each open result. Check that section endpoints meet the selected cuts and that the final section wraps to the start.
 12. Check overwrite protection: generated output needs the overwrite option and the second confirmation. Do not use a canonical model for this check. Check that model-directory writes are refused unless explicitly allowed.
 13. Close the window. Delete the test files:
 

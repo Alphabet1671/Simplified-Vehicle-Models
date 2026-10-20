@@ -114,32 +114,145 @@
         "fraction": 0.00205078125
       },
       "roundtrips": {
-        "closed_save_load": true,
-        "reverse_save_load": true,
-        "double_reverse_xy": true,
-        "reverse_preserves_start_and_flips_curvature": true,
-        "sections": 3,
-        "section_lengths_m": [
-          340.6366075076503,
-          340.63285358558335,
-          340.6347114828903
-        ],
-        "split_length_error_m": 0.0326715609448911,
-        "section_departures": [
-          {
-            "maximum_correction_m": 0.00631928251,
-            "bound_m": 0.02
-          },
-          {
-            "maximum_correction_m": 0.00369806017,
-            "bound_m": 0.02
-          },
-          {
-            "maximum_correction_m": 0.00590897376,
-            "bound_m": 0.02
-          }
-        ],
-        "open_section_save_reverse_load": true
+        "closed_save_load": {
+          "nodes": 2045,
+          "distance_max_error_m": 4.820890353585128e-09,
+          "xy_max_error_m": 4.998810254619457e-10,
+          "heading_wrapped_max_error_rad": 4.9960036108132044e-12,
+          "curvature_max_error_inv_m": 4.926198338139898e-13,
+          "length_error_m": 4.820890353585128e-09,
+          "serialized_seam_rows": 0,
+          "trailing_duplicate_rows": 0,
+          "heading_seam_source": "writer_final_step_extension",
+          "base_heading_wrapped_max_error_rad": 4.9960036108132044e-12,
+          "terminal_heading_wrapped_error_rad": 4.427569422205124e-12,
+          "terminal_heading_limit_rad": 2e-09
+        },
+        "reverse_mapping": {
+          "nodes": 2045,
+          "distance_max_error_m": 0.0,
+          "xy_max_error_m": 0.0,
+          "heading_wrapped_max_error_rad": 0.0,
+          "curvature_max_error_inv_m": 0.0,
+          "length_error_m": 0.0,
+          "serialized_seam_rows": 0,
+          "trailing_duplicate_rows": 0,
+          "heading_seam_source": "track_data",
+          "first_reverse_segment_dot": -0.24993713752264599,
+          "start_moved_m": 0.0
+        },
+        "reverse_save_load": {
+          "nodes": 2045,
+          "distance_max_error_m": 0.0,
+          "xy_max_error_m": 0.0,
+          "heading_wrapped_max_error_rad": 0.0,
+          "curvature_max_error_inv_m": 0.0,
+          "length_error_m": 0.0,
+          "serialized_seam_rows": 0,
+          "trailing_duplicate_rows": 0,
+          "heading_seam_source": "track_data"
+        },
+        "double_reverse": {
+          "nodes": 2045,
+          "distance_max_error_m": 5.5706550483591855e-12,
+          "xy_max_error_m": 0.0,
+          "heading_wrapped_max_error_rad": 2.0878253186751294e-05,
+          "curvature_max_error_inv_m": 0.0,
+          "length_error_m": 3.069544618483633e-12,
+          "serialized_seam_rows": 0,
+          "trailing_duplicate_rows": 0,
+          "heading_seam_source": "track_data",
+          "base_heading_wrapped_max_error_rad": 0.0,
+          "terminal_heading_wrapped_error_rad": 2.0878253186751294e-05,
+          "terminal_heading_limit_rad": 0.0005
+        },
+        "sections": {
+          "sections": 3,
+          "node_counts": [
+            3408,
+            3408,
+            3408
+          ],
+          "distance_max_error_m": 0.0,
+          "xy_max_error_m": 0.0,
+          "heading_wrapped_max_error_rad": 0.0,
+          "curvature_max_error_inv_m": 0.0,
+          "endpoint_max_error_m": 0.0,
+          "stored_distance_vs_arc_max_error_m": 0.0005116971688039484,
+          "arc_vs_cut_span_max_error_m": 0.012773835923951538,
+          "cut_span_limit_m": 0.10218715010151791,
+          "section_lengths_m": [
+            340.6366075076503,
+            340.63285358558335,
+            340.6347114828903
+          ],
+          "cut_parameter_spans_m": [
+            340.62383367172635,
+            340.62383367172635,
+            340.6238336717264
+          ],
+          "wrap_to_start_error_m": 0.0,
+          "corrections": [
+            {
+              "maximum_correction_m": 0.00631928251,
+              "bound_m": 0.02
+            },
+            {
+              "maximum_correction_m": 0.00369806017,
+              "bound_m": 0.02
+            },
+            {
+              "maximum_correction_m": 0.00590897376,
+              "bound_m": 0.02
+            }
+          ]
+        },
+        "open_section_save_load": {
+          "nodes": 3408,
+          "distance_max_error_m": 0.0,
+          "xy_max_error_m": 0.0,
+          "heading_wrapped_max_error_rad": 0.0,
+          "curvature_max_error_inv_m": 0.0,
+          "length_error_m": 0.0,
+          "serialized_seam_rows": 0,
+          "trailing_duplicate_rows": 0,
+          "heading_seam_source": "track_data"
+        },
+        "open_reverse": {
+          "nodes": 3408,
+          "distance_max_error_m": 0.0,
+          "xy_max_error_m": 0.0,
+          "heading_wrapped_max_error_rad": 0.0,
+          "curvature_max_error_inv_m": 0.0,
+          "length_error_m": 0.0,
+          "serialized_seam_rows": 0,
+          "trailing_duplicate_rows": 0,
+          "heading_seam_source": "track_data",
+          "first_reverse_segment_dot": -0.009995845872636772,
+          "start_moved_m": 189.99214863255378
+        },
+        "open_reverse_save_load": {
+          "nodes": 3408,
+          "distance_max_error_m": 0.0,
+          "xy_max_error_m": 0.0,
+          "heading_wrapped_max_error_rad": 0.0,
+          "curvature_max_error_inv_m": 0.0,
+          "length_error_m": 0.0,
+          "serialized_seam_rows": 0,
+          "trailing_duplicate_rows": 0,
+          "heading_seam_source": "track_data"
+        },
+        "open_double_reverse": {
+          "nodes": 3408,
+          "distance_max_error_m": 6.252776074688882e-13,
+          "xy_max_error_m": 0.0,
+          "heading_wrapped_max_error_rad": 0.0,
+          "curvature_max_error_inv_m": 0.0,
+          "length_error_m": 2.8421709430404007e-13,
+          "serialized_seam_rows": 0,
+          "trailing_duplicate_rows": 0,
+          "heading_seam_source": "track_data"
+        }
       },
       "figure": "docs/superpowers/sdd/2026-10-20-track-gui-tools/mis-overlap.png",
       "figure_visually_inspected": false
@@ -981,32 +1094,145 @@
         "fraction": 0.08307558476705973
       },
       "roundtrips": {
-        "closed_save_load": true,
-        "reverse_save_load": true,
-        "double_reverse_xy": true,
-        "reverse_preserves_start_and_flips_curvature": true,
-        "sections": 3,
-        "section_lengths_m": [
-          96.14520518321714,
-          96.14496612805826,
-          96.14555255399983
-        ],
-        "split_length_error_m": 0.001810172003047228,
-        "section_departures": [
-          {
-            "maximum_correction_m": 0.000593907969,
-            "bound_m": 0.02
-          },
-          {
-            "maximum_correction_m": 0.000203567713,
-            "bound_m": 0.02
-          },
-          {
-            "maximum_correction_m": 0.000845518405,
-            "bound_m": 0.02
-          }
-        ],
-        "open_section_save_reverse_load": true
+        "closed_save_load": {
+          "nodes": 2885,
+          "distance_max_error_m": 4.998668146072305e-10,
+          "xy_max_error_m": 4.998668146072305e-11,
+          "heading_wrapped_max_error_rad": 4.992006807924554e-12,
+          "curvature_max_error_inv_m": 4.994893387788579e-13,
+          "length_error_m": 2.721662895055488e-10,
+          "serialized_seam_rows": 0,
+          "trailing_duplicate_rows": 0,
+          "heading_seam_source": "writer_final_step_extension",
+          "base_heading_wrapped_max_error_rad": 4.992006807924554e-12,
+          "terminal_heading_wrapped_error_rad": 4.1886494273057906e-12,
+          "terminal_heading_limit_rad": 2e-09
+        },
+        "reverse_mapping": {
+          "nodes": 2885,
+          "distance_max_error_m": 0.0,
+          "xy_max_error_m": 0.0,
+          "heading_wrapped_max_error_rad": 0.0,
+          "curvature_max_error_inv_m": 0.0,
+          "length_error_m": 0.0,
+          "serialized_seam_rows": 0,
+          "trailing_duplicate_rows": 0,
+          "heading_seam_source": "track_data",
+          "first_reverse_segment_dot": -0.010002351991877512,
+          "start_moved_m": 0.0
+        },
+        "reverse_save_load": {
+          "nodes": 2885,
+          "distance_max_error_m": 0.0,
+          "xy_max_error_m": 0.0,
+          "heading_wrapped_max_error_rad": 0.0,
+          "curvature_max_error_inv_m": 0.0,
+          "length_error_m": 0.0,
+          "serialized_seam_rows": 0,
+          "trailing_duplicate_rows": 0,
+          "heading_seam_source": "track_data"
+        },
+        "double_reverse": {
+          "nodes": 2885,
+          "distance_max_error_m": 4.334310688136611e-12,
+          "xy_max_error_m": 0.0,
+          "heading_wrapped_max_error_rad": 4.181980958506415e-05,
+          "curvature_max_error_inv_m": 0.0,
+          "length_error_m": 3.694822225952521e-12,
+          "serialized_seam_rows": 0,
+          "trailing_duplicate_rows": 0,
+          "heading_seam_source": "track_data",
+          "base_heading_wrapped_max_error_rad": 1.7763568394002505e-15,
+          "terminal_heading_wrapped_error_rad": 4.181980958506415e-05,
+          "terminal_heading_limit_rad": 0.0005
+        },
+        "sections": {
+          "sections": 3,
+          "node_counts": [
+            963,
+            963,
+            1924
+          ],
+          "distance_max_error_m": 0.0,
+          "xy_max_error_m": 0.0,
+          "heading_wrapped_max_error_rad": 0.0,
+          "curvature_max_error_inv_m": 0.0,
+          "endpoint_max_error_m": 0.0,
+          "stored_distance_vs_arc_max_error_m": 0.0005680819969882123,
+          "arc_vs_cut_span_max_error_m": 0.000914656242429146,
+          "cut_span_limit_m": 0.02884339136932722,
+          "section_lengths_m": [
+            96.14520518321714,
+            96.14496612805826,
+            96.14555255399983
+          ],
+          "cut_parameter_spans_m": [
+            96.14463789775739,
+            96.14463789775739,
+            96.1446378977574
+          ],
+          "wrap_to_start_error_m": 0.0,
+          "corrections": [
+            {
+              "maximum_correction_m": 0.000593907969,
+              "bound_m": 0.02
+            },
+            {
+              "maximum_correction_m": 0.000203567713,
+              "bound_m": 0.02
+            },
+            {
+              "maximum_correction_m": 0.000845518405,
+              "bound_m": 0.02
+            }
+          ]
+        },
+        "open_section_save_load": {
+          "nodes": 963,
+          "distance_max_error_m": 0.0,
+          "xy_max_error_m": 0.0,
+          "heading_wrapped_max_error_rad": 0.0,
+          "curvature_max_error_inv_m": 0.0,
+          "length_error_m": 0.0,
+          "serialized_seam_rows": 0,
+          "trailing_duplicate_rows": 0,
+          "heading_seam_source": "track_data"
+        },
+        "open_reverse": {
+          "nodes": 963,
+          "distance_max_error_m": 0.0,
+          "xy_max_error_m": 0.0,
+          "heading_wrapped_max_error_rad": 0.0,
+          "curvature_max_error_inv_m": 0.0,
+          "length_error_m": 0.0,
+          "serialized_seam_rows": 0,
+          "trailing_duplicate_rows": 0,
+          "heading_seam_source": "track_data",
+          "first_reverse_segment_dot": -0.009988495039635179,
+          "start_moved_m": 60.60501420228401
+        },
+        "open_reverse_save_load": {
+          "nodes": 963,
+          "distance_max_error_m": 0.0,
+          "xy_max_error_m": 0.0,
+          "heading_wrapped_max_error_rad": 0.0,
+          "curvature_max_error_inv_m": 0.0,
+          "length_error_m": 0.0,
+          "serialized_seam_rows": 0,
+          "trailing_duplicate_rows": 0,
+          "heading_seam_source": "track_data"
+        },
+        "open_double_reverse": {
+          "nodes": 963,
+          "distance_max_error_m": 5.3290705182007514e-14,
+          "xy_max_error_m": 0.0,
+          "heading_wrapped_max_error_rad": 0.0,
+          "curvature_max_error_inv_m": 0.0,
+          "length_error_m": 1.4210854715202004e-14,
+          "serialized_seam_rows": 0,
+          "trailing_duplicate_rows": 0,
+          "heading_seam_source": "track_data"
+        }
       },
       "figure": "docs/superpowers/sdd/2026-10-20-track-gui-tools/fsc-overlap.png",
       "figure_visually_inspected": false

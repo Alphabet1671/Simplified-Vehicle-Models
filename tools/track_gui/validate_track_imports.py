@@ -84,8 +84,8 @@ def validate_fixture(label: str, source: Path, output: Path, *, gps: bool) -> di
     if not loaded.is_closed or abs(loaded.length - track.length) > settings.spacing * 1.1:
         raise AssertionError(f'{label}: closed save/load length or closure mismatch')
     rev = reverse_track(loaded)
-    if not np.allclose(rev.curvature[:-1], -loaded.curvature[:-1][::-1], atol=1e-9):
-        raise AssertionError(f'{label}: reversal did not negate signed curvature')
+    if not np.allclose(rev.curvature, -loaded.curvature[::-1], atol=1e-9):
+        raise AssertionError(f'{label}: reversal did not negate signed curvature on the reversed node order')
     if not np.allclose([rev.x_north[0], rev.y_east[0]], [loaded.x_north[0], loaded.y_east[0]], atol=1e-9):
         raise AssertionError(f'{label}: closed reversal moved the start point')
     rev_saved = save_track_data(rev, directory, 'reversed', f'{label.lower()}_reversed', f'{label} reversed')

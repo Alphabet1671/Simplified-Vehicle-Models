@@ -70,7 +70,8 @@ def reverse_track(track: TrackData) -> TrackData:
         idx=np.r_[0,np.arange(len(d)-2,0,-1),0]
         nd=np.r_[0.,np.cumsum(np.diff(d)[::-1])]
         h=np.unwrap(track.heading[idx]+np.pi)
-        c=np.r_[-track.curvature[:-1][::-1], -track.curvature[-2]]
+        c=-track.curvature[idx]
+        c[-1]=c[0]
         return TrackData(nd,track.x_north[idx],track.y_east[idx],h,c,True,track.title,track.maximum_radius)
     idx=np.arange(len(d)-1,-1,-1)
     return TrackData(np.r_[0.,np.cumsum(np.diff(d)[::-1])],track.x_north[idx],track.y_east[idx],np.unwrap(track.heading[idx]+np.pi),-track.curvature[idx],False,track.title,track.maximum_radius)

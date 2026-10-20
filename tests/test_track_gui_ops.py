@@ -33,8 +33,8 @@ class TrackOpsTests(unittest.TestCase):
 
     def test_closed_save_reverse_curvature_and_double(self):
         t=load_track_data(TRACKS/"2024_michigan_endurance_closed.xml"); r=reverse_track(t); rr=reverse_track(r)
-        np.testing.assert_allclose(r.x_north[0],t.x_north[0]); np.testing.assert_allclose(r.curvature[:-1],-t.curvature[:-1][::-1],atol=1e-10)
-        np.testing.assert_allclose(rr.x_north,t.x_north,atol=1e-9); np.testing.assert_allclose(rr.curvature[:-1],t.curvature[:-1],atol=1e-10)
+        np.testing.assert_allclose(r.x_north[0],t.x_north[0]); np.testing.assert_allclose(r.curvature,-t.curvature[::-1],atol=1e-10)
+        np.testing.assert_allclose(rr.x_north,t.x_north,atol=1e-9); np.testing.assert_allclose(rr.curvature,t.curvature,atol=1e-10)
         with tempfile.TemporaryDirectory() as d:
             out=load_track_data(save_track_data(r,d,"closed","closed-id","Closed").xml)
             self.assertTrue(out.is_closed); np.testing.assert_allclose(out.curvature,r.curvature,atol=2e-9)
@@ -85,6 +85,30 @@ class TrackOpsTests(unittest.TestCase):
             with mock.patch("tools.track_gui.track_ops.os.replace",side_effect=fail_late):
                 with self.assertRaisesRegex(OSError,"injected"): save_sections(t,[0,t.length/2],d,"part","id","Title",overwrite=True)
             self.assertEqual({p.name:p.read_bytes() for p in Path(d).iterdir()},before)
+
+    def test_adaptive_refinement_retries_strict_validation(self):
+        from simplified_vehicle_models.tracks import profile as profile_module
+        real=profile_module._validate_open_geometry_arrays
+        calls=0
+        def fail_once(*args,**kwargs):
+            nonlocal calls
+            calls+=1
+            if calls==1:
+                raise ValueError("forced strict validation retry")
+            return real(*args,**kwargs)
+        t=load_track_data(TRACKS/"2024_michigan_endurance_closed.xml")
+        with mock.patch("simplified_vehicle_models.tracks.profile._validate_open_geometry_arrays",side_effect=fail_once):
+            parts=split_closed(t,[0,t.length/2])
+        self.assertEqual(len(parts),2)
+        self.assertEqual(calls,3)
+
+    def test_adaptive_refinement_stops_at_node_cap(self):
+        from simplified_vehicle_models.tracks import profile as profile_module
+        t=load_track_data(TRACKS/"2024_michigan_endurance_closed.xml")
+        with mock.patch("simplified_vehicle_models.tracks.profile._validate_open_geometry_arrays",side_effect=ValueError("forced strict failure")), \
+             mock.patch("tools.track_gui.track_ops.MAX_SECTION_NODES",6000):
+            with self.assertRaisesRegex(ValueError,"node resource limit"):
+                split_closed(t,[0,t.length/2])
 
     def test_converters_accept_real_builder_geometry_and_open_course(self):
         theta=np.linspace(0,2*np.pi,200,endpoint=False)

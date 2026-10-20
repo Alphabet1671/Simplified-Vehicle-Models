@@ -6,7 +6,7 @@ import math
 import os
 import tempfile
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from xml.sax.saxutils import escape
 
@@ -30,6 +30,7 @@ class TrackData:
     is_closed: bool
     title: str
     maximum_radius: float = 300.0
+    _reverse_source_curvature: np.ndarray | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self):
         for name in ("distance", "x_north", "y_east", "heading", "curvature"):
@@ -56,7 +57,7 @@ def load_track_data(path) -> TrackData:
     path=Path(path)
     profile=load_track(path); coords=profile.path_coordinates
     params={e.get("name"):e.get("value") for e in ET.parse(path).getroot().findall("./parameters/parameter")}
-    maximum=float(params.get("maximum_radius",300.0))
+    maximum=float(params.get("track_gui_maximum_radius", params.get("maximum_radius", 300.0)))
     return TrackData(profile.distance,coords.x_north if coords else None,coords.y_east if coords else None,
         coords.heading if coords else np.zeros_like(profile.distance),profile.curvature,profile.is_closed,profile.title,maximum)
 
@@ -64,9 +65,11 @@ def load_track_data(path) -> TrackData:
 def reverse_track(track: TrackData) -> TrackData:
     d=track.distance
     if track.x_north is None:
-        # Legacy CSV radius rows are associated with forward segments; terminal duplicate is metadata convention.
-        vals=np.r_[track.curvature[:-1][::-1],track.curvature[0]] if track.is_closed and np.isclose(track.curvature[-1],track.curvature[0]) else track.curvature[::-1]
-        return TrackData(np.r_[0.,np.cumsum(np.diff(d)[::-1])],None,None,np.zeros_like(d),vals,track.is_closed,track.title,track.maximum_radius)
+        # Store the input convention so a second reversal exactly restores radii.
+        prior = track._reverse_source_curvature
+        values = prior if prior is not None else track.curvature[::-1]
+        result = TrackData(np.r_[0.,np.cumsum(np.diff(d)[::-1])],None,None,np.zeros_like(d),values,track.is_closed,track.title,track.maximum_radius,track.curvature)
+        return result
     if track.is_closed:
         idx=np.r_[0,np.arange(len(d)-2,0,-1),0]
         nd=np.r_[0.,np.cumsum(np.diff(d)[::-1])]
@@ -76,8 +79,22 @@ def reverse_track(track: TrackData) -> TrackData:
     return TrackData(np.r_[0.,np.cumsum(np.diff(d)[::-1])],track.x_north[idx],track.y_east[idx],np.unwrap(track.heading[idx]+np.pi),-track.curvature[idx],False,track.title,track.maximum_radius)
 
 
-def from_closed_geometry(geometry: dict, title: str = "Closed track") -> TrackData:
-    return TrackData(geometry["distance"],geometry["x_north"],geometry["y_east"],geometry["heading"],geometry["curvature"],True,title,float(geometry.get("maximum_radius",300.0)))
+def from_closed_geometry(geometry: dict, title: str = "Closed track", maximum_radius: float = 300.0) -> TrackData:
+    """Convert build_closed_track geometry (north/east keys) to immutable track data."""
+    distance = geometry["distance"]
+    north = geometry.get("x_north", geometry.get("north"))
+    east = geometry.get("y_east", geometry.get("east"))
+    if north is None or east is None:
+        raise ValueError("closed geometry must provide north/x_north and east/y_east arrays")
+    if len(distance) and (north[0] != north[-1] or east[0] != east[-1]):
+        distance = np.r_[distance, float(distance[-1]) + float(distance[-1] - distance[-2])]
+        north = np.r_[north, north[0]]
+        east = np.r_[east, east[0]]
+        heading = np.r_[geometry["heading"], float(geometry["heading"][-1] + (geometry["heading"][1] - geometry["heading"][0]))]
+        curvature = np.r_[geometry["curvature"], geometry["curvature"][0]]
+    else:
+        heading, curvature = geometry["heading"], geometry["curvature"]
+    return TrackData(distance,north,east,heading,curvature,True,title,maximum_radius)
 
 
 def from_open_course(course: OpenCourse, title: str = "Open track", maximum_radius: float = 300.0) -> TrackData:
@@ -141,18 +158,18 @@ def _write_one(track,folder,stem,model_id,title,provenance):
         else:
             course=OpenCourse(track.distance,track.x_north,track.y_east,track.heading,track.curvature,(0.,track.length),("track",),())
             (folder/f"{stem}.csv").write_text(csv_text(course),encoding="utf8")
-            (folder/f"{stem}.xml").write_text(xml_text(course,model_id,title,f"{stem}.csv",[provenance] if provenance else [],parameters=[]),encoding="utf8")
+            (folder/f"{stem}.xml").write_text(xml_text(course,model_id,title,f"{stem}.csv",[provenance] if provenance else [],parameters=[("track_gui_maximum_radius",track.maximum_radius,"m")]),encoding="utf8")
     else:
         # Legacy unsigned distance/radius profile. Keep radius magnitudes, never add signed geometry.
         with (folder/f"{stem}.csv").open("w",newline="",encoding="utf8") as f:
             w=csv.writer(f); w.writerow(["distance","segment_length","radius"])
             seg=np.diff(track.distance)
-            rows=len(track.distance) if track.is_closed else len(track.distance)-1
+            rows=len(track.distance)
             for i,d in enumerate(track.distance[:rows]):
                 sl=seg[i] if i < len(seg) else seg[-1]
                 radius=1.0/max(abs(track.curvature[i]),1e-12)
                 w.writerow((float(d),float(sl),float(radius)))
-        txt=f'<?xml version="1.0" encoding="UTF-8"?>\n<model schema-version="1.0" id="{escape(model_id)}" type="track-model" subtype="distance-radius-profile"><metadata><title>{escape(title)}</title></metadata><data ref="{stem}.csv"/><parameters><parameter name="is_closed" value="{str(track.is_closed).lower()}"/><parameter name="terminal_segment_is_duplicate" value="{str(track.is_closed).lower()}"/></parameters></model>\n'
+        txt=f'<?xml version="1.0" encoding="UTF-8"?>\n<model schema-version="1.0" id="{escape(model_id)}" type="track-model" subtype="distance-radius-profile"><metadata><title>{escape(title)}</title></metadata><data ref="{stem}.csv"/><parameters><parameter name="is_closed" value="{str(track.is_closed).lower()}"/><parameter name="terminal_segment_is_duplicate" value="true"/><parameter name="track_gui_maximum_radius" value="{track.maximum_radius}"/></parameters></model>\n'
         (folder/f"{stem}.xml").write_text(txt,encoding="utf8")
 
 

@@ -6,7 +6,7 @@ Section outputs use a periodic cubic SciPy spline in XY, derive heading/curvatur
 
 The batch saver checks every numbered destination before writing, stages and validates every pair, and uses a shared backup/rollback transaction for the entire batch. Existing model/generated-file protections are reused. Legacy unsigned reversal retains unsigned values and does not fabricate XY or signed direction.
 
-Additional public converters `from_closed_geometry(geometry, title="Closed track")` and `from_open_course(course, title="Open track", maximum_radius=300.0)` support GUI handoff. Saves now retain open/closed/unsigned subtype semantics, and source maximum radius is read from XML when present.
+Additional public converters `from_closed_geometry(geometry, title="Closed track", maximum_radius=300.0)` and `from_open_course(course, title="Open track", maximum_radius=300.0)` support GUI handoff. The closed converter accepts build_closed_track's `north`/`east` keys and appends the repeated seam row. Saves retain open/closed/unsigned subtype semantics and preserve maximum_radius, using a distinct `track_gui_maximum_radius` parameter where standard open-profile XML already has its own cap.
 
 Tests: `PYTHONPATH=src:. python3 -m unittest tests.test_track_gui_ops tests.test_track_gui_export tests.test_track_gui_design tests.test_tracks -q` passed (36 tests). The initial required missing-module baseline was captured before creating tests: `ModuleNotFoundError: No module named 'tests.test_track_gui_ops'`. Canonical section reconstruction was manually exercised for both canonical closed sources (single and multi-lap), and staged strict-loader validation passed.
 

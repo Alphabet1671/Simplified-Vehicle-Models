@@ -68,6 +68,21 @@ class EditorTests(unittest.TestCase):
             X.set_source_ref(SAMPLE, "a.xml")
         self.assertIn('<source ref="v.xml" />', X.set_source_ref('<model id="f"><source ref="o.xml" /></model>', "v.xml"))
 
+    def test_edge_cases_comments_missing_refs_quotes_and_root(self):
+        text = """<!-- <model id='comment'/> <component role='x' ref='bad'/> -->
+<model id='root'> <component role='x' ref = '../a.xml'/> <source ref = 's.xml'/> <parameters><parameter name='p' value = '1' unit = 'm'/></parameters>
+  <wrapper><model id='nested'/></wrapper>
+</model>"""
+        self.assertEqual(X.model_id(text), "root")
+        self.assertIn("<model id='changed'>", X.set_model_id(text, "changed"))
+        self.assertEqual(X.parameter_values(text), {"p": "1"})
+        self.assertIn("value = '2.0'", X.set_parameters(text, {"p": 2.0}))
+        self.assertIn("ref = '../b.xml'", X.set_component_ref(text, "x", "../b.xml"))
+        with self.assertRaisesRegex(ValueError, "no ref"):
+            X.set_component_ref("<model id='x'><component role='x'/></model>", "x", "a.xml")
+        with self.assertRaisesRegex(ValueError, "no ref"):
+            X.set_source_ref("<model id='x'><source/></model>", "a.xml")
+
     def test_reanchor_keeps_targets(self):
         with tempfile.TemporaryDirectory() as folder:
             source, target = Path(folder) / "models" / "vehicles", Path(folder) / "out" / "deep"

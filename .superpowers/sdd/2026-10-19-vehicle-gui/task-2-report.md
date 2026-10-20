@@ -33,3 +33,17 @@ No files under `src/` or `tools/sim_gui/` were changed. No PyQt6 imports or pypr
 ## Note
 
 The brief's literal `_set_ref` example uses a broad replacement expression with `count=0`; the implementation retains the intended behavior while safely replacing only the `ref` attribute in the selected tag.
+
+## Round 1 review fixes
+
+Addressed root targeting, single- and double-quoted attributes with whitespace around `=`, comment isolation, and missing-reference errors. Added a regression test covering comment-contained tags, nested models, quote/spacing variants, and missing `ref` attributes.
+
+Focused command and output:
+
+```text
+MPLCONFIGDIR=/tmp/mplcfg PYTHONPATH=src:. python3 -m unittest tests.test_vehicle_gui_xmltext -q
+Ran 11 tests in 0.027s
+OK
+```
+
+The full suite was not rerun per review direction.

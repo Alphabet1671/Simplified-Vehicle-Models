@@ -28,6 +28,7 @@ from __future__ import annotations
 import argparse
 import csv
 import hashlib
+import json
 import math
 from pathlib import Path
 import xml.etree.ElementTree as ElementTree
@@ -62,6 +63,11 @@ DEFAULT_SMOOTHING = 2.0
 
 #: Largest radius that the point-mass limit solver treats as a straight.
 DEFAULT_MAXIMUM_RADIUS = 300.0
+
+
+def _xml_comment_text(text: str) -> str:
+    """Escape sequences that XML comments do not permit."""
+    return text.replace("--", "- -").rstrip("-") + (" " if text.endswith("-") else "")
 
 
 def _sha256(path: Path) -> str:
@@ -247,6 +253,98 @@ def minimum_self_distance(
     return closest
 
 
+def geometry_from_arrays(
+    north: np.ndarray,
+    east: np.ndarray,
+    spacing: float,
+    smoothing: float,
+    *,
+    stamps=None,
+) -> dict[str, object]:
+    """Build closed-track geometry from arrays without changing CLI defaults."""
+    north = np.asarray(north, dtype=float)
+    east = np.asarray(east, dtype=float)
+    if (
+        north.ndim != 1
+        or east.shape != north.shape
+        or north.size < 8
+        or not np.all(np.isfinite(north))
+        or not np.all(np.isfinite(east))
+    ):
+        raise ValueError(
+            "coordinate arrays must be finite, one-dimensional, equally sized, "
+            "and contain at least eight samples"
+        )
+    if not math.isfinite(spacing) or spacing <= 0:
+        raise ValueError("node spacing must be finite and positive")
+    if not math.isfinite(smoothing) or smoothing < 0:
+        raise ValueError("smoothing must be finite and nonnegative")
+    estimated_nodes = int(math.ceil(float(arc_length(north, east)[-1]) / spacing))
+    if estimated_nodes > 12000:
+        raise ValueError(
+            "requested spacing would create more than 12000 geometry nodes; "
+            "choose a larger spacing"
+        )
+
+    raw_distance = arc_length(north, east)
+    closed_north, closed_east, gap = close_by_linear_correction(
+        north, east, raw_distance
+    )
+    distance, north_nodes, east_nodes = resample(
+        raw_distance, closed_north, closed_east, spacing
+    )
+    correction = 0.0
+    for _ in range(2):
+        before_north = north_nodes.copy()
+        before_east = east_nodes.copy()
+        sigma = min(smoothing / spacing, len(north_nodes) / 16)
+        north_nodes = periodic_gaussian(north_nodes, sigma)
+        east_nodes = periodic_gaussian(east_nodes, sigma)
+        correction = max(
+            correction,
+            float(
+                np.max(
+                    np.hypot(
+                        north_nodes - before_north,
+                        east_nodes - before_east,
+                    )
+                )
+            ),
+        )
+        closed_north_nodes = np.append(north_nodes, north_nodes[0])
+        closed_east_nodes = np.append(east_nodes, east_nodes[0])
+        closed_distance = arc_length(closed_north_nodes, closed_east_nodes)
+        distance, north_nodes, east_nodes = resample(
+            closed_distance, closed_north_nodes, closed_east_nodes, spacing
+        )
+
+    node_spacing = float(distance[1] - distance[0])
+    length = float(distance[-1] + node_spacing)
+    heading, curvature = signed_geometry(distance, north_nodes, east_nodes)
+    winding = float(np.sum(curvature) * node_spacing)
+    return {
+        "stamps": np.asarray(stamps if stamps is not None else []),
+        "raw_distance": raw_distance,
+        "raw_north": north,
+        "raw_east": east,
+        "closed_north": closed_north,
+        "closed_east": closed_east,
+        "closure_gap": gap,
+        "distance": distance,
+        "north": north_nodes,
+        "east": east_nodes,
+        "heading": heading,
+        "curvature": curvature,
+        "length": length,
+        "winding": winding,
+        "peak_smoothing_correction": correction,
+        "minimum_radius": float(1 / np.max(np.abs(curvature))),
+        "minimum_self_distance": minimum_self_distance(
+            north_nodes, east_nodes
+        ),
+    }
+
+
 def build_geometry(
     telemetry: Path,
     start_time: float,
@@ -364,13 +462,29 @@ def write_xml(
             "subtype": TRACK_SUBTYPE,
         },
     )
-    model.append(ElementTree.Comment(
-        " Closed signed centerline rebuilt from a measured velocity trace."
+    provenance = geometry.get("provenance")
+    if provenance:
+        source_description = (
+            f"selected {provenance['mode']} channels "
+            f"{provenance['channels']['x']} / {provenance['channels']['y']}"
+        )
+    else:
+        source_description = "measured velocity trace"
+    first_comment = (
+        " Closed signed centerline rebuilt from a "
+        + source_description
+        + "."
         f" World frame X north, Y east, Z down, so {AXIS_FORWARD} is north,"
         f" {AXIS_RIGHT} is east, and {AXIS_DOWN} is down."
-        f" A right turn has positive curvature."
-    ))
-    model.append(ElementTree.Comment(
+        " A right turn has positive curvature."
+    )
+    model.append(ElementTree.Comment(_xml_comment_text(first_comment)))
+    if provenance:
+        provenance_comment = " Track GUI provenance " + json.dumps(
+            provenance, sort_keys=True, default=str
+        )
+        model.append(ElementTree.Comment(_xml_comment_text(provenance_comment)))
+    source_comment = (
         f" Source {telemetry.name} sha256={_sha256(telemetry)}"
         f" rows {np.asarray(geometry['raw_north']).size}"
         f" nodes {np.asarray(geometry['distance']).size}"
@@ -380,9 +494,15 @@ def write_xml(
         f" winding {float(geometry['winding']):+.6f} rad"
         f" minimum radius {float(geometry['minimum_radius']):.4f} m"
         f" minimum self distance {float(geometry['minimum_self_distance']):.3f} m"
-        " The source radius is a magnitude only, so this rebuild is the first"
-        " signed geometry for this track."
-    ))
+    )
+    if provenance:
+        source_comment += " Rebuilt from the selected channels listed above."
+    else:
+        source_comment += (
+            " The source radius is a magnitude only, so this rebuild is the first"
+            " signed geometry for this track."
+        )
+    model.append(ElementTree.Comment(_xml_comment_text(source_comment)))
     model.append(ElementTree.Comment(
         " The point-mass limit solver consumes radius_magnitude."
         " The planar model consumes signed curvature."

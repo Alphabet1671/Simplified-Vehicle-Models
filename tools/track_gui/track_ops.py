@@ -1,19 +1,24 @@
 """Geometry-only track operations and safe exports for the track GUI."""
 from __future__ import annotations
 
+import csv
 import math
+import os
 import tempfile
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
+from xml.sax.saxutils import escape
 
 import numpy as np
 
 from simplified_vehicle_models.tracks.profile import load_track
-from tools.tracks.open_course import OpenCourse
-from tools.track_gui.export import (SavedTrack, _guard_targets, _install, check_model_id,
-                                    check_title, SaveRefused)
+from tools.tracks.open_course import OpenCourse, csv_text, xml_text
+from tools.track_gui.export import SavedTrack, _guard_targets, check_model_id, check_title, SaveRefused
 from tools.gui_common.files import check_name
 
+MAX_SECTION_NODES = 100_000
+MAX_RECONSTRUCTION_DEPARTURE_M = 0.02
 
 @dataclass(frozen=True, slots=True)
 class TrackData:
@@ -28,172 +33,166 @@ class TrackData:
 
     def __post_init__(self):
         for name in ("distance", "x_north", "y_east", "heading", "curvature"):
-            value = getattr(self, name)
-            if value is None:
-                continue
-            array = np.array(value, dtype=float, copy=True)
-            array.setflags(write=False)
-            object.__setattr__(self, name, array)
-        n = len(self.distance)
-        if self.distance.ndim != 1 or n < 2 or any(getattr(self, key).ndim != 1 or len(getattr(self, key)) != n for key in ("heading", "curvature")):
+            value=getattr(self,name)
+            if value is not None:
+                a=np.array(value,dtype=float,copy=True); a.setflags(write=False); object.__setattr__(self,name,a)
+        n=len(self.distance)
+        if self.distance.ndim!=1 or n<2 or any(getattr(self,k).ndim!=1 or len(getattr(self,k))!=n for k in ("heading","curvature")):
             raise ValueError("track arrays must be one-dimensional, equal length, and have at least two nodes")
-        if not all(np.all(np.isfinite(getattr(self, key))) for key in ("distance", "heading", "curvature")):
+        if not all(np.all(np.isfinite(getattr(self,k))) for k in ("distance","heading","curvature")):
             raise ValueError("track arrays must be finite")
-        if not math.isclose(float(self.distance[0]), 0.0, abs_tol=1e-12) or np.any(np.diff(self.distance) <= 0):
-            raise ValueError("distance must start at zero and increase")
-        if (self.x_north is None) != (self.y_east is None):
-            raise ValueError("both XY arrays must be present or absent")
-        if self.x_north is not None and (self.x_north.ndim != 1 or self.y_east.ndim != 1 or len(self.x_north) != n or len(self.y_east) != n):
-            raise ValueError("track arrays must be one-dimensional and have equal lengths")
-        if self.x_north is not None and not (np.all(np.isfinite(self.x_north)) and np.all(np.isfinite(self.y_east))):
-            raise ValueError("track arrays must be finite")
+        if not math.isclose(float(self.distance[0]),0.,abs_tol=1e-12) or np.any(np.diff(self.distance)<=0): raise ValueError("distance must start at zero and increase")
+        if (self.x_north is None)!=(self.y_east is None): raise ValueError("both XY arrays must be present or absent")
+        if self.x_north is not None:
+            if any(a.ndim!=1 or len(a)!=n for a in (self.x_north,self.y_east)): raise ValueError("track arrays must have equal lengths")
+            if not all(np.all(np.isfinite(a)) for a in (self.x_north,self.y_east)): raise ValueError("track arrays must be finite")
+        if not math.isfinite(self.maximum_radius) or self.maximum_radius<=0: raise ValueError("maximum radius must be positive and finite")
 
     @property
-    def length(self) -> float:
-        return float(self.distance[-1])
+    def length(self): return float(self.distance[-1])
 
 
 def load_track_data(path) -> TrackData:
-    profile = load_track(path)
-    coords = profile.path_coordinates
-    xy = coords is not None
-    return TrackData(profile.distance, coords.x_north if xy else None,
-                     coords.y_east if xy else None, coords.heading if xy else np.zeros_like(profile.distance),
-                     profile.curvature, profile.is_closed, profile.title)
+    path=Path(path)
+    profile=load_track(path); coords=profile.path_coordinates
+    params={e.get("name"):e.get("value") for e in ET.parse(path).getroot().findall("./parameters/parameter")}
+    maximum=float(params.get("maximum_radius",300.0))
+    return TrackData(profile.distance,coords.x_north if coords else None,coords.y_east if coords else None,
+        coords.heading if coords else np.zeros_like(profile.distance),profile.curvature,profile.is_closed,profile.title,maximum)
 
 
 def reverse_track(track: TrackData) -> TrackData:
-    """Reverse travel direction, preserving the start point for closed XY tracks."""
-    d = track.distance
-    if track.x_north is None and track.is_closed:
-        # Legacy CSV stores one radius per physical segment plus a terminal duplicate.
-        if len(d) > 2 and np.isclose(track.curvature[-1], track.curvature[0], rtol=0, atol=1e-12):
-            values = np.r_[track.curvature[:-1][::-1], track.curvature[0]]
+    d=track.distance
+    if track.x_north is None:
+        # Legacy CSV radius rows are associated with forward segments; terminal duplicate is metadata convention.
+        vals=np.r_[track.curvature[:-1][::-1],track.curvature[0]] if track.is_closed and np.isclose(track.curvature[-1],track.curvature[0]) else track.curvature[::-1]
+        return TrackData(np.r_[0.,np.cumsum(np.diff(d)[::-1])],None,None,np.zeros_like(d),vals,track.is_closed,track.title,track.maximum_radius)
+    if track.is_closed:
+        idx=np.r_[0,np.arange(len(d)-2,0,-1),0]
+        nd=np.r_[0.,np.cumsum(np.diff(d)[::-1])]
+        h=np.unwrap(track.heading[idx]+np.pi); c=-track.curvature[idx]; c[-1]=c[0]
+        return TrackData(nd,track.x_north[idx],track.y_east[idx],h,c,True,track.title,track.maximum_radius)
+    idx=np.arange(len(d)-1,-1,-1)
+    return TrackData(np.r_[0.,np.cumsum(np.diff(d)[::-1])],track.x_north[idx],track.y_east[idx],np.unwrap(track.heading[idx]+np.pi),-track.curvature[idx],False,track.title,track.maximum_radius)
+
+
+def from_closed_geometry(geometry: dict, title: str = "Closed track") -> TrackData:
+    return TrackData(geometry["distance"],geometry["x_north"],geometry["y_east"],geometry["heading"],geometry["curvature"],True,title,float(geometry.get("maximum_radius",300.0)))
+
+
+def from_open_course(course: OpenCourse, title: str = "Open track", maximum_radius: float = 300.0) -> TrackData:
+    return TrackData(course.distance,course.x_north,course.y_east,course.heading,course.curvature,False,title,maximum_radius)
+
+
+def _spline(track):
+    try: from scipy.interpolate import CubicSpline
+    except ImportError as exc: raise ValueError("SciPy is required to reconstruct strict open sections; install the forward extra") from exc
+    return CubicSpline(track.distance,track.x_north,bc_type="periodic"),CubicSpline(track.distance,track.y_east,bc_type="periodic")
+
+
+def _interp_polyline(track,s):
+    # Linear interpolation with periodic wrap, used for a conservative fidelity check.
+    d=track.distance; q=np.asarray(s)%track.length
+    i=np.searchsorted(d,q,side="right")-1; i=np.clip(i,0,len(d)-2); f=(q-d[i])/(d[i+1]-d[i])
+    return np.column_stack((track.x_north[i]+f*(track.x_north[i+1]-track.x_north[i]),track.y_east[i]+f*(track.y_east[i+1]-track.y_east[i])))
+
+
+def _section_courses(track,cuts):
+    if track.x_north is None or not track.is_closed: raise ValueError("section export requires signed closed XY geometry")
+    L=track.length
+    if not np.allclose([track.x_north[0],track.y_east[0]],[track.x_north[-1],track.y_east[-1]],atol=1e-8): raise ValueError("closed XY geometry must repeat its start point")
+    raw=[float(c) for c in cuts]
+    if not raw or any(not math.isfinite(c) or c<0 or c>L for c in raw): raise ValueError("cuts must be finite distances between zero and track length")
+    raw=[0.0 if math.isclose(c,L,rel_tol=0,abs_tol=1e-10) else c for c in raw]
+    if len(set(raw))!=len(raw): raise ValueError("cut distances must be distinct (track length and zero are the same seam)")
+    if len(raw)<2: raise ValueError("at least two distinct cuts are required")
+    sx,sy=_spline(track); bounds=sorted(raw); courses=[]
+    for st,en0 in zip(bounds,bounds[1:]+[bounds[0]+L]):
+        span=en0-st; count=max(2,int(math.ceil(span/0.1)))
+        if count+1>MAX_SECTION_NODES: raise ValueError("section exceeds the node resource limit")
+        u=np.linspace(st,en0,count+1); q=u%L
+        n=sx(q); e=sy(q); dn=sx(q,1); de=sy(q,1); ddn=sx(q,2); dde=sy(q,2); speed=np.hypot(dn,de)
+        if np.any(speed<1e-9): raise ValueError("section spline has a stationary point")
+        dist=np.r_[0.,np.cumsum(np.diff(u)*(speed[:-1]+speed[1:])*0.5)]
+        h=np.unwrap(np.arctan2(de,dn)); k=(dn*dde-de*ddn)/speed**3
+        h[-1]=h[-2]+((h[-1]-h[-2]+np.pi)%(2*np.pi)-np.pi)
+        source=_interp_polyline(track,u)
+        departure=float(np.max(np.hypot(n-source[:,0],e-source[:,1])))
+        if departure>MAX_RECONSTRUCTION_DEPARTURE_M: raise ValueError(f"section reconstruction departs {departure:.6g} m, above {MAX_RECONSTRUCTION_DEPARTURE_M:.3g} m tolerance")
+        courses.append((OpenCourse(dist,n,e,h,k,(0.,float(dist[-1])),("section",),()),departure))
+    return courses
+
+
+def split_closed(track,cuts):
+    return [TrackData(c.distance,c.x_north,c.y_east,c.heading,c.curvature,False,track.title,track.maximum_radius) for c,_ in _section_courses(track,list(cuts))]
+
+
+def _write_one(track,folder,stem,model_id,title,provenance):
+    folder=Path(folder); folder.mkdir(parents=True,exist_ok=True)
+    if track.x_north is not None:
+        if track.is_closed:
+            rows=zip(track.distance,track.x_north,track.y_east,track.heading,track.curvature)
+            with (folder/f"{stem}.csv").open("w",newline="",encoding="utf8") as f:
+                w=csv.writer(f); w.writerow(["distance","x_north","y_east","heading_rad","curvature"]); w.writerows(rows)
+            subtype="closed-xy-profile"; closed="true"; duplicate="true"
+            body="".join(f'<parameter name="{n}" value="{v}" />\n' for n,v in (("is_closed",closed),("terminal_segment_is_duplicate",duplicate),("maximum_radius",track.maximum_radius)))
+            txt=f'<?xml version="1.0" encoding="UTF-8"?>\n<model schema-version="1.0" id="{escape(model_id, {"\\\"":"&quot;"})}" type="track-model" subtype="{subtype}"><metadata><title>{escape(title)}</title></metadata><data ref="{stem}.csv"/><parameters>{body}</parameters></model>\n'
+            (folder/f"{stem}.xml").write_text(txt,encoding="utf8")
         else:
-            values = track.curvature[::-1]
-        nd = np.r_[0.0, np.cumsum(np.diff(d)[::-1])]
-        return TrackData(nd, None, None, np.zeros_like(nd), values, track.is_closed, track.title, track.maximum_radius)
-    if track.is_closed and track.x_north is not None:
-        idx = np.r_[0, np.arange(len(d)-2, 0, -1), 0]
-        seg = np.diff(d)[::-1]
-        nd = np.r_[0.0, np.cumsum(seg)]
-        hd = np.unwrap(track.heading[idx] + math.pi)
-        curv = -track.curvature[idx]
-        curv[-1] = curv[0]
-        return TrackData(nd, track.x_north[idx], track.y_east[idx], hd, curv, True, track.title, track.maximum_radius)
-    idx = np.arange(len(d)-1, -1, -1)
-    lengths = np.diff(d)[::-1]
-    nd = np.r_[0.0, np.cumsum(lengths)]
-    if track.x_north is None:
-        return TrackData(nd, None, None, np.zeros_like(nd), track.curvature[idx], track.is_closed, track.title, track.maximum_radius)
-    hd = np.unwrap(track.heading[idx] + math.pi)
-    return TrackData(nd, track.x_north[idx], track.y_east[idx], hd, -track.curvature[idx], track.is_closed, track.title, track.maximum_radius)
+            course=OpenCourse(track.distance,track.x_north,track.y_east,track.heading,track.curvature,(0.,track.length),("track",),())
+            (folder/f"{stem}.csv").write_text(csv_text(course),encoding="utf8")
+            (folder/f"{stem}.xml").write_text(xml_text(course,model_id,title,f"{stem}.csv",[provenance] if provenance else [],parameters=[]),encoding="utf8")
+    else:
+        # Legacy unsigned distance/radius profile. Keep radius magnitudes, never add signed geometry.
+        with (folder/f"{stem}.csv").open("w",newline="",encoding="utf8") as f:
+            w=csv.writer(f); w.writerow(["distance","segment_length","radius"])
+            seg=np.diff(track.distance)
+            rows=len(track.distance) if track.is_closed else len(track.distance)-1
+            for i,d in enumerate(track.distance[:rows]):
+                sl=seg[i] if i < len(seg) else seg[-1]
+                radius=1.0/max(abs(track.curvature[i]),1e-12)
+                w.writerow((float(d),float(sl),float(radius)))
+        txt=f'<?xml version="1.0" encoding="UTF-8"?>\n<model schema-version="1.0" id="{escape(model_id)}" type="track-model" subtype="distance-radius-profile"><metadata><title>{escape(title)}</title></metadata><data ref="{stem}.csv"/><parameters><parameter name="is_closed" value="{str(track.is_closed).lower()}"/><parameter name="terminal_segment_is_duplicate" value="{str(track.is_closed).lower()}"/></parameters></model>\n'
+        (folder/f"{stem}.xml").write_text(txt,encoding="utf8")
 
 
-def _periodic_samples(track: TrackData, cuts: list[float]):
-    if track.x_north is None:
-        raise ValueError("section export requires signed XY geometry")
-    try:
-        from scipy.interpolate import CubicSpline
-    except ImportError as exc:
-        raise ValueError("SciPy is required to reconstruct strict open sections; install the forward extra") from exc
-    length = track.length
-    if length <= 0 or not track.is_closed:
-        raise ValueError("section export requires a closed track")
-    # A periodic spline uses unique nodes; preserve explicit endpoints as the seam.
-    source_d = track.distance
-    if not np.allclose(track.x_north[0], track.x_north[-1], atol=1e-8) or not np.allclose(track.y_east[0], track.y_east[-1], atol=1e-8):
-        raise ValueError("closed XY geometry must repeat its start point")
-    sx = CubicSpline(source_d, track.x_north, bc_type="periodic")
-    sy = CubicSpline(source_d, track.y_east, bc_type="periodic")
-    if any(not math.isfinite(float(c)) for c in cuts):
-        raise ValueError("cut distances must be finite")
-    values = [float(c) for c in cuts]
-    if any(c < 0.0 or c > length for c in values):
-        raise ValueError("cut distances must lie between zero and track length")
-    normalized = sorted(set((0.0 if math.isclose(c, length, abs_tol=1e-10) else c) for c in values))
-    if len(normalized) < 2:
-        raise ValueError("at least two distinct section cuts are required")
-    output=[]
-    for start, end0 in zip(normalized, normalized[1:]+[normalized[0]+length]):
-        end=end0
-        # Source-parametric dense samples, with exact endpoints.
-        count=max(2, int(math.ceil((end-start)/0.1)))
-        u=np.linspace(start,end,count+1)
-        q=u % length
-        q[-1] = end % length
-        # Evaluate wrapped positions; spline accepts periodic extended domain by wrapping.
-        n=sx(q); e=sy(q)
-        dn=sx(q,1); de=sy(q,1); ddn=sx(q,2); dde=sy(q,2)
-        speed=np.hypot(dn,de)
-        ds=np.diff(u)*(speed[:-1]+speed[1:])*0.5
-        dist=np.r_[0,np.cumsum(ds)]
-        heading=np.unwrap(np.arctan2(de,dn))
-        curv=(dn*dde-de*ddn)/np.maximum(speed,1e-12)**3
-        # Endpoint periodic cut may have a discontinuous unwrapped tangent; match direction continuation.
-        heading[-1]=heading[-2]+((heading[-1]-heading[-2]+np.pi)%(2*np.pi)-np.pi)
-        output.append(OpenCourse(dist,n,e,heading,curv,(0.0,float(dist[-1])),("section",),()))
-    return output
-
-
-def split_closed(track: TrackData, cuts) -> list[TrackData]:
-    courses = _periodic_samples(track, list(cuts))
-    # Geometry is already sampled from smooth XY; return an intermediate TrackData list.
-    return [TrackData(c.distance,c.x_north,c.y_east,c.heading,c.curvature,False,track.title,track.maximum_radius) for c in courses]
-
-
-def _write_track(track, folder: Path, stem: str, model_id: str, title: str, provenance: str):
-    from tools.tracks.open_course import csv_text, xml_text
-    course=OpenCourse(track.distance,track.x_north,track.y_east,track.heading,track.curvature,(0.,track.length),("section",),())
-    (folder/f"{stem}.csv").write_text(csv_text(course),encoding="utf-8")
-    (folder/f"{stem}.xml").write_text(xml_text(course,model_id,title,f"{stem}.csv",[provenance]),encoding="utf-8")
-
-
-def _save_many(tracks, directory, stems, model_id, title, *, allow_models, overwrite, overwrite_generated):
+def _save_many(tracks,directory,stems,model_id,title,*,allow_models,overwrite,overwrite_generated,provenance=None):
     directory=Path(directory); check_model_id(model_id); check_title(title)
     for stem in stems:
-        check_name(stem,"file name")
-        _guard_targets(directory,stem,allow_models=allow_models,overwrite=overwrite,overwrite_generated=overwrite_generated)
-    directory.mkdir(parents=True,exist_ok=True)
+        check_name(stem,"file name"); _guard_targets(directory,stem,allow_models=allow_models,overwrite=overwrite,overwrite_generated=overwrite_generated)
     with tempfile.TemporaryDirectory() as temp:
         scratch=Path(temp)
-        for i,(track,stem) in enumerate(zip(tracks,stems),1):
-            _write_track(track,scratch,stem,model_id,title,f"Section {i}; reconstructed from periodic cubic XY spline.")
+        for i,(t,stem) in enumerate(zip(tracks,stems)):
+            _write_one(t,scratch,stem,model_id,title,(provenance[i] if provenance else ""))
             loaded=load_track(scratch/f"{stem}.xml")
-            if loaded.is_closed: raise ValueError("section did not load as open")
-        # Install as one rollback transaction. Back up all existing targets first.
+            if loaded.is_closed!=t.is_closed: raise ValueError("saved track closure status changed")
+        directory.mkdir(parents=True,exist_ok=True)
         backups=[]; installed=[]
         try:
             for stem in stems:
                 for ext in (".csv",".xml"):
                     target=directory/f"{stem}{ext}"
                     if target.exists():
-                        backup=scratch/f"backup-{len(backups)}"
-                        import os; os.replace(target,backup); backups.append((target,backup))
-            import os
+                        backup=scratch/f"backup-{len(backups)}"; os.replace(target,backup); backups.append((target,backup))
             for stem in stems:
                 for ext in (".csv",".xml"):
-                    target=directory/f"{stem}{ext}"
-                    os.replace(scratch/f"{stem}{ext}",target); installed.append(target)
+                    target=directory/f"{stem}{ext}"; os.replace(scratch/f"{stem}{ext}",target); installed.append(target)
         except Exception:
-            for target in installed:
-                try: target.unlink()
-                except FileNotFoundError: pass
+            for p in installed:
+                try:p.unlink()
+                except FileNotFoundError:pass
             for target,backup in backups:
-                if backup.exists(): os.replace(backup,target)
+                if backup.exists():os.replace(backup,target)
             raise
-    result=[]
-    for stem in stems:
-        p=load_track(directory/f"{stem}.xml")
-        result.append(SavedTrack(directory/f"{stem}.xml",directory/f"{stem}.csv",float(p.lap_length),False,len(p.distance)))
-    return result
+    return [SavedTrack(directory/f"{s}.xml",directory/f"{s}.csv",float(load_track(directory/f"{s}.xml").lap_length),t.is_closed,len(t.distance)) for t,s in zip(tracks,stems)]
 
 
-def save_track_data(track, directory, stem, model_id, title, *, allow_models=False, overwrite=False, overwrite_generated=False):
+def save_track_data(track,directory,stem,model_id,title,*,allow_models=False,overwrite=False,overwrite_generated=False):
     return _save_many([track],directory,[stem],model_id,title,allow_models=allow_models,overwrite=overwrite,overwrite_generated=overwrite_generated)[0]
 
 
-def save_sections(track, cuts, directory, stem, model_id, title, *, allow_models=False, overwrite=False, overwrite_generated=False):
-    parts=split_closed(track,cuts)
-    stems=[f"{stem}_{i:02d}" for i in range(1,len(parts)+1)]
-    return _save_many(parts,directory,stems,model_id,title,allow_models=allow_models,overwrite=overwrite,overwrite_generated=overwrite_generated)
+def save_sections(track,cuts,directory,stem,model_id,title,*,allow_models=False,overwrite=False,overwrite_generated=False):
+    pairs=_section_courses(track,list(cuts)); tracks=[TrackData(c.distance,c.x_north,c.y_east,c.heading,c.curvature,False,title,track.maximum_radius) for c,_ in pairs]
+    stems=[f"{stem}_{i:02d}" for i in range(1,len(tracks)+1)]
+    provenance=[f"Section reconstructed from periodic cubic XY spline; measured maximum departure from source polyline: {d:.9g} m; accepted limit {MAX_RECONSTRUCTION_DEPARTURE_M:g} m." for _,d in pairs]
+    return _save_many(tracks,directory,stems,model_id,title,allow_models=allow_models,overwrite=overwrite,overwrite_generated=overwrite_generated,provenance=provenance)

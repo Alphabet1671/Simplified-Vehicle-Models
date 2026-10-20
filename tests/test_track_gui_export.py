@@ -1,6 +1,8 @@
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from tools.gui_common import REPOSITORY_ROOT
 from tools.track_gui.design import CourseDesign, SectionSpec, skidpad_design
@@ -34,7 +36,8 @@ class ExportTests(unittest.TestCase):
         self.assertIn("Tom &amp; Jerry &lt;1&gt;", saved.xml.read_text())
 
     def test_bad_inputs_write_nothing(self):
-        for key, value in (("stem", "bad name"), ("model_id", 'a"b'), ("title", ""), ("title", "x\ny")):
+        for key, value in (("stem", "bad name"), ("model_id", 'a"b'), ("title", ""),
+                           ("title", "x\ny"), ("title", "x\x01y")):
             with self.subTest(key=key):
                 with self.assertRaises(ValueError):
                     self.save(**{key: value})
@@ -47,6 +50,40 @@ class ExportTests(unittest.TestCase):
         with self.assertRaisesRegex(SaveRefused, "already exists"):
             self.save()
         self.save(overwrite=True)
+
+    def test_install_failure_cleans_new_csv(self):
+        real_replace = os.replace
+        calls = 0
+
+        def fail_xml(source, target):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise OSError("injected XML install failure")
+            return real_replace(source, target)
+
+        with mock.patch("tools.track_gui.export.os.replace", side_effect=fail_xml):
+            with self.assertRaisesRegex(OSError, "injected"):
+                self.save()
+        self.assertEqual(list(self.folder.iterdir()), [])
+
+    def test_install_failure_restores_existing_pair(self):
+        self.save()
+        before = {name: (self.folder / name).read_bytes() for name in ("t1.csv", "t1.xml")}
+        real_replace = os.replace
+        calls = 0
+
+        def fail_xml(source, target):
+            nonlocal calls
+            calls += 1
+            if calls == 4:
+                raise OSError("injected XML install failure")
+            return real_replace(source, target)
+
+        with mock.patch("tools.track_gui.export.os.replace", side_effect=fail_xml):
+            with self.assertRaisesRegex(OSError, "injected"):
+                self.save(overwrite=True)
+        self.assertEqual({name: (self.folder / name).read_bytes() for name in before}, before)
 
     def test_models_folder_needs_permission_and_nothing_is_written(self):
         before = sorted(p.name for p in TRACKS.iterdir())

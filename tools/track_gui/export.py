@@ -37,9 +37,19 @@ def check_model_id(value: str) -> str:
 
 
 def check_title(value: str) -> str:
-    if not value.strip() or len(value) > 120 or "\n" in value:
+    if not value.strip() or len(value) > 120 or "\n" in value or "\r" in value:
         raise ValueError("the title must be one line of 1 to 120 characters")
+    if any(ord(character) < 0x20 and character not in "\t" for character in value):
+        raise ValueError("the title contains an XML-illegal control character")
     return value
+
+
+def _check_comments(comments: list[str]) -> None:
+    for comment in comments:
+        if "--" in comment or comment.endswith("-"):
+            raise ValueError("an XML comment must not contain '--' or end with '-'")
+        if any(ord(character) < 0x20 and character not in "\t\n\r" for character in comment):
+            raise ValueError("the comment contains an XML-illegal control character")
 
 
 def _guard_targets(
@@ -72,9 +82,32 @@ def _guard_targets(
 def _install(temporary: Path, directory: Path, stem: str) -> tuple[Path, Path]:
     directory.mkdir(parents=True, exist_ok=True)
     csv_target, xml_target = directory / f"{stem}.csv", directory / f"{stem}.xml"
-    # The CSV goes first: an XML that points at a missing CSV is the worse half-state.
-    os.replace(temporary / f"{stem}.csv", csv_target)
-    os.replace(temporary / f"{stem}.xml", xml_target)
+    targets = ((csv_target, temporary / f"{stem}.csv"), (xml_target, temporary / f"{stem}.xml"))
+    backups: list[tuple[Path, Path]] = []
+    installed: list[Path] = []
+    try:
+        # Move old files aside first, so a failed second replacement can restore the pair.
+        for target, _ in targets:
+            if target.exists():
+                backup = temporary / (target.name + ".backup")
+                os.replace(target, backup)
+                backups.append((target, backup))
+        # The CSV goes first: an XML that points at a missing CSV is the worse half-state.
+        os.replace(targets[0][1], targets[0][0])
+        installed.append(targets[0][0])
+        os.replace(targets[1][1], targets[1][0])
+        installed.append(targets[1][0])
+    except Exception:
+        # Remove anything newly installed, then put the previous pair back exactly.
+        for target in installed:
+            try:
+                target.unlink()
+            except FileNotFoundError:
+                pass
+        for target, backup in backups:
+            if backup.exists():
+                os.replace(backup, target)
+        raise
     return xml_target, csv_target
 
 
@@ -98,6 +131,7 @@ def save_open_course(
     check_name(stem, "file name")
     check_model_id(model_id)
     check_title(title)
+    _check_comments(list(comments))
     _guard_targets(
         directory,
         stem,

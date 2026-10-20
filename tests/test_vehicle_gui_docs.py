@@ -24,8 +24,10 @@ class VehicleGuiDocsTests(unittest.TestCase):
         self.assertIn("The save bar's file name sets the output stem.", text)
         self.assertIn("The model id is stored inside that file.", text)
         self.assertIn("The `models/sweeps/` folder is exempt.", text)
-        self.assertNotIn("und[o]es the edits and the swap", text)
-        self.assertNotIn("when it or a component below it changed", text)
+        self.assertNotIn("**Revert slot** undoes the edits and the swap of the slot.", text)
+        self.assertNotIn("The assembly, when it or a component below it changed.", text)
+        self.assertNotIn("asks for a model id and writes one file `<name>.xml`.", text)
+        self.assertNotIn("- A folder inside `models/` is refused unless you tick **Allow writing inside models/**.\n", text)
 
     def test_the_guide_splits_the_save_failure_warning(self):
         text = (ROOT / "docs" / "dev" / "vehicle-gui.md").read_text(encoding="utf-8")

@@ -1,5 +1,8 @@
 """Regression tests for reference-free closed-loop averaging."""
+import math
 import unittest
+from unittest import mock
+
 import numpy as np
 
 try:
@@ -122,6 +125,44 @@ class LapAverageTests(unittest.TestCase):
                 )
         finally:
             lap_module.detect_laps = original
+
+    def test_invalid_settings_are_refused_before_scipy(self):
+        invalid_average = (
+            (dict(spacing=0.0), "spacing must be finite and positive"),
+            (dict(spacing=-0.5), "spacing must be finite and positive"),
+            (dict(spacing=float("nan")), "spacing must be finite and positive"),
+            (dict(smoothing=-1.0), "smoothing must be finite and nonnegative"),
+            (dict(smoothing=float("inf")), "smoothing must be finite and nonnegative"),
+            (dict(deviation_limit=0.0), "deviation_limit must be finite and positive"),
+            (dict(deviation_limit=float("nan")), "deviation_limit must be finite and positive"),
+            (dict(minimum_support=1), "minimum_support must be an integer"),
+            (dict(return_radius=-1.0), "return_radius must be finite and positive"),
+            (dict(minimum_travel=0.0), "minimum_travel must be finite and positive"),
+            (dict(minimum_duration=0.0), "minimum_duration must be finite and positive"),
+            (dict(minimum_duration=10.0, maximum_duration=5.0),
+             "maximum_duration must be greater than or equal to minimum_duration"),
+        )
+        guard = mock.patch(
+            "builtins.__import__",
+            side_effect=AssertionError("SciPy imported before settings validation"),
+        )
+        with guard:
+            for options, message in invalid_average:
+                with self.subTest(options=options):
+                    with self.assertRaisesRegex(ValueError, message):
+                        average_laps([], [], [], **options)
+            for message, options in (
+                ("return_radius must be finite and positive", dict(return_radius=0.0)),
+                ("heading_tolerance must be finite and in", dict(heading_tolerance=0.0)),
+                ("heading_tolerance must be finite and in", dict(heading_tolerance=math.pi + 0.1)),
+            ):
+                with self.subTest(options=options):
+                    with self.assertRaisesRegex(ValueError, message):
+                        detect_laps([], [], [], **options)
+
+    def test_non_vector_channels_are_refused(self):
+        with self.assertRaisesRegex(ValueError, "one-dimensional"):
+            detect_laps(np.arange(10), np.zeros((10, 2)), np.zeros((10, 2)))
 
     def test_geometry_array_node_cap(self):
         from tools.tracks.build_closed_track import geometry_from_arrays

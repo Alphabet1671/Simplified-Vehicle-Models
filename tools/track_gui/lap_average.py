@@ -11,6 +11,39 @@ def _arc(x, y):
     return np.r_[0.0, np.cumsum(np.hypot(np.diff(x), np.diff(y)))]
 
 
+def _positive_limit(name, value):
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError(f"{name} must be finite and positive")
+
+
+def _check_detection_limits(
+    return_radius,
+    minimum_travel,
+    minimum_duration,
+    maximum_duration,
+    heading_tolerance,
+):
+    """Reject unusable detection settings before SciPy or array work."""
+    limits = (
+        ("return_radius", return_radius),
+        ("minimum_travel", minimum_travel),
+        ("minimum_duration", minimum_duration),
+        ("maximum_duration", maximum_duration),
+    )
+    for name, value in limits:
+        _positive_limit(name, value)
+    if maximum_duration < minimum_duration:
+        raise ValueError(
+            "maximum_duration must be greater than or equal to minimum_duration"
+        )
+    if (
+        not math.isfinite(heading_tolerance)
+        or heading_tolerance <= 0
+        or heading_tolerance > math.pi
+    ):
+        raise ValueError("heading_tolerance must be finite and in (0, pi]")
+
+
 def detect_laps(
     time,
     north,
@@ -23,11 +56,27 @@ def detect_laps(
     heading_tolerance=math.pi / 3,
 ):
     """Find moving-start spatial returns with distance, duration and heading guards."""
+    _check_detection_limits(
+        return_radius,
+        minimum_travel,
+        minimum_duration,
+        maximum_duration,
+        heading_tolerance,
+    )
     from scipy.spatial import cKDTree
 
     t, x, y = (np.asarray(values, dtype=float) for values in (time, north, east))
-    if t.ndim != 1 or len(t) < 8 or len(t) != len(x) or len(t) != len(y):
-        raise ValueError("lap detection needs at least eight synchronized samples")
+    if (
+        t.ndim != 1
+        or x.ndim != 1
+        or y.ndim != 1
+        or len(t) < 8
+        or len(t) != len(x)
+        or len(t) != len(y)
+    ):
+        raise ValueError(
+            "lap detection needs at least eight synchronized one-dimensional samples"
+        )
     if (
         not np.all(np.isfinite(t))
         or not np.all(np.isfinite(x))
@@ -191,10 +240,21 @@ def average_laps(
     minimum_support=2,
 ):
     """Filter, cyclically register, clip and arithmetically average complete loops."""
-    t, x, y = (np.asarray(values, dtype=float) for values in (time, north, east))
+    _positive_limit("spacing", spacing)
+    if not math.isfinite(smoothing) or smoothing < 0:
+        raise ValueError("smoothing must be finite and nonnegative")
+    _positive_limit("deviation_limit", deviation_limit)
     if not isinstance(minimum_support, (int, np.integer)) or minimum_support < 2:
         raise ValueError("minimum_support must be an integer of at least two laps")
+    _check_detection_limits(
+        return_radius,
+        minimum_travel,
+        minimum_duration,
+        maximum_duration,
+        math.pi / 3,
+    )
 
+    t, x, y = (np.asarray(values, dtype=float) for values in (time, north, east))
     laps, detection = detect_laps(
         t,
         x,

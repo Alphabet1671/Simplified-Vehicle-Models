@@ -36,4 +36,4 @@ Implementation follows the Task 5 interface and exact behavior: only the Value c
 
 Initial commit: `408eca9` — `feat: add the parameter table model for the vehicle GUI`
 
-Fix commit: pending (adds direct-edit guards, robustness checks, and expanded tests).
+Fix commit: `f8c0ab1` — `fix: guard parameter table edits` (adds direct-edit guards, robustness checks, and expanded tests).

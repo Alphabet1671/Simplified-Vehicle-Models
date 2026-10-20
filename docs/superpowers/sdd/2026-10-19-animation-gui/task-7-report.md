@@ -28,3 +28,22 @@ OK
 ```
 
 `git diff --check` passed. No unrelated files were staged.
+
+## Review fix round 1
+- Corrected the editable-install command to `python -m pip install -e '.[gui]'`.
+- Clarified that the GUI asks before replacing an existing output, while non-empty PNG folders are refused rather than replaced.
+
+Focused verification after the review fixes:
+```text
+$ MPLCONFIGDIR=/tmp/mplcfg PYTHONPATH=src:. QT_QPA_PLATFORM=offscreen python3 -m unittest tests.test_anim_gui_docs -v
+ test_the_default_output_folder_is_ignored (tests.test_anim_gui_docs.AnimGuiDocsTests.test_the_default_output_folder_is_ignored) ... ok
+ test_the_guide_names_the_start_command (tests.test_anim_gui_docs.AnimGuiDocsTests.test_the_guide_names_the_start_command) ... ok
+ test_tools_layout_lists_the_package_and_links_the_guide (tests.test_anim_gui_docs.AnimGuiDocsTests.test_tools_layout_lists_the_package_and_links_the_guide) ... ok
+
+----------------------------------------------------------------------
+Ran 3 tests in 0.001s
+
+OK
+```
+
+`git diff --check` passed after the review fixes.

@@ -7,7 +7,7 @@ The animation GUI exports a run record as a video or as PNG frames. It does not 
 Install the GUI extra from the repository root:
 
 ```bash
-python -m pip install -e '[gui]'
+python -m pip install -e '.[gui]'
 ```
 
 The exporter needs matplotlib. An MP4 file also needs `ffmpeg` on `PATH`. See [animation-export.md](animation-export.md).
@@ -51,7 +51,7 @@ Select **Export**. The GUI starts the exporter with `--progress` and shows the f
 | 2 | The exporter refused the request, with its own reason. |
 | 3 | No video encoder is available. Install ffmpeg, or export a PNG sequence. |
 
-The default output is `videos/<record folder>_<record name>.mp4`, or the folder `videos/<record folder>_<record name>_frames` for PNG. Git ignores `videos/`. The GUI asks before it replaces an existing file or a non-empty folder.
+The default output is `videos/<record folder>_<record name>.mp4`, or the folder `videos/<record folder>_<record name>_frames` for PNG. Git ignores `videos/`. The GUI asks before replacing an existing output; non-empty PNG folders are refused rather than replaced.
 
 ## Preview a still frame
 

@@ -20,11 +20,23 @@ Implemented the animation exporter GUI main window and application entry point.
 ## Focused verification
 ```text
 MPLCONFIGDIR=/tmp/mplcfg PYTHONPATH=src:. QT_QPA_PLATFORM=offscreen python3 -m unittest tests.test_anim_gui_qt -q
-Ran 14 tests in 7.798s
+Ran 16 tests in 7.712s
 OK
 ```
 
 The suite launches real child processes for PNG export, MP4 export (when ffmpeg is available), preview, cancellation, and exporter-error handling. No test hung; all completed within the command timeout. Validation was performed with Qt's offscreen platform; no manual desktop-window validation was performed in this run.
 
-## Diff check
+## Fix round 1
+- Export cleanup now removes partial outputs when the exporter exits nonzero even if the process state is `done`.
+- Added regression coverage proving partial MP4 cleanup does not delete unrelated files.
+- Refuse output symlinks and mismatched output types before prompting or creating directories, preventing writes through links and `mkdir` errors.
+- Close requests during a running job now wait for cancellation completion before final cleanup/acceptance, avoiding a cancel/close race.
+
+Focused fix-round verification:
+```text
+MPLCONFIGDIR=/tmp/mplcfg PYTHONPATH=src:. QT_QPA_PLATFORM=offscreen python3 -m unittest tests.test_anim_gui_qt -q
+Ran 16 tests in 7.712s
+OK
+```
+
 `git diff --check` passed.

@@ -181,6 +181,34 @@ class WindowTests(unittest.TestCase):
         self.assertEqual(self.window.mode, "idle")
         self.assertFalse(target.exists())
 
+    def test_symlink_output_is_refused(self):
+        self.open(self.real)
+        self.window.format.setCurrentIndex(self.window.format.findData("png"))
+        target = Path(self.out.name) / "frames"
+        real_target = Path(self.out.name) / "real-frames"
+        real_target.mkdir()
+        target.symlink_to(real_target, target_is_directory=True)
+        self.window.output.setText(str(target))
+        self.window.start_export()
+        self.assertEqual(self.window.mode, "idle")
+        self.assertTrue(real_target.is_dir())
+
+    def test_nonzero_done_export_removes_only_partial_outputs(self):
+        self.open(self.real)
+        self.window.format.setCurrentIndex(self.window.format.findData("mp4"))
+        output = Path(self.out.name) / "result.mp4"
+        partial = output.with_name("result.partial.mp4")
+        partial.write_bytes(b"partial")
+        unrelated = Path(self.out.name) / "keep.txt"
+        unrelated.write_text("keep")
+        self.window.output.setText(str(output))
+        self.window._active_output = output
+        self.window.mode = "export"
+        self.window._finished(2, "done")
+        self.assertFalse(partial.exists())
+        self.assertTrue(unrelated.exists())
+        self.assertEqual(self.window.mode, "idle")
+
     def test_the_synthetic_record_fails_with_the_exporters_message(self):
         # A synthetic record names no track, so a real render exits 2 and the GUI must say why.
         self.open(self.synthetic)

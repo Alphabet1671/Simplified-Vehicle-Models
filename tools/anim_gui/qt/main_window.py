@@ -43,6 +43,7 @@ class MainWindow(QMainWindow):
         self.span = (0.0, 1.0)
         self._preview_folder: tempfile.TemporaryDirectory | None = None
         self._active_output: Path | None = None
+        self._closing = False
 
         # record
         self.record = QLineEdit()
@@ -368,12 +369,25 @@ class MainWindow(QMainWindow):
             if protected:
                 QMessageBox.warning(self, "Not exported", protected)
                 return
+        if target.is_symlink():
+            QMessageBox.warning(self, "Not exported", f"Refusing to write through output symlink: {target}")
+            return
         if target.exists():
+            if settings.format == "mp4" and not target.is_file():
+                QMessageBox.warning(self, "Not exported", f"Output is not a regular file: {target}")
+                return
+            if settings.format == "png" and not target.is_dir():
+                QMessageBox.warning(self, "Not exported", f"Output is not a directory: {target}")
+                return
             if QMessageBox.question(self, "Replace?", f"{target} already exists. Replace it?") != QMessageBox.StandardButton.Yes:
                 return
             if QMessageBox.question(self, "Confirm overwrite", f"Replace existing export {target} and its contents?") != QMessageBox.StandardButton.Yes:
                 return
-        target.parent.mkdir(parents=True, exist_ok=True) if settings.format == "mp4" else target.mkdir(parents=True, exist_ok=True)
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True) if settings.format == "mp4" else target.mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            QMessageBox.warning(self, "Not exported", f"Cannot prepare output {target}: {error}")
+            return
         self._run(settings, "export", EXPORT_TIMEOUT_SECONDS)
 
     def start_preview(self) -> None:
@@ -412,7 +426,7 @@ class MainWindow(QMainWindow):
     def _finished(self, code: int, state: str) -> None:
         mode, output = self.mode, self._active_output
         self.mode = "idle"
-        if state != "done" and mode == "export" and output is not None:
+        if (code != 0 or state != "done") and mode == "export" and output is not None:
             records.remove_partials(output)
         message = progress.describe_result(code, state, self.errors)
         if mode == "preview":
@@ -422,6 +436,9 @@ class MainWindow(QMainWindow):
             if code == 0 and state == "done":
                 self.bar.setValue(1000)
         self._buttons()
+        if self._closing:
+            self._closing = False
+            self.close()
 
     def _show_preview(self, code: int, state: str, message: str) -> None:
         frames = sorted((Path(self._preview_folder.name) / "frames").glob("frame_*.png")) if self._preview_folder else []
@@ -440,7 +457,10 @@ class MainWindow(QMainWindow):
             if QMessageBox.question(self, "Quit", "An export is running. Cancel it and quit?") != QMessageBox.StandardButton.Yes:
                 event.ignore()
                 return
+            self._closing = True
             self.job.cancel()
+            event.ignore()
+            return
         self._drop_preview()
         self.settings.setValue("geometry", self.saveGeometry())
         event.accept()

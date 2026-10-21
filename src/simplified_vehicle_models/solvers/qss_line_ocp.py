@@ -143,9 +143,10 @@ def build_ocp(track, corridor, surface, mesh, settings: QssSettings):
     am = [ca.MX.sym(f"am_{i}") for i in range(count)]
     qm = [ca.MX.sym(f"qm_{i}") for i in range(count)]
     x = ca.vertcat(*n, *psi, *v, *a, *q, *am, *qm)
-    abox = float(max(np.max(surface.acceleration_max), -np.min(surface.acceleration_min)))
-    xl = np.concatenate([nlo, np.full(nodes,-settings.maximum_heading), np.full(nodes,settings.minimum_speed), np.full(nodes,-abox), np.full(nodes,-settings.maximum_curvature_rate), np.full(count,-abox), np.full(count,-settings.maximum_curvature_rate)])
-    xu = np.concatenate([nhi, np.full(nodes,settings.maximum_heading), np.full(nodes,float(surface.speed[-1])), np.full(nodes,abox), np.full(nodes,settings.maximum_curvature_rate), np.full(count,abox), np.full(count,settings.maximum_curvature_rate)])
+    acceleration_lower = float(np.min(surface.acceleration_min))
+    acceleration_upper = float(np.max(surface.acceleration_max))
+    xl = np.concatenate([nlo, np.full(nodes,-settings.maximum_heading), np.full(nodes,settings.minimum_speed), np.full(nodes,acceleration_lower), np.full(nodes,-settings.maximum_curvature_rate), np.full(count,acceleration_lower), np.full(count,-settings.maximum_curvature_rate)])
+    xu = np.concatenate([nhi, np.full(nodes,settings.maximum_heading), np.full(nodes,float(surface.speed[-1])), np.full(nodes,acceleration_upper), np.full(nodes,settings.maximum_curvature_rate), np.full(count,acceleration_upper), np.full(count,settings.maximum_curvature_rate)])
 
     def rates(state, control, curvature):
         offset, heading, speed = state

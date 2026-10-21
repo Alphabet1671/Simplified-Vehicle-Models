@@ -56,6 +56,17 @@ class TranscriptionTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "closed track"):
             build_ocp(track,corridor,_flat_surface(25.0),mesh,QssSettings())
 
+    def test_acceleration_variable_bounds_are_asymmetric(self):
+        from simplified_vehicle_models.solvers.qss_line_ocp import build_mesh, build_ocp, QssSettings
+        track = self._track()
+        surface = _flat_surface(25.0, acceleration=3.0, deceleration=8.0)
+        built = build_ocp(track, corridor_from_track(track), surface, build_mesh(track, 4.0), QssSettings())
+        nodes = built["mesh"].size
+        np.testing.assert_allclose(built["x_lower"][3 * nodes:4 * nodes], -8.0)
+        np.testing.assert_allclose(built["x_upper"][3 * nodes:4 * nodes], 3.0)
+        np.testing.assert_allclose(built["x_lower"][5 * nodes:5 * nodes + nodes - 1], -8.0)
+        np.testing.assert_allclose(built["x_upper"][5 * nodes:5 * nodes + nodes - 1], 3.0)
+
     def test_decision_layout_matches_the_declared_contract(self):
         from simplified_vehicle_models.solvers.qss_line_ocp import build_mesh, build_ocp, QssSettings
         track=self._track(); mesh=build_mesh(track,4.0); corridor=corridor_from_track(track)

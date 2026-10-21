@@ -4,6 +4,7 @@ Every physics value is evaluated by the NumPy point-mass implementation.
 """
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, fields, is_dataclass
 import hashlib
 import json
@@ -45,25 +46,32 @@ class CapabilitySurface:
             raise ValueError("speed_ceiling must match curvature")
 
 
+def _type_tag(value) -> str:
+    cls = type(value)
+    return f"{cls.__module__}.{cls.__qualname__}"
+
+
 def _canonical(value):
     if is_dataclass(value):
-        return {f.name: _canonical(getattr(value, f.name)) for f in fields(value)}
+        return {"__type__": _type_tag(value), "fields": [[f.name, _canonical(getattr(value, f.name))] for f in fields(value)]}
     if isinstance(value, np.ndarray):
-        return {"dtype": str(value.dtype), "shape": list(value.shape), "values": value.tolist()}
+        return {"__type__": _type_tag(value), "dtype": str(value.dtype), "shape": list(value.shape), "values": _canonical(value.tolist())}
     if isinstance(value, np.generic):
-        return _canonical(value.item())
-    if isinstance(value, dict):
-        return {str(k): _canonical(value[k]) for k in sorted(value, key=str)}
+        return {"__type__": _type_tag(value), "value": _canonical(value.item())}
+    if isinstance(value, Mapping):
+        pairs = [[_canonical(k), _canonical(v)] for k, v in value.items()]
+        pairs.sort(key=lambda pair: json.dumps(pair[0], sort_keys=True, separators=(",", ":"), allow_nan=False))
+        return {"__type__": _type_tag(value), "items": pairs}
     if isinstance(value, (tuple, list)):
-        return [_canonical(v) for v in value]
+        return {"__type__": _type_tag(value), "items": [_canonical(v) for v in value]}
     if isinstance(value, float):
         if not math.isfinite(value):
-            return str(value)
-        return value
+            return {"__type__": _type_tag(value), "value": str(value)}
+        return {"__type__": _type_tag(value), "value": value}
     if value is None or isinstance(value, (str, int, bool)):
-        return value
+        return {"__type__": _type_tag(value), "value": value}
     if hasattr(value, "__dict__"):
-        return {k: _canonical(v) for k, v in sorted(vars(value).items()) if not k.startswith("_")}
+        return {"__type__": _type_tag(value), "attributes": [[k, _canonical(v)] for k, v in sorted(vars(value).items()) if not k.startswith("_")]}
     slots = []
     for cls in type(value).__mro__:
         declared = getattr(cls, "__slots__", ())
@@ -73,9 +81,9 @@ def _canonical(value):
             if not name.startswith("_") and hasattr(value, name):
                 slots.append((name, _canonical(getattr(value, name))))
     if slots:
-        return {name: item for name, item in sorted(slots)}
+        return {"__type__": _type_tag(value), "slots": [[name, item] for name, item in sorted(slots)]}
     if hasattr(value, "value") and isinstance(value.value, (str, int, float)):
-        return {"enum": type(value).__qualname__, "value": _canonical(value.value)}
+        return {"__type__": _type_tag(value), "value": _canonical(value.value)}
     raise TypeError(f"cannot canonically serialize capability input {type(value).__qualname__}")
 
 
@@ -85,7 +93,11 @@ def capability_hash(vehicle) -> str:
 
 
 def _ceiling_speed(vehicle, curvature: float, maximum: float, tolerance: float) -> float:
-    """Find the highest zero-longitudinal feasible speed, not a zero sentinel."""
+    """Return highest contact/lateral feasible speed, or acceleration-zero root.
+
+    The feasibility boundary is the cap when reached before a power-reserve
+    root. It is backed off into the feasible side by the requested tolerance.
+    """
     def feasible(speed: float) -> bool:
         contact, lateral, *_ = _equilibrium_limits(vehicle, speed, curvature, 0.0)
         return contact and lateral
@@ -115,19 +127,23 @@ def _ceiling_speed(vehicle, curvature: float, maximum: float, tolerance: float) 
     # endpoints, without mistaking the zero sentinel for a feasible top speed.
     def residual(speed: float) -> float:
         return maximum_acceleration_limit(vehicle, speed, curvature)
-    if residual(boundary) <= 1.0e-10:
+    low_residual = residual(low)
+    boundary_residual = residual(boundary)
+    if boundary_residual > 1.0e-10:
+        # Lateral/contact feasibility is the limiting surface before drive reserve.
         return boundary
-    if boundary < maximum:
-        # A laterally infeasible upper point can yield the max-limit zero
-        # sentinel. Its sign cannot be used to infer a root; the cap is boundary.
-        if residual(maximum) == 0.0:
-            return boundary
-        if residual(maximum) > 0.0:
-            return boundary
-        return brentq(residual, low, boundary, xtol=tolerance, rtol=1e-12)
-    if residual(maximum) >= 0.0:
-        return maximum
-    return brentq(residual, low, maximum, xtol=tolerance, rtol=1e-12)
+    if boundary_residual >= -1.0e-10:
+        return boundary
+    if low_residual <= 0.0:
+        # No positive-reserve interval starts at the low endpoint.
+        return low
+    if boundary <= low:
+        return boundary
+    # Explicitly establish the sign bracket before invoking Brent. The upper
+    # endpoint is inside lateral/contact feasibility, avoiding the zero sentinel.
+    if not (low_residual > 0.0 and boundary_residual < 0.0):
+        return boundary
+    return brentq(residual, low, boundary, xtol=tolerance, rtol=1e-12)
 
 
 def build_capability_surface(vehicle, *, curvature_limit: float, speed_points: int = 121,

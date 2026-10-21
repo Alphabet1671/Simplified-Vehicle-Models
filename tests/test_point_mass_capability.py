@@ -1,7 +1,7 @@
 from pathlib import Path
 import tempfile
 import unittest
-from dataclasses import replace
+from dataclasses import dataclass, replace
 
 import numpy as np
 
@@ -55,11 +55,51 @@ class CapabilitySurfaceTest(unittest.TestCase):
         for j in (0, 1, 3, 4):
             self.assertLess(float(surface.speed_ceiling[j]), float(surface.speed[-1]))
 
+    def test_acceleration_zero_root_precedes_lateral_feasibility_cap(self):
+        ceiling = float(self.surface.speed_ceiling[13])
+        curvature = float(self.surface.curvature[13])
+        at = acceleration_limits(self.vehicle, ceiling, curvature)
+        self.assertGreater(ceiling, 0.5)
+        self.assertLessEqual(at.maximum_acceleration, 1.0e-3)
+        self.assertTrue(at.coasting_state.contact_feasible and at.coasting_state.lateral_feasible)
+
+    def test_lateral_feasibility_cap_is_backed_into_feasible_interval(self):
+        surface = build_capability_surface(self.vehicle, curvature_limit=10.0,
+                                           speed_points=3, curvature_points=5)
+        for j in (0, 1, 3, 4):
+            ceiling = float(surface.speed_ceiling[j])
+            self.assertGreater(ceiling, 0.0)
+            state = acceleration_limits(self.vehicle, ceiling, float(surface.curvature[j])).coasting_state
+            self.assertTrue(state.contact_feasible and state.lateral_feasible)
+
     def test_hash_stable_hex_and_nested_physics_sensitive(self):
         first = capability_hash(self.vehicle)
         self.assertEqual(first, capability_hash(self.vehicle)); self.assertEqual(len(first), 64); int(first, 16)
         modified_tire = replace(self.vehicle.tire, effective_radius=self.vehicle.tire.effective_radius * 1.001)
         self.assertNotEqual(first, capability_hash(replace(self.vehicle, tire=modified_tire)))
+
+    def test_hash_distinguishes_mapping_key_types(self):
+        @dataclass(frozen=True)
+        class Container:
+            payload: object
+        self.assertNotEqual(capability_hash(Container({1: "same"})),
+                            capability_hash(Container({"1": "same"})))
+
+    def test_hash_distinguishes_same_fields_different_types(self):
+        @dataclass(frozen=True)
+        class PhysicsOne:
+            coefficient: float
+        @dataclass(frozen=True)
+        class PhysicsTwo:
+            coefficient: float
+        self.assertNotEqual(capability_hash(PhysicsOne(2.0)), capability_hash(PhysicsTwo(2.0)))
+
+    def test_hash_distinguishes_public_attribute_classes(self):
+        class PhysicsOne:
+            def __init__(self): self.coefficient = 2.0
+        class PhysicsTwo:
+            def __init__(self): self.coefficient = 2.0
+        self.assertNotEqual(capability_hash(PhysicsOne()), capability_hash(PhysicsTwo()))
 
     def test_round_trip_preserves_every_array(self):
         with tempfile.TemporaryDirectory() as name:

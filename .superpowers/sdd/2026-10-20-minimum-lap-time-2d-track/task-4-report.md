@@ -52,6 +52,44 @@ Passed; usage displayed required `--formulation`, `--track`, `--output` and opti
 - Verified save/load retains every array and provenance value.
 - Checked CLI helper `--help` as required by the brief; did not run the full 121×81 production surface due the stated multi-minute budget.
 
+## Fix round 1 — review findings and validation
+
+Addressed the scoped review findings after the initial implementation commit:
+- Hash serialization now includes qualified type tags for structured objects/dataclasses, plus typed sorted mapping key/value pairs. Added collision regressions for integer-vs-string mapping keys, same-field dataclass types, and same-public-attribute classes.
+- Ceiling logic now explicitly distinguishes an acceleration-zero root from the contact/lateral feasibility cap. It checks signs at the low and backed-off boundary endpoints before calling `brentq`; nonpositive low residual returns the low endpoint, positive boundary residual returns the feasibility cap, and near-zero boundary residual returns the boundary.
+- Updated the helper docstring to describe a highest contact/lateral feasible cap or acceleration-zero root, whichever limits first, with a backed-off feasibility boundary.
+- Added direct tests for root-before-feasibility and a feasibility cap that stays inside the feasible range.
+
+Focused command:
+
+```text
+PYTHONPATH=src python3 -m unittest tests.test_point_mass_capability -v
+```
+
+Exact fix-round output:
+
+```text
+test_acceleration_zero_root_precedes_lateral_feasibility_cap (tests.test_point_mass_capability.CapabilitySurfaceTest.test_acceleration_zero_root_precedes_lateral_feasibility_cap) ... ok
+test_axes_are_sorted_and_symmetric (tests.test_point_mass_capability.CapabilitySurfaceTest.test_axes_are_sorted_and_symmetric) ... ok
+test_ceiling_rejects_laterally_infeasible_high_curvature_top_speed (tests.test_point_mass_capability.CapabilitySurfaceTest.test_ceiling_rejects_laterally_infeasible_high_curvature_top_speed) ... ok
+test_hash_distinguishes_mapping_key_types (tests.test_point_mass_capability.CapabilitySurfaceTest.test_hash_distinguishes_mapping_key_types) ... ok
+test_hash_distinguishes_public_attribute_classes (tests.test_point_mass_capability.CapabilitySurfaceTest.test_hash_distinguishes_public_attribute_classes) ... ok
+test_hash_distinguishes_same_fields_different_types (tests.test_point_mass_capability.CapabilitySurfaceTest.test_hash_distinguishes_same_fields_different_types) ... ok
+test_hash_stable_hex_and_nested_physics_sensitive (tests.test_point_mass_capability.CapabilitySurfaceTest.test_hash_stable_hex_and_nested_physics_sensitive) ... ok
+test_lateral_feasibility_cap_is_backed_into_feasible_interval (tests.test_point_mass_capability.CapabilitySurfaceTest.test_lateral_feasibility_cap_is_backed_into_feasible_interval) ... ok
+test_limits_reproduce_numpy_physics_at_grid_nodes (tests.test_point_mass_capability.CapabilitySurfaceTest.test_limits_reproduce_numpy_physics_at_grid_nodes) ... ok
+test_rejects_bad_curvature_limit (tests.test_point_mass_capability.CapabilitySurfaceTest.test_rejects_bad_curvature_limit) ... ok
+test_round_trip_preserves_every_array (tests.test_point_mass_capability.CapabilitySurfaceTest.test_round_trip_preserves_every_array) ... ok
+test_speed_ceiling_is_feasible_and_acceleration_boundary (tests.test_point_mass_capability.CapabilitySurfaceTest.test_speed_ceiling_is_feasible_and_acceleration_boundary) ... ok
+
+----------------------------------------------------------------------
+Ran 12 tests in 2.467s
+
+OK
+```
+
+`git diff --check` and compile checks passed for the fix round. Review fixes committed separately as `14d8b99` (`fix: harden capability provenance and ceiling roots`).
+
 ## Concerns / limitations
 - Production MIS surface generation and its runtime/file size remain unmeasured. The brief estimates 5–20 minutes; this report does not claim that estimate as measured.
 - The feasibility bisection assumes a contiguous feasible speed interval from the low-speed probe, consistent with the physical cornering envelope used here.

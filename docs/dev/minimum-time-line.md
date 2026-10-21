@@ -86,7 +86,7 @@ PYTHONPATH=src:/tmp/casadi-runtime-2026-10-20 python3 -m tools.run.solve_minimum
   --output runs/minimum_time_line/acceleration --margin 0.10 --half-width 2.45
 ```
 
-Use `--spacings 10,5` when a finer strict-tolerance stage does not converge. The mesh-convergence check then compares those two stages.
+Use `--spacings 10,5` when a finer strict-tolerance stage does not converge. The mesh-convergence check then compares those two stages. The ladder needs at least two finite positive values in strictly decreasing order.
 
 Run the focused gate tests:
 

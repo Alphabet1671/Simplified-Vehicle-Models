@@ -462,6 +462,33 @@ class RunnerOrchestrationTest(unittest.TestCase):
             self.assertIs(solve_lap.call_args.args[2], LapMode.STANDING_START)
             self.assertTrue((root / "output").is_dir())
 
+    def test_invalid_spacings_fail_before_solver_or_output_creation(self) -> None:
+        from tools.run import solve_minimum_time_line as runner
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "closed.xml"
+            source.write_text(
+                '<model schema-version="1.0" type="track-model" subtype="closed-xy-profile">'
+                '<metadata><title>fixture</title></metadata><data ref="geometry.csv" />'
+                '</model>', encoding="utf-8",
+            )
+            output = root / "output"
+            track = SimpleNamespace(is_closed=True, has_edges=True)
+            with (
+                patch.object(runner, "load_track", return_value=track),
+                patch.object(runner, "solve_lap") as solve_lap,
+            ):
+                for bad in ("5", "5,5", "1,2"):
+                    with self.subTest(spacings=bad):
+                        with self.assertRaises(ValueError):
+                            runner.run(SimpleNamespace(
+                                track=source, output=output, margin=.1,
+                                half_width=None, spacings=bad,
+                            ))
+            solve_lap.assert_not_called()
+            self.assertFalse(output.exists())
+
     def test_mesh_spacings_are_validated(self) -> None:
         from tools.run.solve_minimum_time_line import _parse_spacings
 

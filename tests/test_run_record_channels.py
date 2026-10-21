@@ -7,7 +7,7 @@ import numpy as np
 
 from simplified_vehicle_models.compiler.compile import compile_formulation
 from simplified_vehicle_models.formulations.planar_7dof import rotate_tire_forces_to_body
-from simplified_vehicle_models.results.plant_channels import RunRecordSink
+from simplified_vehicle_models.results.plant_channels import RunRecordSink, road_wheel_angles
 from simplified_vehicle_models.results.run_record import load_run_record
 from simplified_vehicle_models.solvers.forward_driver import (
     DriverCommand, PreviewDriver, SpeedPlan, StepSample, solve_forward,
@@ -192,6 +192,23 @@ class PlanarChannelTest(Case):
 
 class VerticalChannelTest(Case):
     plant_class, xml = VerticalForwardPlant, VERTICAL_XML
+
+    def test_road_wheel_angles_include_static_toe_and_asymmetric_jounce_steer(self):
+        plant, _ = build(self.plant_class, self.xml)
+        state = plant.initial_state(8.)
+        names = list(plant.state_names)
+        state[names.index("steering")] = 0.12
+        jounce = np.array([0.004, -0.003, 0.002, -0.001])
+        for wheel, value in zip(("fl", "fr", "rl", "rr"), jounce):
+            state[names.index(f"jounce_{wheel}")] = value
+        offsets = plant.vehicle.suspension.kinematics.toe(jounce)
+        expected = np.array([0.12, 0.12, 0., 0.]) + offsets
+        np.testing.assert_allclose(road_wheel_angles(plant, state), expected,
+                                   rtol=0., atol=1.e-14)
+        self.assertGreater(np.max(np.abs(offsets)), 0.)
+        self.assertFalse(np.allclose(offsets,
+                                    plant.vehicle.suspension.kinematics.toe(np.zeros(4)),
+                                    rtol=0., atol=1.e-14))
 
     def test_attitude_channels_are_state_values_and_loads_match_the_evaluation(self):
         checks = []

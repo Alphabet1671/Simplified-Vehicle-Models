@@ -240,10 +240,8 @@ def road_wheel_angles(plant, state) -> np.ndarray:
                         dtype=float)
     suspension = getattr(plant.vehicle, "suspension", None)
     if suspension is not None and "jounce_fl" in names:
-        from simplified_vehicle_models.suspension.corner import corner_toe_angles
-
         jounce = np.array([state[names.index(f"jounce_{wheel}")] for wheel in WHEELS])
-        angles = angles + corner_toe_angles(suspension, jounce)
+        angles = angles + suspension.kinematics.toe(jounce)
     return angles
 
 

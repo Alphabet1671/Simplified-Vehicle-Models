@@ -35,7 +35,7 @@ The corridor is `assumed` unless the track declares `surveyed` width provenance.
 2. Compile the formulation and use its planar point-mass view. Load the capability surface. Stop if its provenance hash does not match the vehicle.
 3. Solve a flying lap on the edged centreline. This is the centreline envelope.
 4. Build an exactly collapsed corridor with `minimum = maximum = 0`. Solve the zero-corridor control. Do not use `half_width`; the track may have asymmetric bounds.
-5. Solve the line at 5 m, 2 m, and 1 m spacing. Warm-start each finer mesh from the previous solution. Record iteration counts and measured wall times.
+5. Call `solve_ladder` at 5 m, 2 m, and 1 m spacing. Warm-start each finer mesh from the previous solution. The stage callback records iteration counts and wall time around each `solve_line` call; mesh construction and seed projection are not included in those durations.
 6. Rebuild the finest line as a path. Write the rebuilt XML and CSV into the run directory. Widths are carried by source node and projected onto the rebuilt path's local normals; a tangent change above 0.25 rad is rejected because the projection is not a continuous boundary reconstruction. Load the rebuilt path and calculate its replay lap time.
 7. Sample corridor minimum and maximum values periodically at the solution nodes. Exclude the repeated terminal node for periodic sampling. This tests containment on the solution mesh. It is not a proof of containment between mesh nodes.
 

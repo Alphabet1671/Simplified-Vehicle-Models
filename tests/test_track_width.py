@@ -138,3 +138,83 @@ class WidthParameterTest(unittest.TestCase):
     def test_nonpositive_half_width_is_rejected(self) -> None:
         with self.assertRaises(ValueError):
             load_track(_write_circle_track(self.directory, half_width=0.0))
+
+from tools.tracks.build_width_profile import write_width_profile
+
+
+class WidthProfileToolTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self._directory = tempfile.TemporaryDirectory()
+        self.directory = Path(self._directory.name)
+
+    def tearDown(self) -> None:
+        self._directory.cleanup()
+
+    def test_symmetric_width_writes_the_expected_header_and_rows(self) -> None:
+        source = load_track(_write_circle_track(self.directory, half_width=2.0))
+        destination = self.directory / "written.csv"
+        write_width_profile(source, destination, half_width=2.25, provenance="assumed")
+        lines = destination.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(lines[0], "distance,half_width_left,half_width_right")
+        self.assertEqual(len(lines), source.distance.size + 1)
+        left, right = (float(value) for value in lines[1].split(",")[1:])
+        self.assertAlmostEqual(left, 2.25)
+        self.assertAlmostEqual(right, 2.25)
+
+    def test_asymmetric_width_is_written_per_side(self) -> None:
+        source = load_track(_write_circle_track(self.directory, half_width=2.0))
+        destination = self.directory / "asymmetric.csv"
+        write_width_profile(
+            source,
+            destination,
+            half_width_left=2.0,
+            half_width_right=3.0,
+            provenance="assumed",
+        )
+        first = destination.read_text(encoding="utf-8").splitlines()[1].split(",")
+        self.assertAlmostEqual(float(first[1]), 2.0)
+        self.assertAlmostEqual(float(first[2]), 3.0)
+
+    def test_both_a_half_width_and_per_side_widths_is_rejected(self) -> None:
+        source = load_track(_write_circle_track(self.directory, half_width=2.0))
+        with self.assertRaises(ValueError):
+            write_width_profile(
+                source,
+                self.directory / "bad.csv",
+                half_width=2.0,
+                half_width_left=2.0,
+                provenance="assumed",
+            )
+
+    def test_unknown_provenance_is_rejected(self) -> None:
+        source = load_track(_write_circle_track(self.directory, half_width=2.0))
+        with self.assertRaises(ValueError):
+            write_width_profile(
+                source, self.directory / "bad.csv", half_width=2.0, provenance="guessed"
+            )
+
+    def test_the_written_file_loads_back_through_the_track_loader(self) -> None:
+        source = load_track(_write_circle_track(self.directory, half_width=2.0))
+        write_width_profile(
+            source, self.directory / "width.csv", half_width=1.75, provenance="assumed"
+        )
+        track_dir = self.directory
+        xml = (
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<model schema-version="1.0" id="round-trip" type="track-model" '
+            'subtype="closed-xy-profile">\n'
+            '  <metadata><title>Round trip</title></metadata>\n'
+            '  <data ref="centreline.csv" />\n'
+            '  <data role="width" ref="width.csv" />\n'
+            '  <parameters>\n'
+            '    <parameter name="is_closed" value="true" />\n'
+            '    <parameter name="terminal_segment_is_duplicate" value="true" />\n'
+            '    <parameter name="maximum_radius" value="300" unit="m" />\n'
+            '    <parameter name="width_provenance" value="assumed" />\n'
+            '  </parameters>\n'
+            '</model>\n'
+        )
+        (track_dir / "round_trip.xml").write_text(xml, encoding="utf-8")
+        restored = load_track(track_dir / "round_trip.xml")
+        np.testing.assert_allclose(restored.half_width_left, 1.75)
+        np.testing.assert_allclose(restored.half_width_right, 1.75)

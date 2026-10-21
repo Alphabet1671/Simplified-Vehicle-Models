@@ -164,6 +164,24 @@ def _write_line(path: Path, solution) -> None:
             writer.writerow((f"{float(value):.12g}" for value in row))
 
 
+def _parse_spacings(value) -> tuple[float, ...]:
+    """Validate a coarse-to-fine mesh ladder."""
+    if isinstance(value, str):
+        parts = value.split(",")
+        if any(not part.strip() for part in parts):
+            raise ValueError("spacings must be a comma-separated list of numbers")
+        spacings = tuple(float(part) for part in parts)
+    else:
+        spacings = tuple(float(item) for item in value)
+    if len(spacings) < 2:
+        raise ValueError("at least two mesh spacings are required")
+    if any(not np.isfinite(item) or item <= 0.0 for item in spacings):
+        raise ValueError("mesh spacings must be finite and positive")
+    if any(a <= b for a, b in zip(spacings, spacings[1:])):
+        raise ValueError("mesh spacings must be strictly decreasing")
+    return spacings
+
+
 def _open_envelope_seed(track, mesh, envelope, settings: QssSettings) -> np.ndarray:
     """Project an open-course envelope speed profile onto an OCP mesh."""
     mesh = np.asarray(mesh, dtype=float)
@@ -203,6 +221,7 @@ def run(args) -> dict:
     )
     zero_corridor = Corridor(corridor.distance, np.zeros_like(corridor.minimum), np.zeros_like(corridor.maximum), corridor.provenance, corridor.is_closed)
     settings = QssSettings()
+    spacings = _parse_spacings(getattr(args, "spacings", (5.0, 2.0, 1.0)))
     launch = 0.0 if track.is_closed else launch_time(track, surface, settings)
     zero_mesh = build_mesh(track, 1.0 if track.is_closed else 2.0)
     zero_seed = None if track.is_closed else _open_envelope_seed(track, zero_mesh, seed_lap, settings)
@@ -215,11 +234,6 @@ def run(args) -> dict:
         print(f"Solved free line at {spacing:g} m spacing in {wall_seconds:.2f} s", flush=True)
         stage_wall_seconds.append(wall_seconds)
 
-    spacings = getattr(args, "spacings", (5.0, 2.0, 1.0))
-    if isinstance(spacings, str):
-        spacings = tuple(float(value) for value in spacings.split(","))
-    else:
-        spacings = tuple(float(value) for value in spacings)
     print(f"Solving free-line mesh ladder ({'/'.join(f'{s:g}' for s in spacings)} m)...", flush=True)
     ladder_seed = None
     if not track.is_closed:

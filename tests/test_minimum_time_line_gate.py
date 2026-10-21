@@ -462,6 +462,81 @@ class RunnerOrchestrationTest(unittest.TestCase):
             self.assertIs(solve_lap.call_args.args[2], LapMode.STANDING_START)
             self.assertTrue((root / "output").is_dir())
 
+    def test_mesh_spacings_are_validated(self) -> None:
+        from tools.run.solve_minimum_time_line import _parse_spacings
+
+        self.assertEqual(_parse_spacings("5,2,1"), (5.0, 2.0, 1.0))
+        self.assertEqual(_parse_spacings([10, 5]), (10.0, 5.0))
+        for bad in ("5", "5,5", "1,2", "5,0,1", "5,nan", "5,,1"):
+            with self.subTest(spacings=bad):
+                with self.assertRaises(ValueError):
+                    _parse_spacings(bad)
+
+    def test_open_launch_time_enters_gate_inputs_and_summary(self) -> None:
+        from tools.run import solve_minimum_time_line as runner
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "open.xml"
+            source.write_text(
+                '<model schema-version="1.0" type="track-model" subtype="open-xy-profile">'
+                '<metadata><title>open fixture</title></metadata><data ref="geometry.csv" />'
+                '</model>', encoding="utf-8",
+            )
+            distance = np.array([0., 1., 2.])
+            coordinates = PathCoordinates(
+                distance=distance, x_north=np.zeros(3), y_east=np.zeros(3),
+                heading=np.zeros(3), curvature=np.zeros(3), is_closed=False,
+            )
+            track = SimpleNamespace(
+                is_closed=False, has_edges=False, width_provenance=None,
+                lap_length=2.0, distance=distance,
+            )
+            corridor = SimpleNamespace(
+                distance=distance, minimum=np.full(3, -2.), maximum=np.full(3, 2.),
+                provenance="assumed", is_closed=False,
+            )
+            envelope = SimpleNamespace(lap_time=10.5, speed=np.array([0., 5., 6.]))
+            zero = SimpleNamespace(lap_time=9.9, iterations=1, maximum_violation=0.0)
+            coarse = SimpleNamespace(lap_time=9.84, iterations=1, maximum_violation=0.0)
+            fine = SimpleNamespace(
+                distance=distance, offset=np.zeros(3), heading_error=np.zeros(3),
+                speed=np.full(3, 5.), acceleration=np.zeros(3),
+                curvature_rate=np.zeros(3), lap_time=9.8, iterations=1,
+                maximum_violation=0.0,
+            )
+            replay = SimpleNamespace(lap_time=10.3)
+            args = SimpleNamespace(
+                track=source, output=root / "output", margin=.1, half_width=2.0,
+                spacings="5,2", formulation=Path("formulation.xml"),
+                surface=Path("surface.npz"),
+            )
+            with (
+                patch.object(runner, "load_track", side_effect=[track, track]),
+                patch.object(runner, "corridor_from_track", return_value=corridor),
+                patch.object(runner, "compile_formulation", return_value=SimpleNamespace(model=object())),
+                patch.object(runner, "point_mass_view_of_planar", return_value=object()),
+                patch.object(runner, "load_capability_surface", return_value=SimpleNamespace(provenance_hash="hash")),
+                patch.object(runner, "capability_hash", return_value="hash"),
+                patch.object(runner, "solve_lap", side_effect=[envelope, envelope, replay]),
+                patch.object(runner, "launch_time", return_value=0.5),
+                patch.object(runner, "capability_envelope_time", return_value=10.5),
+                patch.object(runner, "solve_line", return_value=zero),
+                patch.object(runner, "solve_ladder", return_value=[coarse, fine]),
+                patch.object(runner, "path_from_solution", return_value=coordinates),
+                patch.object(runner, "_write_rebuilt_track", return_value=(root / "rebuilt.xml", root / "geometry.csv")),
+                patch.object(runner, "check_zero_corridor_matches_envelope", return_value=True) as zero_gate,
+                patch.object(runner, "check_free_line_not_slower", return_value=True) as free_gate,
+                patch.object(runner, "check_replay_agreement", return_value=True) as replay_gate,
+            ):
+                summary = runner.run(args)
+            zero_gate.assert_called_once_with(open_loop=10.5, ocp=10.4, tolerance=0.01)
+            free_gate.assert_called_once_with(centreline=10.5, free=10.3, tolerance=0.002)
+            replay_gate.assert_called_once_with(ocp=10.3, replay=10.3, tolerance=0.01)
+            self.assertEqual(summary["launch_time_s"], 0.5)
+            self.assertEqual(summary["ocp_zero_corridor_including_launch_s"], 10.4)
+            self.assertEqual(summary["ocp_free_line_including_launch_s"], 10.3)
+
     def test_run_reports_all_five_checks_and_preserves_false_gate(self) -> None:
         from tools.run import solve_minimum_time_line as runner
 

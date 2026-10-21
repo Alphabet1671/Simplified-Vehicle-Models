@@ -35,9 +35,11 @@ PYTHONPATH=src:. python3 tools/sim_gui/app.py models/vehicles/iem24_murphy_real_
 1. Start the GUI.
 2. Select **Open Vehicle Model…**.
 3. Select a vehicle formulation or vehicle assembly XML file.
-4. Select the track in the **Track** tab. **Browse…** adds a track file. The tab previews the centerline.
+4. Select **Browse…** in the **Track** or **Single Run** tab to open a track file. The Track tab previews the centerline.
 
-The GUI scans registered XML files below `models/`. It lists only components that fit the selected slot. It shows the selected component parameters as read-only values.
+The vehicle-model and track dropdowns start empty. They list only files opened during the current GUI session, with no duplicate entries or history restored from previous launches. Opening a study also adds its model and track. Track selections stay synchronized between the Track and Single Run tabs.
+
+For component replacement, the GUI scans registered XML files below `models/`. It lists only components that fit the selected slot. It shows the selected component parameters as read-only values.
 
 The forward runner supports `planar-7dof` and `14dof-simple`. The point-mass model has no forward runner in this GUI.
 
@@ -88,8 +90,8 @@ Use a single run to run one case. A single run does not use a study.
 
 1. Open a vehicle model.
 2. Open the **Single Run** tab.
-3. Select a **Vehicle model**.
-4. Select a **Track**.
+3. Select a previously opened **Vehicle model**, or use **Browse…** to open another.
+4. Use **Browse…** to open a **Track**, or select one already opened in this session.
 5. Select an **Export folder**.
 6. Select **Go** or press `F5`.
 

@@ -235,6 +235,9 @@ class MainWindow(QMainWindow):
         if self._run_mode is not None or self._validation_thread is not None:
             return
         definition = self._definition()
+        if not definition.track:
+            _warn(self, "Study", "Select a track model.")
+            return
         try:
             cases = expand(definition)
         except ValueError as error:

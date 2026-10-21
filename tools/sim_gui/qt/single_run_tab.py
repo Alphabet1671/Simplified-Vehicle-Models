@@ -20,9 +20,7 @@ from PyQt6.QtWidgets import (
 )
 
 from simplified_vehicle_models.tracks.profile import load_track
-from tools.run import run_iem24_forward_driver as runner
 from tools.sim_gui import REPOSITORY_ROOT
-from tools.sim_gui.catalogue import scan_catalogue, tracks
 from tools.sim_gui.vehicle import VehicleConfiguration
 
 _warn = QMessageBox.warning
@@ -39,7 +37,7 @@ class SingleRunTab(QWidget):
     trackSelected = pyqtSignal(object)
 
     def __init__(self, parent: QWidget | None = None) -> None:
-        """Create the single-run tab with a default track and export folder."""
+        """Create the single-run tab with empty selectors and an export folder."""
         super().__init__(parent)
         self.model_combo = QComboBox()
         self.model_browse = QPushButton("Browse…")
@@ -61,20 +59,6 @@ class SingleRunTab(QWidget):
         self.log_view.setReadOnly(True)
         self.log_view.setMaximumBlockCount(MAXIMUM_LOG_LINES)
         self.stop_button.setEnabled(False)
-
-        for path in sorted((REPOSITORY_ROOT / "models/formulations").glob("*.xml")):
-            self.model_combo.addItem(path.stem, str(path.resolve()))
-        catalogue = scan_catalogue()
-        for entry in tracks(catalogue):
-            self.track_combo.addItem(entry.path.stem, str(entry.path))
-        default = (REPOSITORY_ROOT / runner.DEFAULT_TRACK).resolve()
-        default_index = self._index_of(self.track_combo, default)
-        if default_index < 0 and self.track_combo.count():
-            default_index = 0
-        if default_index >= 0:
-            self.track_combo.blockSignals(True)
-            self.track_combo.setCurrentIndex(default_index)
-            self.track_combo.blockSignals(False)
 
         self.model_combo.currentIndexChanged.connect(self._model_changed)
         self.track_combo.currentIndexChanged.connect(self._track_changed)

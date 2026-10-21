@@ -19,9 +19,6 @@ from PyQt6.QtWidgets import (
 
 from simplified_vehicle_models.tracks.profile import load_track
 from simplified_vehicle_models.tracks.types import TrackProfile
-from tools.run import run_iem24_forward_driver as runner
-from tools.sim_gui import REPOSITORY_ROOT
-from tools.sim_gui.catalogue import scan_catalogue, tracks
 
 _warn = QMessageBox.warning
 
@@ -118,9 +115,8 @@ class TrackTab(QWidget):
     trackChanged = pyqtSignal(object)
 
     def __init__(self, parent: QWidget | None = None) -> None:
-        """Create the track tab and preselect the default track."""
+        """Create the track tab with no preselected track."""
         super().__init__(parent)
-        self._catalogue = scan_catalogue()
         self._previous_index = -1
         self._combo = QComboBox()
         self._browse = QPushButton("Browse…")
@@ -137,16 +133,6 @@ class TrackTab(QWidget):
         layout.addWidget(self._info)
         layout.addWidget(self.preview, 1)
 
-        for entry in tracks(self._catalogue):
-            self._combo.addItem(entry.path.stem, str(entry.path))
-        default = (REPOSITORY_ROOT / runner.DEFAULT_TRACK).resolve()
-        index = self._index_of(default)
-        if index < 0:
-            index = 0 if self._combo.count() else -1
-        self._combo.setCurrentIndex(index)
-        self._previous_index = index
-        if index >= 0:
-            self._load(index, emit=False)
         self._combo.currentIndexChanged.connect(self._change)
         self._browse.clicked.connect(self._browse_track)
 
@@ -156,7 +142,7 @@ class TrackTab(QWidget):
         return Path(value) if value else None
 
     def set_track(self, path: Path) -> None:
-        """Select a track by resolved path, adding it when not catalogued."""
+        """Select a track by resolved path, adding it to this session's history."""
         target = Path(path).resolve()
         current = self.track()
         if current is not None and current.resolve() == target:

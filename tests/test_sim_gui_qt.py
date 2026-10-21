@@ -141,14 +141,21 @@ class TrackTabTests(unittest.TestCase):
         self.tab = TrackTab()
         self.addCleanup(self.tab.deleteLater)
 
-    def test_default_track_is_preselected_and_previewed(self):
-        from tools.run import run_iem24_forward_driver as runner
-        from simplified_vehicle_models.tracks.profile import load_track
-        expected = (REPOSITORY_ROOT / runner.DEFAULT_TRACK).resolve()
-        self.assertEqual(self.tab.track(), expected)
-        self.assertGreater(len(self.tab.preview.points()), 3)
-        profile = load_track(expected)
-        self.assertIn(f"{profile.lap_length:.3f} m", self.tab._info.text())
+    def test_initial_track_history_is_empty_and_session_local(self):
+        self.assertEqual(self.tab._combo.count(), 0)
+        self.assertIsNone(self.tab.track())
+        self.assertEqual(self.tab.preview.points(), ())
+        second = TrackTab()
+        try:
+            self.assertEqual(second._combo.count(), 0)
+            self.assertIsNone(second.track())
+            path = REPOSITORY_ROOT / "models/tracks/2024_michigan_endurance_closed.xml"
+            self.tab.set_track(path)
+            self.tab.set_track(path.parent / ".." / "tracks" / path.name)
+            self.assertEqual(self.tab._combo.count(), 1)
+            self.assertEqual(second._combo.count(), 0)
+        finally:
+            second.deleteLater()
 
     def test_browse_selects_a_legacy_track_without_a_centerline(self):
         path = REPOSITORY_ROOT / "models/tracks/2024_michigan_endurance_v11.xml"
@@ -182,6 +189,7 @@ class TrackTabTests(unittest.TestCase):
         self.assertEqual(self.tab._combo.count(), before_count)
 
     def test_preview_paints_the_centerline(self):
+        self.tab.set_track(REPOSITORY_ROOT / "models/tracks/2024_michigan_endurance_closed.xml")
         from PyQt6.QtGui import QImage
         preview = self.tab.preview
         preview.resize(320, 240)
@@ -218,6 +226,16 @@ class SingleRunTabTests(unittest.TestCase):
         raise AssertionError(f"{path} is not in the combo")
 
     def test_defaults_and_signals(self):
+        self.assertEqual(self.tab.model_combo.count(), 0)
+        self.assertEqual(self.tab.track_combo.count(), 0)
+        self.assertIsNone(self.tab.model_path())
+        self.assertIsNone(self.tab.track_path())
+        second = SingleRunTab()
+        try:
+            self.assertEqual(second.model_combo.count(), 0)
+            self.assertEqual(second.track_combo.count(), 0)
+        finally:
+            second.deleteLater()
         self.assertEqual(self.tab.export_folder(), REPOSITORY_ROOT / "runs")
         go, stop, models, chosen_tracks = [], [], [], []
         self.tab.goRequested.connect(go.append)
@@ -226,6 +244,10 @@ class SingleRunTabTests(unittest.TestCase):
         self.tab.trackSelected.connect(chosen_tracks.append)
         self.tab.set_model(self.model)
         self.tab.set_track(self.track)
+        self.tab.set_model(self.model.parent / ".." / "formulations" / self.model.name)
+        self.tab.set_track(self.track.parent / ".." / "tracks" / self.track.name)
+        self.assertEqual(self.tab.model_combo.count(), 1)
+        self.assertEqual(self.tab.track_combo.count(), 1)
         self.tab.set_progress(1.5)
         self.assertEqual(models, [])
         self.assertEqual(chosen_tracks, [])
@@ -499,6 +521,7 @@ class MainWindowTests(unittest.TestCase):
         output = Path(tempfile.mkdtemp())
         self.addCleanup(lambda: shutil.rmtree(output, ignore_errors=True))
         window = MainWindow(output_root=output, settings_store=store)
+        window.track_tab.set_track(REPOSITORY_ROOT / "models/tracks/2024_michigan_endurance_closed.xml")
         self.addCleanup(window.close)
         return window
 
@@ -528,6 +551,7 @@ class MainWindowTests(unittest.TestCase):
         window = MainWindow(output_root=output, settings_store=store)
         self.addCleanup(window.close)
         window.open_model(REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_planar_7dof.xml")
+        window.track_tab.set_track(REPOSITORY_ROOT / "models/tracks/2024_michigan_endurance_closed.xml")
         window.settings_tab.duration.setValue(0.3)
         window.settings_tab.timeout_seconds.setValue(120.0)
         window.run_cases()
@@ -651,6 +675,18 @@ class MainWindowTests(unittest.TestCase):
                 app.processEvents()
             self.assertEqual(Path(window.study_index.cases[0]["track"]).resolve(), track.resolve())
 
+    def test_build_cases_requires_an_explicit_track(self):
+        window = self._window()
+        window.open_model(REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_planar_7dof.xml")
+        window.track_tab._combo.clear()
+        window.single_tab.set_track(None)
+        with mock.patch("tools.sim_gui.qt.main_window._warn") as warn, \
+                mock.patch("tools.sim_gui.qt.main_window.expand") as expand_mock:
+            window.build_cases()
+        warn.assert_called_once()
+        self.assertIn("Select a track", warn.call_args.args[2])
+        expand_mock.assert_not_called()
+
     def test_definition_uses_the_track_tab(self):
         window = self._window()
         window.open_model(REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_planar_7dof.xml")
@@ -661,6 +697,7 @@ class MainWindowTests(unittest.TestCase):
     def test_single_run_completes_and_writes_a_record(self):
         window = self._window()
         window.open_model(REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_planar_7dof.xml")
+        window.track_tab.set_track(REPOSITORY_ROOT / "models/tracks/2024_michigan_endurance_closed.xml")
         window.settings_tab.duration.setValue(0.3)
         window.settings_tab.timeout_seconds.setValue(120.0)
         export = Path(tempfile.mkdtemp())
@@ -725,6 +762,9 @@ class MainWindowTests(unittest.TestCase):
         window = self._window()
         single = window.single_tab
         planar = REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_planar_7dof.xml"
+        first_model = REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_14dof_simple.xml"
+        window.open_model(planar)
+        window.open_model(first_model)
         index = next(
             i for i in range(single.model_combo.count())
             if Path(single.model_combo.itemData(i)).name == planar.name
@@ -734,6 +774,8 @@ class MainWindowTests(unittest.TestCase):
         self.assertEqual(window.configuration.source.resolve(), planar.resolve())
         self.assertEqual(single.model_path().resolve(), planar.resolve())
         track = REPOSITORY_ROOT / "models/tracks/2024_michigan_endurance_closed.xml"
+        other = REPOSITORY_ROOT / "models/tracks/2024_michigan_endurance_multilap_closed.xml"
+        window.track_tab.set_track(other)
         index = next(
             i for i in range(single.track_combo.count())
             if Path(single.track_combo.itemData(i)).resolve() == track.resolve()
@@ -742,7 +784,6 @@ class MainWindowTests(unittest.TestCase):
         self.assertEqual(window.track_tab.track().resolve(), track.resolve())
         self.assertEqual(Path(window._definition().track).resolve(), track.resolve())
         self.assertEqual(single.track_path().resolve(), track.resolve())
-        other = REPOSITORY_ROOT / "models/tracks/2024_michigan_endurance_multilap_closed.xml"
         window.track_tab.set_track(other)
         self.assertEqual(single.track_path().resolve(), other.resolve())
 
@@ -998,10 +1039,15 @@ class MainWindowTests(unittest.TestCase):
         store_dir = Path(tempfile.mkdtemp())
         self.addCleanup(lambda: __import__("shutil").rmtree(store_dir, ignore_errors=True))
         store = QSettings(str(store_dir / "settings.ini"), QSettings.Format.IniFormat)
+        store.setValue("recent_files", ["/tmp/prior-session-model.xml"])
         output = Path(tempfile.mkdtemp())
         self.addCleanup(lambda: __import__("shutil").rmtree(output, ignore_errors=True))
         window = MainWindow(output_root=output, settings_store=store)
         self.addCleanup(window.close)
+        self.assertEqual(window.single_tab.model_combo.count(), 0)
+        self.assertEqual(window.single_tab.track_combo.count(), 0)
+        self.assertEqual(window.track_tab._combo.count(), 0)
+        self.assertEqual(window._recent, ["/tmp/prior-session-model.xml"])
         for index in range(12):
             window._remember(Path(f"/tmp/model-{index}.xml"))
         self.assertEqual(len(window._recent), 10)

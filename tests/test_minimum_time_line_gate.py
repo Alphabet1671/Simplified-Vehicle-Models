@@ -262,6 +262,45 @@ class RunnerOrchestrationTest(unittest.TestCase):
                 runner.run(args)
             self.assertEqual(geometry.read_bytes(), geometry_bytes)
 
+            generated_names = (
+                "line.csv", "racing_line.csv", "racing_line_track.csv",
+                "racing_line_track.xml", "rebuilt_width.csv", "summary.json",
+            )
+            for name in generated_names:
+                asset = root / name
+                asset_bytes = f"source asset {name}\n".encode()
+                asset.write_bytes(asset_bytes)
+                xml = root / f"ref_{name}.xml"
+                xml.write_text(
+                    '<model schema-version="1.0" type="track-model" subtype="closed-xy-profile">'
+                    f'<metadata><title>fixture</title></metadata><data ref="{name}" />'
+                    '</model>',
+                    encoding="utf-8",
+                )
+                with self.subTest(generated_name=name):
+                    with self.assertRaisesRegex(ValueError, "overwrite source track asset"):
+                        _validate_output_paths(xml, root)
+                    self.assertEqual(asset.read_bytes(), asset_bytes)
+
+            width_asset = root / "track.csv"
+            width_bytes = b"original width data\n"
+            width_asset.write_bytes(width_bytes)
+            geometry_collision = root / "track_rebuilt.csv"
+            geometry_bytes = b"original geometry data\n"
+            geometry_collision.write_bytes(geometry_bytes)
+            width_source = root / "width_source.xml"
+            width_source.write_text(
+                '<model schema-version="1.0" type="track-model" subtype="closed-xy-profile">'
+                '<metadata><title>width collision</title></metadata>'
+                '<data ref="track_rebuilt.csv" /><data role="width" ref="track.csv" />'
+                '</model>',
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "overwrite source track asset"):
+                _validate_output_paths(width_source, root)
+            self.assertEqual(width_asset.read_bytes(), width_bytes)
+            self.assertEqual(geometry_collision.read_bytes(), geometry_bytes)
+
             source_named_as_output = root / "summary.json"
             source_xml_bytes = (
                 b'<model schema-version="1.0" type="track-model" subtype="closed-xy-profile">'

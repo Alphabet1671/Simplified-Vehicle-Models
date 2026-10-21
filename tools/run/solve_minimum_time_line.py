@@ -41,11 +41,14 @@ def _validate_output_paths(source: Path, output: Path) -> None:
     protected = {source.resolve()}
     for element in root.findall("./data"):
         reference = element.get("ref")
-        if reference:
-            protected.add((source.parent / reference).resolve())
-    for source_asset in protected:
-        candidates = generated | {(output / f"{source_asset.stem}_rebuilt.csv").resolve()}
-        for candidate in candidates:
+        if not reference:
+            continue
+        source_asset = (source.parent / reference).resolve()
+        protected.add(source_asset)
+        if element.get("role") == "width":
+            generated.add((output / f"{source_asset.stem}_rebuilt.csv").resolve())
+    for candidate in generated:
+        for source_asset in protected:
             same_file = candidate == source_asset
             if not same_file and candidate.exists() and source_asset.exists():
                 same_file = candidate.samefile(source_asset)

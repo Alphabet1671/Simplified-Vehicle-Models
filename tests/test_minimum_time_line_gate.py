@@ -1,6 +1,8 @@
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 import xml.etree.ElementTree as ET
 
 import numpy as np
@@ -232,3 +234,76 @@ class GateCheckTest(unittest.TestCase):
             rows = tree.getroot().findall("./data")
             self.assertEqual(rows[0].get("role"), "width")
             self.assertEqual(rows[1].get("role"), None)
+
+
+class RunnerOrchestrationTest(unittest.TestCase):
+    def test_run_reports_all_five_checks_and_preserves_false_gate(self) -> None:
+        from tools.run import solve_minimum_time_line as runner
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            distance = np.array([0., 1., 2., 3., 4.])
+            path = PathCoordinates(
+                distance=distance, x_north=np.zeros(5), y_east=np.zeros(5),
+                heading=np.zeros(5), curvature=np.ones(5), is_closed=True,
+            )
+            stage = SimpleNamespace(
+                distance=distance, offset=np.zeros(5), heading_error=np.zeros(5),
+                speed=np.full(5, 20.), acceleration=np.zeros(5),
+                curvature_rate=np.zeros(5), lap_time=57.9, iterations=12,
+                maximum_violation=0.0,
+            )
+            stages = [stage, stage, stage]
+            track = SimpleNamespace(
+                lap_length=4.0, distance=distance, width_provenance="assumed",
+                is_closed=True,
+            )
+            corridor = SimpleNamespace(
+                distance=distance, minimum=np.full(5, -2.), maximum=np.full(5, 2.),
+                provenance="assumed", is_closed=True,
+            )
+            args = SimpleNamespace(
+                track=Path("track.xml"), formulation=Path("formulation.xml"),
+                surface=Path("surface.npz"), output=root / "output", margin=.1,
+            )
+            with (
+                patch.object(runner, "corridor_from_track", return_value=corridor),
+                patch.object(runner, "compile_formulation", return_value=SimpleNamespace(model=object())),
+                patch.object(runner, "point_mass_view_of_planar", return_value=object()),
+                patch.object(runner, "load_capability_surface", return_value=SimpleNamespace(provenance_hash="matching-hash")),
+                patch.object(runner, "capability_hash", return_value="matching-hash"),
+                patch.object(runner, "solve_lap", side_effect=[SimpleNamespace(lap_time=58.0), SimpleNamespace(lap_time=57.9)]),
+                patch.object(runner, "solve_line", return_value=stage) as solve_zero_corridor,
+                patch.object(
+                    runner, "solve_ladder",
+                    side_effect=lambda *_args, stage_callback=None, **_kwargs: [
+                        (stage_callback(spacing, item, 0.1) if stage_callback else None) or item
+                        for spacing, item in zip((5.0, 2.0, 1.0), stages)
+                    ],
+                ) as solve_ladder,
+                patch.object(runner, "path_from_solution", return_value=path),
+                patch.object(runner, "_write_rebuilt_track", return_value=(root / "rebuilt.xml", root / "geometry.csv")),
+                patch.object(runner, "load_track", side_effect=[track, track, track]),
+                patch.object(runner, "check_zero_corridor_matches_envelope", return_value=True),
+                patch.object(runner, "check_free_line_not_slower", return_value=True),
+                patch.object(runner, "check_corridor_containment", return_value=False),
+                patch.object(runner, "check_mesh_convergence", return_value=True),
+                patch.object(runner, "check_replay_agreement", return_value=True),
+            ):
+                summary = runner.run(args)
+
+            solve_zero_corridor.assert_called_once()
+            zero_corridor_arg = solve_zero_corridor.call_args.args[1]
+            np.testing.assert_array_equal(zero_corridor_arg.minimum, 0.0)
+            np.testing.assert_array_equal(zero_corridor_arg.maximum, 0.0)
+            solve_ladder.assert_called_once()
+            self.assertEqual(solve_ladder.call_args.kwargs["spacings"], (5.0, 2.0, 1.0))
+            self.assertEqual(set(summary["checks"]), {
+                "zero_corridor_matches_envelope", "free_line_not_slower", "corridor_containment",
+                "mesh_convergence", "replay_agreement",
+            })
+            self.assertFalse(summary["checks"]["corridor_containment"])
+            self.assertEqual(summary["stages"][0]["spacing_m"], 5.0)
+            self.assertEqual(summary["stages"][-1]["spacing_m"], 1.0)
+            self.assertTrue(summary["conditional_result"])
+            self.assertTrue((root / "output" / "summary.json").is_file())

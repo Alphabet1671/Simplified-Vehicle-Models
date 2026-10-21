@@ -63,6 +63,10 @@ class TranscriptionTest(unittest.TestCase):
         self.assertGreaterEqual(float(solution.speed.min()), 0.5)
         self.assertLessEqual(float(solution.speed.max()), 40.0)
         self.assertLessEqual(solution.maximum_violation, 1.0e-7)
+        self.assertIsNotNone(solution.mid_acceleration)
+        self.assertIsNotNone(solution.mid_curvature_rate)
+        self.assertEqual(solution.mid_acceleration.size, solution.distance.size - 1)
+        self.assertEqual(solution.mid_curvature_rate.size, solution.distance.size - 1)
 
     def test_nonfinite_seed_is_rejected_before_solver_construction(self):
         from unittest.mock import patch
@@ -266,6 +270,74 @@ class LadderTest(unittest.TestCase):
         self.assertIs(callbacks[0][1], stages[0])
         self.assertIs(callbacks[1][1], stages[1])
         self.assertTrue(all(np.isfinite(entry[2]) and entry[2] >= 0.0 for entry in callbacks))
+
+    def test_project_seed_preserves_midpoint_controls_on_same_mesh(self) -> None:
+        from simplified_vehicle_models.solvers.qss_line_ocp import QssSolution, project_seed
+
+        mesh = np.array([0.0, 2.0, 4.0, 6.0])
+        nodes = np.arange(mesh.size, dtype=float)
+        mid_a = np.array([10.0, 20.0, 30.0])
+        mid_q = np.array([-1.0, -2.0, -3.0])
+        solution = QssSolution(mesh, nodes, nodes, nodes, nodes, nodes, 1.0,
+                               "Solve_Succeeded", 1, 0.0, mid_a, mid_q)
+        projected = project_seed(solution, mesh)
+        np.testing.assert_array_equal(projected[-6:-3], mid_a)
+        np.testing.assert_array_equal(projected[-3:], mid_q)
+
+    def test_project_seed_periodically_interpolates_midpoint_controls(self) -> None:
+        from simplified_vehicle_models.solvers.qss_line_ocp import QssSolution, project_seed
+
+        source = np.array([0.0, 2.0, 4.0, 6.0])
+        nodes = np.zeros(source.size)
+        solution = QssSolution(source, nodes, nodes, nodes, nodes, nodes, 1.0,
+                               "Solve_Succeeded", 1, 0.0,
+                               np.array([0.0, 2.0, 4.0]), np.array([1.0, 3.0, 5.0]))
+        target = np.array([0.0, 3.0, 6.0])
+        projected = project_seed(solution, target)
+        np.testing.assert_allclose(projected[-4:-2], [0.5, 3.5])
+        np.testing.assert_allclose(projected[-2:], [1.5, 4.5])
+
+    def test_project_seed_rejects_malformed_midpoint_controls(self) -> None:
+        from simplified_vehicle_models.solvers.qss_line_ocp import QssSolution, project_seed
+
+        mesh = np.array([0.0, 2.0, 4.0])
+        nodes = np.zeros(mesh.size)
+        malformed = (
+            np.array([[1.0, 2.0]]),
+            np.array([1.0]),
+            np.array([1.0, np.nan]),
+        )
+        for values in malformed:
+            solution = QssSolution(mesh, nodes, nodes, nodes, nodes, nodes, 1.0,
+                                   "Solve_Succeeded", 1, 0.0, values, np.zeros(2))
+            with self.subTest(values=values), self.assertRaisesRegex(ValueError, "finite and match"):
+                project_seed(solution, mesh)
+
+    def test_project_seed_rejects_malformed_meshes(self) -> None:
+        from simplified_vehicle_models.solvers.qss_line_ocp import QssSolution, project_seed
+
+        mesh = np.array([0.0, 2.0, 4.0])
+        nodes = np.zeros(mesh.size)
+        solution = QssSolution(mesh, nodes, nodes, nodes, nodes, nodes, 1.0,
+                               "Solve_Succeeded", 1, 0.0, np.zeros(2), np.zeros(2))
+        for target in (np.array([0.0]), np.array([0.0, 2.0, 1.0]), np.array([0.0, np.inf, 4.0])):
+            with self.subTest(target=target), self.assertRaisesRegex(ValueError, "target mesh"):
+                project_seed(solution, target)
+        bad_source = QssSolution(np.array([0.0, np.nan, 4.0]), nodes, nodes, nodes,
+                                 nodes, nodes, 1.0, "Solve_Succeeded", 1, 0.0,
+                                 np.zeros(2), np.zeros(2))
+        with self.assertRaisesRegex(ValueError, "solution distance"):
+            project_seed(bad_source, mesh)
+
+    def test_project_seed_legacy_solution_defaults_midpoint_controls_to_zero(self) -> None:
+        from simplified_vehicle_models.solvers.qss_line_ocp import QssSolution, project_seed
+
+        mesh = np.array([0.0, 2.0, 4.0])
+        nodes = np.zeros(mesh.size)
+        solution = QssSolution(mesh, nodes, nodes, nodes, nodes, nodes, 1.0,
+                               "Solve_Succeeded", 1, 0.0)
+        projected = project_seed(solution, mesh)
+        np.testing.assert_array_equal(projected[-4:], np.zeros(4))
 
     def test_empty_spacing_list_is_rejected(self) -> None:
         from simplified_vehicle_models.solvers.qss_line_ocp import QssSettings, solve_ladder

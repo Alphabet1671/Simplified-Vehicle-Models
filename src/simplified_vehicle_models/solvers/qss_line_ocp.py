@@ -38,6 +38,8 @@ class QssSolution:
     status: str
     iterations: int
     maximum_violation: float
+    mid_acceleration: FloatArray | None = None
+    mid_curvature_rate: FloatArray | None = None
 
 
 def _validate_inputs(track, corridor, surface, mesh, settings):
@@ -291,16 +293,34 @@ def solve_line(track, corridor, surface, mesh, settings: QssSettings, *, seed: F
                             built["x_lower"], built["x_upper"])
     violation=max(violation,float(np.max(np.maximum(np.maximum(built["x_lower"]-values,0.0),values-built["x_upper"]))))
     blocks=unpack(values,count)
-    return QssSolution(np.asarray(mesh,dtype=float),blocks["offset"],blocks["heading"],blocks["speed"],blocks["acceleration"],blocks["curvature_rate"],float(result["f"]),str(stats["return_status"]),int(stats["iter_count"]),violation)
+    return QssSolution(np.asarray(mesh,dtype=float),blocks["offset"],blocks["heading"],blocks["speed"],blocks["acceleration"],blocks["curvature_rate"],float(result["f"]),str(stats["return_status"]),int(stats["iter_count"]),violation,blocks["mid_acceleration"],blocks["mid_curvature_rate"])
 
 
 def project_seed(coarse: QssSolution, mesh) -> FloatArray:
-    """Interpolate a prior solution to the requested mesh."""
-    mesh=np.asarray(mesh,dtype=float); count=mesh.size-1; source=np.asarray(coarse.distance,dtype=float)
+    """Interpolate prior node and midpoint controls onto a new mesh."""
+    mesh=np.asarray(mesh,dtype=float); source=np.asarray(coarse.distance,dtype=float)
+    if mesh.ndim != 1 or mesh.size < 2 or not np.all(np.isfinite(mesh)) or np.any(np.diff(mesh) <= 0.0):
+        raise ValueError("target mesh must be finite, one-dimensional, and strictly increasing")
+    if source.ndim != 1 or source.size < 2 or not np.all(np.isfinite(source)) or np.any(np.diff(source) <= 0.0):
+        raise ValueError("solution distance must be finite, one-dimensional, and strictly increasing")
+    count=mesh.size-1
     if source.size != coarse.offset.size: raise ValueError("solution distance does not match its node count")
     arrays=[np.interp(mesh,source,np.asarray(values,dtype=float)) for values in (coarse.offset,coarse.heading_error,coarse.speed,coarse.acceleration,coarse.curvature_rate)]
-    mids=np.zeros(count)
-    return np.concatenate([*arrays,mids,mids])
+    def project_midpoint(values):
+        if values is None:
+            return np.zeros(count)
+        values=np.asarray(values,dtype=float)
+        if values.shape != (source.size - 1,) or not np.all(np.isfinite(values)):
+            raise ValueError("solution midpoint controls must be finite and match its mesh")
+        source_midpoints=.5*(source[:-1]+source[1:])
+        target_midpoints=.5*(mesh[:-1]+mesh[1:])
+        periodic_midpoints=np.r_[source_midpoints,source_midpoints[0]+float(coarse.distance[-1]-coarse.distance[0])]
+        periodic_values=np.r_[values,values[0]]
+        wrapped=source_midpoints[0]+np.mod(target_midpoints-source_midpoints[0],float(coarse.distance[-1]-coarse.distance[0]))
+        return np.interp(wrapped,periodic_midpoints,periodic_values)
+    mids_a=project_midpoint(coarse.mid_acceleration)
+    mids_q=project_midpoint(coarse.mid_curvature_rate)
+    return np.concatenate([*arrays,mids_a,mids_q])
 
 
 def solve_ladder(track, corridor, surface, settings: QssSettings,

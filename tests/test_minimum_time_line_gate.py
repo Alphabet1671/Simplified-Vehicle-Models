@@ -349,3 +349,20 @@ class RunnerOrchestrationTest(unittest.TestCase):
             self.assertEqual(summary["stages"][-1]["spacing_m"], 1.0)
             self.assertTrue(summary["conditional_result"])
             self.assertTrue((root / "output" / "summary.json").is_file())
+
+    def test_cli_exit_codes_reflect_failed_gates_and_pipeline_errors(self) -> None:
+        from tools.run import solve_minimum_time_line as runner
+
+        failed_summary = {"checks": {"required_gate": False}}
+        with patch.object(runner, "run", return_value=failed_summary):
+            self.assertEqual(
+                runner.main(["--track", "track.xml", "--formulation", "formulation.xml",
+                             "--surface", "surface.npz", "--output", "out"]),
+                1,
+            )
+        with patch.object(runner, "run", side_effect=RuntimeError("solver failed")):
+            self.assertEqual(
+                runner.main(["--track", "track.xml", "--formulation", "formulation.xml",
+                             "--surface", "surface.npz", "--output", "out"]),
+                2,
+            )

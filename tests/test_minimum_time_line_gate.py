@@ -237,6 +237,29 @@ class GateCheckTest(unittest.TestCase):
 
 
 class RunnerOrchestrationTest(unittest.TestCase):
+    def test_requested_tracks_match_current_runner_scope(self) -> None:
+        from tools.run.solve_minimum_time_line import _validate_track_for_line_pipeline
+
+        tracks = (
+            ("MIS", Path("models/tracks/2024_michigan_endurance_closed_edged.xml"), True, True),
+            ("FSC", Path("tracks_out/fsc_may_2026.xml"), True, False),
+            ("skidpad", Path("models/tracks/fsae_2026_skidpad.xml"), False, False),
+            ("acceleration", Path("models/tracks/fsae_2026_acceleration.xml"), False, False),
+        )
+        for name, path, closed, has_edges in tracks:
+            with self.subTest(track=name):
+                track = load_track(path)
+                self.assertEqual(track.is_closed, closed)
+                self.assertEqual(track.has_edges, has_edges)
+                if closed and has_edges:
+                    _validate_track_for_line_pipeline(track)
+                elif not closed:
+                    with self.assertRaisesRegex(ValueError, "requires a closed track"):
+                        _validate_track_for_line_pipeline(track)
+                else:
+                    with self.assertRaisesRegex(ValueError, "requires a lateral corridor"):
+                        _validate_track_for_line_pipeline(track)
+
     def test_output_collision_is_rejected_before_source_bytes_change(self) -> None:
         from tools.run import solve_minimum_time_line as runner
 

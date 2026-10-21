@@ -93,8 +93,9 @@ Use a single run to run one case. A single run does not use a study.
 5. Select an **Export folder**.
 6. Select **Go** or press `F5`.
 
-The default export folder is `runs/`. The GUI remembers the last export folder. The export folder
-must exist. The GUI refuses a folder inside `models/`, except `models/sweeps/`.
+The default export folder is `runs/`. The GUI remembers the last export folder. The GUI creates the
+export folder when it does not exist. The GUI refuses a folder inside `models/`, except
+`models/sweeps/`.
 
 The GUI writes the case to `<export folder>/single-run_<YYYYmmdd-HHMMSS>/`. The layout is the
 same as a one-case study. The **Queue** tab and the **Log** tab do not change during a single run.
@@ -119,7 +120,7 @@ A planar run has a wall limit of 300 s. The GUI passes the timeout to the runner
 
 ## Output layout
 
-The default output root is `runs/`. Each study uses a directory named `<study-name>_<YYYYMMDD-HHMMSS>`. A single run uses a directory named `single-run_<YYYYmmdd-HHMMSS>`. The GUI creates these paths:
+The default output root is `runs/`. Each study uses a directory named `<study-name>_<YYYYmmdd-HHMMSS>`. A single run uses a directory named `single-run_<YYYYmmdd-HHMMSS>`. The GUI creates these paths:
 
 ```text
 runs/<study-name>_<YYYYmmdd-HHMMSS>/

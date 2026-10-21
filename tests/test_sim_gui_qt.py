@@ -679,7 +679,7 @@ class MainWindowTests(unittest.TestCase):
         self.assertTrue(log_text)
         self.assertLessEqual(len(log_text.splitlines()), 2000)
 
-    def test_single_run_does_not_start_without_a_track_or_folder(self):
+    def test_single_run_does_not_start_without_a_track(self):
         window = self._window()
         window.open_model(REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_planar_7dof.xml")
         window.single_tab.set_track(None)
@@ -687,18 +687,39 @@ class MainWindowTests(unittest.TestCase):
         with mock.patch("tools.sim_gui.qt.main_window._warn") as warn, \
                 mock.patch.object(window._queue, "start") as start:
             window.run_single()
-            warn.assert_called_once()
-            start.assert_not_called()
-            self.assertIsNone(window._run_mode)
-            window.single_tab.set_track(window.track_tab.track())
-            missing = Path(tempfile.mkdtemp()) / "missing"
-            self.addCleanup(lambda: shutil.rmtree(missing.parent, ignore_errors=True))
-            window.single_tab.set_export_folder(missing)
-            window.run_single()
-            self.assertEqual(warn.call_count, 2)
-            start.assert_not_called()
-        self.assertFalse(missing.exists())
+        warn.assert_called_once()
+        start.assert_not_called()
         self.assertIsNone(window._run_mode)
+
+    def test_missing_export_folder_is_created(self):
+        window = self._window()
+        window.open_model(REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_planar_7dof.xml")
+        missing = Path(tempfile.mkdtemp()) / "missing"
+        self.addCleanup(lambda: shutil.rmtree(missing.parent, ignore_errors=True))
+        window.single_tab.set_export_folder(missing)
+        with mock.patch.object(ValidationWorker, "run", lambda worker: worker.finished.emit()), \
+                mock.patch("tools.sim_gui.qt.main_window._warn") as warn:
+            window.run_single()
+            deadline = time.time() + 10
+            while window._validation_thread is not None and time.time() < deadline:
+                app.processEvents()
+        self.assertTrue(missing.is_dir())
+        warn.assert_not_called()
+        self.assertEqual(window.settings_store.value("single_run_output"), str(missing))
+        self.assertIsNone(window._run_mode)
+
+    def test_build_cases_does_not_start_twice(self):
+        window = self._window()
+        window.open_model(REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_planar_7dof.xml")
+        window.build_cases()
+        first = window._validation_thread
+        self.assertIsNotNone(first)
+        window.build_cases()
+        self.assertIs(window._validation_thread, first)
+        deadline = time.time() + 20
+        while window._validation_thread is not None and time.time() < deadline:
+            app.processEvents()
+        self.assertIsNone(window._validation_thread)
 
     def test_model_and_track_sync_both_ways(self):
         window = self._window()

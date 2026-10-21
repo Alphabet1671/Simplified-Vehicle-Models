@@ -232,7 +232,7 @@ class MainWindow(QMainWindow):
 
     def build_cases(self) -> None:
         """Prepare and validate the current study cases."""
-        if self._run_mode is not None:
+        if self._run_mode is not None or self._validation_thread is not None:
             return
         definition = self._definition()
         try:
@@ -459,12 +459,12 @@ class MainWindow(QMainWindow):
         thread.start()
 
     def _export_folder_problem(self, folder: Path) -> str | None:
-        """Return a warning message for an unsafe or missing export folder."""
+        """Return a warning message for an unsafe export folder."""
         problem = protected_directory_problem(folder, allow_models=False)
         if problem is not None:
             return problem
-        if not folder.is_dir():
-            return f"{folder} is not an existing directory"
+        if folder.exists() and not folder.is_dir():
+            return f"{folder} is not a directory"
         return None
 
     def _single_model_selected(self, path) -> None:
@@ -486,6 +486,10 @@ class MainWindow(QMainWindow):
             self.track_tab.set_track(Path(path))
         finally:
             self._syncing_track = False
+        # The Track tab refuses an unreadable file; show what it accepted.
+        accepted = self.track_tab.track()
+        if accepted is not None:
+            self.single_tab.set_track(accepted)
 
     def _track_changed(self, path) -> None:
         """Mirror a Track tab choice into the single-run tab."""

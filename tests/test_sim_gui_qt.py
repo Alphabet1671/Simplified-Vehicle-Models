@@ -31,6 +31,7 @@ if QApplication is not None:
     from tools.sim_gui.qt.workers import ValidationWorker
     from tools.sim_gui.qt.queue import CaseQueue
     from tools.sim_gui.qt.main_window import MainWindow
+    from tools.sim_gui.qt.single_run_tab import SingleRunTab
     from tools.sim_gui.qt.track_tab import TrackTab
     from PyQt6.QtCore import QSettings, QEventLoop, QTimer, QThread
     from PyQt6.QtWidgets import QMessageBox
@@ -198,6 +199,79 @@ class TrackTabTests(unittest.TestCase):
         target = REPOSITORY_ROOT / "models/tracks/2024_michigan_endurance_multilap_closed.xml"
         self.tab.set_track(target)
         self.assertEqual(emitted, [target.resolve()])
+
+
+@unittest.skipIf(QApplication is None, "PyQt6 is not installed")
+class SingleRunTabTests(unittest.TestCase):
+    def setUp(self):
+        self.tab = SingleRunTab()
+        self.addCleanup(self.tab.deleteLater)
+        self.model = REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_planar_7dof.xml"
+        self.track = REPOSITORY_ROOT / "models/tracks/2024_michigan_endurance_closed.xml"
+
+    def _index_of(self, combo, path):
+        target = Path(path).resolve()
+        for index in range(combo.count()):
+            value = combo.itemData(index)
+            if value and Path(value).resolve() == target:
+                return index
+        raise AssertionError(f"{path} is not in the combo")
+
+    def test_defaults_and_signals(self):
+        self.assertEqual(self.tab.export_folder(), REPOSITORY_ROOT / "runs")
+        go, stop, models, chosen_tracks = [], [], [], []
+        self.tab.goRequested.connect(go.append)
+        self.tab.stopRequested.connect(lambda: stop.append(True))
+        self.tab.modelSelected.connect(models.append)
+        self.tab.trackSelected.connect(chosen_tracks.append)
+        self.tab.set_model(self.model)
+        self.tab.set_track(self.track)
+        self.tab.set_progress(1.5)
+        self.assertEqual(models, [])
+        self.assertEqual(chosen_tracks, [])
+        self.assertEqual(self.tab.model_path(), self.model.resolve())
+        self.assertEqual(self.tab.track_path(), self.track.resolve())
+        self.assertEqual(self.tab.progress_bar.value(), 100)
+        with tempfile.TemporaryDirectory() as tmp:
+            self.tab.set_export_folder(Path(tmp))
+            self.assertEqual(go, [])
+            self.tab.go_button.click()
+            self.assertEqual(go, [Path(tmp)])
+        self.assertTrue(self.tab.go_button.isEnabled())
+        self.assertFalse(self.tab.stop_button.isEnabled())
+        self.tab.set_running(True)
+        self.assertFalse(self.tab.go_button.isEnabled())
+        self.assertTrue(self.tab.stop_button.isEnabled())
+        self.tab.set_running(False)
+        self.assertTrue(self.tab.go_button.isEnabled())
+        self.assertFalse(self.tab.stop_button.isEnabled())
+
+    def test_bad_model_and_track_are_refused(self):
+        self.tab.set_model(self.model)
+        self.tab.set_track(self.track)
+        before_model = self.tab.model_path()
+        before_track = self.tab.track_path()
+        before_model_count = self.tab.model_combo.count()
+        before_track_count = self.tab.track_combo.count()
+        with tempfile.TemporaryDirectory() as tmp:
+            bad = Path(tmp) / "bad.xml"
+            bad.write_text('<model type="aero" subtype="simple" id="bad" />')
+            with mock.patch(
+                "tools.sim_gui.qt.single_run_tab.QFileDialog.getOpenFileName",
+                return_value=(str(bad), ""),
+            ), mock.patch("tools.sim_gui.qt.single_run_tab._warn") as warn:
+                self.tab.model_browse.click()
+            warn.assert_called_once()
+            with mock.patch(
+                "tools.sim_gui.qt.single_run_tab.QFileDialog.getOpenFileName",
+                return_value=(str(bad), ""),
+            ), mock.patch("tools.sim_gui.qt.single_run_tab._warn") as warn:
+                self.tab.track_browse.click()
+            warn.assert_called_once()
+        self.assertEqual(self.tab.model_path(), before_model)
+        self.assertEqual(self.tab.track_path(), before_track)
+        self.assertEqual(self.tab.model_combo.count(), before_model_count)
+        self.assertEqual(self.tab.track_combo.count(), before_track_count)
 
 
 @unittest.skipIf(QApplication is None, "PyQt6 is not installed")
@@ -435,6 +509,13 @@ class MainWindowTests(unittest.TestCase):
         loop.exec()
         queue.shutdown()
 
+    def _until(self, condition, timeout=60):
+        deadline = time.time() + timeout
+        while not condition() and time.time() < deadline:
+            app.processEvents()
+            time.sleep(0.01)
+        self.assertTrue(condition())
+
     def test_main_window_end_to_end_case(self):
         output = REPOSITORY_ROOT / "runs" / "_test"
         if output.exists():
@@ -513,7 +594,7 @@ class MainWindowTests(unittest.TestCase):
                 app.processEvents()
         self.assertEqual(build.call_count, 1)
         start.assert_not_called()
-        self.assertTrue(window.run_action.isEnabled())
+        self.assertTrue(window.go_action.isEnabled())
         self.assertEqual(window.study_index.cases[0]["status"], "invalid")
 
     def test_panel_tire_swap_reaches_built_baseline(self):
@@ -577,6 +658,154 @@ class MainWindowTests(unittest.TestCase):
         window.track_tab.set_track(track)
         self.assertEqual(Path(window._definition().track).resolve(), track.resolve())
 
+    def test_single_run_completes_and_writes_a_record(self):
+        window = self._window()
+        window.open_model(REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_planar_7dof.xml")
+        window.settings_tab.duration.setValue(0.3)
+        window.settings_tab.timeout_seconds.setValue(120.0)
+        export = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(export, ignore_errors=True))
+        window.single_tab.set_export_folder(export)
+        window.single_tab.go_button.click()
+        self._wait(window._queue, 120)
+        self.assertEqual(window.single_tab.status_label.text(), "completed")
+        directory = window.study_index.directory
+        self.assertEqual(directory.parent, export)
+        self.assertTrue(directory.name.startswith("single-run_"))
+        records = list(export.glob("single-run_*/cases/case_000/attempt_*/run_record.npz"))
+        self.assertEqual(len(records), 1)
+        self.assertEqual(window.queue_table.rowCount(), 0)
+        log_text = window.single_tab.log_view.toPlainText()
+        self.assertTrue(log_text)
+        self.assertLessEqual(len(log_text.splitlines()), 2000)
+
+    def test_single_run_does_not_start_without_a_track_or_folder(self):
+        window = self._window()
+        window.open_model(REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_planar_7dof.xml")
+        window.single_tab.set_track(None)
+        self.assertIsNone(window.single_tab.track_path())
+        with mock.patch("tools.sim_gui.qt.main_window._warn") as warn, \
+                mock.patch.object(window._queue, "start") as start:
+            window.run_single()
+            warn.assert_called_once()
+            start.assert_not_called()
+            self.assertIsNone(window._run_mode)
+            window.single_tab.set_track(window.track_tab.track())
+            missing = Path(tempfile.mkdtemp()) / "missing"
+            self.addCleanup(lambda: shutil.rmtree(missing.parent, ignore_errors=True))
+            window.single_tab.set_export_folder(missing)
+            window.run_single()
+            self.assertEqual(warn.call_count, 2)
+            start.assert_not_called()
+        self.assertFalse(missing.exists())
+        self.assertIsNone(window._run_mode)
+
+    def test_model_and_track_sync_both_ways(self):
+        window = self._window()
+        single = window.single_tab
+        planar = REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_planar_7dof.xml"
+        index = next(
+            i for i in range(single.model_combo.count())
+            if Path(single.model_combo.itemData(i)).name == planar.name
+        )
+        single.model_combo.setCurrentIndex(index)
+        self.assertIsNotNone(window.configuration)
+        self.assertEqual(window.configuration.source.resolve(), planar.resolve())
+        self.assertEqual(single.model_path().resolve(), planar.resolve())
+        track = REPOSITORY_ROOT / "models/tracks/2024_michigan_endurance_closed.xml"
+        index = next(
+            i for i in range(single.track_combo.count())
+            if Path(single.track_combo.itemData(i)).resolve() == track.resolve()
+        )
+        single.track_combo.setCurrentIndex(index)
+        self.assertEqual(window.track_tab.track().resolve(), track.resolve())
+        self.assertEqual(Path(window._definition().track).resolve(), track.resolve())
+        self.assertEqual(single.track_path().resolve(), track.resolve())
+        other = REPOSITORY_ROOT / "models/tracks/2024_michigan_endurance_multilap_closed.xml"
+        window.track_tab.set_track(other)
+        self.assertEqual(single.track_path().resolve(), other.resolve())
+
+    def test_stop_cancels_a_single_run(self):
+        window = self._window()
+        window.open_model(REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_planar_7dof.xml")
+        window.settings_tab.duration.setValue(60.0)
+        export = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(export, ignore_errors=True))
+        window.single_tab.set_export_folder(export)
+        window.single_tab.go_button.click()
+        self._until(lambda: bool(window._queue._running), 90)
+        window.single_tab.stop_button.click()
+        self._wait(window._queue, 15)
+        self.assertEqual(window.single_tab.status_label.text(), "cancelled")
+        self.assertTrue(window.single_tab.go_button.isEnabled())
+        self.assertEqual(window.queue_table.rowCount(), 0)
+
+    def test_study_run_still_uses_the_queue(self):
+        window = self._window()
+        window.open_model(REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_planar_7dof.xml")
+        window.settings_tab.duration.setValue(0.3)
+        window.settings_tab.timeout_seconds.setValue(120.0)
+        window.build_cases()
+        self._until(lambda: window._validation_thread is None, 60)
+        window.run_cases()
+        self._wait(window._queue, 120)
+        self.assertEqual(window.queue_table.rowCount(), 1)
+        self.assertEqual(window.queue_table.item(0, 2).text(), "completed")
+        self.assertEqual(window.single_tab.status_label.text(), "")
+        self.assertEqual(window.single_tab.log_view.toPlainText(), "")
+
+    def test_all_finished_only_updates_the_active_mode(self):
+        window = self._window()
+        window.open_model(REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_planar_7dof.xml")
+        window.queue_table.setRowCount(1)
+        window.log_view.setPlainText("study log")
+        window.single_tab.set_status("single status")
+        window._run_mode = "study"
+        window._all_finished()
+        self.assertEqual(window.single_tab.status_label.text(), "single status")
+        self.assertEqual(window.queue_table.rowCount(), 1)
+        self.assertEqual(window.log_view.toPlainText(), "study log")
+        window._run_mode = "single"
+        window._all_finished()
+        self.assertEqual(window.queue_table.rowCount(), 1)
+        self.assertEqual(window.log_view.toPlainText(), "study log")
+
+    def test_single_run_refuses_an_export_folder_inside_models(self):
+        window = self._window()
+        window.open_model(REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_planar_7dof.xml")
+        folder = REPOSITORY_ROOT / "models" / f"tmp-export-{time.time_ns()}"
+        self.addCleanup(lambda: shutil.rmtree(folder, ignore_errors=True))
+        window.single_tab.set_export_folder(folder)
+        with mock.patch("tools.sim_gui.qt.main_window._warn") as warn, \
+                mock.patch.object(window._queue, "start") as start:
+            window.run_single()
+        warn.assert_called_once()
+        self.assertIn("inside models/", warn.call_args.args[2])
+        start.assert_not_called()
+        self.assertFalse(folder.exists())
+        self.assertIsNone(window._run_mode)
+
+    def test_single_run_allows_a_models_sweeps_export_folder(self):
+        window = self._window()
+        window.open_model(REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_planar_7dof.xml")
+        folder = REPOSITORY_ROOT / "models/sweeps" / f"single-run-test-{time.time_ns()}"
+        self.addCleanup(lambda: shutil.rmtree(folder, ignore_errors=True))
+        folder.mkdir(parents=True)
+        window.single_tab.set_export_folder(folder)
+        try:
+            with mock.patch("tools.sim_gui.qt.main_window._warn") as warn, \
+                    mock.patch.object(window._queue, "start") as start:
+                window.run_single()
+                self._until(lambda: start.called, 120)
+                warn.assert_not_called()
+                start.assert_called_once()
+        finally:
+            window.single_tab.set_running(False)
+            window._single_log_timer.stop()
+            window._run_mode = None
+            window._running = False
+            window._refresh_actions()
+
     def test_open_model_twice_keeps_one_study_tab(self):
         window = self._window()
         source = REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_planar_7dof.xml"
@@ -587,9 +816,10 @@ class MainWindowTests(unittest.TestCase):
         self.assertEqual(names.count("Study"), 1)
         self.assertIsNot(window.study_tab, first)
 
-    def test_track_tab_is_first(self):
+    def test_single_run_tab_is_first_and_track_tab_is_second(self):
         window = self._window()
-        self.assertEqual(window.tabs.tabText(0), "Track")
+        self.assertEqual(window.tabs.tabText(0), "Single Run")
+        self.assertEqual(window.tabs.tabText(1), "Track")
 
     def test_point_mass_disables_run(self):
         store_dir = Path(tempfile.mkdtemp())
@@ -600,7 +830,7 @@ class MainWindowTests(unittest.TestCase):
         window = MainWindow(output_root=output, settings_store=store)
         self.addCleanup(window.close)
         window.open_model(REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_point_mass.xml")
-        self.assertFalse(window.run_action.isEnabled())
+        self.assertFalse(window.go_action.isEnabled())
 
     def test_save_open_study_round_trip(self):
         store_dir = Path(tempfile.mkdtemp())
@@ -670,7 +900,7 @@ class MainWindowTests(unittest.TestCase):
         self.assertTrue(progress_count)
         self.assertEqual(progress_count, [1])
         self.assertEqual(window._prepared, [])
-        self.assertTrue(window.run_action.isEnabled())
+        self.assertTrue(window.go_action.isEnabled())
 
     def test_log_selection_tails_and_timer_tracks_running(self):
         window = self._window()
@@ -696,7 +926,7 @@ class MainWindowTests(unittest.TestCase):
         window = self._window(store)
         self.assertEqual(window.open_action.shortcut().toString(), "Ctrl+O")
         self.assertEqual(window.save_action.shortcut().toString(), "Ctrl+S")
-        self.assertEqual(window.run_action.shortcut().toString(), "F5")
+        self.assertEqual(window.go_action.shortcut().toString(), "F5")
         with mock.patch("tools.sim_gui.qt.main_window.QDesktopServices.openUrl") as opened:
             window.open_output_folder()
             opened.assert_called_once()

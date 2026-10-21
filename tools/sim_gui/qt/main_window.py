@@ -20,16 +20,19 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtGui import QDesktopServices
 
+from tools.gui_common.files import protected_directory_problem
 from tools.sim_gui import REPOSITORY_ROOT
 from tools.sim_gui.execute import prepare_case, validate_case
 from tools.sim_gui.qt.model_panel import ModelPanel
 from tools.sim_gui.qt.queue import CaseQueue, QueueTable
 from tools.sim_gui.qt.settings_tab import SettingsTab
+from tools.sim_gui.qt.single_run_tab import SingleRunTab
 from tools.sim_gui.qt.study_tab import StudyTab
 from tools.sim_gui.qt.track_tab import TrackTab
 from tools.sim_gui.qt.workers import ValidationWorker
 from tools.sim_gui.run_study import _study_directory
 from tools.sim_gui.study import MAXIMUM_CASES, StudyDefinition, StudyIndex, WARNING_CASES, _atomic, expand
+from tools.sim_gui.vehicle import VehicleConfiguration
 
 _warn = QMessageBox.warning
 _confirm = QMessageBox.question
@@ -48,6 +51,9 @@ class MainWindow(QMainWindow):
         self._prepared = []
         self._running = False
         self._run_requested = False
+        self._run_mode = None
+        self._syncing_track = False
+        self._case_error = None
         self._queue = CaseQueue(parent=self)
         self._validation_thread = None
         self._validation_worker = None
@@ -55,9 +61,11 @@ class MainWindow(QMainWindow):
         self._progress_dialog = None
         self._queue.caseFinished.connect(self._case_finished)
         self._queue.caseProgress.connect(self._case_progress)
+        self._queue.caseProgress.connect(self._single_progress)
         self._queue.allFinished.connect(self._all_finished)
 
         self.model_panel = ModelPanel(parent=self)
+        self.single_tab = SingleRunTab(self)
         self.track_tab = TrackTab(self)
         self.settings_tab = SettingsTab(self)
         self.study_tab = None
@@ -65,6 +73,7 @@ class MainWindow(QMainWindow):
         self.log_view = QPlainTextEdit(self)
         self.log_view.setReadOnly(True)
         self.tabs = QTabWidget(self)
+        self.tabs.addTab(self.single_tab, "Single Run")
         self.tabs.addTab(self.track_tab, "Track")
         self.tabs.addTab(self.settings_tab, "Run Settings")
         self.tabs.addTab(self.queue_table, "Queue")
@@ -77,15 +86,27 @@ class MainWindow(QMainWindow):
         self.model_panel.configurationChanged.connect(self._configuration_changed)
         self.settings_tab.settingsChanged.connect(self._settings_changed)
         self.queue_table.itemSelectionChanged.connect(self._selection_changed)
+        self.single_tab.goRequested.connect(self.run_single)
+        self.single_tab.stopRequested.connect(self.stop_cases)
+        self.single_tab.modelSelected.connect(self._single_model_selected)
+        self.single_tab.trackSelected.connect(self._single_track_selected)
+        self.track_tab.trackChanged.connect(self._track_changed)
+        stored = self.settings_store.value("single_run_output")
+        self.single_tab.set_export_folder(Path(stored) if stored else self.output_root)
+        self.single_tab.set_track(self.track_tab.track())
         self._build_actions()
         self._log_timer = QTimer(self)
         self._log_timer.setInterval(1000)
         self._log_timer.timeout.connect(self._refresh_log)
+        self._single_log_timer = QTimer(self)
+        self._single_log_timer.setInterval(1000)
+        self._single_log_timer.timeout.connect(self._refresh_single_log)
         self.status = self.statusBar()
         self._recent = list(self.settings_store.value("recent_files", []))
         geometry = self.settings_store.value("geometry")
         if geometry is not None:
             self.restoreGeometry(geometry)
+        self._refresh_actions()
 
     def _build_actions(self) -> None:
         toolbar = QToolBar("Simulation", self)
@@ -99,18 +120,20 @@ class MainWindow(QMainWindow):
         self.open_study_action.triggered.connect(self.open_study)
         self.build_action = QAction("Build Cases", self)
         self.build_action.triggered.connect(self.build_cases)
-        self.run_action = QAction("Run", self)
-        self.run_action.triggered.connect(self.run_cases)
+        self.go_action = QAction("Go", self)
+        self.go_action.triggered.connect(self.run_single)
+        self.run_study_action = QAction("Run Study", self)
+        self.run_study_action.triggered.connect(self.run_cases)
         self.stop_action = QAction("Stop", self)
         self.stop_action.triggered.connect(self.stop_cases)
-        self.run_action.setShortcut("F5")
+        self.go_action.setShortcut("F5")
         self.save_action.setShortcut("Ctrl+S")
         self.open_output_action = QAction("Open Output Folder", self)
         self.open_output_action.triggered.connect(self.open_output_folder)
         self.quit_action = QAction("Quit", self)
         self.quit_action.triggered.connect(self.close)
         actions = (self.open_action, self.open_study_action, self.save_action,
-                   self.build_action, self.run_action, self.stop_action,
+                   self.build_action, self.go_action, self.run_study_action, self.stop_action,
                    self.open_output_action, self.quit_action)
         for action in actions:
             toolbar.addAction(action)
@@ -120,13 +143,24 @@ class MainWindow(QMainWindow):
         menu.addActions(actions[3:])
         self.stop_action.setEnabled(False)
 
+    def _refresh_actions(self) -> None:
+        """Enable the run actions only for a runnable, idle configuration."""
+        enabled = (
+            self.configuration is not None
+            and self.configuration.runnable
+            and self._run_mode is None
+        )
+        self.go_action.setEnabled(enabled)
+        self.run_study_action.setEnabled(enabled)
+        self.stop_action.setEnabled(self._run_mode is not None)
+
     def _configuration_changed(self, configuration) -> None:
         self.configuration = configuration
         if self.study_tab is not None:
             self.study_tab.configuration = configuration
             self.study_tab.settings = self.settings_tab._settings
         self.settings_tab.set_model(configuration.model)
-        self.run_action.setEnabled(configuration.runnable and not self._running)
+        self._refresh_actions()
 
     def _settings_changed(self, settings) -> None:
         if self.study_tab is not None:
@@ -142,7 +176,7 @@ class MainWindow(QMainWindow):
 
     def open_model(self, path: Path) -> None:
         """Open a vehicle configuration and refresh dependent tabs."""
-        self.configuration = __import__("tools.sim_gui.vehicle", fromlist=["VehicleConfiguration"]).VehicleConfiguration.open(path)
+        self.configuration = VehicleConfiguration.open(path)
         self.model_panel.set_configuration(self.configuration)
         self.settings_tab.set_model(self.configuration.model)
         try:
@@ -150,7 +184,8 @@ class MainWindow(QMainWindow):
         except ValueError:
             current_settings = self.settings_tab._settings
         self._replace_study_tab(StudyTab(self.configuration, current_settings, self))
-        self.run_action.setEnabled(self.configuration.runnable)
+        self.single_tab.set_model(Path(path))
+        self._refresh_actions()
         self._remember(Path(path))
 
     def _replace_study_tab(self, tab: StudyTab) -> None:
@@ -197,6 +232,8 @@ class MainWindow(QMainWindow):
 
     def build_cases(self) -> None:
         """Prepare and validate the current study cases."""
+        if self._run_mode is not None:
+            return
         definition = self._definition()
         try:
             cases = expand(definition)
@@ -206,7 +243,11 @@ class MainWindow(QMainWindow):
         if len(cases) > MAXIMUM_CASES:
             _warn(self, "Study", f"study has {len(cases)} cases; maximum is {MAXIMUM_CASES}")
             return
-        if len(cases) > WARNING_CASES and _confirm(self, "Study", f"Build {len(cases)} cases?") != QMessageBox.StandardButton.Yes:
+        if (
+            len(cases) > WARNING_CASES
+            and _confirm(self, "Study", f"Build {len(cases)} cases?")
+            != QMessageBox.StandardButton.Yes
+        ):
             return
         study_dir = _study_directory(self.output_root, definition)
         self.study_index = StudyIndex.create(study_dir, definition, cases)
@@ -245,6 +286,7 @@ class MainWindow(QMainWindow):
             self._progress_dialog.setValue(done)
 
     def _validation_finished(self) -> None:
+        single = self._run_mode == "single"
         self._validation_thread = None
         self._validation_worker = None
         if self._progress_dialog is not None:
@@ -253,10 +295,28 @@ class MainWindow(QMainWindow):
             self._progress_dialog.close()
             self._progress_dialog = None
         if self._validation_cancelled:
-            self._run_requested = False
-            self._prepared = []
-            self.run_action.setEnabled(self.configuration is not None and self.configuration.runnable)
             self._validation_cancelled = False
+            self._prepared = []
+            if single:
+                self._finish_single_without_queue("cancelled")
+            else:
+                self._run_requested = False
+                self._refresh_actions()
+            return
+        if single:
+            prepared = self._prepared[0] if self._prepared else None
+            self._prepared = []
+            if prepared is None:
+                self._finish_single_without_queue(
+                    "failed", self._case_error or "case could not be prepared"
+                )
+                return
+            self._running = True
+            self.single_tab.set_status("running")
+            self._single_log_timer.start()
+            self._queue.start([prepared], 1)
+            self.single_tab.set_running(True)
+            self._refresh_actions()
             return
         self.queue_table.set_cases(self.study_index.cases)
         self._refresh_status()
@@ -266,7 +326,17 @@ class MainWindow(QMainWindow):
                 self.run_cases()
             else:
                 self.status.showMessage("No valid cases to run")
-                self.run_action.setEnabled(self.configuration is not None and self.configuration.runnable)
+                self._refresh_actions()
+
+    def _finish_single_without_queue(self, status: str, result: str | None = None) -> None:
+        """Leave a single run that never reached the queue in a clean state."""
+        self._run_mode = None
+        self._running = False
+        self._single_log_timer.stop()
+        self.single_tab.set_running(False)
+        self.single_tab.set_status(status)
+        self.single_tab.set_result(result if result is not None else "")
+        self._refresh_actions()
 
     def _case_ready(self, prepared, error) -> None:
         """Keep a valid case, or record an invalid one as run_study does."""
@@ -280,32 +350,170 @@ class MainWindow(QMainWindow):
             self._mark_invalid(case_id, error)
 
     def _mark_invalid(self, case_id: str, error: str) -> None:
+        self._case_error = error
+        if self._run_mode == "single":
+            self.single_tab.set_result(error)
         self._update_case(case_id, directory=f"cases/{case_id}", status="invalid", error=error)
 
     def _update_case(self, case_id: str, **fields) -> None:
         if self.study_index is None:
             return
         self.study_index.update(case_id, **fields)
+        if self._run_mode == "single":
+            return
         self.queue_table.set_cases(self.study_index.cases)
         self._refresh_status()
 
     def run_cases(self) -> None:
-        """Build a baseline if needed and start the process queue."""
+        """Build a baseline if needed and start the study process queue."""
+        if self._run_mode is not None or self._validation_thread is not None:
+            return
         if not self._prepared:
             self._run_requested = True
             self.build_cases()
         if self._prepared and self._validation_thread is None:
-            self.queue_table.set_cases(self.study_index.cases)
-            self._running = True
-            self.run_action.setEnabled(False)
-            self.stop_action.setEnabled(True)
-            self._log_timer.start()
-            parallel = self.study_tab.parallel_cases.value() if self.study_tab is not None else 1
-            self._queue.start(self._prepared, parallel)
+            self._start_study_queue()
+
+    def _start_study_queue(self) -> None:
+        """Show the prepared cases in the Queue tab and start them."""
+        self._run_mode = "study"
+        self.queue_table.set_cases(self.study_index.cases)
+        self._running = True
+        self._log_timer.start()
+        self._refresh_actions()
+        parallel = self.study_tab.parallel_cases.value() if self.study_tab is not None else 1
+        self._queue.start(self._prepared, parallel)
 
     def stop_cases(self) -> None:
-        """Stop all running cases."""
+        """Stop the active run, cancelling validation when it has not started."""
+        if self._run_mode == "single" and self._validation_thread is not None:
+            self._cancel_validation()
+            return
         self._queue.stop()
+
+    def run_single(self) -> None:
+        """Prepare and run one case outside the Queue and Log tabs."""
+        if self.configuration is None or not self.configuration.runnable:
+            return
+        if self._run_mode is not None or self._validation_thread is not None:
+            return
+        track = self.single_tab.track_path()
+        if track is None:
+            _warn(self, "Single run", "Select a track model.")
+            return
+        export_folder = self.single_tab.export_folder()
+        problem = self._export_folder_problem(export_folder)
+        if problem is not None:
+            _warn(self, "Single run", problem)
+            return
+        try:
+            export_folder.mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            _warn(self, "Single run", f"cannot create {export_folder}: {error}")
+            return
+        self.settings_store.setValue("single_run_output", str(export_folder))
+        definition = StudyDefinition(
+            "single-run",
+            str(self.configuration.source),
+            track.as_posix(),
+            self.configuration.model,
+            {key: str(value) for key, value in self.configuration.choices.items()},
+            self.settings_tab.settings(),
+            "one-at-a-time",
+            (),
+        )
+        try:
+            cases = expand(definition)
+        except ValueError as error:
+            _warn(self, "Single run", str(error))
+            return
+        if len(cases) != 1:
+            _warn(self, "Single run", f"single run expanded to {len(cases)} cases")
+            return
+        study_dir = _study_directory(export_folder, definition)
+        index = StudyIndex.create(study_dir, definition, cases)
+        self.study_index = index
+        self._queue.study_index = index
+        self._prepared = []
+        self._case_error = None
+        self._validation_cancelled = False
+        self._run_mode = "single"
+        self.single_tab.clear_run()
+        self.single_tab.set_log("")
+        self.single_tab.set_status("Preparing…")
+        self.single_tab.set_running(True)
+        self._refresh_actions()
+        thread = QThread(self)
+        worker = ValidationWorker(study_dir, definition, cases)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.caseReady.connect(self._case_ready)
+        worker.casePrepareFailed.connect(self._mark_invalid)
+        worker.progress.connect(self._validation_progress)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._validation_finished)
+        self._validation_thread = thread
+        self._validation_worker = worker
+        thread.start()
+
+    def _export_folder_problem(self, folder: Path) -> str | None:
+        """Return a warning message for an unsafe or missing export folder."""
+        problem = protected_directory_problem(folder, allow_models=False)
+        if problem is not None:
+            return problem
+        if not folder.is_dir():
+            return f"{folder} is not an existing directory"
+        return None
+
+    def _single_model_selected(self, path) -> None:
+        """Open a model chosen in the single tab, or restore the old selection."""
+        previous = self.configuration.source if self.configuration is not None else None
+        try:
+            self.open_model(Path(path))
+        except (OSError, ValueError) as error:
+            _warn(self, "Vehicle model", str(error))
+            self.single_tab.set_model(previous)
+            self._refresh_actions()
+
+    def _single_track_selected(self, path) -> None:
+        """Mirror a single-tab track choice into the Track tab."""
+        if self._syncing_track:
+            return
+        self._syncing_track = True
+        try:
+            self.track_tab.set_track(Path(path))
+        finally:
+            self._syncing_track = False
+
+    def _track_changed(self, path) -> None:
+        """Mirror a Track tab choice into the single-run tab."""
+        if self._syncing_track:
+            return
+        self._syncing_track = True
+        try:
+            self.single_tab.set_track(Path(path))
+        finally:
+            self._syncing_track = False
+
+    def _single_progress(self, key, value) -> None:
+        """Show queue progress in the single tab while a single run is active."""
+        if self._run_mode != "single":
+            return
+        self.single_tab.set_progress(value)
+        self._refresh_single_log()
+
+    def _refresh_single_log(self) -> None:
+        """Tail the active single-run attempt log into the single-run tab."""
+        if self.study_index is None or not self.study_index.cases:
+            return
+        attempt = self.study_index.cases[0].get("attempt")
+        if not attempt:
+            return
+        log = self.study_index.directory / attempt / "run.log"
+        if log.exists():
+            self.single_tab.set_log(log.read_text(errors="replace"))
 
     def save_study(self) -> None:
         """Save the current definition atomically to a study JSON file."""
@@ -320,7 +528,6 @@ class MainWindow(QMainWindow):
         if not path:
             return
         definition = StudyDefinition.from_json(json.loads(Path(path).read_text()))
-        from tools.sim_gui.vehicle import VehicleConfiguration
         baseline = VehicleConfiguration.open(Path(definition.source))
         configuration = baseline.with_model(definition.model)
         for key, value in definition.choices.items():
@@ -330,29 +537,61 @@ class MainWindow(QMainWindow):
         self.model_panel.set_configuration(configuration, baseline=baseline)
         self.settings_tab.set_model(configuration.model)
         self.settings_tab.set_settings(definition.settings)
+        self.single_tab.set_model(Path(definition.source))
         if definition.track:
             self.track_tab.set_track(Path(definition.track))
         tab = StudyTab(configuration, definition.settings, self)
         tab.set_definition(definition)
         self._replace_study_tab(tab)
-        self.run_action.setEnabled(configuration.runnable)
+        self._refresh_actions()
         self._remember(Path(path))
 
     def _case_finished(self, key, fields) -> None:
+        if self._run_mode == "single":
+            self.single_tab.set_status(str(fields.get("status", "")))
+            self._refresh_single_log()
+            return
         if self.study_index is not None:
             self.queue_table.set_cases(self.study_index.cases)
         self._refresh_status()
 
     def _case_progress(self, key, value) -> None:
+        if self._run_mode == "single":
+            return
         self._refresh_log()
 
     def _all_finished(self) -> None:
+        """Finish the active mode without changing the other mode's widgets."""
+        mode = self._run_mode
         self._running = False
-        self.run_action.setEnabled(self.configuration is not None and self.configuration.runnable)
-        self.stop_action.setEnabled(False)
         self._log_timer.stop()
+        self._single_log_timer.stop()
+        if mode == "single":
+            self.single_tab.set_running(False)
+            case = self.study_index.cases[0] if self.study_index is not None else {}
+            self.single_tab.set_status(str(case.get("status", "failed")))
+            self.single_tab.set_result(self._single_result_text(case))
+            self._run_mode = None
+            self._refresh_actions()
+            return
+        self._run_mode = None
+        self._refresh_actions()
+
+    def _single_result_text(self, case: dict) -> str:
+        """Return the lap time, record path, or error text for one finished case."""
+        summary = case.get("summary") or {}
+        lap_time = summary.get("lap_time")
+        if lap_time is not None:
+            return f"lap time {lap_time} s"
+        record = case.get("run_record")
+        if record:
+            base = self.study_index.directory if self.study_index is not None else Path()
+            return str(base / record)
+        return str(case.get("error") or "")
 
     def _refresh_log(self) -> None:
+        if self._run_mode == "single":
+            return
         if self.study_index is None:
             return
         row = self.queue_table.currentRow()
@@ -367,6 +606,8 @@ class MainWindow(QMainWindow):
             self.log_view.setPlainText("\n".join(log.read_text(errors="replace").splitlines()[-2000:]))
 
     def _refresh_status(self) -> None:
+        if self._run_mode == "single":
+            return
         counts = {}
         if self.study_index is not None:
             for case in self.study_index.cases:

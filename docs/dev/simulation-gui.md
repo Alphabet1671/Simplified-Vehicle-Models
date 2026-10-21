@@ -82,7 +82,29 @@ Add the sweep to a study:
 
 The sweep members must fit exactly one vehicle slot. Use one sweep dimension per slot. Do not add two sweep targets to one component.
 
+## Single run
+
+Use a single run to run one case. A single run does not use a study.
+
+1. Open a vehicle model.
+2. Open the **Single Run** tab.
+3. Select a **Vehicle model**.
+4. Select a **Track**.
+5. Select an **Export folder**.
+6. Select **Go** or press `F5`.
+
+The default export folder is `runs/`. The GUI remembers the last export folder. The export folder
+must exist. The GUI refuses a folder inside `models/`, except `models/sweeps/`.
+
+The GUI writes the case to `<export folder>/single-run_<YYYYmmdd-HHMMSS>/`. The layout is the
+same as a one-case study. The **Queue** tab and the **Log** tab do not change during a single run.
+The **Single Run** tab shows the status, the progress, the result, and the log.
+
+Select **Stop** to cancel the single run.
+
 ## Run a study
+
+Use a study to run several cases from one definition.
 
 The GUI supports two modes:
 
@@ -91,13 +113,13 @@ The GUI supports two modes:
 
 The GUI warns when a study has more than 50 cases. It refuses a study above 500 cases. The study name must contain 1 to 40 ASCII letters, numbers, `_`, or `-` characters.
 
-Select **Run** or press `F5`. Set **Parallel cases** to choose the maximum concurrent cases. Select **Stop** to cancel pending cases and terminate active cases. The GUI validates each generated formulation before it starts the case. It writes the case status as `pending`, `invalid`, `running`, `completed`, `rejected`, `timed_out`, `cancelled`, or `failed`.
+Select **Build Cases** to prepare and validate the cases. Select **Run Study** to start them. The **Queue** tab shows the case status and progress. Set **Parallel cases** to choose the maximum concurrent cases. Select **Stop** to cancel pending cases and terminate active cases. The GUI validates each generated formulation before it starts the case. It writes the case status as `pending`, `invalid`, `running`, `completed`, `rejected`, `timed_out`, `cancelled`, or `failed`.
 
 A planar run has a wall limit of 300 s. The GUI passes the timeout to the runner. The runner rejects a planar timeout above 300 s. The `14dof-simple` model can use a longer user-selected timeout.
 
 ## Output layout
 
-The default output root is `runs/`. Each study uses a directory named `<study-name>_<YYYYMMDD-HHMMSS>`. The GUI creates these paths:
+The default output root is `runs/`. Each study uses a directory named `<study-name>_<YYYYMMDD-HHMMSS>`. A single run uses a directory named `single-run_<YYYYmmdd-HHMMSS>`. The GUI creates these paths:
 
 ```text
 runs/<study-name>_<YYYYmmdd-HHMMSS>/

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Vertical 14-DOF formulation using the dedicated IEM24 Murphy 14DoF assembly. -->
+<model schema-version="1.0" id="iem24-murphy-real-14dof-formulation" type="vehicle-formulation" subtype="14dof-simple">
+    <source ref="../vehicles/iem24_murphy_real_14dof.xml" />
+    <requires capability="steady-combined-slip" />
+    <requires capability="aero-loads" />
+    <requires capability="drive-force-limit" />
+    <requires capability="suspension-forces" />
+    <requires capability="transient-combined-slip" />
+</model>

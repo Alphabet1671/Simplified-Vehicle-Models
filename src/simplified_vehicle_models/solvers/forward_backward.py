@@ -178,6 +178,7 @@ def solve_lap(
     root_tolerance: float = 1.0e-8,
     drive_cache_policy: DriveCachePolicy = DriveCachePolicy(),
     _storage_trace: FloatArray | None = None,
+    conservative_transition: bool | None = None,
 ) -> LapResult:
     """Calculate a minimum-time speed profile on a prescribed path."""
 
@@ -234,12 +235,20 @@ def solve_lap(
     else:
         raise ValueError(f"unsupported lap mode {mode!r}")
 
+    if conservative_transition is None:
+        conservative_transition = bool(track.is_closed)
+    elif not isinstance(conservative_transition, (bool, np.bool_)):
+        raise ValueError("conservative_transition must be a boolean")
+
     converged = False
     maximum_change = math.inf
     iterations = 0
     for iterations in range(1, maximum_iterations + 1):
         previous = speed.copy()
-        _forward_sweep(vehicle, track, speed, speed_limit, _storage_trace, root_tolerance, drive_cache)
+        _forward_sweep(
+            vehicle, track, speed, speed_limit, _storage_trace, root_tolerance,
+            drive_cache, conservative_transition=conservative_transition,
+        )
         if mode is LapMode.FLYING:
             _apply_periodic_boundary(speed)
         else:
@@ -301,12 +310,13 @@ def _forward_sweep(
     storage_trace: FloatArray | None = None,
     root_tolerance: float = 1.0e-8,
     drive_cache: DriveCache | None = None,
+    conservative_transition: bool = True,
 ) -> None:
     for index, segment_length in enumerate(track.segment_length):
         start_speed = float(speed[index])
         upper_speed = float(speed[index + 1])
         cap = float(speed_limit[index + 1])
-        if upper_speed <= start_speed:
+        if conservative_transition and upper_speed <= start_speed:
             speed[index + 1] = min(upper_speed, cap)
             continue
         # The conservative magnitude bounds the segment.
@@ -330,10 +340,25 @@ def _forward_sweep(
                 + 2.0 * acceleration_limit * segment_length
             )
 
-        speed[index + 1] = min(
-            _fixed_point_transition(reachable, upper_speed, root_tolerance),
-            cap,
-        )
+        if conservative_transition:
+            speed[index + 1] = min(
+                _fixed_point_transition(reachable, upper_speed, root_tolerance),
+                cap,
+            )
+            continue
+        # An open course has no periodic corner-speed bound at the next node.
+        # Start the fixed point at the current speed so it can increase. The
+        # conservative iteration above starts from the previous upper bound and
+        # therefore only decreases, which under-predicts open-course acceleration.
+        candidate = start_speed
+        for _ in range(50):
+            updated = min(reachable(candidate), cap)
+            if abs(updated - candidate) <= root_tolerance:
+                break
+            candidate = updated
+        else:
+            raise RuntimeError("open-course transition did not converge")
+        speed[index + 1] = candidate
 
 
 def _backward_sweep(

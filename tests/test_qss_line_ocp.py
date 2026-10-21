@@ -362,6 +362,17 @@ class LadderTest(unittest.TestCase):
         solution = solve_line(track, corridor, surface, build_mesh(track, 2.0), settings)
         self.assertAlmostEqual(solution.lap_time, reference, delta=0.02 * reference)
 
+    def test_launch_time_integrates_from_rest_to_the_ocp_start_speed(self):
+        from tools.tracks.open_course import build_course, straight, write_course
+        from simplified_vehicle_models.solvers.qss_line_ocp import launch_time, QssSettings
+
+        course = build_course([straight(20.0)])
+        xml_path, _ = write_course(course, self.directory, "launch", "launch", "Launch")
+        track = load_track(xml_path)
+        surface = _flat_surface(25.0, acceleration=3.0)
+        value = launch_time(track, surface, QssSettings())
+        self.assertAlmostEqual(value, 0.5 / 3.0, places=6)
+
     def test_open_ladder_uses_stage_lateral_regularisation(self):
         from unittest.mock import patch
         from simplified_vehicle_models.solvers import qss_line_ocp

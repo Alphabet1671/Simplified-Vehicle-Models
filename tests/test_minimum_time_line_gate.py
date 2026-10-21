@@ -28,6 +28,9 @@ class GateCheckTest(unittest.TestCase):
     def test_free_line_check_rejects_a_slower_line(self) -> None:
         self.assertTrue(check_free_line_not_slower(centreline=61.14, free=58.90))
         self.assertFalse(check_free_line_not_slower(centreline=61.14, free=61.60))
+        self.assertFalse(check_free_line_not_slower(centreline=61.14, free=61.20))
+        self.assertTrue(check_free_line_not_slower(centreline=61.14, free=61.20, tolerance=0.002))
+        self.assertFalse(check_free_line_not_slower(centreline=61.14, free=61.14, tolerance=-0.001))
 
     def test_containment_check_tests_both_edges(self) -> None:
         minimum = np.array([-1.0, -2.0, -1.0])

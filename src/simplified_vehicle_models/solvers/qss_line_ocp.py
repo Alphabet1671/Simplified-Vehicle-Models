@@ -172,7 +172,8 @@ def _bilinear(grid, x_axis, y_axis, x: float, y: float) -> float:
     )
 
 
-def capability_envelope_time(track, surface, settings: QssSettings, *, step: float = 0.05) -> float:
+def capability_envelope_time(track, surface, settings: QssSettings, *, step: float = 0.05,
+                             start_speed: float | None = None) -> float:
     """Integrate the sampled capability along an open centreline.
 
     This is an independent one-dimensional reference for the open-track
@@ -190,7 +191,12 @@ def capability_envelope_time(track, surface, settings: QssSettings, *, step: flo
         track.curvature, track.distance, positions,
         closed=False, period=length,
     )
-    speed = max(float(settings.start_speed), float(settings.minimum_speed))
+    if start_speed is None:
+        speed = max(float(settings.start_speed), float(settings.minimum_speed))
+    else:
+        if not math.isfinite(start_speed) or start_speed < 0.0:
+            raise ValueError("start_speed must be finite and nonnegative")
+        speed = float(start_speed)
     elapsed = 0.0
     for index in range(count):
         ds = float(positions[index + 1] - positions[index])
@@ -208,6 +214,35 @@ def capability_envelope_time(track, surface, settings: QssSettings, *, step: flo
         elapsed += ds / mean_speed
         speed = next_speed
     return elapsed
+
+
+def launch_time(track, surface, settings: QssSettings, *, samples: int = 200) -> float:
+    """Return the time to accelerate from rest to the OCP start speed.
+
+    The distance-domain OCP cannot use zero speed because its dynamics divide by
+    speed. For an open standing-start course the reported time must include the
+    omitted launch interval.
+    """
+    target = max(float(settings.start_speed), float(settings.minimum_speed))
+    if target <= 0.0:
+        return 0.0
+    if samples < 1:
+        raise ValueError("samples must be positive")
+    curvature = float(track_sample(
+        track.curvature, track.distance, [float(track.distance[0])],
+        closed=bool(track.is_closed), period=float(track.lap_length),
+    )[0])
+    speeds = np.linspace(0.0, target, samples + 1)
+    inverse = []
+    for speed in speeds:
+        acceleration = _bilinear(
+            surface.acceleration_max, surface.speed, surface.curvature,
+            speed, curvature,
+        )
+        if acceleration <= 0.0:
+            raise ValueError("capability surface cannot launch the vehicle")
+        inverse.append(1.0 / acceleration)
+    return float(np.trapezoid(np.asarray(inverse), speeds))
 
 
 def build_ocp(track, corridor, surface, mesh, settings: QssSettings):

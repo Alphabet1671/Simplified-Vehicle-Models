@@ -22,9 +22,15 @@ def check_zero_corridor_matches_envelope(*, open_loop: float, ocp: float, tolera
                 and abs(ocp - open_loop) <= tolerance * abs(open_loop))
 
 
-def check_free_line_not_slower(*, centreline: float, free: float) -> bool:
-    """The free line must not be slower than the centreline."""
-    return bool(_valid_times(centreline, free) and free <= centreline)
+def check_free_line_not_slower(*, centreline: float, free: float, tolerance: float = 0.0) -> bool:
+    """The free line must not be slower than the centreline.
+
+    ``tolerance`` is a relative allowance for numerical equality, which is
+    needed on a straight open course where the free line and centreline optima
+    coincide.
+    """
+    return bool(_valid_times(centreline, free) and _valid_tolerance(tolerance)
+                and free <= centreline * (1.0 + tolerance))
 
 
 def check_corridor_containment(offset, minimum, maximum) -> bool:

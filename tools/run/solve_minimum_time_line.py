@@ -18,8 +18,8 @@ from simplified_vehicle_models.formulations.point_mass import point_mass_view_of
 from simplified_vehicle_models.formulations.point_mass_capability import capability_hash, load_capability_surface
 from simplified_vehicle_models.solvers.forward_backward import solve_lap
 from simplified_vehicle_models.solvers.qss_line_ocp import (
-    QssSettings, build_mesh, capability_envelope_time, solve_line, solve_ladder,
-    track_sample,
+    QssSettings, build_mesh, capability_envelope_time, launch_time, solve_line,
+    solve_ladder, track_sample,
 )
 from simplified_vehicle_models.results.traces import LapMode
 from simplified_vehicle_models.tracks.corridor import Corridor, corridor_from_track
@@ -197,10 +197,15 @@ def run(args) -> dict:
     lap_mode = LapMode.FLYING if track.is_closed else LapMode.STANDING_START
     print("Solving centreline envelope...", flush=True)
     centreline_lap = solve_lap(vehicle, track, lap_mode)
+    seed_lap = (
+        centreline_lap if track.is_closed
+        else solve_lap(vehicle, track, lap_mode, conservative_transition=True)
+    )
     zero_corridor = Corridor(corridor.distance, np.zeros_like(corridor.minimum), np.zeros_like(corridor.maximum), corridor.provenance, corridor.is_closed)
     settings = QssSettings()
+    launch = 0.0 if track.is_closed else launch_time(track, surface, settings)
     zero_mesh = build_mesh(track, 1.0 if track.is_closed else 2.0)
-    zero_seed = None if track.is_closed else _open_envelope_seed(track, zero_mesh, centreline_lap, settings)
+    zero_seed = None if track.is_closed else _open_envelope_seed(track, zero_mesh, seed_lap, settings)
     print("Solving zero-corridor control...", flush=True)
     zero_solution = solve_line(track, zero_corridor, surface, zero_mesh, settings, seed=zero_seed)
     print(f"Zero-corridor control completed: {zero_solution.lap_time:.6f} s", flush=True)
@@ -218,7 +223,7 @@ def run(args) -> dict:
     print(f"Solving free-line mesh ladder ({'/'.join(f'{s:g}' for s in spacings)} m)...", flush=True)
     ladder_seed = None
     if not track.is_closed:
-        ladder_seed = _open_envelope_seed(track, build_mesh(track, spacings[0]), centreline_lap, settings)
+        ladder_seed = _open_envelope_seed(track, build_mesh(track, spacings[0]), seed_lap, settings)
     stages = solve_ladder(
         track, corridor, surface, settings, spacings=spacings,
         seed=ladder_seed, stage_callback=record_stage,
@@ -249,16 +254,21 @@ def run(args) -> dict:
         maximum = track_sample(corridor.maximum, corridor.distance, unique_mesh,
                                closed=False, period=float(track.lap_length))
     containment = check_corridor_containment(containment_offset, minimum, maximum)
+    zero_total = zero_solution.lap_time + launch
+    free_total = finest.lap_time + launch
     zero_reference = (
         centreline_lap.lap_time if track.is_closed
-        else capability_envelope_time(track, surface, settings)
+        else capability_envelope_time(track, surface, settings, start_speed=0.0)
     )
     checks = {
-        "zero_corridor_matches_envelope": check_zero_corridor_matches_envelope(open_loop=zero_reference, ocp=zero_solution.lap_time, tolerance=0.01),
-        "free_line_not_slower": check_free_line_not_slower(centreline=centreline_lap.lap_time, free=finest.lap_time),
+        "zero_corridor_matches_envelope": check_zero_corridor_matches_envelope(open_loop=zero_reference, ocp=zero_total, tolerance=0.01),
+        "free_line_not_slower": check_free_line_not_slower(
+            centreline=centreline_lap.lap_time, free=free_total,
+            tolerance=0.0 if track.is_closed else 0.002,
+        ),
         "corridor_containment": containment,
         "mesh_convergence": mesh_ok,
-        "replay_agreement": check_replay_agreement(ocp=finest.lap_time, replay=replay.lap_time, tolerance=0.01),
+        "replay_agreement": check_replay_agreement(ocp=free_total, replay=replay.lap_time, tolerance=0.01),
     }
     summary = {
         "track": str(Path(args.track)), "track_closed": bool(track.is_closed),
@@ -267,10 +277,13 @@ def run(args) -> dict:
         "conditional_result": track.width_provenance != "surveyed", "margin_m": args.margin,
         "mesh_spacing_m": float(spacings[-1]), "centreline_envelope_s": centreline_lap.lap_time,
         "zero_corridor_reference_s": zero_reference,
+        "launch_time_s": launch,
         "ocp_zero_corridor_s": zero_solution.lap_time, "ocp_free_line_s": finest.lap_time,
+        "ocp_zero_corridor_including_launch_s": zero_total,
+        "ocp_free_line_including_launch_s": free_total,
         "replay_lap_s": replay.lap_time,
-        "free_line_gain_s": centreline_lap.lap_time - finest.lap_time,
-        "free_line_gain_percent": 100.0 * (centreline_lap.lap_time - finest.lap_time) / centreline_lap.lap_time,
+        "free_line_gain_s": centreline_lap.lap_time - free_total,
+        "free_line_gain_percent": 100.0 * (centreline_lap.lap_time - free_total) / centreline_lap.lap_time,
         "stages": [{"spacing_m": spacing, "iterations": stage.iterations, "wall_seconds": wall_seconds, "lap_time_s": stage.lap_time} for spacing, stage, wall_seconds in zip(spacings, stages, stage_wall_seconds)],
         "maximum_violation": finest.maximum_violation, "checks": checks,
     }

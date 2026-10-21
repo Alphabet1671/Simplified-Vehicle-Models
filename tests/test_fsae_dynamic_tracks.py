@@ -88,6 +88,21 @@ class FsaeDynamicTrackTests(unittest.TestCase):
         self.assertGreater(right, 4.0)
         self.assertLess(right, 8.0)
 
+    def test_open_standing_start_can_increase_speed(self) -> None:
+        vehicle = load_point_mass_vehicle(REPOSITORY_ROOT / "models/formulations/murphy_point_mass.xml")
+        track = load_track(ACCELERATION)
+        corrected = solve_lap(
+            vehicle, track, LapMode.STANDING_START, tolerance=1.0e-5,
+            conservative_transition=False,
+        )
+        conservative = solve_lap(
+            vehicle, track, LapMode.STANDING_START, tolerance=1.0e-5,
+            conservative_transition=True,
+        )
+        self.assertTrue(corrected.converged)
+        self.assertTrue(conservative.converged)
+        self.assertLess(corrected.lap_time, conservative.lap_time)
+
 
 if __name__ == "__main__":
     unittest.main()

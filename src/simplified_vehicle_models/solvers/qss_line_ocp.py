@@ -258,17 +258,23 @@ def _offset_basis(track, mesh, spacing: float | None):
     length = float(track.lap_length)
     controls = max(int(math.ceil(length / spacing)), 2)
     if track.is_closed:
-        positions = np.linspace(0.0, length, controls, endpoint=False)
-        scaled = (mesh % length) / length * controls
-        lower = np.floor(scaled).astype(int) % controls
-        weight = scaled - np.floor(scaled)
-        upper = (lower + 1) % controls
-    else:
-        positions = np.linspace(0.0, length, controls)
-        scaled = mesh / length * (controls - 1)
-        lower = np.clip(np.floor(scaled).astype(int), 0, controls - 2)
-        weight = scaled - lower
-        upper = lower + 1
+        # A periodic harmonic basis is smooth across the wrap. A piecewise-linear
+        # periodic basis has a slope kink there, which the free-lateral NLP does
+        # not tolerate.
+        harmonics = max(1, int(round(length / (2.0 * spacing))))
+        controls = 2 * harmonics + 1
+        angle = 2.0 * math.pi * np.asarray(mesh, dtype=float) / length
+        columns = [np.ones(mesh.size, dtype=float)]
+        for order in range(1, harmonics + 1):
+            columns.append(np.cos(order * angle))
+            columns.append(np.sin(order * angle))
+        basis = np.column_stack(columns)
+        return basis, None
+    positions = np.linspace(0.0, length, controls)
+    scaled = mesh / length * (controls - 1)
+    lower = np.clip(np.floor(scaled).astype(int), 0, controls - 2)
+    weight = scaled - lower
+    upper = lower + 1
     basis = np.zeros((mesh.size, controls), dtype=float)
     rows = np.arange(mesh.size)
     basis[rows, lower] = 1.0 - weight
@@ -308,6 +314,15 @@ def build_ocp(track, corridor, surface, mesh, settings: QssSettings):
         ]
         offset_lower = np.full(control_count, float(np.min(nlo)))
         offset_upper = np.full(control_count, float(np.max(nhi)))
+        if control_distance is None:
+            if np.allclose(nlo, 0.0) and np.allclose(nhi, 0.0):
+                offset_lower = np.zeros(control_count)
+                offset_upper = np.zeros(control_count)
+            else:
+                width = max(float(np.max(np.abs(nlo))), float(np.max(np.abs(nhi))))
+                limit = 2.0 * width + 1.0
+                offset_lower = np.full(control_count, -limit)
+                offset_upper = np.full(control_count, limit)
     psi = [ca.MX.sym(f"psi_{i}") for i in range(nodes)]
     v = [ca.MX.sym(f"v_{i}") for i in range(nodes)]
     a = [ca.MX.sym(f"a_{i}") for i in range(nodes)]
@@ -419,6 +434,9 @@ def initial_guess(track, corridor, surface, mesh, settings: QssSettings) -> Floa
     basis, control_distance = _offset_basis(track, mesh, settings.offset_control_spacing)
     if basis is None:
         offset=.5*(sample(corridor.minimum)+sample(corridor.maximum))
+    elif control_distance is None:
+        center=.5*(sample(corridor.minimum)+sample(corridor.maximum))
+        offset=np.linalg.lstsq(basis,center,rcond=None)[0]
     else:
         offset=.5*(track_sample(corridor.minimum,corridor.distance,control_distance,closed=closed,period=float(track.lap_length))
                    +track_sample(corridor.maximum,corridor.distance,control_distance,closed=closed,period=float(track.lap_length)))
@@ -570,10 +588,17 @@ def project_seed(coarse: QssSolution, mesh, *, is_closed: bool = True,
         if track is None:
             raise ValueError("track is required for a reduced offset basis")
         basis, control_distance = _offset_basis(track, mesh, control_spacing)
-        offset=track_sample(
-            np.asarray(coarse.offset,dtype=float), source, control_distance,
-            closed=is_closed, period=float(track.lap_length),
-        )
+        if control_distance is None:
+            values=track_sample(
+                np.asarray(coarse.offset,dtype=float), source, mesh,
+                closed=is_closed, period=float(track.lap_length),
+            )
+            offset=np.linalg.lstsq(basis,values,rcond=None)[0]
+        else:
+            offset=track_sample(
+                np.asarray(coarse.offset,dtype=float), source, control_distance,
+                closed=is_closed, period=float(track.lap_length),
+            )
     def project_midpoint(values):
         if values is None:
             return np.zeros(count)

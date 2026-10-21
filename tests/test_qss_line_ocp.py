@@ -424,6 +424,28 @@ class LadderTest(unittest.TestCase):
             )
         self.assertEqual(captured, [1.0e-6, 1.0e-4, 1.0e-3])
 
+    def test_closed_reduced_basis_is_periodic_and_fixed_for_zero_corridor(self):
+        from simplified_vehicle_models.solvers.qss_line_ocp import (
+            build_mesh, build_ocp, initial_guess, QssSettings,
+        )
+        from simplified_vehicle_models.tracks.corridor import Corridor
+
+        track = load_track(_write_circle_track(self.directory, radius=40.0, nodes=72, half_width=3.0))
+        base = corridor_from_track(track)
+        zero = Corridor(base.distance, np.zeros_like(base.minimum), np.zeros_like(base.maximum), "assumed", True)
+        settings = QssSettings(offset_control_spacing=10.0)
+        mesh = build_mesh(track, 4.0)
+        built = build_ocp(track, zero, _flat_surface(25.0), mesh, settings)
+        basis = built["offset_basis"]
+        self.assertEqual(basis.shape[1], built["control_count"])
+        self.assertEqual(built["control_count"] % 2, 1)
+        np.testing.assert_allclose(basis[0], basis[-1], atol=1.0e-12)
+        controls = built["control_count"]
+        np.testing.assert_allclose(built["x_lower"][:controls], 0.0)
+        np.testing.assert_allclose(built["x_upper"][:controls], 0.0)
+        seed = initial_guess(track, zero, _flat_surface(25.0), mesh, settings)
+        self.assertEqual(seed.size, built["nlp"]["x"].numel())
+
     def test_reduced_basis_ladder_restarts_from_default_seed(self):
         from unittest.mock import patch
         from simplified_vehicle_models.solvers import qss_line_ocp

@@ -161,11 +161,21 @@ class TrackTab(QWidget):
         current = self.track()
         if current is not None and current.resolve() == target:
             return
+        self._select(target)
+
+    def _select(self, target: Path) -> bool:
+        """Validate and select ``target``; warn and keep the old track on error."""
+        try:
+            load_track(target)
+        except ValueError as error:
+            _warn(self, "Track model", str(error))
+            return False
         index = self._index_of(target)
         if index < 0:
             self._combo.addItem(target.stem, str(target))
             index = self._combo.count() - 1
         self._combo.setCurrentIndex(index)
+        return True
 
     def _index_of(self, target: Path) -> int:
         for index in range(self._combo.count()):
@@ -213,11 +223,5 @@ class TrackTab(QWidget):
         path, _ = QFileDialog.getOpenFileName(
             self, "Select track", filter="XML (*.xml)"
         )
-        if not path:
-            return
-        target = Path(path).resolve()
-        index = self._index_of(target)
-        if index < 0:
-            self._combo.addItem(target.stem, str(target))
-            index = self._combo.count() - 1
-        self._combo.setCurrentIndex(index)
+        if path:
+            self._select(Path(path).resolve())

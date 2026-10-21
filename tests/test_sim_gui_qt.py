@@ -163,6 +163,7 @@ class TrackTabTests(unittest.TestCase):
     def test_invalid_file_warns_and_restores(self):
         before_track = self.tab.track()
         before_points = self.tab.preview.points()
+        before_count = self.tab._combo.count()
         emitted = []
         self.tab.trackChanged.connect(emitted.append)
         with tempfile.TemporaryDirectory() as tmp:
@@ -177,6 +178,18 @@ class TrackTabTests(unittest.TestCase):
         self.assertEqual(self.tab.track(), before_track)
         self.assertEqual(self.tab.preview.points(), before_points)
         self.assertEqual(emitted, [])
+        self.assertEqual(self.tab._combo.count(), before_count)
+
+    def test_preview_paints_the_centerline(self):
+        from PyQt6.QtGui import QImage
+        preview = self.tab.preview
+        preview.resize(320, 240)
+        image = QImage(320, 240, QImage.Format.Format_RGB32)
+        image.fill(0)
+        preview.render(image)
+        colours = {image.pixel(x, y)
+                   for x in range(0, 320, 4) for y in range(0, 240, 4)}
+        self.assertGreater(len(colours), 1)
 
     def test_track_changed_emits_the_resolved_path(self):
         self.tab.set_track(REPOSITORY_ROOT / "models/tracks/2024_michigan_endurance_closed.xml")

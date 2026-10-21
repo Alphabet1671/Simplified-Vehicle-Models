@@ -28,6 +28,14 @@ from tools.gates.check_minimum_time_line import (
 )
 
 
+def _validate_track_for_line_pipeline(track) -> None:
+    """Reject inputs outside the closed, edged track scope before solver work."""
+    if not track.is_closed:
+        raise ValueError("minimum-time line pipeline requires a closed track")
+    if not track.has_edges:
+        raise ValueError("minimum-time line pipeline requires a lateral corridor")
+
+
 def _validate_output_paths(source: Path, output: Path) -> None:
     """Reject generated artifacts that would overwrite source track assets."""
     root = ET.parse(source).getroot()
@@ -156,9 +164,10 @@ def _write_line(path: Path, solution) -> None:
 def run(args) -> dict:
     output = args.output.resolve()
     _validate_output_paths(Path(args.track).resolve(), output)
-    output.mkdir(parents=True, exist_ok=True)
     track = load_track(args.track)
+    _validate_track_for_line_pipeline(track)
     corridor = corridor_from_track(track, margin=args.margin)
+    output.mkdir(parents=True, exist_ok=True)
     compiled = compile_formulation(str(args.formulation))
     vehicle = point_mass_view_of_planar(compiled.model)
     surface = load_capability_surface(args.surface)

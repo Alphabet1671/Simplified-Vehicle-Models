@@ -9,7 +9,7 @@ import numpy as np
 from PyQt6.QtCore import QSettings, Qt, QThread, QObject, pyqtSignal
 from PyQt6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout, QGroupBox,
                              QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton,
-                             QSplitter, QTableView, QTabWidget, QVBoxLayout, QWidget, QPlainTextEdit)
+                             QSplitter, QTableView, QTabWidget, QVBoxLayout, QWidget, QPlainTextEdit, QScrollArea)
 
 from tools.gui_common import REPOSITORY_ROOT
 from tools.gui_common.files import protected_directory_problem
@@ -18,6 +18,7 @@ from tools.track_gui.design import KINDS, PRESETS, CourseDesign
 from tools.track_gui.export import SaveRefused, describe_course, save_open_course
 from tools.track_gui.qt.plots import CoursePlot, CurvaturePlot
 from tools.track_gui.qt.section_table import SectionTableModel
+from tools.track_gui.mat_channels import ChannelSelection, list_channels
 
 DEFAULT_OUTPUT = REPOSITORY_ROOT / "tracks_out"
 
@@ -204,6 +205,7 @@ class DesignTab(QWidget):
             self.course_plot.set_course([], [])
             self.curvature_plot.set_course([], [])
             self.save_button.setEnabled(False)
+            if hasattr(self,"transfer_button"): self.transfer_button.setEnabled(False)
             return
         figures = describe_course(self.course)
         self.problem.setText("")
@@ -217,6 +219,7 @@ class DesignTab(QWidget):
         self.course_plot.set_course(course.x_north, course.y_east, marks)
         self.curvature_plot.set_course(course.distance, course.curvature, course.boundaries)
         self.save_button.setEnabled(True)
+        if hasattr(self,"transfer_button"): self.transfer_button.setEnabled(True)
 
     def save(self) -> None:
         if self.course is None:
@@ -270,6 +273,22 @@ class DesignTab(QWidget):
                 QMessageBox.warning(self, "Not saved", str(error))
 
 
+class _DiscoveryWorker(QObject):
+    done = pyqtSignal(str, object, int)
+    failed = pyqtSignal(str, str, int)
+
+    def __init__(self, path: str, generation: int) -> None:
+        super().__init__()
+        self.path = path
+        self.generation = generation
+
+    def run(self) -> None:
+        try:
+            self.done.emit(self.path, list_channels(self.path), self.generation)
+        except Exception as error:
+            self.failed.emit(self.path, str(error), self.generation)
+
+
 class _BuildWorker(QObject):
     done = pyqtSignal(object)
     failed = pyqtSignal(str)
@@ -293,6 +312,11 @@ class ClosedTab(QWidget):
         self.geometry = None
         self.settings = None
         self.thread: QThread | None = None
+        self.discovery_thread: QThread | None = None
+        self._discovery_worker = None
+        self._discovery_generation = 0
+        self._discovery_path: str | None = None
+        self._discovery_required = False
         self.telemetry = QLineEdit()
         browse = QPushButton("Browse…")
         browse.clicked.connect(self._browse)
@@ -301,6 +325,20 @@ class ClosedTab(QWidget):
         self.spacing = _spin(0.05, 10.0, 0.5, 2, 0.1)
         self.smoothing = _spin(0.0, 50.0, 2.0, 2, 0.5)
         self.max_radius = _spin(1.0, 1e5, 300.0, 1, 10.0)
+        self.x_channel, self.y_channel = QComboBox(), QComboBox()
+        self.mode = QComboBox(); self.mode.addItems(["velocity", "position", "gps"])
+        self.x_scale, self.y_scale = _spin(-1e6,1e6,1.0,6,0.1), _spin(-1e6,1e6,1.0,6,0.1)
+        self.x_unknown, self.y_unknown = QCheckBox("Allow unknown x units"), QCheckBox("Allow unknown y units")
+        self.channel_info = QLabel("Legacy defaults: VNorth / VEast; use Discover to inspect MAT metadata.")
+        self.channel_info.setWordWrap(True)
+        self.discover_button = QPushButton("Discover channels")
+        self.discover_button.clicked.connect(self.discover_channels)
+        self.multi_lap = QCheckBox("Detect and average multiple laps")
+        self.return_radius = _spin(.1,1e4,12.,2,1.)
+        self.minimum_travel = _spin(1,1e6,100.,1,10.)
+        self.minimum_duration = _spin(.1,1e5,15.,1,1.)
+        self.maximum_duration = _spin(.2,1e5,240.,1,5.)
+        self.deviation_limit = _spin(.01,1e4,8.,2,1.)
         self.build_button = QPushButton("Build")
         self.build_button.clicked.connect(self.build)
         self.report = QPlainTextEdit()
@@ -311,6 +349,7 @@ class ClosedTab(QWidget):
         self.save_bar = SaveBar("my_closed_track")
         self.save_button = QPushButton("Save track")
         self.save_button.setEnabled(False)
+        self.transfer_button=QPushButton("Send to viewer"); self.transfer_button.setEnabled(False)
         self.save_button.clicked.connect(self.save)
         form = QFormLayout()
         row = QHBoxLayout()
@@ -322,6 +361,13 @@ class ClosedTab(QWidget):
         form.addRow("Node spacing (m)", self.spacing)
         form.addRow("Smoothing length (m)", self.smoothing)
         form.addRow("Maximum radius (m)", self.max_radius)
+        form.addRow(self.discover_button)
+        form.addRow("North/x channel", self.x_channel); form.addRow("East/y channel", self.y_channel)
+        form.addRow("Coordinate mode", self.mode); form.addRow("x scale", self.x_scale); form.addRow("y scale", self.y_scale)
+        form.addRow(self.x_unknown); form.addRow(self.y_unknown); form.addRow(self.channel_info)
+        form.addRow(self.multi_lap); form.addRow("Return radius (m)", self.return_radius)
+        form.addRow("Minimum travel (m)", self.minimum_travel); form.addRow("Minimum lap (s)", self.minimum_duration)
+        form.addRow("Maximum lap (s)", self.maximum_duration); form.addRow("Deviation limit (m)", self.deviation_limit)
         left = QVBoxLayout()
         left.addLayout(form)
         left.addWidget(self.build_button)
@@ -329,37 +375,196 @@ class ClosedTab(QWidget):
         left.addWidget(self.report, 1)
         left.addWidget(self.save_bar)
         left.addWidget(self.save_button)
+        left.addWidget(self.transfer_button)
+        self.transfer_button.clicked.connect(self.transfer_to_viewer)
         layout = QHBoxLayout(self)
         left_widget = QWidget()
         left_widget.setLayout(left)
-        layout.addWidget(left_widget, 1)
+        scroll=QScrollArea(); scroll.setWidgetResizable(True); scroll.setWidget(left_widget); scroll.setMinimumWidth(390)
+        layout.addWidget(scroll, 1)
+        self.course_plot.setMinimumSize(400,360)
         layout.addWidget(self.course_plot, 1)
+        self._build_controls=[self.telemetry,self.start,self.end,self.spacing,self.smoothing,self.max_radius,self.x_channel,self.y_channel,self.mode,self.x_scale,self.y_scale,self.x_unknown,self.y_unknown,self.multi_lap,self.return_radius,self.minimum_travel,self.minimum_duration,self.maximum_duration,self.deviation_limit]
+        for control in self._build_controls:
+            signal=getattr(control,"textChanged",None) or getattr(control,"valueChanged",None) or getattr(control,"currentIndexChanged",None) or getattr(control,"toggled",None)
+            if signal is not None: signal.connect(self._invalidate_result)
+        self.telemetry.textChanged.connect(self._telemetry_changed)
         if not closed.scipy_available():
             self.build_button.setEnabled(False)
             self.notice.setText("SciPy is not installed, so telemetry tracks cannot be built. "
                                 "Install it with: pip install -e .[forward]")
+
+    def _invalidate_result(self,*_):
+        if self.geometry is not None:
+            self.geometry=None; self.save_button.setEnabled(False); self.transfer_button.setEnabled(False)
+            self.course_plot.set_overlaps([],[]); self.course_plot.set_course([],[])
+            self.report.clear(); self.notice.setText("Build settings changed. Rebuild before saving or transfer.")
+
+    @staticmethod
+    def _canonical_path(text: str) -> str:
+        text = text.strip()
+        if not text:
+            return ""
+        try:
+            return str(Path(text).expanduser().resolve(strict=False))
+        except OSError:
+            return str(Path(text).expanduser().absolute())
+
+    def _telemetry_changed(self, text: str) -> None:
+        current = self._canonical_path(text)
+        if self._discovery_path is not None and current != self._discovery_path:
+            self._discovery_generation += 1
+            for combo in (self.x_channel, self.y_channel):
+                combo.clear()
+            self._discovery_path = None
+            self._discovery_required = True
+            self.channel_info.setText("Telemetry path changed. Discover channels for this file before building.")
 
     def _browse(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "Telemetry", "", "MATLAB files (*.mat)")
         if path:
             self.telemetry.setText(path)
 
-    def build(self) -> None:
-        if self.thread is not None:
+    def set_channels(self,channels,path=None):
+        for combo in (self.x_channel,self.y_channel): combo.clear()
+        for channel in channels:
+            label=f"{channel.name} — {channel.units or 'unknown units'} ({channel.samples}, {channel.start_time:g}–{channel.end_time:g} s)"
+            self.x_channel.addItem(label,channel.name); self.y_channel.addItem(label,channel.name)
+        if channels:
+            nx=self.x_channel.findData("VNorth"); ey=self.y_channel.findData("VEast")
+            if nx>=0:self.x_channel.setCurrentIndex(nx)
+            if ey>=0:self.y_channel.setCurrentIndex(ey)
+        self._discovery_path = self._canonical_path(self.telemetry.text()) if path is None else path
+        self._discovery_required = not channels
+        if channels:
+            self.channel_info.setText(f"Discovered {len(channels)} usable channels. Choose axes explicitly; only known default channels are preselected.")
+        else:
+            self.channel_info.setText("No usable channels found. Discover channels again or choose another file.")
+
+    def _release_discovery(self) -> None:
+        if self.discovery_thread is not None:
+            self.discovery_thread.quit()
+            self.discovery_thread.wait()
+            self.discovery_thread = None
+        self._discovery_worker = None
+        self.discover_button.setEnabled(True)
+        self.build_button.setEnabled(closed.scipy_available() and self.thread is None)
+
+    def discover_channels(self):
+        if self.thread is not None or self.discovery_thread is not None:
+            self.notice.setText("Wait for the current build or channel discovery to finish.")
             return
         self.geometry = None
         self.save_button.setEnabled(False)
+        self.transfer_button.setEnabled(False)
+        self.course_plot.set_overlaps([], [])
         self.course_plot.set_course([], [])
         self.report.clear()
-        self.settings = closed.ClosedSettings(Path(self.telemetry.text()), self.start.value(), self.end.value(),
-                                              self.spacing.value(), self.smoothing.value(), self.max_radius.value())
+        for combo in (self.x_channel, self.y_channel):
+            combo.clear()
+        self._discovery_path = None
+        self._discovery_required = True
+        self.channel_info.setText("Discovering channels for the selected telemetry file.")
+        path = self._canonical_path(self.telemetry.text())
+        self._discovery_generation += 1
+        generation = self._discovery_generation
+        if not path:
+            self._discovery_failed("", "choose a telemetry MAT file first", generation)
+            return
+        self.notice.setText("discovering channels…")
+        self.discover_button.setEnabled(False)
+        self.build_button.setEnabled(False)
+        self.discovery_thread = QThread(self)
+        worker = _DiscoveryWorker(path, generation)
+        worker.moveToThread(self.discovery_thread)
+        self.discovery_thread.started.connect(worker.run)
+        worker.done.connect(self._discovered)
+        worker.failed.connect(self._discovery_failed)
+        self._discovery_worker = worker
+        self.discovery_thread.start()
+
+    def _discovered(self, path: str, channels, generation: int) -> None:
+        self._release_discovery()
+        current = self._canonical_path(self.telemetry.text())
+        if generation != self._discovery_generation or current != path:
+            for combo in (self.x_channel, self.y_channel):
+                combo.clear()
+            self._discovery_path = None
+            self._discovery_required = True
+            self.channel_info.setText("Channel discovery was discarded. Discover channels for this file before building.")
+            self.notice.setText("Discarded channel discovery because the telemetry path changed.")
+            return
+        self.set_channels(channels, path)
+        if channels:
+            self.notice.setText(f"Discovered {len(channels)} channels.")
+        else:
+            self.notice.setText("No usable channels were found in this file.")
+
+    def _discovery_failed(self, path: str, message: str, generation: int) -> None:
+        self._release_discovery()
+        current = self._canonical_path(self.telemetry.text())
+        if path and (generation != self._discovery_generation or current != path):
+            for combo in (self.x_channel, self.y_channel):
+                combo.clear()
+            self._discovery_path = None
+            self._discovery_required = True
+            self.channel_info.setText("Channel discovery was discarded. Discover channels for this file before building.")
+            self.notice.setText("Discarded channel discovery because the telemetry path changed.")
+            return
+        for combo in (self.x_channel, self.y_channel):
+            combo.clear()
+        self._discovery_path = None
+        self._discovery_required = True
+        self.geometry = None
+        self.save_button.setEnabled(False)
+        self.transfer_button.setEnabled(False)
+        self.course_plot.set_course([], [])
+        self.report.clear()
+        self.channel_info.setText("Channel discovery failed. Discover channels for this file before building.")
+        self.notice.setText(f"Could not discover channels: {message}")
+
+    def _selection(self):
+        # Preserve the old Value-only path only for untouched legacy defaults.
+        if self.x_channel.count()==0 and self.y_channel.count()==0:
+            if self._discovery_required or self._discovery_path is not None:
+                raise ValueError("Discover channels for this telemetry file before building.")
+            if (self.mode.currentText()!="velocity" or self.x_scale.value()!=1.0 or self.y_scale.value()!=1.0
+                    or self.x_unknown.isChecked() or self.y_unknown.isChecked()):
+                raise ValueError("Discover channels before using explicit modes, scales, or unit overrides.")
+            return None
+        current = self._canonical_path(self.telemetry.text())
+        if self._discovery_path is not None and current != self._discovery_path:
+            raise ValueError("Discover channels again after changing the telemetry file.")
+        x=self.x_channel.currentData(); y=self.y_channel.currentData()
+        if not x or not y: raise ValueError("Discover channels and select valid x and y channels.")
+        if x == y: raise ValueError("Choose two different channels for north/X and east/Y.")
+        return ChannelSelection(x,y,self.mode.currentText(),self.x_scale.value(),self.y_scale.value(),self.x_unknown.isChecked(),self.y_unknown.isChecked())
+
+    def build(self) -> None:
+        if self.thread is not None:
+            return
+        if self.discovery_thread is not None:
+            self.notice.setText("Wait for channel discovery to finish before building.")
+            return
+        self.geometry = None
+        self.save_button.setEnabled(False)
+        self.transfer_button.setEnabled(False)
+        self.course_plot.set_overlaps([],[])
+        self.course_plot.set_course([], [])
+        self.report.clear()
         try:
+            selection=self._selection()
+            self.settings = closed.ClosedSettings(Path(self.telemetry.text()), self.start.value(), self.end.value(),
+                self.spacing.value(), self.smoothing.value(), self.max_radius.value(), selection,
+                self.multi_lap.isChecked(), self.return_radius.value(), self.minimum_travel.value(),
+                self.minimum_duration.value(), self.maximum_duration.value(), self.deviation_limit.value(), selection is None)
             self.settings.check()
         except ValueError as error:
             self.notice.setText(str(error))
             return
         self.notice.setText("building…")
         self.build_button.setEnabled(False)
+        self._build_token=(self.telemetry.text(),self.start.value(),self.end.value(),self.spacing.value(),self.smoothing.value(),self.max_radius.value(),self.mode.currentText(),self.x_scale.value(),self.y_scale.value(),self.x_unknown.isChecked(),self.y_unknown.isChecked(),self.multi_lap.isChecked(),self.return_radius.value(),self.minimum_travel.value(),self.minimum_duration.value(),self.maximum_duration.value(),self.deviation_limit.value(),self.x_channel.currentData(),self.y_channel.currentData())
         self.thread = QThread(self)
         worker = _BuildWorker(self.settings)
         worker.moveToThread(self.thread)
@@ -367,6 +572,7 @@ class ClosedTab(QWidget):
         worker.done.connect(self._built)
         worker.failed.connect(self._failed)
         self._worker = worker
+        for control in self._build_controls: control.setEnabled(False)
         self.thread.start()
 
     def _release(self) -> None:
@@ -374,22 +580,40 @@ class ClosedTab(QWidget):
             self.thread.quit()
             self.thread.wait()
             self.thread = None
-        self.build_button.setEnabled(closed.scipy_available())
+        self.build_button.setEnabled(closed.scipy_available() and self.discovery_thread is None)
+        self.discover_button.setEnabled(self.discovery_thread is None)
+        for control in self._build_controls: control.setEnabled(True)
 
     def _built(self, geometry) -> None:
         self._release()
+        current=(self.telemetry.text(),self.start.value(),self.end.value(),self.spacing.value(),self.smoothing.value(),self.max_radius.value(),self.mode.currentText(),self.x_scale.value(),self.y_scale.value(),self.x_unknown.isChecked(),self.y_unknown.isChecked(),self.multi_lap.isChecked(),self.return_radius.value(),self.minimum_travel.value(),self.minimum_duration.value(),self.maximum_duration.value(),self.deviation_limit.value(),self.x_channel.currentData(),self.y_channel.currentData())
+        if current!=self._build_token:
+            self.geometry=None; self.course_plot.set_course([],[]); self.save_button.setEnabled(False); self.transfer_button.setEnabled(False); self.notice.setText("Discarded build because its inputs changed."); return
         self.geometry = geometry
         figures = closed.summarize(geometry)
         self.report.setPlainText("\n".join(f"{key}: {value:.6g}" for key, value in figures.items()))
         self.course_plot.set_course(geometry["north"], geometry["east"])
+        self.course_plot.set_overlaps(geometry.get("overlap_north",[]),geometry.get("overlap_east",[]))
+        if geometry.get("lap_diagnostics"):
+            diag=geometry["lap_diagnostics"]
+            self.report.appendPlainText("\nlap_diagnostics: "+str(diag))
         self.notice.setText("built")
         self.save_button.setEnabled(True)
+        self.transfer_button.setEnabled(True)
 
     def _failed(self, message: str) -> None:
         self._release()
         self.geometry = None
         self.save_button.setEnabled(False)
+        self.course_plot.set_course([],[])
+        self.transfer_button.setEnabled(False)
         self.notice.setText(message)
+
+    def transfer_to_viewer(self):
+        if self.geometry is None:return
+        from tools.track_gui.track_ops import from_closed_geometry
+        self.window().viewer_tab.set_track(from_closed_geometry(self.geometry,maximum_radius=self.settings.maximum_radius))
+        self.window().tabs.setCurrentWidget(self.window().viewer_tab)
 
     def save(self) -> None:
         if self.geometry is None:
@@ -425,8 +649,15 @@ class MainWindow(QMainWindow):
         self.tabs = QTabWidget()
         self.design_tab = DesignTab()
         self.closed_tab = ClosedTab()
+        from tools.track_gui.qt.track_viewer import TrackViewer
+        self.viewer_tab=TrackViewer()
+        self.design_tab.transfer_button=QPushButton("Send to viewer")
+        self.design_tab.transfer_button.clicked.connect(self.transfer_design_to_viewer)
+        self.design_tab.transfer_button.setEnabled(self.design_tab.course is not None)
+        self.design_tab.save_button.parentWidget().layout().addWidget(self.design_tab.transfer_button)
         self.tabs.addTab(self.design_tab, "Design an open course")
         self.tabs.addTab(self.closed_tab, "Closed track from telemetry")
+        self.tabs.addTab(self.viewer_tab,"Track viewer")
         self.setCentralWidget(self.tabs)
         for tab in (self.design_tab, self.closed_tab):
             tab.status.connect(self.statusBar().showMessage)
@@ -436,6 +667,13 @@ class MainWindow(QMainWindow):
         else:
             self.resize(1200, 760)
 
+    def transfer_design_to_viewer(self):
+        if self.design_tab.course is None:return
+        from tools.tracks.open_course import OpenCourse
+        c=self.design_tab.course
+        self.viewer_tab.set_track(__import__('tools.track_gui.track_ops',fromlist=['from_open_course']).from_open_course(c))
+        self.tabs.setCurrentWidget(self.viewer_tab)
+
     def closeEvent(self, event) -> None:
         if self.closed_tab.thread is not None:
             if QMessageBox.question(self, "Quit", "A track build is running. Quit anyway?") != QMessageBox.StandardButton.Yes:
@@ -444,6 +682,15 @@ class MainWindow(QMainWindow):
             self.closed_tab.thread.quit()
             if not self.closed_tab.thread.wait(5000):
                 self.closed_tab.notice.setText("A track build is still running; wait for it to finish before quitting.")
+                event.ignore()
+                return
+        if self.closed_tab.discovery_thread is not None:
+            if QMessageBox.question(self, "Quit", "Channel discovery is running. Quit anyway?") != QMessageBox.StandardButton.Yes:
+                event.ignore()
+                return
+            self.closed_tab.discovery_thread.quit()
+            if not self.closed_tab.discovery_thread.wait(5000):
+                self.closed_tab.notice.setText("Channel discovery is still running; wait for it to finish before quitting.")
                 event.ignore()
                 return
         self.settings.setValue("geometry", self.saveGeometry())

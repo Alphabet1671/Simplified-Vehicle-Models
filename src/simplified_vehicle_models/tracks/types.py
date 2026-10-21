@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import numpy as np
+
 from simplified_vehicle_models.core.types import FloatArray
 
 
@@ -38,6 +40,14 @@ class PathCoordinates:
         return float(self.distance[-1] - self.distance[0])
 
 
+#: How a lateral corridor was obtained.  ``surveyed`` means the boundary was
+#: measured independently of the driver.  ``swept`` means it is the union of
+#: driven vehicle envelopes and is therefore an inner bound on the drivable
+#: area.  ``assumed`` means it is a declared constant used for sensitivity
+#: only.  A result produced from a non-surveyed corridor is conditional.
+WIDTH_PROVENANCE = ("surveyed", "swept", "assumed")
+
+
 @dataclass(frozen=True, slots=True)
 class TrackProfile:
     """Store a distance and radius track profile.
@@ -61,6 +71,37 @@ class TrackProfile:
     is_closed: bool
     title: str
     path_coordinates: PathCoordinates | None = None
+    half_width_right: FloatArray | None = None
+    half_width_left: FloatArray | None = None
+    width_provenance: str | None = None
+
+    def __post_init__(self) -> None:
+        left, right = self.half_width_left, self.half_width_right
+        if (left is None) != (right is None):
+            raise ValueError("both half widths are required together")
+        if left is None:
+            if self.width_provenance is not None:
+                raise ValueError("width provenance requires width data")
+            return
+        if self.width_provenance not in WIDTH_PROVENANCE:
+            raise ValueError(
+                f"width provenance must be one of {WIDTH_PROVENANCE}, "
+                f"not {self.width_provenance!r}"
+            )
+        for name in ("half_width_left", "half_width_right"):
+            values = np.asarray(getattr(self, name), dtype=float)
+            if values.shape != self.distance.shape:
+                raise ValueError(f"{name} must match the distance grid")
+            if not np.all(np.isfinite(values)) or np.any(values <= 0.0):
+                raise ValueError(f"{name} must be positive and finite")
+            values.setflags(write=False)
+            object.__setattr__(self, name, values)
+
+    @property
+    def has_edges(self) -> bool:
+        """Return true when the track carries a lateral corridor."""
+
+        return self.half_width_left is not None
 
     @property
     def lap_length(self) -> float:

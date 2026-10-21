@@ -80,6 +80,97 @@ def _data_path(root: ElementTree.Element, source_path: Path) -> Path:
     return (source_path.parent / data_element.get("ref", "")).resolve()
 
 
+def _role_data_path(
+    root: ElementTree.Element, role: str, source_path: Path
+) -> Path | None:
+    """Return the data reference for one named role, or None when absent."""
+
+    matches = [element for element in root.findall("./data") if element.get("role") == role]
+    if len(matches) > 1:
+        raise ValueError(f"{source_path}: data role {role!r} must be declared at most once")
+    if not matches:
+        return None
+    reference = matches[0].get("ref")
+    if not reference:
+        raise ValueError(f"{source_path}: data role {role!r} has no reference")
+    return (source_path.parent / reference).resolve()
+
+
+def _read_width_csv(path: Path) -> tuple[FloatArray, FloatArray, FloatArray]:
+    """Read a per-node lateral corridor table in metres."""
+
+    expected = ["distance", "half_width_left", "half_width_right"]
+    rows: list[tuple[float, float, float]] = []
+    try:
+        with path.open(newline="", encoding="utf-8") as handle:
+            reader = csv.DictReader(handle)
+            if reader.fieldnames != expected:
+                raise ValueError(f"{path}: width columns must be {', '.join(expected)}")
+            for row_number, row in enumerate(reader, start=2):
+                try:
+                    rows.append((
+                        float(row["distance"]),
+                        float(row["half_width_left"]),
+                        float(row["half_width_right"]),
+                    ))
+                except (KeyError, TypeError, ValueError) as error:
+                    raise ValueError(
+                        f"{path}: row {row_number} contains invalid numeric data"
+                    ) from error
+    except OSError as error:
+        raise ValueError(f"cannot read width data {path}: {error}") from error
+    if not rows:
+        raise ValueError(f"{path}: width data must contain at least one row")
+    values = np.asarray(rows, dtype=float)
+    if not np.all(np.isfinite(values)):
+        raise ValueError(f"{path}: width data must be finite")
+    if np.any(values[:, 1:] <= 0.0):
+        raise ValueError(f"{path}: half widths must be positive")
+    if np.any(np.diff(values[:, 0]) <= 0.0):
+        raise ValueError(f"{path}: width distance must increase")
+    return values[:, 0], values[:, 1], values[:, 2]
+
+
+def _width_fields(
+    root: ElementTree.Element, source_path: Path, distance: FloatArray
+) -> dict[str, object]:
+    """Return the width constructor fields for one track."""
+
+    parameters = _read_parameters(root, source_path)
+    data_path = _role_data_path(root, "width", source_path)
+    constant = parameters.get("half_width")
+    if data_path is not None and constant is not None:
+        raise ValueError(
+            f"{source_path}: declare the corridor as data or as a parameter, not both"
+        )
+    if data_path is None and constant is None:
+        return {}
+    provenance = parameters.get("width_provenance")
+    if provenance is None or not provenance.strip():
+        raise ValueError(f"{source_path}: width data needs a width_provenance")
+    if provenance.strip() not in ("surveyed", "swept", "assumed"):
+        raise ValueError(
+            f"{source_path}: width_provenance must be surveyed, swept, or assumed"
+        )
+    if data_path is not None:
+        width_distance, left, right = _read_width_csv(data_path)
+        if width_distance.shape != distance.shape or not np.allclose(
+            width_distance, distance, rtol=0.0, atol=1.0e-9
+        ):
+            raise ValueError(
+                f"{data_path}: width distance grid must match the geometry grid"
+            )
+    else:
+        half_width = _parse_positive_float(constant, "half_width", source_path)
+        left = np.full(distance.shape, half_width)
+        right = np.full(distance.shape, half_width)
+    return {
+        "half_width_left": left,
+        "half_width_right": right,
+        "width_provenance": provenance.strip(),
+    }
+
+
 def _load_distance_radius(
     source_path: Path,
     root: ElementTree.Element,
@@ -195,6 +286,7 @@ def _load_closed_xy(
         is_closed=is_closed,
         title=_title(root, source_path),
         path_coordinates=coordinates,
+        **_width_fields(root, source_path, distance),
     )
 
 
@@ -268,6 +360,7 @@ def _load_open_xy(
         is_closed=False,
         title=_title(root, source_path),
         path_coordinates=coordinates,
+        **_width_fields(root, source_path, distance),
     )
 
 

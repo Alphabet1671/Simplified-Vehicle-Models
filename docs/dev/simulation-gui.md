@@ -35,7 +35,7 @@ PYTHONPATH=src:. python3 tools/sim_gui/app.py models/vehicles/iem24_murphy_real_
 1. Start the GUI.
 2. Select **Open Vehicle Model…**.
 3. Select a vehicle formulation or vehicle assembly XML file.
-4. Select a track in the **Model** panel.
+4. Select the track in the **Track** tab. **Browse…** adds a track file. The tab previews the centerline.
 
 The GUI scans registered XML files below `models/`. It lists only components that fit the selected slot. It shows the selected component parameters as read-only values.
 

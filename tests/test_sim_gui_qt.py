@@ -31,6 +31,7 @@ if QApplication is not None:
     from tools.sim_gui.qt.workers import ValidationWorker
     from tools.sim_gui.qt.queue import CaseQueue
     from tools.sim_gui.qt.main_window import MainWindow
+    from tools.sim_gui.qt.track_tab import TrackTab
     from PyQt6.QtCore import QSettings, QEventLoop, QTimer, QThread
     from PyQt6.QtWidgets import QMessageBox
     from tools.sim_gui.study import Dimension, StudyDefinition, CaseSpec, expand, WARNING_CASES, TooManyCases
@@ -133,8 +134,57 @@ class ModelPanelTests(unittest.TestCase):
         finally:
             panel.deleteLater()
 
-    def test_track_is_preselected(self):
-        self.assertIsNotNone(self.panel.track())
+@unittest.skipIf(QApplication is None, "PyQt6 is not installed")
+class TrackTabTests(unittest.TestCase):
+    def setUp(self):
+        self.tab = TrackTab()
+        self.addCleanup(self.tab.deleteLater)
+
+    def test_default_track_is_preselected_and_previewed(self):
+        from tools.run import run_iem24_forward_driver as runner
+        from simplified_vehicle_models.tracks.profile import load_track
+        expected = (REPOSITORY_ROOT / runner.DEFAULT_TRACK).resolve()
+        self.assertEqual(self.tab.track(), expected)
+        self.assertGreater(len(self.tab.preview.points()), 3)
+        profile = load_track(expected)
+        self.assertIn(f"{profile.lap_length:.3f} m", self.tab._info.text())
+
+    def test_browse_selects_a_legacy_track_without_a_centerline(self):
+        path = REPOSITORY_ROOT / "models/tracks/2024_michigan_endurance_v11.xml"
+        with mock.patch(
+            "tools.sim_gui.qt.track_tab.QFileDialog.getOpenFileName",
+            return_value=(str(path), ""),
+        ):
+            self.tab._browse.click()
+        self.assertEqual(self.tab.track(), path.resolve())
+        self.assertEqual(self.tab.preview.points(), ())
+        self.assertTrue(self.tab.preview.message())
+
+    def test_invalid_file_warns_and_restores(self):
+        before_track = self.tab.track()
+        before_points = self.tab.preview.points()
+        emitted = []
+        self.tab.trackChanged.connect(emitted.append)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "not_a_track.xml"
+            path.write_text('<model type="aero" subtype="simple" id="bad" />')
+            with mock.patch(
+                "tools.sim_gui.qt.track_tab.QFileDialog.getOpenFileName",
+                return_value=(str(path), ""),
+            ), mock.patch("tools.sim_gui.qt.track_tab._warn") as warn:
+                self.tab._browse.click()
+            warn.assert_called_once()
+        self.assertEqual(self.tab.track(), before_track)
+        self.assertEqual(self.tab.preview.points(), before_points)
+        self.assertEqual(emitted, [])
+
+    def test_track_changed_emits_the_resolved_path(self):
+        self.tab.set_track(REPOSITORY_ROOT / "models/tracks/2024_michigan_endurance_closed.xml")
+        emitted = []
+        self.tab.trackChanged.connect(emitted.append)
+        target = REPOSITORY_ROOT / "models/tracks/2024_michigan_endurance_multilap_closed.xml"
+        self.tab.set_track(target)
+        self.assertEqual(emitted, [target.resolve()])
 
 
 @unittest.skipIf(QApplication is None, "PyQt6 is not installed")
@@ -500,12 +550,33 @@ class MainWindowTests(unittest.TestCase):
             path.write_text(json.dumps(definition.to_json()))
             with mock.patch("tools.sim_gui.qt.main_window.QFileDialog.getOpenFileName", return_value=(str(path), "")):
                 window.open_study()
-            self.assertEqual(window.model_panel.track().resolve(), track.resolve())
+            self.assertEqual(window.track_tab.track().resolve(), track.resolve())
             window.build_cases()
             deadline = time.time() + 10
             while window._validation_thread is not None and time.time() < deadline:
                 app.processEvents()
             self.assertEqual(Path(window.study_index.cases[0]["track"]).resolve(), track.resolve())
+
+    def test_definition_uses_the_track_tab(self):
+        window = self._window()
+        window.open_model(REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_planar_7dof.xml")
+        track = REPOSITORY_ROOT / "models/tracks/2024_michigan_endurance_closed.xml"
+        window.track_tab.set_track(track)
+        self.assertEqual(Path(window._definition().track).resolve(), track.resolve())
+
+    def test_open_model_twice_keeps_one_study_tab(self):
+        window = self._window()
+        source = REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_planar_7dof.xml"
+        window.open_model(source)
+        first = window.study_tab
+        window.open_model(source)
+        names = [window.tabs.tabText(index) for index in range(window.tabs.count())]
+        self.assertEqual(names.count("Study"), 1)
+        self.assertIsNot(window.study_tab, first)
+
+    def test_track_tab_is_first(self):
+        window = self._window()
+        self.assertEqual(window.tabs.tabText(0), "Track")
 
     def test_point_mass_disables_run(self):
         store_dir = Path(tempfile.mkdtemp())

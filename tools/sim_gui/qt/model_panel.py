@@ -20,7 +20,7 @@ from PyQt6.QtWidgets import (
 )
 
 from tools.run import run_iem24_forward_driver as runner
-from tools.sim_gui.catalogue import candidates, read_entry, scan_catalogue, tracks
+from tools.sim_gui.catalogue import candidates, read_entry, scan_catalogue
 from tools.sim_gui.vehicle import VehicleConfiguration
 
 _warn = QMessageBox.warning
@@ -89,28 +89,9 @@ class ModelPanel(QWidget):
         """Return the current configuration."""
         return self._cfg
 
-    def track(self) -> Path | None:
-        """Return the selected track path, or ``None`` when none is selected."""
-        if not hasattr(self, "_track"):
-            return None
-        value = self._track.currentData()
-        return Path(value) if value else None
-
     def baseline(self) -> VehicleConfiguration | None:
         """Return the initial configuration used for reset comparisons."""
         return self._baseline
-
-    def set_track(self, path: Path) -> None:
-        """Select a track by resolved path, adding it when not catalogued."""
-        if not hasattr(self, "_track"):
-            return
-        target = Path(path).resolve()
-        for index in range(self._track.count()):
-            if Path(self._track.itemData(index)).resolve() == target:
-                self._track.setCurrentIndex(index)
-                return
-        self._track.addItem(target.stem, str(target))
-        self._track.setCurrentIndex(self._track.count() - 1)
 
     def _update_source_text(self) -> None:
         if self._cfg is None:
@@ -149,16 +130,6 @@ class ModelPanel(QWidget):
         model.currentTextChanged.connect(self._change_model)
         self._form.addRow("Model", model)
         self._model = model
-
-        self._track = QComboBox()
-        track_entries = tracks(self._catalogue)
-        for entry in track_entries:
-            self._track.addItem(entry.path.stem, str(entry.path))
-        if track_entries:
-            default_track = getattr(runner, "DEFAULT_TRACK", None)
-            index = self._track.findData(str(default_track)) if default_track else -1
-            self._track.setCurrentIndex(index if index >= 0 else 0)
-        self._form.addRow("Track", self._track)
 
         for slot in self._cfg.slots():
             combo = QComboBox()

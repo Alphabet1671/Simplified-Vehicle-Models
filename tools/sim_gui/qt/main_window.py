@@ -26,6 +26,7 @@ from tools.sim_gui.qt.model_panel import ModelPanel
 from tools.sim_gui.qt.queue import CaseQueue, QueueTable
 from tools.sim_gui.qt.settings_tab import SettingsTab
 from tools.sim_gui.qt.study_tab import StudyTab
+from tools.sim_gui.qt.track_tab import TrackTab
 from tools.sim_gui.qt.workers import ValidationWorker
 from tools.sim_gui.run_study import _study_directory
 from tools.sim_gui.study import MAXIMUM_CASES, StudyDefinition, StudyIndex, WARNING_CASES, _atomic, expand
@@ -57,12 +58,14 @@ class MainWindow(QMainWindow):
         self._queue.allFinished.connect(self._all_finished)
 
         self.model_panel = ModelPanel(parent=self)
+        self.track_tab = TrackTab(self)
         self.settings_tab = SettingsTab(self)
         self.study_tab = None
         self.queue_table = QueueTable(self)
         self.log_view = QPlainTextEdit(self)
         self.log_view.setReadOnly(True)
         self.tabs = QTabWidget(self)
+        self.tabs.addTab(self.track_tab, "Track")
         self.tabs.addTab(self.settings_tab, "Run Settings")
         self.tabs.addTab(self.queue_table, "Queue")
         self.tabs.addTab(self.log_view, "Log")
@@ -146,10 +149,20 @@ class MainWindow(QMainWindow):
             current_settings = self.settings_tab.settings()
         except ValueError:
             current_settings = self.settings_tab._settings
-        self.study_tab = StudyTab(self.configuration, current_settings, self)
-        self.tabs.insertTab(1, self.study_tab, "Study")
+        self._replace_study_tab(StudyTab(self.configuration, current_settings, self))
         self.run_action.setEnabled(self.configuration.runnable)
         self._remember(Path(path))
+
+    def _replace_study_tab(self, tab: StudyTab) -> None:
+        """Install one Study tab before the Queue tab and drop the previous one."""
+        previous = self.study_tab
+        self.study_tab = tab
+        self.tabs.insertTab(self.tabs.indexOf(self.queue_table), tab, "Study")
+        if previous is not None:
+            index = self.tabs.indexOf(previous)
+            if index >= 0:
+                self.tabs.removeTab(index)
+            previous.deleteLater()
 
     def _open_dialog(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "Open Vehicle Model", filter="XML (*.xml)")
@@ -162,13 +175,23 @@ class MainWindow(QMainWindow):
         self.settings_store.setValue("recent_files", self._recent)
 
     def _definition(self) -> StudyDefinition:
+        track = self.track_tab.track()
+        track_text = track.as_posix() if track is not None else ""
         if self.study_tab is None:
-            return StudyDefinition("study", str(self.configuration.source), self.model_panel.track().as_posix(), self.configuration.model, {key: str(value) for key, value in self.configuration.choices.items()}, self.settings_tab.settings(), "one-at-a-time", ())
+            return StudyDefinition(
+                "study",
+                str(self.configuration.source),
+                track_text,
+                self.configuration.model,
+                {key: str(value) for key, value in self.configuration.choices.items()},
+                self.settings_tab.settings(),
+                "one-at-a-time",
+                (),
+            )
         definition = self.study_tab.definition(self.configuration)
-        track = self.model_panel.track()
         return replace(
             definition,
-            track=track.as_posix() if track is not None else "",
+            track=track_text,
             settings=self.settings_tab.settings(),
         )
 
@@ -307,10 +330,11 @@ class MainWindow(QMainWindow):
         self.model_panel.set_configuration(configuration, baseline=baseline)
         self.settings_tab.set_model(configuration.model)
         self.settings_tab.set_settings(definition.settings)
-        self.model_panel.set_track(Path(definition.track))
-        self.study_tab = StudyTab(configuration, definition.settings, self)
-        self.tabs.insertTab(1, self.study_tab, "Study")
-        self.study_tab.set_definition(definition)
+        if definition.track:
+            self.track_tab.set_track(Path(definition.track))
+        tab = StudyTab(configuration, definition.settings, self)
+        tab.set_definition(definition)
+        self._replace_study_tab(tab)
         self.run_action.setEnabled(configuration.runnable)
         self._remember(Path(path))
 

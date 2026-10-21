@@ -221,7 +221,7 @@ def run(args) -> dict:
         else solve_lap(vehicle, track, lap_mode, conservative_transition=True)
     )
     zero_corridor = Corridor(corridor.distance, np.zeros_like(corridor.minimum), np.zeros_like(corridor.maximum), corridor.provenance, corridor.is_closed)
-    settings = QssSettings()
+    settings = QssSettings(offset_control_spacing=getattr(args, "offset_spacing", None))
     launch = 0.0 if track.is_closed else launch_time(track, surface, settings)
     zero_mesh = build_mesh(track, 1.0 if track.is_closed else 2.0)
     zero_seed = None if track.is_closed else _open_envelope_seed(track, zero_mesh, seed_lap, settings)
@@ -288,6 +288,7 @@ def run(args) -> dict:
         "track": str(Path(args.track)), "track_closed": bool(track.is_closed),
         "corridor_provenance": corridor.provenance,
         "constant_half_width_m": half_width,
+        "offset_control_spacing_m": settings.offset_control_spacing,
         "conditional_result": track.width_provenance != "surveyed", "margin_m": args.margin,
         "mesh_spacing_m": float(spacings[-1]), "centreline_envelope_s": centreline_lap.lap_time,
         "zero_corridor_reference_s": zero_reference,
@@ -322,6 +323,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--spacings", type=str, default="5,2,1",
         help="comma-separated mesh ladder spacings in metres, coarse to fine",
+    )
+    parser.add_argument(
+        "--offset-spacing", type=float, default=None,
+        help="control-point spacing for a reduced linear offset basis",
     )
     args = parser.parse_args(argv)
     try:

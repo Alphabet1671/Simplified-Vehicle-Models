@@ -651,12 +651,14 @@ class RunnerOrchestrationTest(unittest.TestCase):
                     "--track", "track.xml", "--formulation", "formulation.xml",
                     "--surface", "surface.npz", "--output", "out",
                     "--half-width", "2.45", "--spacings", "10,5",
+                    "--offset-spacing", "35",
                 ]),
                 0,
             )
         args = run.call_args.args[0]
         self.assertEqual(args.half_width, 2.45)
         self.assertEqual(args.spacings, "10,5")
+        self.assertEqual(args.offset_spacing, 35.0)
 
     def test_cli_exit_codes_reflect_failed_gates_and_pipeline_errors(self) -> None:
         from tools.run import solve_minimum_time_line as runner

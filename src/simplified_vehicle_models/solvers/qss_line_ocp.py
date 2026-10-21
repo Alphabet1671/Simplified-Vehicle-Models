@@ -26,6 +26,7 @@ class QssSettings:
     tolerance_homotopy: bool = False
     start_speed: float = 0.0
     open_regularisation: float = 1.0e-6
+    offset_control_spacing: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,6 +65,10 @@ def _validate_inputs(track, corridor, surface, mesh, settings):
         raise ValueError("start_speed must be finite and nonnegative")
     if not math.isfinite(settings.open_regularisation) or settings.open_regularisation < 0.0:
         raise ValueError("open_regularisation must be finite and nonnegative")
+    if settings.offset_control_spacing is not None:
+        if (not math.isfinite(settings.offset_control_spacing)
+                or settings.offset_control_spacing <= 0.0):
+            raise ValueError("offset_control_spacing must be finite and positive")
     if isinstance(settings.maximum_iterations, bool) or settings.maximum_iterations < 1:
         raise ValueError("maximum_iterations must be a positive integer")
     if int(settings.maximum_iterations) != settings.maximum_iterations:
@@ -245,6 +250,32 @@ def launch_time(track, surface, settings: QssSettings, *, samples: int = 200) ->
     return float(np.trapezoid(np.asarray(inverse), speeds))
 
 
+def _offset_basis(track, mesh, spacing: float | None):
+    """Return a node-by-control linear interpolation basis for offset."""
+    mesh = np.asarray(mesh, dtype=float)
+    if spacing is None:
+        return None, None
+    length = float(track.lap_length)
+    controls = max(int(math.ceil(length / spacing)), 2)
+    if track.is_closed:
+        positions = np.linspace(0.0, length, controls, endpoint=False)
+        scaled = (mesh % length) / length * controls
+        lower = np.floor(scaled).astype(int) % controls
+        weight = scaled - np.floor(scaled)
+        upper = (lower + 1) % controls
+    else:
+        positions = np.linspace(0.0, length, controls)
+        scaled = mesh / length * (controls - 1)
+        lower = np.clip(np.floor(scaled).astype(int), 0, controls - 2)
+        weight = scaled - lower
+        upper = lower + 1
+    basis = np.zeros((mesh.size, controls), dtype=float)
+    rows = np.arange(mesh.size)
+    basis[rows, lower] = 1.0 - weight
+    basis[rows, upper] += weight
+    return basis, positions
+
+
 def build_ocp(track, corridor, surface, mesh, settings: QssSettings):
     """Build CasADi NLP and its variable/constraint bounds."""
     import casadi as ca
@@ -261,18 +292,33 @@ def build_ocp(track, corridor, surface, mesh, settings: QssSettings):
     )
     nlo = sample(corridor.minimum, mesh)
     nhi = sample(corridor.maximum, mesh)
-    n = [ca.MX.sym(f"n_{i}") for i in range(nodes)]
+    basis, control_distance = _offset_basis(track, mesh, settings.offset_control_spacing)
+    if basis is None:
+        offset_symbols = [ca.MX.sym(f"n_{i}") for i in range(nodes)]
+        n = offset_symbols
+        control_count = nodes
+        offset_lower, offset_upper = nlo, nhi
+    else:
+        control_count = basis.shape[1]
+        offset_symbols = [ca.MX.sym(f"c_{i}") for i in range(control_count)]
+        n = [
+            sum(float(basis[row, column]) * offset_symbols[column]
+                for column in np.flatnonzero(basis[row]))
+            for row in range(nodes)
+        ]
+        offset_lower = np.full(control_count, float(np.min(nlo)))
+        offset_upper = np.full(control_count, float(np.max(nhi)))
     psi = [ca.MX.sym(f"psi_{i}") for i in range(nodes)]
     v = [ca.MX.sym(f"v_{i}") for i in range(nodes)]
     a = [ca.MX.sym(f"a_{i}") for i in range(nodes)]
     q = [ca.MX.sym(f"q_{i}") for i in range(nodes)]
     am = [ca.MX.sym(f"am_{i}") for i in range(count)]
     qm = [ca.MX.sym(f"qm_{i}") for i in range(count)]
-    x = ca.vertcat(*n, *psi, *v, *a, *q, *am, *qm)
+    x = ca.vertcat(*offset_symbols, *psi, *v, *a, *q, *am, *qm)
     acceleration_lower = float(np.min(surface.acceleration_min))
     acceleration_upper = float(np.max(surface.acceleration_max))
-    xl = np.concatenate([nlo, np.full(nodes,-settings.maximum_heading), np.full(nodes,settings.minimum_speed), np.full(nodes,acceleration_lower), np.full(nodes,-settings.maximum_curvature_rate), np.full(count,acceleration_lower), np.full(count,-settings.maximum_curvature_rate)])
-    xu = np.concatenate([nhi, np.full(nodes,settings.maximum_heading), np.full(nodes,float(surface.speed[-1])), np.full(nodes,acceleration_upper), np.full(nodes,settings.maximum_curvature_rate), np.full(count,acceleration_upper), np.full(count,settings.maximum_curvature_rate)])
+    xl = np.concatenate([offset_lower, np.full(nodes,-settings.maximum_heading), np.full(nodes,settings.minimum_speed), np.full(nodes,acceleration_lower), np.full(nodes,-settings.maximum_curvature_rate), np.full(count,acceleration_lower), np.full(count,-settings.maximum_curvature_rate)])
+    xu = np.concatenate([offset_upper, np.full(nodes,settings.maximum_heading), np.full(nodes,float(surface.speed[-1])), np.full(nodes,acceleration_upper), np.full(nodes,settings.maximum_curvature_rate), np.full(count,acceleration_upper), np.full(count,settings.maximum_curvature_rate)])
 
     def rates(state, control, curvature):
         offset, heading, speed = state
@@ -329,7 +375,9 @@ def build_ocp(track, corridor, surface, mesh, settings: QssSettings):
         limits(sm[0],sm[1],sm[2],am[i],qm[i],kmid)
         limits(n[i+1],psi[i+1],v[i+1],a[i+1],q[i+1],float(k0[i+1]))
     if track.is_closed:
-        add(n[0]-n[-1],0.0,0.0); add(psi[0]-psi[-1],0.0,0.0); add(v[0]-v[-1],0.0,0.0)
+        if basis is None:
+            add(n[0]-n[-1],0.0,0.0)
+        add(psi[0]-psi[-1],0.0,0.0); add(v[0]-v[-1],0.0,0.0)
     else:
         # Only heading and launch speed are fixed. Lateral offset stays a free
         # corridor decision at both ends; fixing it as well would duplicate the
@@ -337,23 +385,43 @@ def build_ocp(track, corridor, surface, mesh, settings: QssSettings):
         start_speed = max(float(settings.start_speed), float(settings.minimum_speed))
         add(psi[0],0.0,0.0); add(psi[-1],0.0,0.0)
         add(v[0]-start_speed,0.0,0.0)
-    return {"nlp":{"x":x,"f":objective,"g":ca.vertcat(*constraints)},"x_lower":xl,"x_upper":xu,"g_lower":np.asarray(gl),"g_upper":np.asarray(gu),"mesh":mesh,"count":count}
+    return {"nlp":{"x":x,"f":objective,"g":ca.vertcat(*constraints)},"x_lower":xl,"x_upper":xu,"g_lower":np.asarray(gl),"g_upper":np.asarray(gu),"mesh":mesh,"count":count,"control_count":control_count,"offset_basis":basis,"control_distance":control_distance}
 
 
-def unpack(values, count: int) -> dict[str, FloatArray]:
-    nodes=count+1; expected=5*nodes+2*count; flat=np.asarray(values,dtype=float).ravel()
+def unpack(values, count: int, control_count: int | None = None,
+           basis: FloatArray | None = None) -> dict[str, FloatArray]:
+    nodes=count+1; controls=nodes if control_count is None else int(control_count)
+    expected=controls+4*nodes+2*count; flat=np.asarray(values,dtype=float).ravel()
     if flat.size != expected: raise ValueError(f"decision vector has {flat.size} entries, layout needs {expected}")
-    names=("offset","heading","speed","acceleration","curvature_rate")
-    blocks={name:flat[i*nodes:(i+1)*nodes] for i,name in enumerate(names)}
-    tail=flat[5*nodes:]; blocks["mid_acceleration"]=tail[:count]; blocks["mid_curvature_rate"]=tail[count:]
-    return blocks
+    if basis is None:
+        offset=flat[:controls]
+    else:
+        basis=np.asarray(basis,dtype=float)
+        if basis.shape != (nodes,controls):
+            raise ValueError("offset basis must have shape (nodes, controls)")
+        offset=basis@flat[:controls]
+    heading=flat[controls:controls+nodes]
+    speed=flat[controls+nodes:controls+2*nodes]
+    acceleration=flat[controls+2*nodes:controls+3*nodes]
+    curvature_rate=flat[controls+3*nodes:controls+4*nodes]
+    tail=flat[controls+4*nodes:]
+    return {
+        "offset":offset,"heading":heading,"speed":speed,
+        "acceleration":acceleration,"curvature_rate":curvature_rate,
+        "mid_acceleration":tail[:count],"mid_curvature_rate":tail[count:],
+    }
 
 
 def initial_guess(track, corridor, surface, mesh, settings: QssSettings) -> FloatArray:
     mesh=_validate_inputs(track,corridor,surface,mesh,settings); count=mesh.size-1
     closed=bool(track.is_closed)
     sample=lambda values: track_sample(values,corridor.distance,mesh,closed=closed,period=float(track.lap_length))
-    offset=.5*(sample(corridor.minimum)+sample(corridor.maximum))
+    basis, control_distance = _offset_basis(track, mesh, settings.offset_control_spacing)
+    if basis is None:
+        offset=.5*(sample(corridor.minimum)+sample(corridor.maximum))
+    else:
+        offset=.5*(track_sample(corridor.minimum,corridor.distance,control_distance,closed=closed,period=float(track.lap_length))
+                   +track_sample(corridor.maximum,corridor.distance,control_distance,closed=closed,period=float(track.lap_length)))
     curvature=np.clip(_element_curvature(track,mesh),surface.curvature[0],surface.curvature[-1])
     ceiling=np.interp(curvature,surface.curvature,surface.speed_ceiling)
     speed=np.full(mesh.size,max(.6*float(np.min(ceiling)),settings.minimum_speed+.1))
@@ -379,7 +447,7 @@ def _validate_solver_result(status, values, constraints, objective, violation, t
         raise RuntimeError(f"quasi-steady line solution violates constraints by {violation:g}")
 
 
-def _decision_scaling(node_count: int) -> tuple[FloatArray, FloatArray]:
+def _decision_scaling(node_count: int, control_count: int | None = None) -> tuple[FloatArray, FloatArray]:
     """Return characteristic affine scales for grouped QSS variables.
 
     Scaled variables are O(1) for typical track geometry and capability data:
@@ -392,15 +460,20 @@ def _decision_scaling(node_count: int) -> tuple[FloatArray, FloatArray]:
     nodes = int(node_count)
     if nodes < 2:
         raise ValueError("decision scaling requires at least two mesh nodes")
+    offset_size = nodes if control_count is None else int(control_count)
+    if offset_size < 2:
+        raise ValueError("decision scaling requires at least two offset controls")
     elements = nodes - 1
-    center = np.zeros(5 * nodes + 2 * elements, dtype=float)
+    center = np.zeros(offset_size + 4 * nodes + 2 * elements, dtype=float)
     scale = np.ones_like(center)
-    starts = (0, nodes, 2 * nodes, 3 * nodes, 4 * nodes, 5 * nodes, 5 * nodes + elements)
+    starts = (0, offset_size, offset_size + nodes, offset_size + 2 * nodes,
+              offset_size + 3 * nodes, offset_size + 4 * nodes,
+              offset_size + 4 * nodes + elements)
+    sizes = (offset_size, nodes, nodes, nodes, nodes, elements, elements)
     block_scales = (1.0, 0.15, 10.0, 5.0, 0.1, 5.0, 0.1)
-    for index, (start, block_scale) in enumerate(zip(starts, block_scales)):
-        size = nodes if index < 5 else elements
+    for start, size, block_scale in zip(starts, sizes, block_scales):
         scale[start:start + size] = block_scale
-    center[2 * nodes:3 * nodes] = 20.0
+    center[offset_size + nodes:offset_size + 2 * nodes] = 20.0
     return center, scale
 
 
@@ -425,7 +498,7 @@ def solve_line(track, corridor, surface, mesh, settings: QssSettings, *, seed: F
     if not np.all(np.isfinite(vector)):
         raise ValueError("seed must contain only finite values")
     vector=np.clip(vector,built["x_lower"],built["x_upper"])
-    center, scale = _decision_scaling(len(mesh))
+    center, scale = _decision_scaling(len(mesh), built["control_count"])
     original_x = built["nlp"]["x"]
     scaled_x = ca.MX.sym("qss_scaled_x", vector.size)
     physical_x = ca.DM(center) + ca.DM(scale) * scaled_x
@@ -476,11 +549,12 @@ def solve_line(track, corridor, surface, mesh, settings: QssSettings, *, seed: F
     _validate_solver_result(status, values, g, objective, violation, settings.tolerance,
                             built["x_lower"], built["x_upper"])
     violation=max(violation,float(np.max(np.maximum(np.maximum(built["x_lower"]-values,0.0),values-built["x_upper"]))))
-    blocks=unpack(values,count)
+    blocks=unpack(values,count,built["control_count"],built["offset_basis"])
     return QssSolution(np.asarray(mesh,dtype=float),blocks["offset"],blocks["heading"],blocks["speed"],blocks["acceleration"],blocks["curvature_rate"],float(result["f"]),str(stats["return_status"]),total_iterations,violation,blocks["mid_acceleration"],blocks["mid_curvature_rate"])
 
 
-def project_seed(coarse: QssSolution, mesh, *, is_closed: bool = True) -> FloatArray:
+def project_seed(coarse: QssSolution, mesh, *, is_closed: bool = True,
+                 track=None, control_spacing: float | None = None) -> FloatArray:
     """Interpolate prior node and midpoint controls onto a new mesh."""
     mesh=np.asarray(mesh,dtype=float); source=np.asarray(coarse.distance,dtype=float)
     if mesh.ndim != 1 or mesh.size < 2 or not np.all(np.isfinite(mesh)) or np.any(np.diff(mesh) <= 0.0):
@@ -489,7 +563,17 @@ def project_seed(coarse: QssSolution, mesh, *, is_closed: bool = True) -> FloatA
         raise ValueError("solution distance must be finite, one-dimensional, and strictly increasing")
     count=mesh.size-1
     if source.size != coarse.offset.size: raise ValueError("solution distance does not match its node count")
-    arrays=[np.interp(mesh,source,np.asarray(values,dtype=float)) for values in (coarse.offset,coarse.heading_error,coarse.speed,coarse.acceleration,coarse.curvature_rate)]
+    projected=[np.interp(mesh,source,np.asarray(values,dtype=float)) for values in (coarse.heading_error,coarse.speed,coarse.acceleration,coarse.curvature_rate)]
+    if control_spacing is None:
+        offset=np.interp(mesh,source,np.asarray(coarse.offset,dtype=float))
+    else:
+        if track is None:
+            raise ValueError("track is required for a reduced offset basis")
+        basis, control_distance = _offset_basis(track, mesh, control_spacing)
+        offset=track_sample(
+            np.asarray(coarse.offset,dtype=float), source, control_distance,
+            closed=is_closed, period=float(track.lap_length),
+        )
     def project_midpoint(values):
         if values is None:
             return np.zeros(count)
@@ -506,7 +590,7 @@ def project_seed(coarse: QssSolution, mesh, *, is_closed: bool = True) -> FloatA
         return np.interp(wrapped,periodic_midpoints,periodic_values)
     mids_a=project_midpoint(coarse.mid_acceleration)
     mids_q=project_midpoint(coarse.mid_curvature_rate)
-    return np.concatenate([*arrays,mids_a,mids_q])
+    return np.concatenate([offset,*projected,mids_a,mids_q])
 
 
 def solve_ladder(track, corridor, surface, settings: QssSettings,
@@ -547,5 +631,8 @@ def solve_ladder(track, corridor, surface, settings: QssSettings,
             stage_callback(float(spacing), solution, wall_seconds)
         if index + 1 < len(spacings):
             next_mesh = build_mesh(track, spacings[index + 1])
-            current = project_seed(solution, next_mesh, is_closed=bool(track.is_closed))
+            current = project_seed(
+                solution, next_mesh, is_closed=bool(track.is_closed),
+                track=track, control_spacing=settings.offset_control_spacing,
+            )
     return stages

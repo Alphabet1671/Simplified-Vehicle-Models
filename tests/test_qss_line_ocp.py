@@ -345,6 +345,31 @@ class LadderTest(unittest.TestCase):
         coarse, finest = stages[-2], stages[-1]
         self.assertAlmostEqual(finest.lap_time, coarse.lap_time, delta=5.0e-3 * coarse.lap_time)
 
+    def test_reduced_offset_basis_reduces_controls_and_solves(self):
+        from tools.tracks.open_course import arc_by_angle, build_course, straight, write_course
+        from simplified_vehicle_models.solvers.qss_line_ocp import (
+            build_ocp, build_mesh, initial_guess, solve_line, unpack, QssSettings,
+        )
+
+        course = build_course([straight(20.0), arc_by_angle(30.0, 0.4), straight(10.0)],
+                              allow_curvature_jumps=True)
+        xml_path, _ = write_course(course, self.directory, "basis_course", "basis", "Basis")
+        track = load_track(xml_path)
+        corridor = corridor_from_track(track, half_width=2.0)
+        settings = QssSettings(offset_control_spacing=10.0, maximum_iterations=2000)
+        mesh = build_mesh(track, 2.0)
+        built = build_ocp(track, corridor, _flat_surface(25.0), mesh, settings)
+        self.assertLess(built["control_count"], mesh.size)
+        self.assertEqual(built["offset_basis"].shape, (mesh.size, built["control_count"]))
+        np.testing.assert_allclose(built["offset_basis"].sum(axis=1), 1.0)
+        seed = initial_guess(track, corridor, _flat_surface(25.0), mesh, settings)
+        self.assertEqual(seed.size, built["nlp"]["x"].numel())
+        blocks = unpack(seed, len(mesh) - 1, built["control_count"], built["offset_basis"])
+        self.assertEqual(blocks["offset"].size, mesh.size)
+        solution = solve_line(track, corridor, _flat_surface(25.0), mesh, settings)
+        self.assertEqual(solution.status, "Solve_Succeeded")
+        self.assertEqual(solution.offset.size, mesh.size)
+
     def test_open_capability_envelope_matches_zero_corridor_ocp(self):
         from tools.tracks.open_course import arc_by_angle, build_course, straight, write_course
         from simplified_vehicle_models.solvers.qss_line_ocp import (

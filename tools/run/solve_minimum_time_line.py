@@ -6,7 +6,6 @@ import csv
 import json
 from pathlib import Path
 import sys
-import time
 import xml.etree.ElementTree as ET
 
 import numpy as np
@@ -18,7 +17,7 @@ from simplified_vehicle_models.compiler.compile import compile_formulation
 from simplified_vehicle_models.formulations.point_mass import point_mass_view_of_planar
 from simplified_vehicle_models.formulations.point_mass_capability import capability_hash, load_capability_surface
 from simplified_vehicle_models.solvers.forward_backward import solve_lap
-from simplified_vehicle_models.solvers.qss_line_ocp import QssSettings, build_mesh, periodic_sample, solve_line, project_seed
+from simplified_vehicle_models.solvers.qss_line_ocp import QssSettings, build_mesh, periodic_sample, solve_line, solve_ladder
 from simplified_vehicle_models.results.traces import LapMode
 from simplified_vehicle_models.tracks.corridor import Corridor, corridor_from_track
 from simplified_vehicle_models.tracks.profile import load_track, _read_width_csv
@@ -142,18 +141,17 @@ def run(args) -> dict:
     print("Solving zero-corridor control...", flush=True)
     zero_solution = solve_line(track, zero_corridor, surface, build_mesh(track, 1.0), settings)
     print(f"Zero-corridor control completed: {zero_solution.lap_time:.6f} s", flush=True)
-    stages = []
     stage_wall_seconds = []
-    stage_seed = None
-    for index, spacing in enumerate((5.0, 2.0, 1.0)):
-        print(f"Solving free line at {spacing:g} m spacing...", flush=True)
-        mesh = build_mesh(track, spacing)
-        started = time.perf_counter()
-        solution = solve_line(track, corridor, surface, mesh, settings, seed=stage_seed)
-        stage_wall_seconds.append(time.perf_counter() - started)
-        stages.append(solution)
-        if index < 2:
-            stage_seed = project_seed(solution, build_mesh(track, (2.0, 1.0)[index]))
+
+    def record_stage(spacing, solution, wall_seconds):
+        print(f"Solved free line at {spacing:g} m spacing in {wall_seconds:.2f} s", flush=True)
+        stage_wall_seconds.append(wall_seconds)
+
+    print("Solving free-line mesh ladder (5/2/1 m)...", flush=True)
+    stages = solve_ladder(
+        track, corridor, surface, settings, spacings=(5.0, 2.0, 1.0),
+        stage_callback=record_stage,
+    )
     finest = stages[-1]
     _write_line(output / "line.csv", finest)
     rebuilt = path_from_solution(track, finest)

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
+import time
 
 import numpy as np
 
@@ -266,12 +267,15 @@ def project_seed(coarse: QssSolution, mesh) -> FloatArray:
 
 def solve_ladder(track, corridor, surface, settings: QssSettings,
                  spacings: tuple[float, ...] = (5.0, 2.0, 1.0),
-                 *, seed: FloatArray | None = None) -> list[QssSolution]:
+                 *, seed: FloatArray | None = None,
+                 stage_callback=None) -> list[QssSolution]:
     """Solve coarse to fine, warm starting each stage from the one before.
 
     Each prior solution is projected directly onto the *next* stage mesh before
     it is used as that stage's seed. The first supplied seed is interpreted as
     a seed for the first spacing, consistent with ``solve_line``'s contract.
+    If supplied, ``stage_callback(spacing, solution, wall_seconds)`` runs after
+    each successful solve; the duration measures the ``solve_line`` call only.
     """
     if not spacings:
         raise ValueError("at least one mesh spacing is required")
@@ -279,13 +283,17 @@ def solve_ladder(track, corridor, surface, settings: QssSettings,
     current = seed
     for index, spacing in enumerate(spacings):
         mesh = build_mesh(track, spacing)
+        started = time.perf_counter()
         solution = solve_line(track, corridor, surface, mesh, settings, seed=current)
+        wall_seconds = time.perf_counter() - started
         if solution.status != "Solve_Succeeded":
             raise RuntimeError(
                 f"stage at {spacing} m failed with {solution.status} "
                 f"after {solution.iterations} iterations"
             )
         stages.append(solution)
+        if stage_callback is not None:
+            stage_callback(float(spacing), solution, wall_seconds)
         if index + 1 < len(spacings):
             next_mesh = build_mesh(track, spacings[index + 1])
             current = project_seed(solution, next_mesh)

@@ -182,20 +182,34 @@ class LadderTest(unittest.TestCase):
         settings = qss_line_ocp.QssSettings()
         meshes = [qss_line_ocp.build_mesh(track, s) for s in (8.0, 4.0)]
         captured = []
+        first_stage = []
+        callbacks = []
+        def fake_callback(spacing, solution, wall_seconds):
+            callbacks.append((spacing, solution, wall_seconds))
+
         def fake_solve(track, corridor, surface, mesh, settings, *, seed=None):
             captured.append((np.asarray(mesh).copy(), seed))
             values = qss_line_ocp.initial_guess(track, corridor, surface, mesh, settings)
             blocks = qss_line_ocp.unpack(values, len(mesh)-1)
-            return qss_line_ocp.QssSolution(np.asarray(mesh), blocks["offset"], blocks["heading"], blocks["speed"], blocks["acceleration"], blocks["curvature_rate"], 1.0, "Solve_Succeeded", 1, 0.0)
+            solution = qss_line_ocp.QssSolution(np.asarray(mesh), blocks["offset"], blocks["heading"], blocks["speed"], blocks["acceleration"], blocks["curvature_rate"], 1.0, "Solve_Succeeded", 1, 0.0)
+            captured[-1] = (*captured[-1], solution)
+            if not first_stage:
+                first_stage.append(solution)
+            return solution
 
         with patch.object(qss_line_ocp, "solve_line", side_effect=fake_solve):
-            qss_line_ocp.solve_ladder(track, corridor, _flat_surface(25.0), settings, spacings=(8.0, 4.0))
-        expected = qss_line_ocp.project_seed(
-            fake_solve(track, corridor, _flat_surface(25.0), meshes[0], settings), meshes[1]
-        )
+            stages = qss_line_ocp.solve_ladder(
+                track, corridor, _flat_surface(25.0), settings,
+                spacings=(8.0, 4.0), stage_callback=fake_callback,
+            )
+        expected = qss_line_ocp.project_seed(first_stage[0], meshes[1])
         self.assertEqual(captured[1][0].size, meshes[1].size)
         self.assertEqual(captured[1][1].size, 5 * meshes[1].size + 2 * (meshes[1].size - 1))
         np.testing.assert_array_equal(captured[1][1], expected)
+        self.assertEqual([entry[0] for entry in callbacks], [8.0, 4.0])
+        self.assertIs(callbacks[0][1], stages[0])
+        self.assertIs(callbacks[1][1], stages[1])
+        self.assertTrue(all(np.isfinite(entry[2]) and entry[2] >= 0.0 for entry in callbacks))
 
     def test_empty_spacing_list_is_rejected(self) -> None:
         from simplified_vehicle_models.solvers.qss_line_ocp import QssSettings, solve_ladder

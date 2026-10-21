@@ -88,7 +88,7 @@ Ran 12 tests in 2.467s
 OK
 ```
 
-`git diff --check` and compile checks passed for the fix round. Review fixes committed separately as `14d8b99` (`fix: harden capability provenance and ceiling roots`).
+`git diff --check` and compile checks passed for the fix round. Review fixes committed separately as `8149a71` (`fix: harden capability provenance and ceiling roots`).
 
 ## Concerns / limitations
 - Production MIS surface generation and its runtime/file size remain unmeasured. The brief estimates 5–20 minutes; this report does not claim that estimate as measured.

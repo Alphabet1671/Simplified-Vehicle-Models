@@ -235,17 +235,55 @@ def _validate_solver_result(status, values, constraints, objective, violation, t
         raise RuntimeError(f"quasi-steady line solution violates constraints by {violation:g}")
 
 
+def _decision_scaling(node_count: int) -> tuple[FloatArray, FloatArray]:
+    """Return characteristic affine scales for grouped QSS variables.
+
+    Scaled variables are O(1) for typical track geometry and capability data:
+    offset in meters, heading in radians, speed around 20 m/s, acceleration in
+    m/s², and curvature rate in 1/m. These scales alter conditioning only; the
+    NLP objective, constraints, bounds, and returned solution remain physical.
+    """
+    if isinstance(node_count, (bool, np.bool_)) or not isinstance(node_count, (int, np.integer)):
+        raise ValueError("decision scaling node count must be an integer")
+    nodes = int(node_count)
+    if nodes < 2:
+        raise ValueError("decision scaling requires at least two mesh nodes")
+    elements = nodes - 1
+    center = np.zeros(5 * nodes + 2 * elements, dtype=float)
+    scale = np.ones_like(center)
+    starts = (0, nodes, 2 * nodes, 3 * nodes, 4 * nodes, 5 * nodes, 5 * nodes + elements)
+    block_scales = (1.0, 0.15, 10.0, 5.0, 0.1, 5.0, 0.1)
+    for index, (start, block_scale) in enumerate(zip(starts, block_scales)):
+        size = nodes if index < 5 else elements
+        scale[start:start + size] = block_scale
+    center[2 * nodes:3 * nodes] = 20.0
+    return center, scale
+
+
 def solve_line(track, corridor, surface, mesh, settings: QssSettings, *, seed: FloatArray | None = None) -> QssSolution:
     """Solve the free-line minimum-time problem on a fixed mesh."""
     import casadi as ca
     built=build_ocp(track,corridor,surface,mesh,settings); count=built["count"]
     vector=initial_guess(track,corridor,surface,mesh,settings) if seed is None else np.asarray(seed,dtype=float).ravel()
     if vector.size != built["nlp"]["x"].shape[0]: raise ValueError("seed does not match the mesh")
+    if not np.all(np.isfinite(vector)):
+        raise ValueError("seed must contain only finite values")
     vector=np.clip(vector,built["x_lower"],built["x_upper"])
-    opts={"ipopt.tol":settings.tolerance,"ipopt.constr_viol_tol":settings.tolerance,"ipopt.max_iter":settings.maximum_iterations,"ipopt.hessian_approximation":"exact","ipopt.nlp_scaling_method":"gradient-based","ipopt.print_level":0,"print_time":False}
-    solver=ca.nlpsol("qss_line","ipopt",built["nlp"],opts)
-    result=solver(x0=vector,lbx=built["x_lower"],ubx=built["x_upper"],lbg=built["g_lower"],ubg=built["g_upper"])
-    values=np.asarray(result["x"],dtype=float).ravel(); g=np.asarray(result["g"],dtype=float).ravel()
+    center, scale = _decision_scaling(len(mesh))
+    original_x = built["nlp"]["x"]
+    scaled_x = ca.MX.sym("qss_scaled_x", vector.size)
+    physical_x = ca.DM(center) + ca.DM(scale) * scaled_x
+    scaled_nlp = {
+        "x": scaled_x,
+        "f": ca.substitute(built["nlp"]["f"], original_x, physical_x),
+        "g": ca.substitute(built["nlp"]["g"], original_x, physical_x),
+    }
+    lower = (built["x_lower"] - center) / scale
+    upper = (built["x_upper"] - center) / scale
+    opts={"ipopt.tol":settings.tolerance,"ipopt.constr_viol_tol":settings.tolerance,"ipopt.max_iter":settings.maximum_iterations,"ipopt.hessian_approximation":"exact","ipopt.nlp_scaling_method":"gradient-based","ipopt.mu_strategy":"adaptive","ipopt.print_level":0,"print_time":False}
+    solver=ca.nlpsol("qss_line","ipopt",scaled_nlp,opts)
+    result=solver(x0=(vector-center)/scale,lbx=lower,ubx=upper,lbg=built["g_lower"],ubg=built["g_upper"])
+    values=center + scale * np.asarray(result["x"],dtype=float).ravel(); g=np.asarray(result["g"],dtype=float).ravel()
     violation=float(np.max(np.maximum(np.maximum(built["g_lower"]-g,0),g-built["g_upper"])))
     stats=solver.stats(); status=str(stats["return_status"])
     objective=float(result["f"])

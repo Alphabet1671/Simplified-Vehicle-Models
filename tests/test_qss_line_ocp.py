@@ -49,6 +49,35 @@ class TranscriptionTest(unittest.TestCase):
         self.assertAlmostEqual(float(mesh[-1]), track.lap_length, places=9)
         self.assertTrue(np.all(np.diff(mesh) > 0.0))
 
+    def test_scaled_solver_returns_physical_solution_values(self):
+        from simplified_vehicle_models.solvers.qss_line_ocp import QssSettings, build_mesh, solve_line
+
+        track = self._track(radius=40.0, nodes=72, half_width=3.0)
+        corridor = corridor_from_track(track)
+        solution = solve_line(
+            track, corridor, _flat_surface(25.0), build_mesh(track, 4.0),
+            QssSettings(tolerance=1.0e-7, maximum_iterations=1000),
+        )
+        self.assertEqual(solution.status, "Solve_Succeeded")
+        self.assertTrue(np.all(np.isfinite(solution.speed)))
+        self.assertGreaterEqual(float(solution.speed.min()), 0.5)
+        self.assertLessEqual(float(solution.speed.max()), 40.0)
+        self.assertLessEqual(solution.maximum_violation, 1.0e-7)
+
+    def test_nonfinite_seed_is_rejected_before_solver_construction(self):
+        from unittest.mock import patch
+        from simplified_vehicle_models.solvers import qss_line_ocp
+
+        track = self._track()
+        mesh = qss_line_ocp.build_mesh(track, 4.0)
+        corridor = corridor_from_track(track)
+        seed = qss_line_ocp.initial_guess(track, corridor, _flat_surface(25.0), mesh, qss_line_ocp.QssSettings())
+        seed[0] = np.nan
+        with patch("casadi.nlpsol", side_effect=AssertionError("solver must not be constructed")):
+            with self.assertRaisesRegex(ValueError, "finite values"):
+                qss_line_ocp.solve_line(track, corridor, _flat_surface(25.0), mesh,
+                                        qss_line_ocp.QssSettings(), seed=seed)
+
     def test_open_track_is_rejected_at_periodic_solver_boundary(self):
         from simplified_vehicle_models.solvers.qss_line_ocp import build_mesh, build_ocp, QssSettings
         track=self._track(); mesh=build_mesh(track,4.0); corridor=corridor_from_track(track)
@@ -66,6 +95,33 @@ class TranscriptionTest(unittest.TestCase):
         np.testing.assert_allclose(built["x_upper"][3 * nodes:4 * nodes], 3.0)
         np.testing.assert_allclose(built["x_lower"][5 * nodes:5 * nodes + nodes - 1], -8.0)
         np.testing.assert_allclose(built["x_upper"][5 * nodes:5 * nodes + nodes - 1], 3.0)
+
+    def test_decision_scaling_rejects_invalid_node_count(self):
+        from simplified_vehicle_models.solvers.qss_line_ocp import _decision_scaling
+
+        with self.assertRaisesRegex(ValueError, "at least two"):
+            _decision_scaling(1)
+        for invalid in (True, 3.5):
+            with self.subTest(invalid=invalid), self.assertRaisesRegex(ValueError, "must be an integer"):
+                _decision_scaling(invalid)
+
+    def test_decision_scaling_preserves_grouped_bounds_and_centers_speed(self):
+        from simplified_vehicle_models.solvers.qss_line_ocp import _decision_scaling
+
+        nodes = 4
+        center, scale = _decision_scaling(nodes)
+        elements = nodes - 1
+        self.assertEqual(center.size, 5 * nodes + 2 * elements)
+        np.testing.assert_array_equal(center[2 * nodes:3 * nodes], np.full(nodes, 20.0))
+        for start, size, expected in (
+            (0, nodes, 1.0), (nodes, nodes, 0.15), (2 * nodes, nodes, 10.0),
+            (3 * nodes, nodes, 5.0), (4 * nodes, nodes, 0.1),
+            (5 * nodes, elements, 5.0), (5 * nodes + elements, elements, 0.1),
+        ):
+            np.testing.assert_array_equal(scale[start:start + size], np.full(size, expected))
+        physical = np.linspace(-3.0, 35.0, center.size)
+        scaled = (physical - center) / scale
+        np.testing.assert_allclose(center + scale * scaled, physical)
 
     def test_decision_layout_matches_the_declared_contract(self):
         from simplified_vehicle_models.solvers.qss_line_ocp import build_mesh, build_ocp, QssSettings

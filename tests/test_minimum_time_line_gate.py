@@ -269,6 +269,18 @@ class RunnerOrchestrationTest(unittest.TestCase):
                 _validate_output_paths(source, alias_directory)
             self.assertEqual(geometry.read_bytes(), geometry_bytes)
 
+            hardlink_directory = root / "hardlink_output"
+            hardlink_directory.mkdir()
+            hardlink_target = hardlink_directory / "line.csv"
+            try:
+                hardlink_target.hardlink_to(geometry)
+            except (OSError, NotImplementedError):
+                pass
+            else:
+                with self.assertRaisesRegex(ValueError, "overwrite source track asset"):
+                    _validate_output_paths(source, hardlink_directory)
+                self.assertEqual(geometry.read_bytes(), geometry_bytes)
+
             args = SimpleNamespace(track=source, output=root, margin=.1)
             with self.assertRaisesRegex(ValueError, "overwrite source track asset"):
                 runner.run(args)

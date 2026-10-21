@@ -262,6 +262,13 @@ class RunnerOrchestrationTest(unittest.TestCase):
             self.assertEqual(geometry.read_bytes(), geometry_bytes)
             self.assertFalse((root / "racing_line_track.xml").exists())
 
+            alias_directory = root / "alias_output"
+            alias_directory.mkdir()
+            (alias_directory / "line.csv").symlink_to(geometry)
+            with self.assertRaisesRegex(ValueError, "overwrite source track asset"):
+                _validate_output_paths(source, alias_directory)
+            self.assertEqual(geometry.read_bytes(), geometry_bytes)
+
             args = SimpleNamespace(track=source, output=root, margin=.1)
             with self.assertRaisesRegex(ValueError, "overwrite source track asset"):
                 runner.run(args)

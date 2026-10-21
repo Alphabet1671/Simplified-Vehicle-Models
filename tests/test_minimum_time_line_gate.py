@@ -352,10 +352,18 @@ class RunnerOrchestrationTest(unittest.TestCase):
             with (
                 patch.object(runner, "load_track", return_value=track),
                 patch.object(runner, "solve_lap") as solve_lap,
+                patch.object(runner, "solve_line") as solve_line,
+                patch.object(runner, "solve_ladder") as solve_ladder,
+                patch.object(runner, "compile_formulation") as compile_formulation,
+                patch.object(runner, "load_capability_surface") as load_surface,
             ):
                 with self.assertRaisesRegex(ValueError, "requires a closed track"):
                     runner.run(args)
             solve_lap.assert_not_called()
+            solve_line.assert_not_called()
+            solve_ladder.assert_not_called()
+            compile_formulation.assert_not_called()
+            load_surface.assert_not_called()
             self.assertFalse(output.exists())
 
     def test_run_rejects_missing_corridor_before_solver_or_output_creation(self) -> None:
@@ -375,10 +383,18 @@ class RunnerOrchestrationTest(unittest.TestCase):
             with (
                 patch.object(runner, "load_track", return_value=track),
                 patch.object(runner, "solve_lap") as solve_lap,
+                patch.object(runner, "solve_line") as solve_line,
+                patch.object(runner, "solve_ladder") as solve_ladder,
+                patch.object(runner, "compile_formulation") as compile_formulation,
+                patch.object(runner, "load_capability_surface") as load_surface,
             ):
                 with self.assertRaisesRegex(ValueError, "requires a lateral corridor"):
                     runner.run(args)
             solve_lap.assert_not_called()
+            solve_line.assert_not_called()
+            solve_ladder.assert_not_called()
+            compile_formulation.assert_not_called()
+            load_surface.assert_not_called()
             self.assertFalse(output.exists())
 
     def test_run_reports_all_five_checks_and_preserves_false_gate(self) -> None:

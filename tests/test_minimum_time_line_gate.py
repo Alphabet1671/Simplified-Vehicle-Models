@@ -489,6 +489,20 @@ class RunnerOrchestrationTest(unittest.TestCase):
             solve_lap.assert_not_called()
             self.assertFalse(output.exists())
 
+    def test_open_envelope_seed_matches_reduced_basis_layout(self) -> None:
+        from tools.run.solve_minimum_time_line import _open_envelope_seed
+        from simplified_vehicle_models.solvers.qss_line_ocp import QssSettings, _offset_basis
+
+        distance = np.linspace(0.0, 10.0, 5)
+        track = SimpleNamespace(lap_length=10.0, distance=distance, is_closed=False)
+        envelope = SimpleNamespace(speed=np.linspace(0.0, 10.0, 5))
+        settings = QssSettings(offset_control_spacing=5.0)
+        mesh = np.linspace(0.0, 10.0, 3)
+        seed = _open_envelope_seed(track, mesh, envelope, settings)
+        basis, _ = _offset_basis(track, mesh, 5.0)
+        self.assertEqual(seed.size, basis.shape[1] + 4 * mesh.size + 2 * (mesh.size - 1))
+        self.assertTrue(np.all(np.isfinite(seed)))
+
     def test_mesh_spacings_are_validated(self) -> None:
         from tools.run.solve_minimum_time_line import _parse_spacings
 

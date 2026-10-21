@@ -19,7 +19,7 @@ from simplified_vehicle_models.formulations.point_mass_capability import capabil
 from simplified_vehicle_models.solvers.forward_backward import solve_lap
 from simplified_vehicle_models.solvers.qss_line_ocp import (
     QssSettings, build_mesh, capability_envelope_time, launch_time, solve_line,
-    solve_ladder, track_sample,
+    solve_ladder, track_sample, _offset_basis,
 )
 from simplified_vehicle_models.results.traces import LapMode
 from simplified_vehicle_models.tracks.corridor import Corridor, corridor_from_track
@@ -192,9 +192,12 @@ def _open_envelope_seed(track, mesh, envelope, settings: QssSettings) -> np.ndar
     speed = np.maximum(np.interp(mesh, distance, envelope_speed), settings.minimum_speed)
     speed_rate = np.gradient(envelope_speed, distance)
     acceleration = np.interp(mesh, distance, envelope_speed * speed_rate)
+    basis, _ = _offset_basis(track, mesh, settings.offset_control_spacing)
+    offset_size = nodes if basis is None else basis.shape[1]
+    offset = np.zeros(offset_size)
     zeros = np.zeros(nodes)
     mids = np.zeros(count)
-    return np.concatenate([zeros, zeros, speed, acceleration, zeros, mids, mids])
+    return np.concatenate([offset, zeros, speed, acceleration, zeros, mids, mids])
 
 
 def run(args) -> dict:

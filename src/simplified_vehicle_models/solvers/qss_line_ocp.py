@@ -613,13 +613,14 @@ def solve_ladder(track, corridor, surface, settings: QssSettings,
     for index, spacing in enumerate(spacings):
         mesh = build_mesh(track, spacing)
         stage_settings = settings
-        if not track.is_closed:
+        if not track.is_closed and settings.offset_control_spacing is None:
             stage_settings = replace(
                 settings,
                 open_regularisation=open_schedule[min(index, len(open_schedule) - 1)],
             )
         started = time.perf_counter()
-        solution = solve_line(track, corridor, surface, mesh, stage_settings, seed=current)
+        stage_seed = None if settings.offset_control_spacing is not None else current
+        solution = solve_line(track, corridor, surface, mesh, stage_settings, seed=stage_seed)
         wall_seconds = time.perf_counter() - started
         if solution.status != "Solve_Succeeded":
             raise RuntimeError(

@@ -424,6 +424,36 @@ class LadderTest(unittest.TestCase):
             )
         self.assertEqual(captured, [1.0e-6, 1.0e-4, 1.0e-3])
 
+    def test_reduced_basis_ladder_restarts_from_default_seed(self):
+        from unittest.mock import patch
+        from simplified_vehicle_models.solvers import qss_line_ocp
+
+        track = load_track(_write_circle_track(self.directory, radius=40.0, nodes=72, half_width=3.0))
+        object.__setattr__(track, "is_closed", False)
+        corridor = corridor_from_track(track)
+        captured = []
+
+        def fake_solve(track, corridor, surface, mesh, settings, *, seed=None):
+            captured.append((settings.open_regularisation, seed))
+            built = qss_line_ocp.build_ocp(track, corridor, surface, mesh, settings)
+            values = qss_line_ocp.initial_guess(track, corridor, surface, mesh, settings)
+            blocks = qss_line_ocp.unpack(
+                values, len(mesh) - 1, built["control_count"], built["offset_basis"],
+            )
+            return qss_line_ocp.QssSolution(
+                np.asarray(mesh), blocks["offset"], blocks["heading"], blocks["speed"],
+                blocks["acceleration"], blocks["curvature_rate"], 1.0,
+                "Solve_Succeeded", 1, 0.0,
+            )
+
+        settings = qss_line_ocp.QssSettings(offset_control_spacing=20.0)
+        with patch.object(qss_line_ocp, "solve_line", side_effect=fake_solve):
+            qss_line_ocp.solve_ladder(
+                track, corridor, _flat_surface(25.0), settings, spacings=(8.0, 4.0),
+            )
+        self.assertEqual([item[0] for item in captured], [1.0e-6, 1.0e-6])
+        self.assertEqual([item[1] for item in captured], [None, None])
+
     def test_next_stage_receives_next_mesh_projection(self) -> None:
         from unittest.mock import patch
         from simplified_vehicle_models.solvers import qss_line_ocp

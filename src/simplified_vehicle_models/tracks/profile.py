@@ -74,7 +74,14 @@ def _title(root: ElementTree.Element, source_path: Path) -> str:
 
 
 def _data_path(root: ElementTree.Element, source_path: Path) -> Path:
-    data_element = root.find("./data")
+    """Return the unroled geometry reference used by track model conventions."""
+
+    geometry = [
+        element for element in root.findall("./data") if element.get("role") is None
+    ]
+    if len(geometry) > 1:
+        raise ValueError(f"{source_path}: geometry data must be declared at most once")
+    data_element = geometry[0] if geometry else None
     if data_element is None or not data_element.get("ref"):
         raise ValueError(f"{source_path}: missing track data reference")
     return (source_path.parent / data_element.get("ref", "")).resolve()
@@ -97,7 +104,11 @@ def _role_data_path(
 
 
 def _read_width_csv(path: Path) -> tuple[FloatArray, FloatArray, FloatArray]:
-    """Read a per-node lateral corridor table in metres."""
+    """Read per-node corridor widths in metres.
+
+    Positive lateral offset is right of the direction of travel; columns name
+    the left and right half-widths respectively.
+    """
 
     expected = ["distance", "half_width_left", "half_width_right"]
     rows: list[tuple[float, float, float]] = []

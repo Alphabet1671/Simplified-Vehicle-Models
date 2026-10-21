@@ -19,6 +19,7 @@ def _write_circle_track(
     width_rows: int | None = None,
     provenance: str | None = "assumed",
     side: str = "both",
+    width_first: bool = False,
 ) -> Path:
     """Write a closed circular track with an optional width source.
 
@@ -58,7 +59,11 @@ def _write_circle_track(
                 left = 3.0 if side in ("both", "left") else 1.0
                 right = 3.0 if side in ("both", "right") else 1.0
                 writer.writerow([f"{distance[index]:.17g}", f"{left}", f"{right}"])
-        data.append('<data role="width" ref="width.csv" />')
+        width_data = '<data role="width" ref="width.csv" />'
+        if width_first:
+            data.insert(0, width_data)
+        else:
+            data.append(width_data)
         parameters.append('<parameter name="width_provenance" value="surveyed" />')
 
     xml = (
@@ -106,6 +111,13 @@ class WidthParameterTest(unittest.TestCase):
         self.assertEqual(track.width_provenance, "surveyed")
         np.testing.assert_allclose(track.half_width_left, 3.0)
         np.testing.assert_allclose(track.half_width_right, 1.0)
+
+    def test_width_role_before_geometry_still_loads_geometry(self) -> None:
+        track = load_track(
+            _write_circle_track(self.directory, width_rows=240, width_first=True)
+        )
+        self.assertTrue(track.has_signed_geometry)
+        self.assertEqual(track.width_provenance, "surveyed")
 
     def test_width_data_row_count_must_match_the_grid(self) -> None:
         with self.assertRaises(ValueError):

@@ -258,7 +258,34 @@ def project_seed(coarse: QssSolution, mesh) -> FloatArray:
     """Interpolate a prior solution to the requested mesh."""
     mesh=np.asarray(mesh,dtype=float); count=mesh.size-1; source=np.asarray(coarse.distance,dtype=float)
     if source.size != coarse.offset.size: raise ValueError("solution distance does not match its node count")
-    def periodic(values): return np.r_[np.asarray(values,dtype=float),np.asarray(values,dtype=float)[0]]
-    arrays=[np.interp(mesh,source,periodic(values)) for values in (coarse.offset,coarse.heading_error,coarse.speed,coarse.acceleration,coarse.curvature_rate)]
+    arrays=[np.interp(mesh,source,np.asarray(values,dtype=float)) for values in (coarse.offset,coarse.heading_error,coarse.speed,coarse.acceleration,coarse.curvature_rate)]
     mids=np.zeros(count)
     return np.concatenate([*arrays,mids,mids])
+
+
+def solve_ladder(track, corridor, surface, settings: QssSettings,
+                 spacings: tuple[float, ...] = (5.0, 2.0, 1.0),
+                 *, seed: FloatArray | None = None) -> list[QssSolution]:
+    """Solve coarse to fine, warm starting each stage from the one before.
+
+    Each prior solution is projected directly onto the *next* stage mesh before
+    it is used as that stage's seed. The first supplied seed is interpreted as
+    a seed for the first spacing, consistent with ``solve_line``'s contract.
+    """
+    if not spacings:
+        raise ValueError("at least one mesh spacing is required")
+    stages: list[QssSolution] = []
+    current = seed
+    for index, spacing in enumerate(spacings):
+        mesh = build_mesh(track, spacing)
+        solution = solve_line(track, corridor, surface, mesh, settings, seed=current)
+        if solution.status != "Solve_Succeeded":
+            raise RuntimeError(
+                f"stage at {spacing} m failed with {solution.status} "
+                f"after {solution.iterations} iterations"
+            )
+        stages.append(solution)
+        if index + 1 < len(spacings):
+            next_mesh = build_mesh(track, spacings[index + 1])
+            current = project_seed(solution, next_mesh)
+    return stages

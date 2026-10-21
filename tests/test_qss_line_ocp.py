@@ -139,3 +139,56 @@ class TranscriptionTest(unittest.TestCase):
         self.assertLess(float(np.max(solution.offset)),-.9*width)
         expected=2*math.pi*(radius-width)/25.0
         self.assertAlmostEqual(solution.lap_time,expected,delta=5e-3*expected)
+
+
+@unittest.skipUnless(CASADI, "CasADi is not installed")
+class LadderTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self._directory = tempfile.TemporaryDirectory()
+        self.directory = Path(self._directory.name)
+
+    def tearDown(self) -> None:
+        self._directory.cleanup()
+
+    def test_ladder_converges_and_is_mesh_independent(self) -> None:
+        from simplified_vehicle_models.solvers.qss_line_ocp import QssSettings, solve_ladder
+
+        track = load_track(_write_circle_track(self.directory, radius=40.0, nodes=360, half_width=3.0))
+        corridor = corridor_from_track(track)
+        stages = solve_ladder(track, corridor, _flat_surface(25.0), QssSettings(maximum_iterations=6000), spacings=(4.0, 2.0, 1.0))
+        self.assertEqual(len(stages), 3)
+        for stage in stages:
+            self.assertEqual(stage.status, "Solve_Succeeded")
+        coarse, finest = stages[-2], stages[-1]
+        self.assertAlmostEqual(finest.lap_time, coarse.lap_time, delta=5.0e-3 * coarse.lap_time)
+
+    def test_next_stage_receives_next_mesh_projection(self) -> None:
+        from unittest.mock import patch
+        from simplified_vehicle_models.solvers import qss_line_ocp
+
+        track = load_track(_write_circle_track(self.directory, radius=40.0, nodes=360, half_width=3.0))
+        corridor = corridor_from_track(track)
+        settings = qss_line_ocp.QssSettings()
+        meshes = [qss_line_ocp.build_mesh(track, s) for s in (8.0, 4.0)]
+        captured = []
+        def fake_solve(track, corridor, surface, mesh, settings, *, seed=None):
+            captured.append((np.asarray(mesh).copy(), seed))
+            values = qss_line_ocp.initial_guess(track, corridor, surface, mesh, settings)
+            blocks = qss_line_ocp.unpack(values, len(mesh)-1)
+            return qss_line_ocp.QssSolution(np.asarray(mesh), blocks["offset"], blocks["heading"], blocks["speed"], blocks["acceleration"], blocks["curvature_rate"], 1.0, "Solve_Succeeded", 1, 0.0)
+
+        with patch.object(qss_line_ocp, "solve_line", side_effect=fake_solve):
+            qss_line_ocp.solve_ladder(track, corridor, _flat_surface(25.0), settings, spacings=(8.0, 4.0))
+        expected = qss_line_ocp.project_seed(
+            fake_solve(track, corridor, _flat_surface(25.0), meshes[0], settings), meshes[1]
+        )
+        self.assertEqual(captured[1][0].size, meshes[1].size)
+        self.assertEqual(captured[1][1].size, 5 * meshes[1].size + 2 * (meshes[1].size - 1))
+        np.testing.assert_array_equal(captured[1][1], expected)
+
+    def test_empty_spacing_list_is_rejected(self) -> None:
+        from simplified_vehicle_models.solvers.qss_line_ocp import QssSettings, solve_ladder
+
+        track = load_track(_write_circle_track(self.directory, radius=40.0, nodes=360, half_width=3.0))
+        with self.assertRaisesRegex(ValueError, "at least one"):
+            solve_ladder(track, corridor_from_track(track), _flat_surface(25.0), QssSettings(), spacings=())

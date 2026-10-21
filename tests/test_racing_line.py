@@ -51,6 +51,25 @@ class OffsetPathTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             offset_path(track.path_coordinates, np.zeros(3))
 
+    def test_path_from_solution_samples_open_track_without_wrapping(self):
+        from tools.tracks.open_course import arc_by_angle, build_course, straight, write_course
+
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        course = build_course([straight(10.0), arc_by_angle(30.0, 0.4), straight(5.0)], allow_curvature_jumps=True)
+        xml_path, _ = write_course(course, Path(directory.name), "open", "open-test", "Open test")
+        track = load_track(xml_path)
+        solution = SimpleNamespace(
+            offset=np.full(track.distance.size, 1.0),
+            distance=np.asarray(track.distance),
+        )
+        path = path_from_solution(track, solution)
+        self.assertFalse(path.is_closed)
+        self.assertEqual(path.distance.shape, track.distance.shape)
+        np.testing.assert_allclose(path.distance[0], 0.0)
+        smooth = path_from_solution(track, solution, smoothing=0.5)
+        np.testing.assert_allclose(smooth.x_north, path.x_north, atol=1e-9)
+
     def test_path_from_solution_samples_periodically_to_track_grid(self):
         track = self._circle()
         solution = SimpleNamespace(

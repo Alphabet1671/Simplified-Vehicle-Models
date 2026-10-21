@@ -78,6 +78,18 @@ def _periodic_smooth(values, sigma_samples: float):
     return np.convolve(padded, kernel, mode="valid")
 
 
+def _smooth(values, sigma_samples: float):
+    """Apply a Gaussian average to an open sample sequence, preserving edges."""
+
+    values = np.asarray(values, dtype=float)
+    half = int(max(1, round(4.0 * sigma_samples)))
+    taps = np.arange(-half, half + 1)
+    kernel = np.exp(-0.5 * (taps / sigma_samples) ** 2)
+    kernel /= kernel.sum()
+    padded = np.pad(values, half, mode="edge")
+    return np.convolve(padded, kernel, mode="valid")
+
+
 def path_from_solution(track, solution, *, smoothing: float = 0.0) -> PathCoordinates:
     """Rebuild a track-grid path from a QSS solution's lateral offset."""
 
@@ -85,18 +97,26 @@ def path_from_solution(track, solution, *, smoothing: float = 0.0) -> PathCoordi
         raise ValueError("smoothing must be finite and nonnegative")
     if track.path_coordinates is None:
         raise ValueError("track has no signed path coordinates")
-    if not track.is_closed:
-        raise ValueError("path_from_solution requires a closed track")
-    from simplified_vehicle_models.solvers.qss_line_ocp import periodic_sample
+    if track.is_closed:
+        from simplified_vehicle_models.solvers.qss_line_ocp import periodic_sample
 
-    offset = periodic_sample(
-        np.asarray(solution.offset, dtype=float)[:-1],
-        np.asarray(solution.distance, dtype=float)[:-1],
-        np.asarray(track.distance, dtype=float),
-        period=float(track.lap_length),
-    )
+        offset = periodic_sample(
+            np.asarray(solution.offset, dtype=float)[:-1],
+            np.asarray(solution.distance, dtype=float)[:-1],
+            np.asarray(track.distance, dtype=float),
+            period=float(track.lap_length),
+        )
+    else:
+        offset = np.interp(
+            np.asarray(track.distance, dtype=float),
+            np.asarray(solution.distance, dtype=float),
+            np.asarray(solution.offset, dtype=float),
+        )
     if smoothing > 0.0:
         spacing = float(track.lap_length) / float(track.distance.size - 1)
-        offset = _periodic_smooth(offset[:-1], smoothing / spacing)
-        offset = np.r_[offset, offset[0]]
+        if track.is_closed:
+            offset = _periodic_smooth(offset[:-1], smoothing / spacing)
+            offset = np.r_[offset, offset[0]]
+        else:
+            offset = _smooth(offset, smoothing / spacing)
     return offset_path(track.path_coordinates, offset)

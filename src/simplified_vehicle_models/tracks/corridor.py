@@ -66,20 +66,41 @@ class Corridor:
 
 
 def corridor_from_track(
-    track, *, margin: float = 0.0, fold_guard: float = 0.2
+    track, *, margin: float = 0.0, fold_guard: float = 0.2,
+    half_width: float | None = None,
 ) -> Corridor:
-    """Build right-positive bounds from track widths and signed curvature."""
+    """Build right-positive bounds from track widths and signed curvature.
 
-    if not getattr(track, "has_edges", False):
-        raise ValueError("the track carries no lateral corridor")
+    A track without width data may be given a constant reference-point
+    ``half_width`` in metres. The resulting corridor is labelled ``assumed``
+    because the width is a modelling input, not a surveyed edge. Supplying
+    ``half_width`` for a track that already carries edges is rejected so the
+    source data cannot be silently overridden.
+    """
+
+    has_edges = bool(getattr(track, "has_edges", False))
+    if has_edges and half_width is not None:
+        raise ValueError("half_width is only valid for a track without edges")
+    if not has_edges and half_width is None:
+        raise ValueError(
+            "the track carries no lateral corridor; provide half_width"
+        )
     if not np.isfinite(margin) or margin < 0.0:
         raise ValueError("margin must be finite and nonnegative")
     if not np.isfinite(fold_guard) or not 0.0 < fold_guard < 1.0:
         raise ValueError("fold_guard must lie strictly between zero and one")
 
     distance = np.asarray(track.distance, dtype=float)
-    left = np.asarray(track.half_width_left, dtype=float)
-    right = np.asarray(track.half_width_right, dtype=float)
+    if has_edges:
+        left = np.asarray(track.half_width_left, dtype=float)
+        right = np.asarray(track.half_width_right, dtype=float)
+        provenance = str(track.width_provenance)
+    else:
+        if not np.isfinite(half_width) or half_width <= 0.0:
+            raise ValueError("half_width must be finite and positive")
+        left = np.full(distance.shape, float(half_width))
+        right = np.full(distance.shape, float(half_width))
+        provenance = "assumed"
     curvature = np.asarray(track.curvature, dtype=float)
     if not all(np.all(np.isfinite(a)) for a in (distance, left, right, curvature)):
         raise ValueError("track corridor inputs must be finite")
@@ -105,6 +126,6 @@ def corridor_from_track(
         distance=distance,
         minimum=minimum,
         maximum=maximum,
-        provenance=str(track.width_provenance),
+        provenance=provenance,
         is_closed=bool(track.is_closed),
     )

@@ -4,7 +4,7 @@ Decision vector is grouped: [n | psi | v | a | dpsi/ds | a_mid | dpsi/ds_mid].
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import math
 import time
 
@@ -24,6 +24,8 @@ class QssSettings:
     tolerance: float = 1.0e-6
     maximum_iterations: int = 3000
     tolerance_homotopy: bool = False
+    start_speed: float = 0.0
+    open_regularisation: float = 1.0e-6
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,14 +60,19 @@ def _validate_inputs(track, corridor, surface, mesh, settings):
         raise ValueError("regularisation must be finite and nonnegative")
     if not isinstance(settings.tolerance_homotopy, (bool, np.bool_)):
         raise ValueError("tolerance_homotopy must be a boolean")
+    if not math.isfinite(settings.start_speed) or settings.start_speed < 0.0:
+        raise ValueError("start_speed must be finite and nonnegative")
+    if not math.isfinite(settings.open_regularisation) or settings.open_regularisation < 0.0:
+        raise ValueError("open_regularisation must be finite and nonnegative")
     if isinstance(settings.maximum_iterations, bool) or settings.maximum_iterations < 1:
         raise ValueError("maximum_iterations must be a positive integer")
     if int(settings.maximum_iterations) != settings.maximum_iterations:
         raise ValueError("maximum_iterations must be a positive integer")
-    if not getattr(track, "is_closed", False):
-        raise ValueError("quasi-steady line OCP requires a closed track")
-    if not getattr(corridor, "is_periodic", False):
-        raise ValueError("quasi-steady line OCP requires a periodic corridor")
+    closed = bool(getattr(track, "is_closed", False))
+    if closed and not getattr(corridor, "is_periodic", False):
+        raise ValueError("quasi-steady line OCP requires a periodic corridor for a closed track")
+    if not closed and getattr(corridor, "is_closed", True):
+        raise ValueError("quasi-steady line OCP requires an open corridor for an open track")
     mesh = np.asarray(mesh, dtype=float)
     if mesh.ndim != 1 or mesh.size < 2 or not np.all(np.isfinite(mesh)) or np.any(np.diff(mesh) <= 0):
         raise ValueError("mesh must be a finite strictly increasing vector")
@@ -125,8 +132,82 @@ def periodic_sample(values, distance, positions, *, period: float | None = None)
     return np.interp(wrapped, nodes, samples)
 
 
+def track_sample(values, distance, positions, *, closed: bool, period: float) -> FloatArray:
+    """Linearly sample track data, wrapping only for a closed track."""
+    if closed:
+        return periodic_sample(values, distance, positions, period=period)
+    distance = np.asarray(distance, dtype=float)
+    query = np.asarray(positions, dtype=float)
+    tolerance = 1.0e-9
+    if query.size == 0:
+        raise ValueError("sample positions must not be empty")
+    if np.any(query < distance[0] - tolerance) or np.any(query > distance[-1] + tolerance):
+        raise ValueError("sample positions must lie on the track distance range")
+    return np.interp(query, distance, np.asarray(values, dtype=float))
+
+
 def _element_curvature(track, mesh) -> FloatArray:
-    return periodic_sample(track.curvature, track.distance, mesh, period=float(track.lap_length))
+    return track_sample(
+        track.curvature, track.distance, mesh,
+        closed=bool(track.is_closed), period=float(track.lap_length),
+    )
+
+
+def _bilinear(grid, x_axis, y_axis, x: float, y: float) -> float:
+    """Bilinear interpolation matching CasADi's linear 2-D interpolant."""
+    x_axis = np.asarray(x_axis, dtype=float)
+    y_axis = np.asarray(y_axis, dtype=float)
+    x = float(np.clip(x, x_axis[0], x_axis[-1]))
+    y = float(np.clip(y, y_axis[0], y_axis[-1]))
+    i = int(np.clip(np.searchsorted(x_axis, x) - 1, 0, x_axis.size - 2))
+    j = int(np.clip(np.searchsorted(y_axis, y) - 1, 0, y_axis.size - 2))
+    tx = (x - x_axis[i]) / (x_axis[i + 1] - x_axis[i])
+    ty = (y - y_axis[j]) / (y_axis[j + 1] - y_axis[j])
+    values = np.asarray(grid, dtype=float)
+    return float(
+        (1.0 - tx) * (1.0 - ty) * values[i, j]
+        + tx * (1.0 - ty) * values[i + 1, j]
+        + (1.0 - tx) * ty * values[i, j + 1]
+        + tx * ty * values[i + 1, j + 1]
+    )
+
+
+def capability_envelope_time(track, surface, settings: QssSettings, *, step: float = 0.05) -> float:
+    """Integrate the sampled capability along an open centreline.
+
+    This is an independent one-dimensional reference for the open-track
+    zero-corridor control. It uses the same sampled surface as the OCP, so it
+    checks the transcription rather than validating the surface itself.
+    """
+    if track.is_closed:
+        raise ValueError("capability envelope time is defined for an open track")
+    if not math.isfinite(step) or step <= 0.0:
+        raise ValueError("integration step must be finite and positive")
+    length = float(track.lap_length)
+    count = max(int(math.ceil(length / step)), 1)
+    positions = np.linspace(0.0, length, count + 1)
+    curvature = track_sample(
+        track.curvature, track.distance, positions,
+        closed=False, period=length,
+    )
+    speed = max(float(settings.start_speed), float(settings.minimum_speed))
+    elapsed = 0.0
+    for index in range(count):
+        ds = float(positions[index + 1] - positions[index])
+        kappa = 0.5 * (float(curvature[index]) + float(curvature[index + 1]))
+        acceleration = _bilinear(
+            surface.acceleration_max, surface.speed, surface.curvature,
+            speed, kappa,
+        )
+        next_speed = math.sqrt(max(speed * speed + 2.0 * acceleration * ds, 0.0))
+        ceiling = float(np.interp(kappa, surface.curvature, surface.speed_ceiling))
+        next_speed = min(next_speed, ceiling)
+        mean_speed = 0.5 * (speed + next_speed)
+        if mean_speed <= 0.0:
+            raise ValueError("capability envelope reached zero speed")
+        elapsed += ds / mean_speed
+        speed = next_speed
+    return elapsed
 
 
 def build_ocp(track, corridor, surface, mesh, settings: QssSettings):
@@ -139,8 +220,12 @@ def build_ocp(track, corridor, surface, mesh, settings: QssSettings):
     amin = ca.interpolant("qss_amin", "linear", [surface.speed.tolist(), surface.curvature.tolist()], surface.acceleration_min.ravel(order="F").tolist())
     ceiling = ca.interpolant("qss_vceil", "linear", [surface.curvature.tolist()], surface.speed_ceiling.tolist())
     k0 = _element_curvature(track, mesh)
-    nlo = periodic_sample(corridor.minimum, corridor.distance, mesh, period=float(track.lap_length))
-    nhi = periodic_sample(corridor.maximum, corridor.distance, mesh, period=float(track.lap_length))
+    sample = lambda values, positions: track_sample(
+        values, corridor.distance, positions,
+        closed=bool(track.is_closed), period=float(track.lap_length),
+    )
+    nlo = sample(corridor.minimum, mesh)
+    nhi = sample(corridor.maximum, mesh)
     n = [ca.MX.sym(f"n_{i}") for i in range(nodes)]
     psi = [ca.MX.sym(f"psi_{i}") for i in range(nodes)]
     v = [ca.MX.sym(f"v_{i}") for i in range(nodes)]
@@ -179,8 +264,8 @@ def build_ocp(track, corridor, surface, mesh, settings: QssSettings):
         h = float(mesh[i+1]-mesh[i]); midpos=.5*(mesh[i]+mesh[i+1])
         kmid=float(_element_curvature(track,[midpos])[0])
         interior_positions=mesh[i]+h*np.asarray([0.25,0.5,0.75])
-        interior_lower=periodic_sample(corridor.minimum,corridor.distance,interior_positions,period=float(track.lap_length))
-        interior_upper=periodic_sample(corridor.maximum,corridor.distance,interior_positions,period=float(track.lap_length))
+        interior_lower=sample(corridor.minimum, interior_positions)
+        interior_upper=sample(corridor.maximum, interior_positions)
         s0=ca.vertcat(n[i],psi[i],v[i]); s1=ca.vertcat(n[i+1],psi[i+1],v[i+1])
         f0=rates((n[i],psi[i],v[i]),(a[i],q[i]),float(k0[i]))
         f1=rates((n[i+1],psi[i+1],v[i+1]),(a[i+1],q[i+1]),float(k0[i+1]))
@@ -193,6 +278,13 @@ def build_ocp(track, corridor, surface, mesh, settings: QssSettings):
             return (1-curvature*offset)/(speed*ca.cos(heading))
         objective += h/6*(time_rate(n[i],psi[i],v[i],float(k0[i]))+4*time_rate(sm[0],sm[1],sm[2],kmid)+time_rate(n[i+1],psi[i+1],v[i+1],float(k0[i+1])))
         objective += settings.regularisation*h/6*(q[i]**2+4*qm[i]**2+q[i+1]**2)
+        if not track.is_closed:
+            # On a straight open section neither lateral offset nor heading has
+            # an intrinsic cost, so the OCP would have a null direction. A tiny
+            # preference for the centreline makes the NLP locally unique without
+            # materially changing the minimum time.
+            objective += settings.open_regularisation*h/6*(n[i]**2+4*sm[0]**2+n[i+1]**2)
+            objective += settings.open_regularisation*h/6*(psi[i]**2+4*sm[1]**2+psi[i+1]**2)
         for sample_index, (dense_state, dense_low, dense_high) in enumerate(zip(hermite_states,interior_lower,interior_upper)):
             if sample_index == 1:
                 continue  # Hermite t=1/2 equals the HS collocation midpoint.
@@ -201,7 +293,15 @@ def build_ocp(track, corridor, surface, mesh, settings: QssSettings):
         limits(n[i],psi[i],v[i],a[i],q[i],float(k0[i]))
         limits(sm[0],sm[1],sm[2],am[i],qm[i],kmid)
         limits(n[i+1],psi[i+1],v[i+1],a[i+1],q[i+1],float(k0[i+1]))
-    add(n[0]-n[-1],0.0,0.0); add(psi[0]-psi[-1],0.0,0.0); add(v[0]-v[-1],0.0,0.0)
+    if track.is_closed:
+        add(n[0]-n[-1],0.0,0.0); add(psi[0]-psi[-1],0.0,0.0); add(v[0]-v[-1],0.0,0.0)
+    else:
+        # Only heading and launch speed are fixed. Lateral offset stays a free
+        # corridor decision at both ends; fixing it as well would duplicate the
+        # zero-corridor bounds and leave the open NLP overconstrained.
+        start_speed = max(float(settings.start_speed), float(settings.minimum_speed))
+        add(psi[0],0.0,0.0); add(psi[-1],0.0,0.0)
+        add(v[0]-start_speed,0.0,0.0)
     return {"nlp":{"x":x,"f":objective,"g":ca.vertcat(*constraints)},"x_lower":xl,"x_upper":xu,"g_lower":np.asarray(gl),"g_upper":np.asarray(gu),"mesh":mesh,"count":count}
 
 
@@ -216,10 +316,14 @@ def unpack(values, count: int) -> dict[str, FloatArray]:
 
 def initial_guess(track, corridor, surface, mesh, settings: QssSettings) -> FloatArray:
     mesh=_validate_inputs(track,corridor,surface,mesh,settings); count=mesh.size-1
-    offset=.5*(periodic_sample(corridor.minimum,corridor.distance,mesh)+periodic_sample(corridor.maximum,corridor.distance,mesh))
+    closed=bool(track.is_closed)
+    sample=lambda values: track_sample(values,corridor.distance,mesh,closed=closed,period=float(track.lap_length))
+    offset=.5*(sample(corridor.minimum)+sample(corridor.maximum))
     curvature=np.clip(_element_curvature(track,mesh),surface.curvature[0],surface.curvature[-1])
     ceiling=np.interp(curvature,surface.curvature,surface.speed_ceiling)
     speed=np.full(mesh.size,max(.6*float(np.min(ceiling)),settings.minimum_speed+.1))
+    if not closed:
+        speed[0]=max(float(settings.start_speed),float(settings.minimum_speed))
     zeros=np.zeros(mesh.size); mids=np.zeros(count)
     return np.concatenate([offset,zeros,speed,zeros,zeros,mids,mids])
 
@@ -341,7 +445,7 @@ def solve_line(track, corridor, surface, mesh, settings: QssSettings, *, seed: F
     return QssSolution(np.asarray(mesh,dtype=float),blocks["offset"],blocks["heading"],blocks["speed"],blocks["acceleration"],blocks["curvature_rate"],float(result["f"]),str(stats["return_status"]),total_iterations,violation,blocks["mid_acceleration"],blocks["mid_curvature_rate"])
 
 
-def project_seed(coarse: QssSolution, mesh) -> FloatArray:
+def project_seed(coarse: QssSolution, mesh, *, is_closed: bool = True) -> FloatArray:
     """Interpolate prior node and midpoint controls onto a new mesh."""
     mesh=np.asarray(mesh,dtype=float); source=np.asarray(coarse.distance,dtype=float)
     if mesh.ndim != 1 or mesh.size < 2 or not np.all(np.isfinite(mesh)) or np.any(np.diff(mesh) <= 0.0):
@@ -359,6 +463,8 @@ def project_seed(coarse: QssSolution, mesh) -> FloatArray:
             raise ValueError("solution midpoint controls must be finite and match its mesh")
         source_midpoints=.5*(source[:-1]+source[1:])
         target_midpoints=.5*(mesh[:-1]+mesh[1:])
+        if not is_closed:
+            return np.interp(target_midpoints,source_midpoints,values)
         periodic_midpoints=np.r_[source_midpoints,source_midpoints[0]+float(coarse.distance[-1]-coarse.distance[0])]
         periodic_values=np.r_[values,values[0]]
         wrapped=source_midpoints[0]+np.mod(target_midpoints-source_midpoints[0],float(coarse.distance[-1]-coarse.distance[0]))
@@ -384,10 +490,17 @@ def solve_ladder(track, corridor, surface, settings: QssSettings,
         raise ValueError("at least one mesh spacing is required")
     stages: list[QssSolution] = []
     current = seed
+    open_schedule = (1.0e-6, 1.0e-4, 1.0e-3)
     for index, spacing in enumerate(spacings):
         mesh = build_mesh(track, spacing)
+        stage_settings = settings
+        if not track.is_closed:
+            stage_settings = replace(
+                settings,
+                open_regularisation=open_schedule[min(index, len(open_schedule) - 1)],
+            )
         started = time.perf_counter()
-        solution = solve_line(track, corridor, surface, mesh, settings, seed=current)
+        solution = solve_line(track, corridor, surface, mesh, stage_settings, seed=current)
         wall_seconds = time.perf_counter() - started
         if solution.status != "Solve_Succeeded":
             raise RuntimeError(
@@ -399,5 +512,5 @@ def solve_ladder(track, corridor, surface, settings: QssSettings,
             stage_callback(float(spacing), solution, wall_seconds)
         if index + 1 < len(spacings):
             next_mesh = build_mesh(track, spacings[index + 1])
-            current = project_seed(solution, next_mesh)
+            current = project_seed(solution, next_mesh, is_closed=bool(track.is_closed))
     return stages

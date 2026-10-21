@@ -17,7 +17,10 @@ from simplified_vehicle_models.compiler.compile import compile_formulation
 from simplified_vehicle_models.formulations.point_mass import point_mass_view_of_planar
 from simplified_vehicle_models.formulations.point_mass_capability import capability_hash, load_capability_surface
 from simplified_vehicle_models.solvers.forward_backward import solve_lap
-from simplified_vehicle_models.solvers.qss_line_ocp import QssSettings, build_mesh, periodic_sample, solve_line, solve_ladder
+from simplified_vehicle_models.solvers.qss_line_ocp import (
+    QssSettings, build_mesh, capability_envelope_time, solve_line, solve_ladder,
+    track_sample,
+)
 from simplified_vehicle_models.results.traces import LapMode
 from simplified_vehicle_models.tracks.corridor import Corridor, corridor_from_track
 from simplified_vehicle_models.tracks.profile import load_track, _read_width_csv
@@ -28,12 +31,12 @@ from tools.gates.check_minimum_time_line import (
 )
 
 
-def _validate_track_for_line_pipeline(track) -> None:
-    """Reject inputs outside the closed, edged track scope before solver work."""
-    if not track.is_closed:
-        raise ValueError("minimum-time line pipeline requires a closed track")
-    if not track.has_edges:
-        raise ValueError("minimum-time line pipeline requires a lateral corridor")
+def _validate_track_for_line_pipeline(track, half_width: float | None = None) -> None:
+    """Reject inputs outside the track scope before solver work."""
+    if track.has_edges and half_width is not None:
+        raise ValueError("half_width is only valid for a track without edges")
+    if not track.has_edges and half_width is None:
+        raise ValueError("minimum-time line pipeline requires a lateral corridor or half_width")
 
 
 def _validate_output_paths(source: Path, output: Path) -> None:
@@ -161,12 +164,28 @@ def _write_line(path: Path, solution) -> None:
             writer.writerow((f"{float(value):.12g}" for value in row))
 
 
+def _open_envelope_seed(track, mesh, envelope, settings: QssSettings) -> np.ndarray:
+    """Project an open-course envelope speed profile onto an OCP mesh."""
+    mesh = np.asarray(mesh, dtype=float)
+    nodes = mesh.size
+    count = nodes - 1
+    distance = np.asarray(track.distance, dtype=float)
+    envelope_speed = np.asarray(envelope.speed, dtype=float)
+    speed = np.maximum(np.interp(mesh, distance, envelope_speed), settings.minimum_speed)
+    speed_rate = np.gradient(envelope_speed, distance)
+    acceleration = np.interp(mesh, distance, envelope_speed * speed_rate)
+    zeros = np.zeros(nodes)
+    mids = np.zeros(count)
+    return np.concatenate([zeros, zeros, speed, acceleration, zeros, mids, mids])
+
+
 def run(args) -> dict:
     output = args.output.resolve()
     _validate_output_paths(Path(args.track).resolve(), output)
     track = load_track(args.track)
-    _validate_track_for_line_pipeline(track)
-    corridor = corridor_from_track(track, margin=args.margin)
+    half_width = getattr(args, "half_width", None)
+    _validate_track_for_line_pipeline(track, half_width)
+    corridor = corridor_from_track(track, margin=args.margin, half_width=half_width)
     output.mkdir(parents=True, exist_ok=True)
     compiled = compile_formulation(str(args.formulation))
     vehicle = point_mass_view_of_planar(compiled.model)
@@ -175,12 +194,15 @@ def run(args) -> dict:
     if surface.provenance_hash != expected_hash:
         raise ValueError(f"capability surface provenance hash mismatch: expected {expected_hash}, got {surface.provenance_hash}")
 
+    lap_mode = LapMode.FLYING if track.is_closed else LapMode.STANDING_START
     print("Solving centreline envelope...", flush=True)
-    centreline_lap = solve_lap(vehicle, track, LapMode.FLYING)
+    centreline_lap = solve_lap(vehicle, track, lap_mode)
     zero_corridor = Corridor(corridor.distance, np.zeros_like(corridor.minimum), np.zeros_like(corridor.maximum), corridor.provenance, corridor.is_closed)
     settings = QssSettings()
+    zero_mesh = build_mesh(track, 1.0 if track.is_closed else 2.0)
+    zero_seed = None if track.is_closed else _open_envelope_seed(track, zero_mesh, centreline_lap, settings)
     print("Solving zero-corridor control...", flush=True)
-    zero_solution = solve_line(track, zero_corridor, surface, build_mesh(track, 1.0), settings)
+    zero_solution = solve_line(track, zero_corridor, surface, zero_mesh, settings, seed=zero_seed)
     print(f"Zero-corridor control completed: {zero_solution.lap_time:.6f} s", flush=True)
     stage_wall_seconds = []
 
@@ -188,10 +210,18 @@ def run(args) -> dict:
         print(f"Solved free line at {spacing:g} m spacing in {wall_seconds:.2f} s", flush=True)
         stage_wall_seconds.append(wall_seconds)
 
-    print("Solving free-line mesh ladder (5/2/1 m)...", flush=True)
+    spacings = getattr(args, "spacings", (5.0, 2.0, 1.0))
+    if isinstance(spacings, str):
+        spacings = tuple(float(value) for value in spacings.split(","))
+    else:
+        spacings = tuple(float(value) for value in spacings)
+    print(f"Solving free-line mesh ladder ({'/'.join(f'{s:g}' for s in spacings)} m)...", flush=True)
+    ladder_seed = None
+    if not track.is_closed:
+        ladder_seed = _open_envelope_seed(track, build_mesh(track, spacings[0]), centreline_lap, settings)
     stages = solve_ladder(
-        track, corridor, surface, settings, spacings=(5.0, 2.0, 1.0),
-        stage_callback=record_stage,
+        track, corridor, surface, settings, spacings=spacings,
+        seed=ladder_seed, stage_callback=record_stage,
     )
     finest = stages[-1]
     _write_line(output / "line.csv", finest)
@@ -199,31 +229,49 @@ def run(args) -> dict:
     _write_line(output / "racing_line.csv", finest)
     xml_path, csv_path = _write_rebuilt_track(Path(args.track).resolve(), output, rebuilt)
     replay_track = load_track(xml_path)
-    replay = solve_lap(vehicle, replay_track, LapMode.FLYING)
+    replay = solve_lap(vehicle, replay_track, lap_mode)
 
     coarse, fine = stages[-2], stages[-1]
     mesh_ok = check_mesh_convergence(coarse=coarse.lap_time, fine=fine.lap_time, tolerance=0.005)
-    sample_count = finest.distance.size - 1
-    unique_mesh = finest.distance[:sample_count]
-    minimum = periodic_sample(corridor.minimum[:-1], corridor.distance[:-1], unique_mesh, period=float(track.lap_length))
-    maximum = periodic_sample(corridor.maximum[:-1], corridor.distance[:-1], unique_mesh, period=float(track.lap_length))
-    containment = check_corridor_containment(finest.offset[:sample_count], minimum, maximum)
+    if track.is_closed:
+        sample_count = finest.distance.size - 1
+        unique_mesh = finest.distance[:sample_count]
+        containment_offset = finest.offset[:sample_count]
+        minimum = track_sample(corridor.minimum[:-1], corridor.distance[:-1], unique_mesh,
+                               closed=True, period=float(track.lap_length))
+        maximum = track_sample(corridor.maximum[:-1], corridor.distance[:-1], unique_mesh,
+                               closed=True, period=float(track.lap_length))
+    else:
+        unique_mesh = finest.distance
+        containment_offset = finest.offset
+        minimum = track_sample(corridor.minimum, corridor.distance, unique_mesh,
+                               closed=False, period=float(track.lap_length))
+        maximum = track_sample(corridor.maximum, corridor.distance, unique_mesh,
+                               closed=False, period=float(track.lap_length))
+    containment = check_corridor_containment(containment_offset, minimum, maximum)
+    zero_reference = (
+        centreline_lap.lap_time if track.is_closed
+        else capability_envelope_time(track, surface, settings)
+    )
     checks = {
-        "zero_corridor_matches_envelope": check_zero_corridor_matches_envelope(open_loop=centreline_lap.lap_time, ocp=zero_solution.lap_time, tolerance=0.01),
+        "zero_corridor_matches_envelope": check_zero_corridor_matches_envelope(open_loop=zero_reference, ocp=zero_solution.lap_time, tolerance=0.01),
         "free_line_not_slower": check_free_line_not_slower(centreline=centreline_lap.lap_time, free=finest.lap_time),
         "corridor_containment": containment,
         "mesh_convergence": mesh_ok,
         "replay_agreement": check_replay_agreement(ocp=finest.lap_time, replay=replay.lap_time, tolerance=0.01),
     }
     summary = {
-        "track": str(Path(args.track)), "corridor_provenance": corridor.provenance,
+        "track": str(Path(args.track)), "track_closed": bool(track.is_closed),
+        "corridor_provenance": corridor.provenance,
+        "constant_half_width_m": half_width,
         "conditional_result": track.width_provenance != "surveyed", "margin_m": args.margin,
-        "mesh_spacing_m": 1.0, "centreline_envelope_s": centreline_lap.lap_time,
+        "mesh_spacing_m": float(spacings[-1]), "centreline_envelope_s": centreline_lap.lap_time,
+        "zero_corridor_reference_s": zero_reference,
         "ocp_zero_corridor_s": zero_solution.lap_time, "ocp_free_line_s": finest.lap_time,
         "replay_lap_s": replay.lap_time,
         "free_line_gain_s": centreline_lap.lap_time - finest.lap_time,
         "free_line_gain_percent": 100.0 * (centreline_lap.lap_time - finest.lap_time) / centreline_lap.lap_time,
-        "stages": [{"spacing_m": spacing, "iterations": stage.iterations, "wall_seconds": wall_seconds, "lap_time_s": stage.lap_time} for spacing, stage, wall_seconds in zip((5.0, 2.0, 1.0), stages, stage_wall_seconds)],
+        "stages": [{"spacing_m": spacing, "iterations": stage.iterations, "wall_seconds": wall_seconds, "lap_time_s": stage.lap_time} for spacing, stage, wall_seconds in zip(spacings, stages, stage_wall_seconds)],
         "maximum_violation": finest.maximum_violation, "checks": checks,
     }
     (output / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -240,6 +288,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--surface", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--margin", type=float, default=0.10)
+    parser.add_argument(
+        "--half-width", type=float, default=None,
+        help="constant reference-point half-width for a track without width data",
+    )
+    parser.add_argument(
+        "--spacings", type=str, default="5,2,1",
+        help="comma-separated mesh ladder spacings in metres, coarse to fine",
+    )
     args = parser.parse_args(argv)
     try:
         summary = run(args)

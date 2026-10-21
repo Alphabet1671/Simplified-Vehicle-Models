@@ -251,14 +251,14 @@ class RunnerOrchestrationTest(unittest.TestCase):
                 track = load_track(path)
                 self.assertEqual(track.is_closed, closed)
                 self.assertEqual(track.has_edges, has_edges)
-                if closed and has_edges:
+                if has_edges:
                     _validate_track_for_line_pipeline(track)
-                elif not closed:
-                    with self.assertRaisesRegex(ValueError, "requires a closed track"):
-                        _validate_track_for_line_pipeline(track)
+                    with self.assertRaisesRegex(ValueError, "only valid for a track without edges"):
+                        _validate_track_for_line_pipeline(track, half_width=2.0)
                 else:
-                    with self.assertRaisesRegex(ValueError, "requires a lateral corridor"):
+                    with self.assertRaisesRegex(ValueError, "corridor or half_width"):
                         _validate_track_for_line_pipeline(track)
+                    _validate_track_for_line_pipeline(track, half_width=2.0)
 
     def test_output_collision_is_rejected_before_source_bytes_change(self) -> None:
         from tools.run import solve_minimum_time_line as runner
@@ -358,7 +358,7 @@ class RunnerOrchestrationTest(unittest.TestCase):
                 _validate_output_paths(source_named_as_output, root)
             self.assertEqual(source_named_as_output.read_bytes(), source_xml_bytes)
 
-    def test_run_rejects_open_track_before_solver_or_output_creation(self) -> None:
+    def test_run_rejects_open_track_without_width_before_solver_or_output_creation(self) -> None:
         from tools.run import solve_minimum_time_line as runner
 
         with tempfile.TemporaryDirectory() as directory:
@@ -370,8 +370,8 @@ class RunnerOrchestrationTest(unittest.TestCase):
                 '</model>', encoding="utf-8",
             )
             output = root / "output"
-            track = SimpleNamespace(is_closed=False, has_edges=True)
-            args = SimpleNamespace(track=source, output=output, margin=.1)
+            track = SimpleNamespace(is_closed=False, has_edges=False)
+            args = SimpleNamespace(track=source, output=output, margin=.1, half_width=None)
             with (
                 patch.object(runner, "load_track", return_value=track),
                 patch.object(runner, "solve_lap") as solve_lap,
@@ -380,7 +380,7 @@ class RunnerOrchestrationTest(unittest.TestCase):
                 patch.object(runner, "compile_formulation") as compile_formulation,
                 patch.object(runner, "load_capability_surface") as load_surface,
             ):
-                with self.assertRaisesRegex(ValueError, "requires a closed track"):
+                with self.assertRaisesRegex(ValueError, "corridor or half_width"):
                     runner.run(args)
             solve_lap.assert_not_called()
             solve_line.assert_not_called()
@@ -402,7 +402,7 @@ class RunnerOrchestrationTest(unittest.TestCase):
             )
             output = root / "output"
             track = SimpleNamespace(is_closed=True, has_edges=False)
-            args = SimpleNamespace(track=source, output=output, margin=.1)
+            args = SimpleNamespace(track=source, output=output, margin=.1, half_width=None)
             with (
                 patch.object(runner, "load_track", return_value=track),
                 patch.object(runner, "solve_lap") as solve_lap,
@@ -411,7 +411,7 @@ class RunnerOrchestrationTest(unittest.TestCase):
                 patch.object(runner, "compile_formulation") as compile_formulation,
                 patch.object(runner, "load_capability_surface") as load_surface,
             ):
-                with self.assertRaisesRegex(ValueError, "requires a lateral corridor"):
+                with self.assertRaisesRegex(ValueError, "corridor or half_width"):
                     runner.run(args)
             solve_lap.assert_not_called()
             solve_line.assert_not_called()
@@ -419,6 +419,45 @@ class RunnerOrchestrationTest(unittest.TestCase):
             compile_formulation.assert_not_called()
             load_surface.assert_not_called()
             self.assertFalse(output.exists())
+
+    def test_open_track_uses_standing_start_and_fallback_corridor(self) -> None:
+        from tools.run import solve_minimum_time_line as runner
+        from simplified_vehicle_models.results.traces import LapMode
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "open.xml"
+            source.write_text(
+                '<model schema-version="1.0" type="track-model" subtype="open-xy-profile">'
+                '<metadata><title>open fixture</title></metadata><data ref="geometry.csv" />'
+                '</model>', encoding="utf-8",
+            )
+            track = SimpleNamespace(
+                is_closed=False, has_edges=False, width_provenance=None,
+            )
+            corridor = SimpleNamespace(
+                distance=np.array([0., 1.]), minimum=np.array([-1.9, -1.9]),
+                maximum=np.array([1.9, 1.9]), provenance="assumed", is_closed=False,
+            )
+            args = SimpleNamespace(
+                track=source, output=root / "output", margin=.1, half_width=2.0,
+                formulation=Path("formulation.xml"), surface=Path("surface.npz"),
+            )
+            with (
+                patch.object(runner, "load_track", return_value=track),
+                patch.object(runner, "corridor_from_track", return_value=corridor) as build_corridor,
+                patch.object(runner, "compile_formulation", return_value=SimpleNamespace(model=object())),
+                patch.object(runner, "point_mass_view_of_planar", return_value=object()),
+                patch.object(runner, "load_capability_surface", return_value=SimpleNamespace(provenance_hash="hash")),
+                patch.object(runner, "capability_hash", return_value="hash"),
+                patch.object(runner, "solve_lap", side_effect=RuntimeError("stop")) as solve_lap,
+            ):
+                with self.assertRaisesRegex(RuntimeError, "stop"):
+                    runner.run(args)
+            build_corridor.assert_called_once_with(track, margin=.1, half_width=2.0)
+            solve_lap.assert_called_once()
+            self.assertIs(solve_lap.call_args.args[2], LapMode.STANDING_START)
+            self.assertTrue((root / "output").is_dir())
 
     def test_run_reports_all_five_checks_and_preserves_false_gate(self) -> None:
         from tools.run import solve_minimum_time_line as runner

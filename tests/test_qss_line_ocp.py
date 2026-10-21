@@ -176,11 +176,11 @@ class TranscriptionTest(unittest.TestCase):
                 qss_line_ocp.solve_line(track, corridor, _flat_surface(25.0), mesh,
                                         qss_line_ocp.QssSettings(), seed=seed)
 
-    def test_open_track_is_rejected_at_periodic_solver_boundary(self):
+    def test_open_track_requires_an_open_corridor(self):
         from simplified_vehicle_models.solvers.qss_line_ocp import build_mesh, build_ocp, QssSettings
         track=self._track(); mesh=build_mesh(track,4.0); corridor=corridor_from_track(track)
         object.__setattr__(track, "is_closed", False)
-        with self.assertRaisesRegex(ValueError, "closed track"):
+        with self.assertRaisesRegex(ValueError, "open corridor"):
             build_ocp(track,corridor,_flat_surface(25.0),mesh,QssSettings())
 
     def test_acceleration_variable_bounds_are_asymmetric(self):
@@ -305,6 +305,24 @@ class TranscriptionTest(unittest.TestCase):
         expected=2*math.pi*(radius-width)/25.0
         self.assertAlmostEqual(solution.lap_time,expected,delta=5e-3*expected)
 
+    def test_open_course_solves_with_fixed_endpoints_and_free_finish_speed(self):
+        from tools.tracks.open_course import arc_by_angle, build_course, straight, write_course
+        from simplified_vehicle_models.solvers.qss_line_ocp import build_mesh, solve_line, QssSettings
+
+        course = build_course([straight(15.0), arc_by_angle(30.0, 0.6), straight(10.0)], allow_curvature_jumps=True)
+        xml_path, _ = write_course(course, self.directory, "open_course", "open-test", "Open test")
+        track = load_track(xml_path)
+        self.assertFalse(track.is_closed)
+        corridor = corridor_from_track(track, half_width=2.0)
+        settings = QssSettings(maximum_iterations=3000)
+        solution = solve_line(track, corridor, _flat_surface(25.0), build_mesh(track, 2.0), settings)
+        self.assertEqual(solution.status, "Solve_Succeeded")
+        self.assertEqual(solution.offset.size, solution.distance.size)
+        self.assertAlmostEqual(float(solution.heading_error[0]), 0.0, places=6)
+        self.assertAlmostEqual(float(solution.heading_error[-1]), 0.0, places=6)
+        self.assertAlmostEqual(float(solution.speed[0]), settings.minimum_speed, places=6)
+        self.assertGreater(float(solution.speed[-1]), float(solution.speed[0]))
+
 
 @unittest.skipUnless(CASADI, "CasADi is not installed")
 class LadderTest(unittest.TestCase):
@@ -326,6 +344,49 @@ class LadderTest(unittest.TestCase):
             self.assertEqual(stage.status, "Solve_Succeeded")
         coarse, finest = stages[-2], stages[-1]
         self.assertAlmostEqual(finest.lap_time, coarse.lap_time, delta=5.0e-3 * coarse.lap_time)
+
+    def test_open_capability_envelope_matches_zero_corridor_ocp(self):
+        from tools.tracks.open_course import arc_by_angle, build_course, straight, write_course
+        from simplified_vehicle_models.solvers.qss_line_ocp import (
+            capability_envelope_time, build_mesh, solve_line, QssSettings,
+        )
+
+        course = build_course([straight(20.0), arc_by_angle(30.0, 0.4), straight(10.0)],
+                              allow_curvature_jumps=True)
+        xml_path, _ = write_course(course, self.directory, "open_reference", "open-ref", "Open reference")
+        track = load_track(xml_path)
+        corridor = corridor_from_track(track, half_width=2.0)
+        surface = _flat_surface(25.0)
+        settings = QssSettings(maximum_iterations=2000)
+        reference = capability_envelope_time(track, surface, settings)
+        solution = solve_line(track, corridor, surface, build_mesh(track, 2.0), settings)
+        self.assertAlmostEqual(solution.lap_time, reference, delta=0.02 * reference)
+
+    def test_open_ladder_uses_stage_lateral_regularisation(self):
+        from unittest.mock import patch
+        from simplified_vehicle_models.solvers import qss_line_ocp
+
+        track = load_track(_write_circle_track(self.directory, radius=40.0, nodes=72, half_width=3.0))
+        object.__setattr__(track, "is_closed", False)
+        corridor = corridor_from_track(track)
+        captured = []
+
+        def fake_solve(track, corridor, surface, mesh, settings, *, seed=None):
+            captured.append(settings.open_regularisation)
+            values = qss_line_ocp.initial_guess(track, corridor, surface, mesh, settings)
+            blocks = qss_line_ocp.unpack(values, len(mesh) - 1)
+            return qss_line_ocp.QssSolution(
+                np.asarray(mesh), blocks["offset"], blocks["heading"], blocks["speed"],
+                blocks["acceleration"], blocks["curvature_rate"], 1.0,
+                "Solve_Succeeded", 1, 0.0,
+            )
+
+        with patch.object(qss_line_ocp, "solve_line", side_effect=fake_solve):
+            qss_line_ocp.solve_ladder(
+                track, corridor, _flat_surface(25.0), qss_line_ocp.QssSettings(),
+                spacings=(8.0, 4.0, 2.0),
+            )
+        self.assertEqual(captured, [1.0e-6, 1.0e-4, 1.0e-3])
 
     def test_next_stage_receives_next_mesh_projection(self) -> None:
         from unittest.mock import patch

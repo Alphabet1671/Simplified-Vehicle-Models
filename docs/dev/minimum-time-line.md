@@ -4,9 +4,9 @@ This page describes the stage 1 quasi-steady minimum-time line pipeline. It uses
 
 ## 1. Purpose
 
-The solver changes the lateral path inside a track corridor. It solves a quasi-steady minimum-time problem. It then rebuilds the path and checks it with the existing point-mass lap solver.
+The solver changes the lateral path inside a track corridor. It solves a quasi-steady minimum-time problem. It then rebuilds the path and checks it with the existing point-mass lap solver. It supports a closed lap and an open course with a start and an end.
 
-The corridor is `assumed` unless the track declares `surveyed` width provenance. A result on an assumed corridor is conditional. It is not a certified result.
+The corridor is `assumed` unless the track declares `surveyed` width provenance. A result on an assumed corridor is conditional. It is not a certified result. A track without width data can use a constant reference-point half-width. That width is also tagged `assumed`.
 
 ## 2. Files
 
@@ -31,13 +31,15 @@ The corridor is `assumed` unless the track declares `surveyed` width provenance.
 
 ## 4. How the solver works
 
-1. Load the edged track and build its corridor using the requested margin.
+1. Load the track and build its corridor using the requested margin. If the track has width data, use it. If it has no width data, require a constant `--half-width` and label the corridor `assumed`.
 2. Compile the formulation and use its planar point-mass view. Load the capability surface. Stop if its provenance hash does not match the vehicle.
-3. Solve a flying lap on the edged centreline. This is the centreline envelope.
-4. Build an exactly collapsed corridor with `minimum = maximum = 0`. Solve the zero-corridor control. Do not use `half_width`; the track may have asymmetric bounds.
-5. Call `solve_ladder` at 5 m, 2 m, and 1 m spacing. Warm-start each finer mesh from the previous solution. The stage callback records iteration counts and wall time around each `solve_line` call; mesh construction and seed projection are not included in those durations.
+3. Solve the centreline envelope. Use a flying lap for a closed track and a standing start for an open course.
+4. Build an exactly collapsed corridor with `minimum = maximum = 0`. Solve the zero-corridor control. For an open course, seed it from the envelope speed profile.
+5. Call `solve_ladder` at 5 m, 2 m, and 1 m spacing by default. Warm-start each finer mesh from the previous solution. For an open course, seed the first stage from the envelope and use a small stage-dependent lateral regularisation. The stage callback records iteration counts and wall time around each `solve_line` call; mesh construction and seed projection are not included in those durations.
 6. Rebuild the finest line as a path. Write the rebuilt XML and CSV into the run directory. Widths are carried by source node and projected onto the rebuilt path's local normals; a tangent change above 0.25 rad is rejected because the projection is not a continuous boundary reconstruction. Load the rebuilt path and calculate its replay lap time.
-7. Sample corridor minimum and maximum values periodically at the solution nodes. Exclude the repeated terminal node for periodic sampling. This tests containment on the solution mesh. It is not a proof of containment between mesh nodes.
+7. Sample corridor minimum and maximum values at the solution nodes. Exclude the repeated terminal node on a closed track. This tests containment on the solution mesh. It is not a proof of containment between mesh nodes.
+
+For an open course, the OCP fixes heading at both ends and fixes the start speed. Lateral offset remains a free corridor decision at both ends. The default start speed is the solver minimum speed, because the distance-domain dynamics divide by speed. Set `QssSettings.start_speed` to change it. The OCP uses a small lateral regularisation on open courses to remove a null direction on straight sections.
 
 The OCP uses a quasi-steady model. It does not model transient dynamics, sideslip, suspension, or 14DoF states.
 
@@ -45,11 +47,11 @@ The OCP uses a quasi-steady model. It does not model transient dynamics, sidesli
 
 The runner writes `summary.json`, `line.csv`, `racing_line.csv`, `racing_line_track.xml`, and `racing_line_track.csv` in the output directory. The five checks are:
 
-1. `zero_corridor_matches_envelope`: zero-corridor OCP and centreline envelope differ by no more than 1%.
-2. `free_line_not_slower`: the 1 m free-line OCP time is no greater than the centreline time.
-3. `corridor_containment`: every solution-node offset lies between the periodic corridor bounds, with a 1e-6 m numerical allowance.
-4. `mesh_convergence`: the 2 m and 1 m lap times differ by no more than 0.5%.
-5. `replay_agreement`: rebuilt-path replay and 1 m OCP times differ by no more than 1%.
+1. `zero_corridor_matches_envelope`: zero-corridor OCP and the centreline reference differ by no more than 1%. For a closed track the reference is the flying-lap envelope. For an open course it is the one-dimensional capability-surface integration, because the point-mass standing-start envelope is not the same model.
+2. `free_line_not_slower`: the finest free-line OCP time is no greater than the centreline envelope time.
+3. `corridor_containment`: every solution-node offset lies between the corridor bounds, with a 1e-6 m numerical allowance. Sampling is periodic only for a closed track.
+4. `mesh_convergence`: the two finest lap times differ by no more than 0.5%.
+5. `replay_agreement`: rebuilt-path replay and finest OCP times differ by no more than 1%.
 
 `summary.json` contains measured lap times, gain, solver iterations, stage wall times, maximum constraint violation, track/corridor provenance, and a boolean for each check. A non-surveyed width source sets `conditional_result` to true. The command exits with status 1 if a completed run has any failed check; a setup or solver error exits with status 2.
 
@@ -73,6 +75,18 @@ PYTHONPATH=src:/tmp/casadi-runtime-2026-10-20 python3 -m tools.run.solve_minimum
   --surface runs/capability/iem24_murphy_7dof_mis.npz \
   --output runs/minimum_time_line/stage1 --margin 0.10
 ```
+
+Run an open course that has no width data. The constant width is assumed, so the result is conditional:
+
+```bash
+PYTHONPATH=src:/tmp/casadi-runtime-2026-10-20 python3 -m tools.run.solve_minimum_time_line \
+  --track models/tracks/fsae_2026_acceleration.xml \
+  --formulation models/formulations/iem24_murphy_real_planar_7dof.xml \
+  --surface runs/capability/iem24_murphy_7dof_mis.npz \
+  --output runs/minimum_time_line/acceleration --margin 0.10 --half-width 2.45
+```
+
+Use `--spacings 10,5` when a finer strict-tolerance stage does not converge. The mesh-convergence check then compares those two stages.
 
 Run the focused gate tests:
 
@@ -98,9 +112,18 @@ On 2026-10-21, a bounded derivative diagnostic compared CasADi's production line
 
 ## 8. Multi-track pipeline compatibility checks
 
-On 2026-10-21, the runner was checked against the archived FSC May 2026 track and the FSAE 2026 skidpad and acceleration tracks using the only available capability surface, whose provenance hash matches the IEM24 Murphy planar formulation. The untouched FSC source was rejected before optimization because it has no lateral corridor. After an early topology preflight was added, the untouched skidpad and acceleration sources were rejected before optimization because they are open tracks (`minimum-time line pipeline requires a closed track`). For a deeper topology check, temporary copies of the two FSAE tracks with explicitly assumed 2.45 m half-widths were placed under `/tmp`; both passed track loading and centreline-envelope evaluation, then were rejected by the QSS OCP with `quasi-steady line OCP requires a closed track`. The stage-1 solver therefore does not support these open-course events or their start/finish boundary conditions.
+On 2026-10-21, the runner was extended to support open tracks and tracks without width data. The untouched FSC source still has no lateral corridor. The untouched skidpad and acceleration sources are open. With an explicit `--half-width`, all three tracks load and reach the OCP; the width is tagged `assumed`.
 
-The FSC source is closed but also has no edge data. A temporary copy with an explicitly assumed constant 3.0 m half-width was used only to exercise solver execution; its zero-corridor control completed at 48.866054 s, but the strict 5/2/1 m free-line ladder failed with `Maximum_Iterations_Exceeded`, and no summary or acceptance checks were produced. This is not acceptance for the archived FSC track: the width was invented for diagnosis, and the IEM24 capability surface is not an FSC vehicle calibration. Source XML/CSV hashes for all three tracks matched before and after these attempts. Thus only the MIS edged fixture is structurally compatible with the closed-track runner; its strict convergence issue remains open. Event-valid verification requires surveyed/swept corridor data, vehicle-matched capability surfaces, and an open-course formulation for skidpad and acceleration.
+Measured outcomes with the only available capability surface, whose provenance hash matches the IEM24 Murphy planar formulation:
+
+- Acceleration (`--half-width 2.45`): the zero-corridor control converged at 6.408411 s. The 5/2/1 m free-line ladder converged at 6.562297/6.408411/6.384903 s with maximum violation 9.88e-9. Four checks pass: zero corridor against the 6.378147 s capability integration, free line not slower, containment, and mesh convergence (0.37%). Replay agreement fails: the rebuilt straight path replayed with the point-mass solver at 7.717125 s, while the OCP reports 6.384903 s. This is a 21% model disagreement on open straight-line acceleration, not a path-reconstruction error. The result is conditional because the width is assumed and the capability surface is not an FSAE calibration.
+- Skidpad (`--half-width 1.50`): the 2 m zero-corridor control converged at 22.221716 s. The strict free-line ladder failed in its first 5 m stage with `Maximum_Iterations_Exceeded` at every tested lateral regularisation from 1e-6 to 1e-2, including seeds from the envelope and from the zero-corridor solution.
+- FSC (`--half-width 3.0`): the zero-corridor control converged at 48.866054 s. The strict free-line ladder still failed with `Maximum_Iterations_Exceeded`; no summary was produced.
+- MIS: the closed edged fixture remains in the same state as the diagnostics above; its strict free-line convergence is still unresolved.
+
+The acceleration result shows that the open formulation and runner work end to end, but the five-gate acceptance is not closed. The replay disagreement must be resolved or explained before the open-track acceptance claim is complete. Skidpad and FSC free-line convergence remain open. Event-valid verification also requires real corridor data and vehicle-matched capability surfaces; the FSAE widths used here are rule-course widths reduced by the requested margin, not measured reference-point clearances.
+
+Source XML/CSV hashes for the FSC, skidpad, and acceleration tracks matched before and after these attempts.
 
 ## 9. Limits and roadmap
 

@@ -60,10 +60,27 @@ class CorridorTest(unittest.TestCase):
         self.assertGreaterEqual(float(np.min(fold)), 0.2 - 1.0e-12)
         self.assertLess(float(np.max(corridor.maximum)), 4.0)
 
-    def test_a_track_without_edges_is_rejected(self) -> None:
+    def test_a_track_without_edges_requires_a_fallback_width(self) -> None:
         track = load_track(_write_circle_track(self.directory))
-        with self.assertRaises(ValueError):
+        with self.assertRaisesRegex(ValueError, "provide half_width"):
             corridor_from_track(track)
+
+    def test_a_track_without_edges_uses_a_constant_assumed_width(self) -> None:
+        track = load_track(_write_circle_track(self.directory))
+        corridor = corridor_from_track(track, half_width=2.0, margin=0.25)
+        self.assertEqual(corridor.provenance, "assumed")
+        np.testing.assert_allclose(corridor.minimum, -1.75)
+        np.testing.assert_allclose(corridor.maximum, 1.75)
+
+    def test_a_fallback_width_cannot_override_track_edges(self) -> None:
+        track = load_track(_write_circle_track(self.directory, half_width=2.25))
+        with self.assertRaisesRegex(ValueError, "only valid for a track without edges"):
+            corridor_from_track(track, half_width=2.0)
+
+    def test_a_track_without_edges_rejects_a_nonpositive_fallback(self) -> None:
+        track = load_track(_write_circle_track(self.directory))
+        with self.assertRaisesRegex(ValueError, "must be finite and positive"):
+            corridor_from_track(track, half_width=0.0)
 
     def test_arrays_are_read_only(self) -> None:
         track = load_track(_write_circle_track(self.directory, half_width=2.25))

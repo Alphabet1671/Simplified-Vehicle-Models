@@ -97,26 +97,56 @@ def path_from_solution(track, solution, *, smoothing: float = 0.0) -> PathCoordi
         raise ValueError("smoothing must be finite and nonnegative")
     if track.path_coordinates is None:
         raise ValueError("track has no signed path coordinates")
-    if track.is_closed:
-        from simplified_vehicle_models.solvers.qss_line_ocp import periodic_sample
+    if not track.is_closed:
+        return _spline_path_from_solution(track, solution, smoothing)
+    from simplified_vehicle_models.solvers.qss_line_ocp import periodic_sample
 
-        offset = periodic_sample(
-            np.asarray(solution.offset, dtype=float)[:-1],
-            np.asarray(solution.distance, dtype=float)[:-1],
-            np.asarray(track.distance, dtype=float),
-            period=float(track.lap_length),
-        )
-    else:
-        offset = np.interp(
-            np.asarray(track.distance, dtype=float),
-            np.asarray(solution.distance, dtype=float),
-            np.asarray(solution.offset, dtype=float),
-        )
+    offset = periodic_sample(
+        np.asarray(solution.offset, dtype=float)[:-1],
+        np.asarray(solution.distance, dtype=float)[:-1],
+        np.asarray(track.distance, dtype=float),
+        period=float(track.lap_length),
+    )
     if smoothing > 0.0:
         spacing = float(track.lap_length) / float(track.distance.size - 1)
-        if track.is_closed:
-            offset = _periodic_smooth(offset[:-1], smoothing / spacing)
-            offset = np.r_[offset, offset[0]]
-        else:
-            offset = _smooth(offset, smoothing / spacing)
+        offset = _periodic_smooth(offset[:-1], smoothing / spacing)
+        offset = np.r_[offset, offset[0]]
     return offset_path(track.path_coordinates, offset)
+
+
+def _spline_path_from_solution(track, solution, smoothing: float) -> PathCoordinates:
+    """Fit a cubic path through the OCP nodes, then sample the track grid.
+
+    Differentiating a piecewise-linear offset creates curvature kinks at mesh
+    nodes. A cubic fit keeps the rebuilt heading and curvature mutually
+    consistent on an open course.
+    """
+    from scipy.interpolate import CubicSpline
+
+    source = np.asarray(solution.distance, dtype=float)
+    offset = np.asarray(solution.offset, dtype=float)
+    if smoothing > 0.0:
+        spacing = float(np.mean(np.diff(source)))
+        offset = _smooth(offset, smoothing / spacing)
+    coordinates = track.path_coordinates
+    center_north = np.interp(source, track.distance, coordinates.x_north)
+    center_east = np.interp(source, track.distance, coordinates.y_east)
+    center_heading = np.interp(source, track.distance, coordinates.heading)
+    north = center_north - offset * np.sin(center_heading)
+    east = center_east + offset * np.cos(center_heading)
+    spline_north = CubicSpline(source, north)
+    spline_east = CubicSpline(source, east)
+    positions = np.asarray(track.distance, dtype=float)
+    x_north = spline_north(positions)
+    y_east = spline_east(positions)
+    tangent_north = spline_north(positions, 1)
+    tangent_east = spline_east(positions, 1)
+    second_north = spline_north(positions, 2)
+    second_east = spline_east(positions, 2)
+    heading = np.unwrap(np.arctan2(tangent_east, tangent_north))
+    speed_squared = tangent_north * tangent_north + tangent_east * tangent_east
+    curvature = (tangent_north * second_east - tangent_east * second_north) / np.power(speed_squared, 1.5)
+    distance = np.r_[0.0, np.cumsum(np.hypot(np.diff(x_north), np.diff(y_east)))]
+    for array in (distance, x_north, y_east, heading, curvature):
+        array.setflags(write=False)
+    return PathCoordinates(distance, x_north, y_east, heading, curvature, False)

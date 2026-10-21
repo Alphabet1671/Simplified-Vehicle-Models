@@ -39,6 +39,57 @@ class QssSolution:
     maximum_violation: float
 
 
+def _validate_inputs(track, corridor, surface, mesh, settings):
+    if not isinstance(settings, QssSettings):
+        raise TypeError("settings must be QssSettings")
+    if not math.isfinite(settings.fold_guard) or not (0.0 < settings.fold_guard < 1.0):
+        raise ValueError("fold_guard must lie strictly between zero and one")
+    finite_positive = (settings.maximum_heading, settings.maximum_curvature_rate,
+                       settings.minimum_speed, settings.tolerance)
+    if not all(math.isfinite(x) and x > 0.0 for x in finite_positive):
+        raise ValueError("heading, curvature-rate, speed, and tolerance settings must be finite and positive")
+    if settings.maximum_heading >= 0.5 * math.pi:
+        raise ValueError("maximum_heading must be less than pi/2")
+    if not math.isfinite(settings.regularisation) or settings.regularisation < 0.0:
+        raise ValueError("regularisation must be finite and nonnegative")
+    if isinstance(settings.maximum_iterations, bool) or settings.maximum_iterations < 1:
+        raise ValueError("maximum_iterations must be a positive integer")
+    if int(settings.maximum_iterations) != settings.maximum_iterations:
+        raise ValueError("maximum_iterations must be a positive integer")
+    if not getattr(track, "is_closed", False):
+        raise ValueError("quasi-steady line OCP requires a closed track")
+    if not getattr(corridor, "is_periodic", False):
+        raise ValueError("quasi-steady line OCP requires a periodic corridor")
+    mesh = np.asarray(mesh, dtype=float)
+    if mesh.ndim != 1 or mesh.size < 2 or not np.all(np.isfinite(mesh)) or np.any(np.diff(mesh) <= 0):
+        raise ValueError("mesh must be a finite strictly increasing vector")
+    length = float(track.lap_length)
+    if not np.isclose(mesh[0], 0.0, rtol=0.0, atol=1e-10) or not np.isclose(mesh[-1], length, rtol=1e-10, atol=1e-9):
+        raise ValueError("mesh must span exactly zero to track lap length")
+    if not np.allclose(corridor.distance, track.distance, rtol=0.0, atol=1e-9):
+        raise ValueError("corridor and track distance grids must match")
+    if not np.isclose(corridor.distance[-1], length, rtol=1e-10, atol=1e-9):
+        raise ValueError("corridor lap length must match track")
+    axes = (np.asarray(surface.speed, dtype=float), np.asarray(surface.curvature, dtype=float))
+    if any(axis.ndim != 1 or axis.size < 2 or not np.all(np.isfinite(axis)) or np.any(np.diff(axis) <= 0.0) for axis in axes):
+        raise ValueError("capability surface axes must be finite strictly increasing vectors")
+    expected = (axes[0].size, axes[1].size)
+    for name in ("acceleration_max", "acceleration_min"):
+        values = np.asarray(getattr(surface, name), dtype=float)
+        if values.shape != expected or not np.all(np.isfinite(values)):
+            raise ValueError(f"{name} must be a finite array matching the surface axes")
+    if np.any(surface.acceleration_min > surface.acceleration_max):
+        raise ValueError("surface acceleration_min must not exceed acceleration_max")
+    ceiling_values = np.asarray(surface.speed_ceiling, dtype=float)
+    if ceiling_values.shape != axes[1].shape or not np.all(np.isfinite(ceiling_values)) or np.any(ceiling_values <= 0.0):
+        raise ValueError("speed_ceiling must be finite, positive, and match curvature axis")
+    if settings.minimum_speed < axes[0][0] or settings.minimum_speed >= axes[0][-1]:
+        raise ValueError("minimum_speed must lie within the capability speed axis")
+    if np.any(np.abs(np.asarray(track.curvature, dtype=float)) > max(abs(axes[1][0]), abs(axes[1][-1])) + 1e-12):
+        raise ValueError("track curvature lies outside capability surface")
+    return mesh
+
+
 def build_mesh(track, spacing: float) -> FloatArray:
     """Uniform mesh ending exactly at lap length."""
     if not math.isfinite(spacing) or spacing <= 0:
@@ -48,43 +99,42 @@ def build_mesh(track, spacing: float) -> FloatArray:
     return np.linspace(0.0, length, count + 1)
 
 
-def periodic_sample(values, distance, positions) -> FloatArray:
+def periodic_sample(values, distance, positions, *, period: float | None = None) -> FloatArray:
     """Linearly sample periodic track data."""
     values = np.asarray(values, dtype=float)
     distance = np.asarray(distance, dtype=float)
     query = np.asarray(positions, dtype=float)
     if values.ndim != 1 or distance.shape != values.shape or values.size < 2:
         raise ValueError("periodic data must be matching one-dimensional arrays")
-    period = distance[-1] - distance[0]
-    extended_nodes = np.r_[distance, distance[-1] + (distance[1] - distance[0])]
-    extended_values = np.r_[values, values[0]]
+    period = float(distance[-1] - distance[0] if period is None else period)
+    if not math.isfinite(period) or period <= 0.0 or distance[-1] > distance[0] + period + 1e-9:
+        raise ValueError("period must be positive and cover the distance grid")
+    nodes = distance
+    samples = values
+    if distance[-1] < distance[0] + period - 1e-9:
+        nodes = np.r_[distance, distance[0] + period]
+        samples = np.r_[values, values[0]]
     wrapped = (query - distance[0]) % period + distance[0]
-    wrapped = np.where(np.isclose(query, distance[-1]), distance[-1], wrapped)
-    return np.interp(wrapped, extended_nodes, extended_values)
+    wrapped = np.where(np.isclose(wrapped, distance[0]) & (query > distance[0]), distance[0] + period, wrapped)
+    return np.interp(wrapped, nodes, samples)
 
 
 def _element_curvature(track, mesh) -> FloatArray:
-    return periodic_sample(track.curvature, track.distance, mesh)
+    return periodic_sample(track.curvature, track.distance, mesh, period=float(track.lap_length))
 
 
 def build_ocp(track, corridor, surface, mesh, settings: QssSettings):
     """Build CasADi NLP and its variable/constraint bounds."""
     import casadi as ca
 
-    mesh = np.asarray(mesh, dtype=float)
-    if not getattr(track, "is_closed", False):
-        raise ValueError("quasi-steady line OCP requires a closed track")
-    if not getattr(corridor, "is_periodic", False):
-        raise ValueError("quasi-steady line OCP requires a periodic corridor")
-    if mesh.ndim != 1 or mesh.size < 2 or np.any(np.diff(mesh) <= 0):
-        raise ValueError("mesh must be a strictly increasing vector")
+    mesh = _validate_inputs(track, corridor, surface, mesh, settings)
     count, nodes = mesh.size - 1, mesh.size
     amax = ca.interpolant("qss_amax", "linear", [surface.speed.tolist(), surface.curvature.tolist()], surface.acceleration_max.ravel(order="F").tolist())
     amin = ca.interpolant("qss_amin", "linear", [surface.speed.tolist(), surface.curvature.tolist()], surface.acceleration_min.ravel(order="F").tolist())
     ceiling = ca.interpolant("qss_vceil", "linear", [surface.curvature.tolist()], surface.speed_ceiling.tolist())
     k0 = _element_curvature(track, mesh)
-    nlo = periodic_sample(corridor.minimum, corridor.distance, mesh)
-    nhi = periodic_sample(corridor.maximum, corridor.distance, mesh)
+    nlo = periodic_sample(corridor.minimum, corridor.distance, mesh, period=float(track.lap_length))
+    nhi = periodic_sample(corridor.maximum, corridor.distance, mesh, period=float(track.lap_length))
     n = [ca.MX.sym(f"n_{i}") for i in range(nodes)]
     psi = [ca.MX.sym(f"psi_{i}") for i in range(nodes)]
     v = [ca.MX.sym(f"v_{i}") for i in range(nodes)]
@@ -117,10 +167,12 @@ def build_ocp(track, corridor, surface, mesh, settings: QssSettings):
         add(ceiling(vehicle_k)-speed,0.0,float("inf"))
         add(1-curvature*offset,settings.fold_guard,float("inf"))
 
-    objective = settings.regularisation*ca.sumsqr(ca.vertcat(*q))
+    objective = 0
     for i in range(count):
         h = float(mesh[i+1]-mesh[i]); midpos=.5*(mesh[i]+mesh[i+1])
         kmid=float(_element_curvature(track,[midpos])[0])
+        nlo_mid=float(periodic_sample(corridor.minimum,corridor.distance,[midpos],period=float(track.lap_length))[0])
+        nhi_mid=float(periodic_sample(corridor.maximum,corridor.distance,[midpos],period=float(track.lap_length))[0])
         s0=ca.vertcat(n[i],psi[i],v[i]); s1=ca.vertcat(n[i+1],psi[i+1],v[i+1])
         f0=rates((n[i],psi[i],v[i]),(a[i],q[i]),float(k0[i]))
         f1=rates((n[i+1],psi[i+1],v[i+1]),(a[i+1],q[i+1]),float(k0[i+1]))
@@ -131,6 +183,8 @@ def build_ocp(track, corridor, surface, mesh, settings: QssSettings):
         def time_rate(offset,heading,speed,curvature):
             return (1-curvature*offset)/(speed*ca.cos(heading))
         objective += h/6*(time_rate(n[i],psi[i],v[i],float(k0[i]))+4*time_rate(sm[0],sm[1],sm[2],kmid)+time_rate(n[i+1],psi[i+1],v[i+1],float(k0[i+1])))
+        objective += settings.regularisation*h/6*(q[i]**2+4*qm[i]**2+q[i+1]**2)
+        add(sm[0],nlo_mid,nhi_mid)
         limits(n[i],psi[i],v[i],a[i],q[i],float(k0[i]))
         limits(sm[0],sm[1],sm[2],am[i],qm[i],kmid)
         limits(n[i+1],psi[i+1],v[i+1],a[i+1],q[i+1],float(k0[i+1]))
@@ -148,13 +202,23 @@ def unpack(values, count: int) -> dict[str, FloatArray]:
 
 
 def initial_guess(track, corridor, surface, mesh, settings: QssSettings) -> FloatArray:
-    mesh=np.asarray(mesh,dtype=float); count=mesh.size-1
+    mesh=_validate_inputs(track,corridor,surface,mesh,settings); count=mesh.size-1
     offset=.5*(periodic_sample(corridor.minimum,corridor.distance,mesh)+periodic_sample(corridor.maximum,corridor.distance,mesh))
     curvature=np.clip(_element_curvature(track,mesh),surface.curvature[0],surface.curvature[-1])
     ceiling=np.interp(curvature,surface.curvature,surface.speed_ceiling)
     speed=np.full(mesh.size,max(.6*float(np.min(ceiling)),settings.minimum_speed+.1))
     zeros=np.zeros(mesh.size); mids=np.zeros(count)
     return np.concatenate([offset,zeros,speed,zeros,zeros,mids,mids])
+
+
+def _validate_solver_result(status, values, constraints, objective, violation, tolerance):
+    """Reject solver outputs that are not converged feasible finite solutions."""
+    if status != "Solve_Succeeded":
+        raise RuntimeError(f"quasi-steady line solver failed: {status}")
+    if not (np.all(np.isfinite(values)) and np.all(np.isfinite(constraints)) and math.isfinite(objective) and math.isfinite(violation)):
+        raise RuntimeError("quasi-steady line solver returned non-finite values")
+    if violation > tolerance:
+        raise RuntimeError(f"quasi-steady line solution violates constraints by {violation:g}")
 
 
 def solve_line(track, corridor, surface, mesh, settings: QssSettings, *, seed: FloatArray | None = None) -> QssSolution:
@@ -169,7 +233,10 @@ def solve_line(track, corridor, surface, mesh, settings: QssSettings, *, seed: F
     result=solver(x0=vector,lbx=built["x_lower"],ubx=built["x_upper"],lbg=built["g_lower"],ubg=built["g_upper"])
     values=np.asarray(result["x"],dtype=float).ravel(); g=np.asarray(result["g"],dtype=float).ravel()
     violation=float(np.max(np.maximum(np.maximum(built["g_lower"]-g,0),g-built["g_upper"])))
-    stats=solver.stats(); blocks=unpack(values,count)
+    stats=solver.stats(); status=str(stats["return_status"])
+    objective=float(result["f"])
+    _validate_solver_result(status, values, g, objective, violation, settings.tolerance)
+    blocks=unpack(values,count)
     return QssSolution(np.asarray(mesh,dtype=float),blocks["offset"],blocks["heading"],blocks["speed"],blocks["acceleration"],blocks["curvature_rate"],float(result["f"]),str(stats["return_status"]),int(stats["iter_count"]),violation)
 
 

@@ -60,7 +60,47 @@ class TranscriptionTest(unittest.TestCase):
         from simplified_vehicle_models.solvers.qss_line_ocp import build_mesh, build_ocp, QssSettings
         track=self._track(); mesh=build_mesh(track,4.0); corridor=corridor_from_track(track)
         built=build_ocp(track,corridor,_flat_surface(25.0),mesh,QssSettings())
-        self.assertEqual(built["nlp"]["x"].shape[0],5*mesh.size+2*(mesh.size-1))
+        count=mesh.size-1; nodes=count+1; x=built["nlp"]["x"]
+        self.assertEqual(x.shape[0],5*nodes+2*count)
+        self.assertEqual([x[i*nodes].name() for i in range(5)], ["n_0","psi_0","v_0","a_0","q_0"])
+        self.assertEqual(x[5*nodes].name(),"am_0")
+        self.assertEqual(x[5*nodes+count].name(),"qm_0")
+        from simplified_vehicle_models.solvers.qss_line_ocp import unpack
+        blocks=unpack(np.arange(5*nodes+2*count),count)
+        np.testing.assert_array_equal(blocks["offset"],np.arange(nodes))
+        np.testing.assert_array_equal(blocks["heading"],np.arange(nodes,2*nodes))
+        np.testing.assert_array_equal(blocks["speed"],np.arange(2*nodes,3*nodes))
+
+    def test_invalid_settings_and_mesh_are_rejected(self):
+        from simplified_vehicle_models.solvers.qss_line_ocp import build_mesh, build_ocp, QssSettings
+        track=self._track(); corridor=corridor_from_track(track); surface=_flat_surface(25.0); mesh=build_mesh(track,4.0)
+        for settings in (QssSettings(fold_guard=float("nan")), QssSettings(minimum_speed=0.0), QssSettings(maximum_iterations=0)):
+            with self.subTest(settings=settings), self.assertRaises(ValueError):
+                build_ocp(track,corridor,surface,mesh,settings)
+        with self.assertRaisesRegex(ValueError,"span exactly"):
+            build_ocp(track,corridor,surface,mesh[:-1],QssSettings())
+
+    def test_midpoint_offset_has_corridor_constraint(self):
+        from simplified_vehicle_models.solvers.qss_line_ocp import build_mesh, build_ocp, QssSettings
+        from dataclasses import replace
+        track=self._track(); mesh=build_mesh(track,4.0); corridor=corridor_from_track(track)
+        corridor=replace(corridor,minimum=np.full(corridor.distance.shape,-1.7),maximum=np.full(corridor.distance.shape,2.3))
+        built=build_ocp(track,corridor,_flat_surface(25.0),mesh,QssSettings())
+        # These asymmetric sentinels are unique to corridor bounds (not the
+        # symmetric surface-curvature domain) and one pair is added per midpoint.
+        count=mesh.size-1
+        rows=np.flatnonzero((built["g_lower"] == -1.7) & (built["g_upper"] == 2.3))
+        self.assertEqual(rows.size,count)
+
+    def test_solver_result_rejects_failure_nonfinite_and_violation(self):
+        from simplified_vehicle_models.solvers.qss_line_ocp import _validate_solver_result
+        valid=np.array([1.0]); _validate_solver_result("Solve_Succeeded",valid,valid,1.0,0.0,1e-6)
+        with self.assertRaisesRegex(RuntimeError,"failed"):
+            _validate_solver_result("Maximum_Iterations_Exceeded",valid,valid,1.0,0.0,1e-6)
+        with self.assertRaisesRegex(RuntimeError,"non-finite"):
+            _validate_solver_result("Solve_Succeeded",np.array([np.nan]),valid,1.0,0.0,1e-6)
+        with self.assertRaisesRegex(RuntimeError,"violates constraints"):
+            _validate_solver_result("Solve_Succeeded",valid,valid,1.0,1e-3,1e-6)
 
     def test_zero_corridor_recovers_the_steady_circle_time(self):
         from simplified_vehicle_models.solvers.qss_line_ocp import build_mesh, solve_line, QssSettings

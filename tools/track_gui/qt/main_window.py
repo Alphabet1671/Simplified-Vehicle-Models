@@ -537,6 +537,7 @@ class ClosedTab(QWidget):
             raise ValueError("Discover channels again after changing the telemetry file.")
         x=self.x_channel.currentData(); y=self.y_channel.currentData()
         if not x or not y: raise ValueError("Discover channels and select valid x and y channels.")
+        if x == y: raise ValueError("Choose two different channels for north/X and east/Y.")
         return ChannelSelection(x,y,self.mode.currentText(),self.x_scale.value(),self.y_scale.value(),self.x_unknown.isChecked(),self.y_unknown.isChecked())
 
     def build(self) -> None:

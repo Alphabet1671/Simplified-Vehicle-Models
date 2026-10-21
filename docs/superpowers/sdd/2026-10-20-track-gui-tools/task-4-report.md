@@ -38,4 +38,5 @@ The Task 4 Qt tests include:
 
 - No interactive desktop/manual visual pass was performed. Offscreen smoke verifies startup only.
 - Real-file MIS/FSC GUI acceptance was not performed in this GUI task; see the independent core real-data validation for its results.
+- Viewer file-load coverage is narrow: signed and unsigned tracks are injected in memory with `set_track(...)`, and the only Qt `load_path` test exercises the failing path. Core `load_track_data` tests do perform actual open, closed and unsigned XML file loads and round trips; a successful GUI `load_path` remains a follow-up.
 - The GUI-specific models-folder permission confirmation flow is not directly covered by a new GUI test. Core target guards and existing save tests cover the protected-folder API.

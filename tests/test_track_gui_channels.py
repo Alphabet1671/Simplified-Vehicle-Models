@@ -15,6 +15,17 @@ def signal(time, value, units):
     return {"Time": np.asarray(time), "Value": np.asarray(value), "Units": units}
 
 
+class ChannelSelectionValidationTests(unittest.TestCase):
+    def test_every_mode_rejects_the_same_channel_before_reading_the_file(self):
+        missing = Path(tempfile.gettempdir()) / "track-gui-channel-that-does-not-exist.mat"
+        for mode in ("velocity", "position", "gps"):
+            with self.subTest(mode=mode):
+                with self.assertRaisesRegex(
+                    ValueError, "choose two different channels for north/X and east/Y"
+                ):
+                    load_coordinates(missing, ChannelSelection("VNorth", "VNorth", mode), 0, 1)
+
+
 @unittest.skipIf(savemat is None, "SciPy is required for synthetic MAT tests")
 class MatChannelsTests(unittest.TestCase):
     def setUp(self):

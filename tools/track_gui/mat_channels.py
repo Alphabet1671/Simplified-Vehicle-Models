@@ -122,6 +122,8 @@ def _conversion(units: str, mode: str, scale: float, name: str, allow_unknown: b
 
 def load_coordinates(path: str | Path, selection: ChannelSelection, start_time: float, end_time: float):
     """Synchronize selected signals over their common interval; never extrapolate."""
+    if selection.x_channel == selection.y_channel:
+        raise ValueError("choose two different channels for north/X and east/Y; a track needs distinct axes")
     if selection.mode not in {"velocity", "position", "gps"}:
         raise ValueError(f"unsupported coordinate mode {selection.mode!r}")
     if not math.isfinite(start_time) or not math.isfinite(end_time) or start_time >= end_time:

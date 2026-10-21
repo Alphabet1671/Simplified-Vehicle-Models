@@ -2,7 +2,7 @@
 
 ## Status
 
-The explicit-path validator, opt-in private-fixture tests, source-anchored export mutation tests, developer guide, and desktop manual-check updates are complete. Both actual sources passed the strengthened acceptance run against branch HEAD `c9576a5`, after the core section-reconstruction fix that added strict-loader-aware refinement without weakening loader tolerances. The original FSC finding (section 3, row 154, 0.00204 rad heading/integrated-curvature discrepancy) was fixed in core before this run.
+The explicit-path validator, opt-in private-fixture tests, source-anchored export mutation tests, developer guide, and desktop manual-check updates are complete. Both actual sources passed the strengthened acceptance run at `c9576a5` plus the source-anchoring test/validator commit `afbf2cc`; production behavior is unchanged, so the acceptance results apply to the final branch working tree at `afbf2cc`. The run followed the core section-reconstruction fix that added strict-loader-aware refinement without weakening loader tolerances. The original FSC finding (section 3, row 154, 0.00204 rad heading/integrated-curvature discrepancy) was fixed in core before this run.
 
 ## Validator and commands
 

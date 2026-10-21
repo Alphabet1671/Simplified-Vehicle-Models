@@ -68,6 +68,18 @@ class TrackGuiToolsQtTests(unittest.TestCase):
         self.assertTrue(any("VNorth" in tab.x_channel.itemText(i) for i in range(tab.x_channel.count())))
         self.assertFalse(tab.x_unknown.isChecked())
 
+    def test_same_channel_selection_is_refused_before_building(self):
+        tab = self.window.closed_tab
+        tab.set_channels([ChannelInfo("Latitude_MTI", "deg", 100, 0, 10),
+                          ChannelInfo("Longitude_MTI", "deg", 100, 0, 10)])
+        self.assertEqual(tab.x_channel.currentData(), "Latitude_MTI")
+        self.assertEqual(tab.y_channel.currentData(), "Latitude_MTI")
+        with self.assertRaisesRegex(ValueError, "two different channels for north/X and east/Y"):
+            tab._selection()
+        tab.build()
+        self.assertIsNone(tab.thread)
+        self.assertIn("two different channels", tab.notice.text())
+
     def test_changing_the_telemetry_path_clears_discovered_channels(self):
         tab = self.window.closed_tab
         tab.set_channels([ChannelInfo("VNorth", "m/s", 100, 0, 10), ChannelInfo("VEast", "m/s", 100, 0, 10)])

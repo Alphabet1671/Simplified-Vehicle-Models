@@ -30,6 +30,18 @@ def _flat_surface(ceiling: float, *, acceleration: float = 3.0, deceleration: fl
 
 @unittest.skipUnless(CASADI, "CasADi is not installed")
 class TranscriptionTest(unittest.TestCase):
+    def test_tolerance_schedule_ends_at_requested_tolerance(self):
+        from simplified_vehicle_models.solvers.qss_line_ocp import QssSettings, _tolerance_schedule
+
+        self.assertEqual(_tolerance_schedule(QssSettings(tolerance=1.0e-6)),
+                         (1.0e-6,))
+        self.assertEqual(_tolerance_schedule(QssSettings(tolerance=1.0e-5)),
+                         (1.0e-5,))
+        self.assertEqual(_tolerance_schedule(QssSettings(tolerance=1.0e-7)),
+                         (1.0e-7,))
+        self.assertEqual(_tolerance_schedule(QssSettings(tolerance=1.0e-6, tolerance_homotopy=True)),
+                         (1.0e-4, 1.0e-5, 1.0e-6))
+
     def setUp(self):
         self._directory = tempfile.TemporaryDirectory()
         self.directory = Path(self._directory.name)
@@ -67,6 +79,88 @@ class TranscriptionTest(unittest.TestCase):
         self.assertIsNotNone(solution.mid_curvature_rate)
         self.assertEqual(solution.mid_acceleration.size, solution.distance.size - 1)
         self.assertEqual(solution.mid_curvature_rate.size, solution.distance.size - 1)
+
+    def test_opt_in_tolerance_homotopy_reuses_multipliers_and_shared_budget(self):
+        from unittest.mock import patch
+        import casadi as ca
+        from simplified_vehicle_models.solvers import qss_line_ocp
+
+        track = self._track(radius=40.0, nodes=72, half_width=3.0)
+        corridor = corridor_from_track(track)
+        mesh = qss_line_ocp.build_mesh(track, 20.0)
+        surface = _flat_surface(25.0)
+        settings = qss_line_ocp.QssSettings(
+            tolerance=1.0e-6, maximum_iterations=20, tolerance_homotopy=True,
+        )
+        calls = []
+
+        def fake_nlpsol(_name, _backend, nlp, options):
+            x_symbol = nlp["x"]
+            f_fun = ca.Function(f"fake_f_{len(calls)}", [x_symbol], [nlp["f"]])
+            g_fun = ca.Function(f"fake_g_{len(calls)}", [x_symbol], [nlp["g"]])
+            stage = len(calls)
+            def invoke(**arguments):
+                calls.append((dict(options), dict(arguments)))
+                x_value = np.asarray(arguments["x0"], dtype=float)
+                result = {
+                    "x": x_value,
+                    "f": float(f_fun(x_value)),
+                    "g": np.asarray(g_fun(x_value), dtype=float).ravel(),
+                    "lam_x": np.full(x_value.size, stage + 1.0),
+                    "lam_g": np.full(int(nlp["g"].numel()), stage + 11.0),
+                }
+                return result
+            invoke.stats = lambda: {"return_status": "Solve_Succeeded", "iter_count": (2, 3, 4)[stage]}
+            return invoke
+
+        with patch("casadi.nlpsol", side_effect=fake_nlpsol):
+            solution = qss_line_ocp.solve_line(track, corridor, surface, mesh, settings)
+
+        self.assertEqual(len(calls), 3)
+        self.assertEqual([call[0]["ipopt.tol"] for call in calls], [1.0e-4, 1.0e-5, 1.0e-6])
+        self.assertEqual([call[0]["ipopt.max_iter"] for call in calls], [20, 18, 15])
+        self.assertNotIn("lam_x0", calls[0][1])
+        self.assertNotIn("ipopt.warm_start_init_point", calls[0][0])
+        np.testing.assert_array_equal(calls[1][1]["lam_x0"], 1.0)
+        np.testing.assert_array_equal(calls[1][1]["lam_g0"], 11.0)
+        self.assertEqual(calls[1][0]["ipopt.warm_start_init_point"], "yes")
+        np.testing.assert_array_equal(calls[2][1]["lam_x0"], 2.0)
+        np.testing.assert_array_equal(calls[2][1]["lam_g0"], 12.0)
+        self.assertEqual(solution.iterations, 9)
+        self.assertLessEqual(solution.maximum_violation, settings.tolerance)
+
+    def test_tolerance_homotopy_stops_on_failed_intermediate_stage(self):
+        from unittest.mock import patch
+        import casadi as ca
+        from simplified_vehicle_models.solvers import qss_line_ocp
+
+        track = self._track(radius=40.0, nodes=72, half_width=3.0)
+        corridor = corridor_from_track(track)
+        mesh = qss_line_ocp.build_mesh(track, 20.0)
+        settings = qss_line_ocp.QssSettings(
+            tolerance=1.0e-6, maximum_iterations=20, tolerance_homotopy=True,
+        )
+        calls = []
+
+        def fake_nlpsol(_name, _backend, nlp, options):
+            x_symbol = nlp["x"]
+            f_fun = ca.Function(f"failed_f_{len(calls)}", [x_symbol], [nlp["f"]])
+            g_fun = ca.Function(f"failed_g_{len(calls)}", [x_symbol], [nlp["g"]])
+            def invoke(**arguments):
+                calls.append((dict(options), dict(arguments)))
+                x_value = np.asarray(arguments["x0"], dtype=float)
+                return {"x": x_value, "f": float(f_fun(x_value)),
+                        "g": np.asarray(g_fun(x_value), dtype=float).ravel(),
+                        "lam_x": np.zeros(x_value.size),
+                        "lam_g": np.zeros(int(nlp["g"].numel()))}
+            invoke.stats = lambda: {"return_status": "Maximum_Iterations_Exceeded", "iter_count": 20}
+            return invoke
+
+        with patch("casadi.nlpsol", side_effect=fake_nlpsol):
+            with self.assertRaisesRegex(RuntimeError, "Maximum_Iterations_Exceeded"):
+                qss_line_ocp.solve_line(track, corridor, _flat_surface(25.0), mesh, settings)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0]["ipopt.tol"], 1.0e-4)
 
     def test_nonfinite_seed_is_rejected_before_solver_construction(self):
         from unittest.mock import patch
@@ -145,7 +239,7 @@ class TranscriptionTest(unittest.TestCase):
     def test_invalid_settings_and_mesh_are_rejected(self):
         from simplified_vehicle_models.solvers.qss_line_ocp import build_mesh, build_ocp, QssSettings
         track=self._track(); corridor=corridor_from_track(track); surface=_flat_surface(25.0); mesh=build_mesh(track,4.0)
-        for settings in (QssSettings(fold_guard=float("nan")), QssSettings(minimum_speed=0.0), QssSettings(maximum_iterations=0)):
+        for settings in (QssSettings(fold_guard=float("nan")), QssSettings(minimum_speed=0.0), QssSettings(maximum_iterations=0), QssSettings(tolerance_homotopy=1)):
             with self.subTest(settings=settings), self.assertRaises(ValueError):
                 build_ocp(track,corridor,surface,mesh,settings)
         with self.assertRaisesRegex(ValueError,"span exactly"):

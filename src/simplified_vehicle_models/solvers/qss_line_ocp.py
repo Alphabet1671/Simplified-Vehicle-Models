@@ -23,6 +23,7 @@ class QssSettings:
     regularisation: float = 1.0e-6
     tolerance: float = 1.0e-6
     maximum_iterations: int = 3000
+    tolerance_homotopy: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,6 +56,8 @@ def _validate_inputs(track, corridor, surface, mesh, settings):
         raise ValueError("maximum_heading must be less than pi/2")
     if not math.isfinite(settings.regularisation) or settings.regularisation < 0.0:
         raise ValueError("regularisation must be finite and nonnegative")
+    if not isinstance(settings.tolerance_homotopy, (bool, np.bool_)):
+        raise ValueError("tolerance_homotopy must be a boolean")
     if isinstance(settings.maximum_iterations, bool) or settings.maximum_iterations < 1:
         raise ValueError("maximum_iterations must be a positive integer")
     if int(settings.maximum_iterations) != settings.maximum_iterations:
@@ -262,6 +265,18 @@ def _decision_scaling(node_count: int) -> tuple[FloatArray, FloatArray]:
     return center, scale
 
 
+def _tolerance_schedule(settings: QssSettings) -> tuple[float, ...]:
+    """Return the requested tolerance, optionally preceded by homotopy stages.
+
+    The diagnostic schedule is intentionally opt-in. The iteration cap is shared
+    across all stages of one solve, and the last stage always uses the requested
+    tolerance.
+    """
+    if settings.tolerance_homotopy and settings.tolerance < 1.0e-5:
+        return (1.0e-4, 1.0e-5, settings.tolerance)
+    return (settings.tolerance,)
+
+
 def solve_line(track, corridor, surface, mesh, settings: QssSettings, *, seed: FloatArray | None = None) -> QssSolution:
     """Solve the free-line minimum-time problem on a fixed mesh."""
     import casadi as ca
@@ -282,18 +297,48 @@ def solve_line(track, corridor, surface, mesh, settings: QssSettings, *, seed: F
     }
     lower = (built["x_lower"] - center) / scale
     upper = (built["x_upper"] - center) / scale
-    opts={"ipopt.tol":settings.tolerance,"ipopt.constr_viol_tol":settings.tolerance,"ipopt.max_iter":settings.maximum_iterations,"ipopt.hessian_approximation":"exact","ipopt.nlp_scaling_method":"gradient-based","ipopt.mu_strategy":"adaptive","ipopt.print_level":0,"print_time":False}
-    solver=ca.nlpsol("qss_line","ipopt",scaled_nlp,opts)
-    result=solver(x0=(vector-center)/scale,lbx=lower,ubx=upper,lbg=built["g_lower"],ubg=built["g_upper"])
-    values=center + scale * np.asarray(result["x"],dtype=float).ravel(); g=np.asarray(result["g"],dtype=float).ravel()
-    violation=float(np.max(np.maximum(np.maximum(built["g_lower"]-g,0),g-built["g_upper"])))
-    stats=solver.stats(); status=str(stats["return_status"])
-    objective=float(result["f"])
+    # Tight solves can destabilize from an otherwise feasible seed. Resolve the
+    # same NLP at progressively tighter tolerances and carry IPOPT's multipliers
+    # between stages. Multipliers are deliberately not transferred by solve_ladder
+    # across meshes, whose variable and constraint layouts differ.
+    tolerances = _tolerance_schedule(settings)
+    scaled_seed = (vector-center)/scale
+    lam_x = lam_g = None
+    total_iterations = 0
+    for stage, tolerance in enumerate(tolerances):
+        remaining_iterations = settings.maximum_iterations - total_iterations
+        if remaining_iterations <= 0:
+            status = "Maximum_Iterations_Exceeded"
+            break
+        opts={"ipopt.tol":tolerance,"ipopt.constr_viol_tol":tolerance,"ipopt.max_iter":remaining_iterations,"ipopt.hessian_approximation":"exact","ipopt.nlp_scaling_method":"gradient-based","ipopt.mu_strategy":"adaptive","ipopt.print_level":0,"print_time":False}
+        if lam_x is not None:
+            opts.update({"ipopt.warm_start_init_point":"yes",
+                         "ipopt.warm_start_bound_push":1.0e-8,
+                         "ipopt.warm_start_mult_bound_push":1.0e-8,
+                         "ipopt.warm_start_slack_bound_push":1.0e-8})
+        solver=ca.nlpsol("qss_line","ipopt",scaled_nlp,opts)
+        arguments={"x0":scaled_seed,"lbx":lower,"ubx":upper,
+                   "lbg":built["g_lower"],"ubg":built["g_upper"]}
+        if lam_x is not None:
+            arguments.update({"lam_x0":lam_x,"lam_g0":lam_g})
+        result=solver(**arguments)
+        stats=solver.stats(); status=str(stats["return_status"])
+        total_iterations += int(stats["iter_count"])
+        values=center + scale * np.asarray(result["x"],dtype=float).ravel()
+        g=np.asarray(result["g"],dtype=float).ravel()
+        violation=float(np.max(np.maximum(np.maximum(built["g_lower"]-g,0),g-built["g_upper"])))
+        objective=float(result["f"])
+        if status != "Solve_Succeeded":
+            break
+        if stage + 1 < len(tolerances):
+            scaled_seed=np.asarray(result["x"],dtype=float).ravel()
+            lam_x=np.asarray(result["lam_x"],dtype=float).ravel()
+            lam_g=np.asarray(result["lam_g"],dtype=float).ravel()
     _validate_solver_result(status, values, g, objective, violation, settings.tolerance,
                             built["x_lower"], built["x_upper"])
     violation=max(violation,float(np.max(np.maximum(np.maximum(built["x_lower"]-values,0.0),values-built["x_upper"]))))
     blocks=unpack(values,count)
-    return QssSolution(np.asarray(mesh,dtype=float),blocks["offset"],blocks["heading"],blocks["speed"],blocks["acceleration"],blocks["curvature_rate"],float(result["f"]),str(stats["return_status"]),int(stats["iter_count"]),violation,blocks["mid_acceleration"],blocks["mid_curvature_rate"])
+    return QssSolution(np.asarray(mesh,dtype=float),blocks["offset"],blocks["heading"],blocks["speed"],blocks["acceleration"],blocks["curvature_rate"],float(result["f"]),str(stats["return_status"]),total_iterations,violation,blocks["mid_acceleration"],blocks["mid_curvature_rate"])
 
 
 def project_seed(coarse: QssSolution, mesh) -> FloatArray:

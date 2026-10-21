@@ -17,7 +17,7 @@ from scipy.optimize import brentq
 from simplified_vehicle_models.core.types import FloatArray
 from simplified_vehicle_models.formulations.point_mass import (
     _equilibrium_limits, acceleration_limits, maximum_acceleration_limit,
-    maximum_vehicle_speed, 
+    maximum_vehicle_speed,
 )
 
 

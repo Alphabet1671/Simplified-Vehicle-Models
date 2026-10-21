@@ -28,8 +28,36 @@ from tools.gates.check_minimum_time_line import (
 )
 
 
+def _validate_output_paths(source: Path, output: Path) -> None:
+    """Reject generated artifacts that would overwrite source track assets."""
+    root = ET.parse(source).getroot()
+    generated = {
+        (output / name).resolve()
+        for name in (
+            "line.csv", "racing_line.csv", "racing_line_track.csv",
+            "racing_line_track.xml", "rebuilt_width.csv", "summary.json",
+        )
+    }
+    protected = {source.resolve()}
+    for element in root.findall("./data"):
+        reference = element.get("ref")
+        if reference:
+            protected.add((source.parent / reference).resolve())
+    for source_asset in protected:
+        candidates = generated | {(output / f"{source_asset.stem}_rebuilt.csv").resolve()}
+        for candidate in candidates:
+            same_file = candidate == source_asset
+            if not same_file and candidate.exists() and source_asset.exists():
+                same_file = candidate.samefile(source_asset)
+            if same_file:
+                raise ValueError(
+                    f"output artifact would overwrite source track asset: {source_asset}"
+                )
+
+
 def _write_rebuilt_track(source: Path, output: Path, path) -> tuple[Path, Path]:
     """Write rebuilt geometry with source widths projected onto new normals."""
+    _validate_output_paths(source, output)
     root = ET.parse(source).getroot()
     width_elements = root.findall("./data[@role='width']")
     if len(width_elements) > 1:
@@ -37,9 +65,9 @@ def _write_rebuilt_track(source: Path, output: Path, path) -> tuple[Path, Path]:
     geometry_data = next((element for element in root.findall("./data") if element.get("role") is None), None)
     if geometry_data is None or not geometry_data.get("ref"):
         raise ValueError("source track has no unroled geometry data reference")
-    output.mkdir(parents=True, exist_ok=True)
     csv_path = output / "racing_line_track.csv"
     xml_path = output / "racing_line_track.xml"
+    output.mkdir(parents=True, exist_ok=True)
     with csv_path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
         writer.writerow(("distance", "x_north", "y_east", "heading_rad", "curvature"))
@@ -124,6 +152,7 @@ def _write_line(path: Path, solution) -> None:
 
 def run(args) -> dict:
     output = args.output.resolve()
+    _validate_output_paths(Path(args.track).resolve(), output)
     output.mkdir(parents=True, exist_ok=True)
     track = load_track(args.track)
     corridor = corridor_from_track(track, margin=args.margin)

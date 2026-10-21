@@ -7,7 +7,7 @@ import xml.etree.ElementTree as ET
 
 import numpy as np
 
-from tools.run.solve_minimum_time_line import _write_rebuilt_track
+from tools.run.solve_minimum_time_line import _validate_output_paths, _write_rebuilt_track
 from simplified_vehicle_models.tracks.profile import load_track
 from simplified_vehicle_models.tracks.types import PathCoordinates
 
@@ -237,6 +237,41 @@ class GateCheckTest(unittest.TestCase):
 
 
 class RunnerOrchestrationTest(unittest.TestCase):
+    def test_output_collision_is_rejected_before_source_bytes_change(self) -> None:
+        from tools.run import solve_minimum_time_line as runner
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            geometry = root / "racing_line_track.csv"
+            geometry_bytes = b"original source geometry\n"
+            geometry.write_bytes(geometry_bytes)
+            source = root / "source.xml"
+            source.write_text(
+                '<model schema-version="1.0" type="track-model" subtype="closed-xy-profile">'
+                '<metadata><title>collision fixture</title></metadata>'
+                '<data ref="racing_line_track.csv" />'
+                '</model>',
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "overwrite source track asset"):
+                _validate_output_paths(source, root)
+            self.assertEqual(geometry.read_bytes(), geometry_bytes)
+
+            args = SimpleNamespace(track=source, output=root, margin=.1)
+            with self.assertRaisesRegex(ValueError, "overwrite source track asset"):
+                runner.run(args)
+            self.assertEqual(geometry.read_bytes(), geometry_bytes)
+
+            source_named_as_output = root / "summary.json"
+            source_xml_bytes = (
+                b'<model schema-version="1.0" type="track-model" subtype="closed-xy-profile">'
+                b'<metadata><title>xml collision</title></metadata></model>'
+            )
+            source_named_as_output.write_bytes(source_xml_bytes)
+            with self.assertRaisesRegex(ValueError, "overwrite source track asset"):
+                _validate_output_paths(source_named_as_output, root)
+            self.assertEqual(source_named_as_output.read_bytes(), source_xml_bytes)
+
     def test_run_reports_all_five_checks_and_preserves_false_gate(self) -> None:
         from tools.run import solve_minimum_time_line as runner
 
@@ -262,8 +297,15 @@ class RunnerOrchestrationTest(unittest.TestCase):
                 distance=distance, minimum=np.full(5, -2.), maximum=np.full(5, 2.),
                 provenance="assumed", is_closed=True,
             )
+            source_track = root / "source_track.xml"
+            source_track.write_text(
+                '<model schema-version="1.0" type="track-model" subtype="closed-xy-profile">'
+                '<metadata><title>runner fixture</title></metadata><data ref="source_geometry.csv" />'
+                '</model>',
+                encoding="utf-8",
+            )
             args = SimpleNamespace(
-                track=Path("track.xml"), formulation=Path("formulation.xml"),
+                track=source_track, formulation=Path("formulation.xml"),
                 surface=Path("surface.npz"), output=root / "output", margin=.1,
             )
             with (

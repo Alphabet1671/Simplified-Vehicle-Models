@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import numpy as np
 
 from simplified_vehicle_models.tracks.profile import load_track
-from simplified_vehicle_models.tracks.racing_line import offset_path, path_from_solution
+from simplified_vehicle_models.tracks.racing_line import _periodic_smooth, offset_path, path_from_solution
 from tests.test_track_width import _write_circle_track
 
 NODES = 720
@@ -39,6 +39,13 @@ class OffsetPathTest(unittest.TestCase):
         np.testing.assert_allclose(path.curvature, 1.0 / 40.0, rtol=1.0e-4)
         self.assertAlmostEqual(path.curvature[0], path.curvature[-1], places=14)
 
+    def test_periodic_smoothing_support_may_exceed_unique_nodes(self):
+        values = np.array([0.0, 1.0, 0.0, -1.0])
+        smoothed = _periodic_smooth(values, sigma_samples=20.0)
+        self.assertEqual(smoothed.shape, values.shape)
+        self.assertTrue(np.all(np.isfinite(smoothed)))
+        np.testing.assert_allclose(_periodic_smooth(np.full(4, 2.0), 20.0), 2.0)
+
     def test_offset_length_must_match(self):
         track = self._circle()
         with self.assertRaises(ValueError):
@@ -55,6 +62,9 @@ class OffsetPathTest(unittest.TestCase):
         np.testing.assert_allclose(path.curvature, 1.0 / 38.0, rtol=1.0e-4)
         smooth = path_from_solution(track, solution, smoothing=0.5)
         np.testing.assert_allclose(smooth.x_north, path.x_north, atol=1e-10)
+        broad_smooth = path_from_solution(track, solution, smoothing=100.0)
+        self.assertEqual(broad_smooth.distance.shape, track.distance.shape)
+        self.assertAlmostEqual(broad_smooth.curvature[0], broad_smooth.curvature[-1], places=14)
 
 
 if __name__ == "__main__":

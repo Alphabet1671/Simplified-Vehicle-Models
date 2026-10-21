@@ -73,7 +73,8 @@ def _periodic_smooth(values, sigma_samples: float):
     taps = np.arange(-half, half + 1)
     kernel = np.exp(-0.5 * (taps / sigma_samples) ** 2)
     kernel /= kernel.sum()
-    padded = np.r_[values[-half:], values, values[:half]]
+    indices = (np.arange(-half, values.size + half) % values.size)
+    padded = values[indices]
     return np.convolve(padded, kernel, mode="valid")
 
 

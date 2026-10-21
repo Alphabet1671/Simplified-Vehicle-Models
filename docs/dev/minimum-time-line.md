@@ -82,7 +82,7 @@ PYTHONPATH=src python3 -m unittest tests.test_minimum_time_line_gate -v
 
 ## 7. Measured stage 1 results
 
-The full integration run for the specified Michigan track has not completed successfully. These are solver diagnostics, not acceptance results.
+The full integration run for the specified Michigan track has not completed successfully. These are solver diagnostics, not acceptance results. The acceptance runner uses the default `QssSettings` tolerance (1e-6); after midpoint-control projection was fixed, its default-tolerance Michigan zero-corridor 5/2/1 m ladder still failed with `Maximum_Iterations_Exceeded` after about 250 seconds and reported no completed stage. Thus the successful 1e-5 zero-corridor ladder is not sufficient for the runner configuration.
 
 Before decision-variable normalization, the 5 m zero-corridor solve at tolerance 1e-5 succeeded in 100 iterations: 57.4224 s, maximum constraint violation 4.56e-14. At tolerance 1e-6, the 5 m solve exceeded 500 iterations. Limited-memory Hessian approximation did not resolve prior 1 m failures. An adaptive-barrier 1 m diagnostic ended `Infeasible_Problem_Detected` after 169 iterations (objective 59.393 s; max sampled violation 3.84e-6).
 

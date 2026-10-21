@@ -90,7 +90,16 @@ class TranscriptionTest(unittest.TestCase):
         # symmetric surface-curvature domain) and one pair is added per midpoint.
         count=mesh.size-1
         rows=np.flatnonzero((built["g_lower"] == -1.7) & (built["g_upper"] == 2.3))
-        self.assertEqual(rows.size,count)
+        self.assertEqual(rows.size,4*count)  # midpoint plus Hermite samples at 1/4, 1/2, 3/4
+
+    def test_signed_asymmetric_curvature_axis_rejects_outside_track_curvature(self):
+        from dataclasses import replace
+        from simplified_vehicle_models.solvers.qss_line_ocp import build_mesh, build_ocp, QssSettings
+        track=self._track(); track=replace(track,curvature=np.full(track.curvature.shape,-0.15)); corridor=corridor_from_track(self._track()); base=_flat_surface(25.0)
+        curvature=np.linspace(-0.1,0.2,61)
+        surface=replace(base,curvature=curvature,acceleration_max=np.full((base.speed.size,curvature.size),3.0),acceleration_min=np.full((base.speed.size,curvature.size),-8.0),speed_ceiling=np.full(curvature.size,25.0))
+        with self.assertRaisesRegex(ValueError,"track curvature lies outside"):
+            build_ocp(track,corridor,surface,build_mesh(track,4.0),QssSettings())
 
     def test_solver_result_rejects_failure_nonfinite_and_violation(self):
         from simplified_vehicle_models.solvers.qss_line_ocp import _validate_solver_result
@@ -101,6 +110,8 @@ class TranscriptionTest(unittest.TestCase):
             _validate_solver_result("Solve_Succeeded",np.array([np.nan]),valid,1.0,0.0,1e-6)
         with self.assertRaisesRegex(RuntimeError,"violates constraints"):
             _validate_solver_result("Solve_Succeeded",valid,valid,1.0,1e-3,1e-6)
+        with self.assertRaisesRegex(RuntimeError,"violates constraints"):
+            _validate_solver_result("Solve_Succeeded",np.array([1.1]),valid,1.0,0.0,1e-6,np.array([0.0]),np.array([1.0]))
 
     def test_zero_corridor_recovers_the_steady_circle_time(self):
         from simplified_vehicle_models.solvers.qss_line_ocp import build_mesh, solve_line, QssSettings

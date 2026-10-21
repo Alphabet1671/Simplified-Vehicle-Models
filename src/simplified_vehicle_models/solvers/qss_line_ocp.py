@@ -85,7 +85,7 @@ def _validate_inputs(track, corridor, surface, mesh, settings):
         raise ValueError("speed_ceiling must be finite, positive, and match curvature axis")
     if settings.minimum_speed < axes[0][0] or settings.minimum_speed >= axes[0][-1]:
         raise ValueError("minimum_speed must lie within the capability speed axis")
-    if np.any(np.abs(np.asarray(track.curvature, dtype=float)) > max(abs(axes[1][0]), abs(axes[1][-1])) + 1e-12):
+    if np.any(np.asarray(track.curvature, dtype=float) < axes[1][0] - 1e-12) or np.any(np.asarray(track.curvature, dtype=float) > axes[1][-1] + 1e-12):
         raise ValueError("track curvature lies outside capability surface")
     return mesh
 
@@ -173,10 +173,14 @@ def build_ocp(track, corridor, surface, mesh, settings: QssSettings):
         kmid=float(_element_curvature(track,[midpos])[0])
         nlo_mid=float(periodic_sample(corridor.minimum,corridor.distance,[midpos],period=float(track.lap_length))[0])
         nhi_mid=float(periodic_sample(corridor.maximum,corridor.distance,[midpos],period=float(track.lap_length))[0])
+        interior_positions=mesh[i]+h*np.asarray([0.25,0.5,0.75])
+        interior_lower=periodic_sample(corridor.minimum,corridor.distance,interior_positions,period=float(track.lap_length))
+        interior_upper=periodic_sample(corridor.maximum,corridor.distance,interior_positions,period=float(track.lap_length))
         s0=ca.vertcat(n[i],psi[i],v[i]); s1=ca.vertcat(n[i+1],psi[i+1],v[i+1])
         f0=rates((n[i],psi[i],v[i]),(a[i],q[i]),float(k0[i]))
         f1=rates((n[i+1],psi[i+1],v[i+1]),(a[i+1],q[i+1]),float(k0[i+1]))
         sm=.5*(s0+s1)+h/8*(f0-f1)
+        hermite_states=[(2*t**3-3*t**2+1)*s0+(-2*t**3+3*t**2)*s1+h*(t**3-2*t**2+t)*f0+h*(t**3-t**2)*f1 for t in (0.25,0.5,0.75)]
         fm=rates((sm[0],sm[1],sm[2]),(am[i],qm[i]),kmid)
         defect=s1-s0-h/6*(f0+4*fm+f1)
         for row in range(3): add(defect[row],0.0,0.0)
@@ -185,6 +189,8 @@ def build_ocp(track, corridor, surface, mesh, settings: QssSettings):
         objective += h/6*(time_rate(n[i],psi[i],v[i],float(k0[i]))+4*time_rate(sm[0],sm[1],sm[2],kmid)+time_rate(n[i+1],psi[i+1],v[i+1],float(k0[i+1])))
         objective += settings.regularisation*h/6*(q[i]**2+4*qm[i]**2+q[i+1]**2)
         add(sm[0],nlo_mid,nhi_mid)
+        for dense_state, dense_low, dense_high in zip(hermite_states,interior_lower,interior_upper):
+            add(dense_state[0],float(dense_low),float(dense_high))
         limits(n[i],psi[i],v[i],a[i],q[i],float(k0[i]))
         limits(sm[0],sm[1],sm[2],am[i],qm[i],kmid)
         limits(n[i+1],psi[i+1],v[i+1],a[i+1],q[i+1],float(k0[i+1]))
@@ -211,12 +217,18 @@ def initial_guess(track, corridor, surface, mesh, settings: QssSettings) -> Floa
     return np.concatenate([offset,zeros,speed,zeros,zeros,mids,mids])
 
 
-def _validate_solver_result(status, values, constraints, objective, violation, tolerance):
+def _validate_solver_result(status, values, constraints, objective, violation, tolerance,
+                            x_lower=None, x_upper=None):
     """Reject solver outputs that are not converged feasible finite solutions."""
     if status != "Solve_Succeeded":
         raise RuntimeError(f"quasi-steady line solver failed: {status}")
     if not (np.all(np.isfinite(values)) and np.all(np.isfinite(constraints)) and math.isfinite(objective) and math.isfinite(violation)):
         raise RuntimeError("quasi-steady line solver returned non-finite values")
+    if x_lower is not None and x_upper is not None:
+        if not (np.all(np.isfinite(x_lower)) and np.all(np.isfinite(x_upper))):
+            raise RuntimeError("quasi-steady line variable bounds are non-finite")
+        x_violation = float(np.max(np.maximum(np.maximum(np.asarray(x_lower)-values,0.0),values-np.asarray(x_upper))))
+        violation = max(violation, x_violation)
     if violation > tolerance:
         raise RuntimeError(f"quasi-steady line solution violates constraints by {violation:g}")
 
@@ -235,7 +247,9 @@ def solve_line(track, corridor, surface, mesh, settings: QssSettings, *, seed: F
     violation=float(np.max(np.maximum(np.maximum(built["g_lower"]-g,0),g-built["g_upper"])))
     stats=solver.stats(); status=str(stats["return_status"])
     objective=float(result["f"])
-    _validate_solver_result(status, values, g, objective, violation, settings.tolerance)
+    _validate_solver_result(status, values, g, objective, violation, settings.tolerance,
+                            built["x_lower"], built["x_upper"])
+    violation=max(violation,float(np.max(np.maximum(np.maximum(built["x_lower"]-values,0.0),values-built["x_upper"]))))
     blocks=unpack(values,count)
     return QssSolution(np.asarray(mesh,dtype=float),blocks["offset"],blocks["heading"],blocks["speed"],blocks["acceleration"],blocks["curvature_rate"],float(result["f"]),str(stats["return_status"]),int(stats["iter_count"]),violation)
 

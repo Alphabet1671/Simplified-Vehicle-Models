@@ -257,6 +257,11 @@ class RunnerOrchestrationTest(unittest.TestCase):
                 _validate_output_paths(source, root)
             self.assertEqual(geometry.read_bytes(), geometry_bytes)
 
+            with self.assertRaisesRegex(ValueError, "overwrite source track asset"):
+                _write_rebuilt_track(source, root, SimpleNamespace())
+            self.assertEqual(geometry.read_bytes(), geometry_bytes)
+            self.assertFalse((root / "racing_line_track.xml").exists())
+
             args = SimpleNamespace(track=source, output=root, margin=.1)
             with self.assertRaisesRegex(ValueError, "overwrite source track asset"):
                 runner.run(args)

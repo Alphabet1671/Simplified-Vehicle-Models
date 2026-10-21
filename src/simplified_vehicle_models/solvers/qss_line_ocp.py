@@ -171,8 +171,6 @@ def build_ocp(track, corridor, surface, mesh, settings: QssSettings):
     for i in range(count):
         h = float(mesh[i+1]-mesh[i]); midpos=.5*(mesh[i]+mesh[i+1])
         kmid=float(_element_curvature(track,[midpos])[0])
-        nlo_mid=float(periodic_sample(corridor.minimum,corridor.distance,[midpos],period=float(track.lap_length))[0])
-        nhi_mid=float(periodic_sample(corridor.maximum,corridor.distance,[midpos],period=float(track.lap_length))[0])
         interior_positions=mesh[i]+h*np.asarray([0.25,0.5,0.75])
         interior_lower=periodic_sample(corridor.minimum,corridor.distance,interior_positions,period=float(track.lap_length))
         interior_upper=periodic_sample(corridor.maximum,corridor.distance,interior_positions,period=float(track.lap_length))
@@ -188,9 +186,11 @@ def build_ocp(track, corridor, surface, mesh, settings: QssSettings):
             return (1-curvature*offset)/(speed*ca.cos(heading))
         objective += h/6*(time_rate(n[i],psi[i],v[i],float(k0[i]))+4*time_rate(sm[0],sm[1],sm[2],kmid)+time_rate(n[i+1],psi[i+1],v[i+1],float(k0[i+1])))
         objective += settings.regularisation*h/6*(q[i]**2+4*qm[i]**2+q[i+1]**2)
-        add(sm[0],nlo_mid,nhi_mid)
-        for dense_state, dense_low, dense_high in zip(hermite_states,interior_lower,interior_upper):
+        for sample_index, (dense_state, dense_low, dense_high) in enumerate(zip(hermite_states,interior_lower,interior_upper)):
+            if sample_index == 1:
+                continue  # Hermite t=1/2 equals the HS collocation midpoint.
             add(dense_state[0],float(dense_low),float(dense_high))
+        add(sm[0],float(interior_lower[1]),float(interior_upper[1]))
         limits(n[i],psi[i],v[i],a[i],q[i],float(k0[i]))
         limits(sm[0],sm[1],sm[2],am[i],qm[i],kmid)
         limits(n[i+1],psi[i+1],v[i+1],a[i+1],q[i+1],float(k0[i+1]))

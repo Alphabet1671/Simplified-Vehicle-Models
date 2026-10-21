@@ -90,7 +90,7 @@ class TranscriptionTest(unittest.TestCase):
         # symmetric surface-curvature domain) and one pair is added per midpoint.
         count=mesh.size-1
         rows=np.flatnonzero((built["g_lower"] == -1.7) & (built["g_upper"] == 2.3))
-        self.assertEqual(rows.size,4*count)  # midpoint plus Hermite samples at 1/4, 1/2, 3/4
+        self.assertEqual(rows.size,3*count)  # shared HS/Hermite midpoint plus quarter and three-quarter samples
 
     def test_signed_asymmetric_curvature_axis_rejects_outside_track_curvature(self):
         from dataclasses import replace

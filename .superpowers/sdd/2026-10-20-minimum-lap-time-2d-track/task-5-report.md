@@ -100,6 +100,32 @@ Ran 10 tests in 4.223s
 OK
 ```
 
+## Fix round 3 and Ipopt warning investigation
+
+Removed the duplicate midpoint corridor equality: the Hermite interpolant at `t=1/2` is the same state as the independent Hermite–Simpson collocation midpoint. Corridor constraints now use the explicit HS midpoint plus Hermite quarter- and three-quarter samples—three distinct interior samples per element. The regression checks exactly three asymmetric corridor-bound rows per element. This duplicate caused avoidable equality constraints in the collapsed zero-width corridor case.
+
+Reran the focused suite after deduplication; no Ipopt overconstraint warning appeared in this run. Exact output:
+
+```text
+PYTHONPATH=src:/tmp/casadi-runtime-2026-10-20 python3 -m unittest tests.test_qss_line_ocp -v
+[Ipopt startup banner]
+test_decision_layout_matches_the_declared_contract (tests.test_qss_line_ocp.TranscriptionTest.test_decision_layout_matches_the_declared_contract) ... ok
+test_invalid_settings_and_mesh_are_rejected (tests.test_qss_line_ocp.TranscriptionTest.test_invalid_settings_and_mesh_are_rejected) ... ok
+test_left_turn_free_line_hugs_the_negative_edge (tests.test_qss_line_ocp.TranscriptionTest.test_left_turn_free_line_hugs_the_negative_edge) ... ok
+test_mesh_ends_on_the_lap_length (tests.test_qss_line_ocp.TranscriptionTest.test_mesh_ends_on_the_lap_length) ... ok
+test_midpoint_offset_has_corridor_constraint (tests.test_qss_line_ocp.TranscriptionTest.test_midpoint_offset_has_corridor_constraint) ... ok
+test_open_track_is_rejected_at_periodic_solver_boundary (tests.test_qss_line_ocp.TranscriptionTest.test_open_track_is_rejected_at_periodic_solver_boundary) ... ok
+test_right_turn_free_line_hugs_the_positive_edge (tests.test_qss_line_ocp.TranscriptionTest.test_right_turn_free_line_hugs_the_positive_edge) ... ok
+test_signed_asymmetric_curvature_axis_rejects_outside_track_curvature (tests.test_qss_line_ocp.TranscriptionTest.test_signed_asymmetric_curvature_axis_rejects_outside_track_curvature) ... ok
+test_solver_result_rejects_failure_nonfinite_and_violation (tests.test_qss_line_ocp.TranscriptionTest.test_solver_result_rejects_failure_nonfinite_and_violation) ... ok
+test_zero_corridor_recovers_the_steady_circle_time (tests.test_qss_line_ocp.TranscriptionTest.test_zero_corridor_recovers_the_steady_circle_time) ... ok
+
+----------------------------------------------------------------------
+Ran 10 tests in 3.815s
+
+OK
+```
+
 ## Commit
 
 Committed as recorded below, including only the Task 5 module, tests, and this report.

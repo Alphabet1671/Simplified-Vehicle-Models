@@ -22,6 +22,7 @@ class Corridor:
     minimum: FloatArray
     maximum: FloatArray
     provenance: str
+    is_closed: bool = True
 
     def __post_init__(self) -> None:
         for name in ("distance", "minimum", "maximum"):
@@ -50,7 +51,8 @@ class Corridor:
         """Whether the endpoint bounds agree, indicating a closed grid."""
 
         return bool(
-            self.distance.size > 1
+            self.is_closed
+            and self.distance.size > 1
             and self.distance[-1] > self.distance[0]
             and np.isclose(self.minimum[0], self.minimum[-1], rtol=0.0, atol=1e-12)
             and np.isclose(self.maximum[0], self.maximum[-1], rtol=0.0, atol=1e-12)
@@ -104,4 +106,5 @@ def corridor_from_track(
         minimum=minimum,
         maximum=maximum,
         provenance=str(track.width_provenance),
+        is_closed=bool(track.is_closed),
     )

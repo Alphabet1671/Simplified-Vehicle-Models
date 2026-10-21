@@ -76,7 +76,10 @@ class CorridorTest(unittest.TestCase):
         corridor = corridor_from_track(track, margin=2.25)
         self.assertEqual(corridor.half_width, 0.0)
 
-    def test_open_track_is_not_periodic(self) -> None:
+    def test_open_track_is_not_periodic_even_when_endpoint_bounds_match(self) -> None:
+        from dataclasses import replace
+
         track = load_track(_write_circle_track(self.directory, half_width=2.25))
-        corridor = corridor_from_track(track)
-        self.assertTrue(corridor.is_periodic)
+        open_track = replace(track, is_closed=False)
+        corridor = corridor_from_track(open_track)
+        self.assertFalse(corridor.is_periodic)

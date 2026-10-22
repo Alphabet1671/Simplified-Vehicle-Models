@@ -205,8 +205,6 @@ def build_spline_ocp(track, corridor, surface, mesh, spline, settings: QssSettin
     widths = np.diff(mesh)
     fractions = np.asarray(settings.off_collocation_fractions, dtype=float)
     off_sites = (mesh[:-1, None] + widths[:, None] * fractions).ravel()
-    off_element = np.repeat(np.arange(count), fractions.size)
-    off_coordinate = np.tile(fractions, count)
 
     node_values, node_first, node_second = spline.basis(mesh)
     mid_values, mid_first, mid_second = spline.basis(midpoints)
@@ -314,11 +312,15 @@ def build_spline_ocp(track, corridor, surface, mesh, spline, settings: QssSettin
     constraints: list = []
     lower: list = []
     upper: list = []
+    node_acceleration_upper_indices: list[int] = []
+    midpoint_acceleration_upper_indices: list[int] = []
+    off_site_acceleration_upper_indices: list[int] = []
 
     def add(expression, low, high):
         constraints.append(expression)
         lower.append(low)
         upper.append(high)
+        return len(constraints) - 1
 
     curvature_lower = float(surface.curvature[0])
     curvature_upper = float(surface.curvature[-1])
@@ -332,9 +334,10 @@ def build_spline_ocp(track, corridor, surface, mesh, spline, settings: QssSettin
         add(kappa, curvature_lower, curvature_upper)
         lower_acceleration, upper_acceleration, domain_speed = lookup(car_speed, kappa)
         add(car_acceleration - lower_acceleration, 0.0, math.inf)
-        add(upper_acceleration - car_acceleration, 0.0, math.inf)
+        acceleration_upper_index = add(upper_acceleration - car_acceleration, 0.0, math.inf)
         add(domain_speed - car_speed, 0.0, math.inf)
         add(1.0 - centreline_curvature * offset, fold_guard, math.inf)
+        return acceleration_upper_index
 
     def hermite_speed(index, coordinate):
         """Actual cubic HS speed at an interior element coordinate."""
@@ -407,13 +410,19 @@ def build_spline_ocp(track, corridor, surface, mesh, spline, settings: QssSettin
                 add(n_off[site], float(off_lower[site]), float(off_upper[site]))
             add(n_nodes[index + 1], float(corridor_lower[index + 1]),
                 float(corridor_upper[index + 1]))
-        limits(n_nodes[index], node0[1], node0[2], node0[3], speed[index],
-               acceleration[index], float(k0_nodes[index]))
-        limits(n_mids[index], middle[1], middle[2], middle[3], midpoint_speed,
-               mid_acceleration[index], float(k0_mids[index]))
-        limits(n_nodes[index + 1], node1[1], node1[2], node1[3],
-               speed[index + 1], acceleration[index + 1],
-               float(k0_nodes[index + 1]))
+        node_acceleration_upper_indices.append(limits(
+            n_nodes[index], node0[1], node0[2], node0[3], speed[index],
+            acceleration[index], float(k0_nodes[index]),
+        ))
+        midpoint_acceleration_upper_indices.append(limits(
+            n_mids[index], middle[1], middle[2], middle[3], midpoint_speed,
+            mid_acceleration[index], float(k0_mids[index]),
+        ))
+        node_acceleration_upper_indices.append(limits(
+            n_nodes[index + 1], node1[1], node1[2], node1[3],
+            speed[index + 1], acceleration[index + 1],
+            float(k0_nodes[index + 1]),
+        ))
         for local in range(fractions.size):
             site = index * fractions.size + local
             off_speed = hermite_speed(index, fractions[local])
@@ -421,9 +430,11 @@ def build_spline_ocp(track, corridor, surface, mesh, spline, settings: QssSettin
             # These are feasibility rows only: retain the single HS speed
             # defect above rather than enforcing additional polynomial dynamics.
             add(off_speed - float(settings.minimum_speed), 0.0, math.inf)
-            limits(n_off[site], off_geometry[site][1], off_geometry[site][2],
-                   off_geometry[site][3], off_speed, off_acceleration,
-                   float(k0_off[site]))
+            off_site_acceleration_upper_indices.append(limits(
+                n_off[site], off_geometry[site][1], off_geometry[site][2],
+                off_geometry[site][3], off_speed, off_acceleration,
+                float(k0_off[site]),
+            ))
             if cap_off is not None:
                 add(off_speed - float(cap_off[site]), -math.inf, 0.0)
         if cap_values is not None:
@@ -478,6 +489,18 @@ def build_spline_ocp(track, corridor, surface, mesh, spline, settings: QssSettin
         "control_count": control_count,
         "spline": spline,
         "reference": reference,
+        # Diagnostic-only mapping in element-major/fraction-major order. It
+        # preserves the NLP layout while allowing regressions to identify a
+        # particular physical off-site capability row.
+        "node_acceleration_upper_indices": np.asarray(
+            node_acceleration_upper_indices, dtype=int,
+        ),
+        "midpoint_acceleration_upper_indices": np.asarray(
+            midpoint_acceleration_upper_indices, dtype=int,
+        ),
+        "off_site_acceleration_upper_indices": np.asarray(
+            off_site_acceleration_upper_indices, dtype=int,
+        ),
     }
 
 

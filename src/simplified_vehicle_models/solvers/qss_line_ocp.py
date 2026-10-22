@@ -74,7 +74,9 @@ def _validate_inputs(track, corridor, surface, mesh, settings):
             raise ValueError("offset_control_spacing must be finite and positive")
     fractions = settings.off_collocation_fractions
     if (not isinstance(fractions, tuple) or not fractions
-            or any(not math.isfinite(value) or not 0.0 < value < 1.0
+            or any(not isinstance(value, (int, float, np.integer, np.floating))
+                   or isinstance(value, (bool, np.bool_))
+                   or not math.isfinite(value) or not 0.0 < value < 1.0
                    or math.isclose(value, 0.5, rel_tol=0.0, abs_tol=1.0e-12)
                    for value in fractions)
             or len(set(fractions)) != len(fractions)):

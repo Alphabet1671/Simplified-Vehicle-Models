@@ -359,6 +359,22 @@ class SplineTranscriptionTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "layout needs"):
             unpack(np.zeros(values.size - 1), count, controls)
 
+    def test_invalid_off_collocation_fractions_are_rejected(self) -> None:
+        from simplified_vehicle_models.solvers.qss_line_ocp import QssSettings, build_mesh
+        from simplified_vehicle_models.solvers.qss_spline_ocp import build_spline_ocp
+
+        track = self._track()
+        corridor = _zero_corridor(track, is_closed=True)
+        mesh = build_mesh(track, 10.0)
+        spline = OffsetSpline(track, control_spacing=20.0)
+        for fractions in (("quarter",), (0.25, 0.25), (0.5,), (), [0.25]):
+            with self.subTest(fractions=fractions):
+                with self.assertRaisesRegex(ValueError, "off_collocation_fractions"):
+                    build_spline_ocp(
+                        track, corridor, _surface(), mesh, spline,
+                        QssSettings(off_collocation_fractions=fractions),
+                    )
+
     def test_invalid_speed_cap_and_spline_are_rejected(self) -> None:
         from simplified_vehicle_models.solvers.qss_line_ocp import QssSettings, build_mesh
         from simplified_vehicle_models.solvers.qss_spline_ocp import build_spline_ocp
@@ -513,17 +529,25 @@ class SplineTranscriptionTest(unittest.TestCase):
             is_closed=False, lap_length=20.0,
         )
         mesh = np.array([0.0, 10.0, 20.0])
-        # Linear-table amax is 3 at all nodes and the first HS midpoint, but a
-        # narrow speed notch at the actual quarter-site speed is only 2.
+        # The actual Hermite basis gives v(.25)=10.45028409 while
+        # v(.5)=10.5340909.  The narrow table notch leaves all node and
+        # midpoint capability rows legal but makes only the quarter candidate
+        # fail (the global Bernstein a=3 box remains legal).
         surface = CapabilitySurface(
-            np.array([.5, 10., 10.5, 10.6, 11., 12., 30.]),
+            np.array([.5, 10., 10.43, 10.445, 10.455, 10.47, 11., 12., 30.]),
             np.array([-.3, .3]),
-            np.array([[3., 3.], [3., 3.], [2., 2.], [3., 3.],
-                      [3., 3.], [3., 3.], [3., 3.]]),
-            np.full((7, 2), -8.), np.full(2, 30.), "varying-quarter",
+            np.array([[3., 3.], [3., 3.], [3., 3.], [2., 2.], [2., 2.],
+                      [3., 3.], [3., 3.], [3., 3.], [3., 3.]]),
+            np.full((9, 2), -8.), np.full(2, 30.), "varying-quarter",
         )
         corridor = Corridor(distance, np.zeros_like(distance), np.zeros_like(distance),
                             "straight", False)
+        midpoint_only = build_spline_ocp(
+            track, corridor, surface, mesh,
+            OffsetSpline(track, control_spacing=20.0),
+            # Eighth sites are deliberately away from the quarter notch.
+            QssSettings(start_speed=10.0, off_collocation_fractions=(0.125, 0.875)),
+        )
         built = build_spline_ocp(
             track, corridor, surface, mesh,
             OffsetSpline(track, control_spacing=20.0),
@@ -534,14 +558,48 @@ class SplineTranscriptionTest(unittest.TestCase):
         values[controls:controls + nodes] = [10.0, 11.0, 12.0]
         values[controls + nodes:controls + 2 * nodes] = 3.0
         values[controls + 2 * nodes:] = 3.0
-        constraints = np.asarray(ca.Function(
+        evaluate_midpoint_only = ca.Function(
+            "midpoint_only_capability_constraints", [midpoint_only["nlp"]["x"]],
+            [midpoint_only["nlp"]["g"]],
+        )
+        midpoint_only_constraints = np.asarray(
+            evaluate_midpoint_only(values), dtype=float,
+        ).ravel()
+        evaluate_quarter = ca.Function(
             "quarter_capability_constraints", [built["nlp"]["x"]], [built["nlp"]["g"]],
-        )(values), dtype=float).ravel()
-        # At x=.25, actual HS v≈10.578 and actual quadratic a=3, so the
-        # interpolated amax is about 2.04.  This negative upper-capability row
-        # comes from the new quarter site; global Bernstein bounds still pass.
-        failed = (built["g_lower"] == 0.0) & (built["g_upper"] == np.inf)
-        self.assertTrue(np.any(constraints[failed] < -0.9))
+        )
+        constraints = np.asarray(evaluate_quarter(values), dtype=float).ravel()
+        # All acceleration-capability rows at nodes, midpoints, and the paired
+        # non-quarter sites pass. (The deliberately hand-built candidate need
+        # not satisfy the separate HS defect equality.) At x=.25, H gives
+        # v=10.45028409, a=3, and the table gives amax=2, so the stored physical
+        # upper-capability row for element 0 / fraction .25 is the only
+        # demonstrated acceleration-capability failure.
+        self.assertTrue(np.all(
+            midpoint_only_constraints[
+                midpoint_only["node_acceleration_upper_indices"]
+            ] >= -1.e-9,
+        ))
+        self.assertTrue(np.all(
+            midpoint_only_constraints[
+                midpoint_only["midpoint_acceleration_upper_indices"]
+            ] >= -1.e-9,
+        ))
+        self.assertTrue(np.all(
+            midpoint_only_constraints[
+                midpoint_only["off_site_acceleration_upper_indices"]
+            ] >= -1.e-9,
+        ))
+        self.assertTrue(np.all(
+            constraints[built["node_acceleration_upper_indices"]] >= -1.e-9,
+        ))
+        self.assertTrue(np.all(
+            constraints[built["midpoint_acceleration_upper_indices"]] >= -1.e-9,
+        ))
+        quarter_indices = built["off_site_acceleration_upper_indices"]
+        self.assertEqual(quarter_indices.size, mesh.size - 1)
+        self.assertLess(constraints[quarter_indices[0]], -0.9)
+        self.assertGreaterEqual(constraints[quarter_indices[1]], -1.e-9)
 
     def test_midpoint_speed_has_a_minimum_speed_lower_bound(self) -> None:
         import casadi as ca

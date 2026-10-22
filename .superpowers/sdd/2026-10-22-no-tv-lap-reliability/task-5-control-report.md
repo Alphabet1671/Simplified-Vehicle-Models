@@ -20,7 +20,8 @@ Warm starts and seed layout remain compatible because no decision block changed.
 
 - `node=[3, 3, -0.6]`, `am=[3, 3]` produces last-element `b1=4.8`; the new global Bernstein row has upper bound `3.0`, rejecting the historic continuous peak (~3.45) although node/midpoint controls are legal.
 - A straight 20 m, start-speed 10 m/s, `amax=3 m/s²` solve passed. On 257 dense stations, reconstructed quadratic acceleration remained within `[-8, 3] m/s²`; lap time agreed with `(sqrt(10² + 2*3*20)-10)/3` within 2 ms.
-- A varying legacy capability surface has `amax=3` at nodes/midpoint but a local `amax=2` notch near the actual quarter-site HS speed `10.578125 m/s`; the new 1/4-site physical capability row is negative for the candidate, while its global Bernstein box remains legal.
+- A varying legacy capability surface has `amax=3` at all node and midpoint HS speeds and at paired non-quarter (1/8, 7/8) sites, but has a local `amax=2` notch at the actual 1/4-site HS speed `10.45028409 m/s`. The regression identifies the exact stored 1/4-site physical upper-capability row as negative for the candidate while all node/midpoint and paired-site acceleration-capability rows pass; its global Bernstein box remains legal.
+- The off-collocation setting now rejects nonnumeric, duplicate, midpoint, empty, and non-tuple fractions with `ValueError` rather than leaking a numeric-type exception.
 - Dense speed-defect measurement on the straight launch was independent of the OCP rows: max `|dv/ds-a*metric/v|` was `1.2248e-5` at 8 elements and `1.7017e-6` at 16 elements. This is refinement evidence only; it was not made green by adding exact off-grid dynamics equalities or loosening the validator.
 
 ## Tests run

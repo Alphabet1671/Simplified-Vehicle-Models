@@ -24,11 +24,25 @@ class HighVoltageOperatingMapTests(unittest.TestCase):
         cls.addClassCleanup(cls.folder.cleanup)
         path = Path(cls.folder.name)
         xml = path / "motor-800v.xml"
-        source = (ROOT / "models/power-plants/amk_dd5_100c.xml").read_text()
+        source_xml = ROOT / "models/power-plants/amk_dd5_100c.xml"
+        source_model = load_model(source_xml)
+        cls.source_operating_map = next(
+            data.path for data in source_model.data if data.role == "operating-map"
+        )
+        # The copied XML lives in a temporary directory, so retain its source
+        # LUT link as an absolute resolved path rather than rebasing it there.
+        source = source_xml.read_text()
         xml.write_text(source.replace(
             'name="maximum_bus_voltage" value="600"',
             'name="maximum_bus_voltage" value="800"',
+        ).replace(
+            '../data/amk_dd5_100c_operating_map.npz',
+            cls.source_operating_map.as_posix(),
         ))
+        fixture_model = load_model(xml)
+        cls.fixture_operating_map = next(
+            data.path for data in fixture_model.data if data.role == "operating-map"
+        )
         artifact = path / "map-800v.npz"
         digest = generate(artifact, voltage_points=25, speed_points=129,
                           load_points=65, xml_path=xml,
@@ -36,6 +50,11 @@ class HighVoltageOperatingMapTests(unittest.TestCase):
         model = load_model(xml)
         model = replace(model, data=(DataReference("operating-map", artifact, "npz", digest),))
         cls.motor = compile_electric_motor(model)
+
+    def test_fixture_retains_resolved_source_operating_map(self):
+        """The temporary voltage variant must not rebase its inherited LUT path."""
+        self.assertTrue(self.source_operating_map.is_file())
+        self.assertEqual(self.fixture_operating_map, self.source_operating_map)
 
     def test_high_voltage_nodes_match_analytical_source_in_both_directions(self):
         p = self.motor

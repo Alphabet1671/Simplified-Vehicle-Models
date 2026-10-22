@@ -374,56 +374,63 @@ def validate_line(solution, corridor, surface, settings=None, *, vehicle=None,
                 np.asarray(trajectory.reference.source_station, dtype=float),
                 np.asarray(trajectory.spline.control_distance, dtype=float),
             )))
-            knot_index = np.searchsorted(geometry_knots, interior)
-            nearest_left = np.where(knot_index > 0, geometry_knots[np.maximum(knot_index-1, 0)], -np.inf)
-            nearest_right = np.where(knot_index < geometry_knots.size, geometry_knots[np.minimum(knot_index, geometry_knots.size-1)], np.inf)
-            contained_geometry = np.minimum(interior-nearest_left, nearest_right-interior) > 2.1*step
+            if geometry_knots.size:
+                knot_index = np.searchsorted(geometry_knots, interior)
+                nearest_left = np.where(knot_index > 0, geometry_knots[np.maximum(knot_index-1, 0)], -np.inf)
+                nearest_right = np.where(knot_index < geometry_knots.size, geometry_knots[np.minimum(knot_index, geometry_knots.size-1)], np.inf)
+                contained_geometry = np.minimum(interior-nearest_left, nearest_right-interior) > 2.1*step
+            else:
+                contained_geometry = np.ones(interior.shape, dtype=bool)
             geometry_stations = np.unique(interior[(interior > stations[0]+2*step) &
                 (interior < stations[-1]-2*step) & contained_geometry])
             if geometry_stations.size == 0:
-                raise ValueError("no contained geometry finite-difference stencils")
-            geometry = trajectory.evaluate(geometry_stations)
-            gl = trajectory.evaluate(geometry_stations-step)
-            gr = trajectory.evaluate(geometry_stations+step)
-            dx = (np.asarray(gr.north)-np.asarray(gl.north)) / (2*step)
-            dy = (np.asarray(gr.east)-np.asarray(gl.east)) / (2*step)
-            fd_heading = np.arctan2(dy, dx)
-            heading = np.asarray(geometry.heading)
-            # Local central tangent-heading derivative avoids nonuniform source/
-            # control-knot spacing in a global gradient calculation.
-            tangent_left = trajectory.evaluate(geometry_stations-step)
-            tangent_right = trajectory.evaluate(geometry_stations+step)
-            heading_left = np.arctan2(
-                np.asarray(tangent_left.east)-np.asarray(trajectory.evaluate(geometry_stations-2*step).east),
-                np.asarray(tangent_left.north)-np.asarray(trajectory.evaluate(geometry_stations-2*step).north),
-            )
-            heading_right = np.arctan2(
-                np.asarray(trajectory.evaluate(geometry_stations+2*step).east)-np.asarray(tangent_right.east),
-                np.asarray(trajectory.evaluate(geometry_stations+2*step).north)-np.asarray(tangent_right.north),
-            )
-            # Each chord heading is centred at s±1.5*step, so their spacing is 3*step.
-            g_geo = np.asarray(geometry.metric)
-            fd_curvature = np.angle(np.exp(1j*(heading_right-heading_left))) / (3*step*g_geo)
-            diagnostics.append(_diagnostic("xy_metric", np.abs(np.hypot(dx,dy)-g_geo),
-                                            geometry_stations, "m/m", tolerances["geometry_m"]))
-            diagnostics.append(_diagnostic("xy_heading", np.abs(np.angle(np.exp(1j*(fd_heading-heading)))),
-                                            geometry_stations, "rad", tolerances["heading_rad"]))
-            diagnostics.append(_diagnostic("xy_curvature", np.abs(fd_curvature-np.asarray(geometry.curvature)),
-                                            geometry_stations, "1/m", tolerances["curvature_per_m"]))
-            # Do not trust analytic heading_error_s: independently differentiate
-            # the exported heading-error field at off-grid stations.
-            heading_error_left = np.asarray(trajectory.evaluate(geometry_stations-step).heading_error)
-            heading_error_right = np.asarray(trajectory.evaluate(geometry_stations+step).heading_error)
-            fd_heading_rate = np.angle(np.exp(1j * (heading_error_right-heading_error_left))) / (2*step)
-            diagnostics.append(_diagnostic(
-                "xy_heading_rate", np.abs(fd_heading_rate-np.asarray(geometry.heading_error_s)),
-                geometry_stations, "1/m", tolerances["curvature_per_m"],
-            ))
-            if settings is not None:
+                diagnostics.append({"name": "xy_geometry", "passed": False,
+                                    "maximum_violation": None, "worst_station": None,
+                                    "unit": "", "tolerance": None,
+                                    "reason": "no contained geometry finite-difference stencils"})
+            else:
+                geometry = trajectory.evaluate(geometry_stations)
+                gl = trajectory.evaluate(geometry_stations-step)
+                gr = trajectory.evaluate(geometry_stations+step)
+                dx = (np.asarray(gr.north)-np.asarray(gl.north)) / (2*step)
+                dy = (np.asarray(gr.east)-np.asarray(gl.east)) / (2*step)
+                fd_heading = np.arctan2(dy, dx)
+                heading = np.asarray(geometry.heading)
+                # Local central tangent-heading derivative avoids nonuniform source/
+                # control-knot spacing in a global gradient calculation.
+                tangent_left = trajectory.evaluate(geometry_stations-step)
+                tangent_right = trajectory.evaluate(geometry_stations+step)
+                heading_left = np.arctan2(
+                    np.asarray(tangent_left.east)-np.asarray(trajectory.evaluate(geometry_stations-2*step).east),
+                    np.asarray(tangent_left.north)-np.asarray(trajectory.evaluate(geometry_stations-2*step).north),
+                )
+                heading_right = np.arctan2(
+                    np.asarray(trajectory.evaluate(geometry_stations+2*step).east)-np.asarray(tangent_right.east),
+                    np.asarray(trajectory.evaluate(geometry_stations+2*step).north)-np.asarray(tangent_right.north),
+                )
+                # Each chord heading is centred at s±1.5*step, so their spacing is 3*step.
+                g_geo = np.asarray(geometry.metric)
+                fd_curvature = np.angle(np.exp(1j*(heading_right-heading_left))) / (3*step*g_geo)
+                diagnostics.append(_diagnostic("xy_metric", np.abs(np.hypot(dx,dy)-g_geo),
+                                                geometry_stations, "m/m", tolerances["geometry_m"]))
+                diagnostics.append(_diagnostic("xy_heading", np.abs(np.angle(np.exp(1j*(fd_heading-heading)))),
+                                                geometry_stations, "rad", tolerances["heading_rad"]))
+                diagnostics.append(_diagnostic("xy_curvature", np.abs(fd_curvature-np.asarray(geometry.curvature)),
+                                                geometry_stations, "1/m", tolerances["curvature_per_m"]))
+                # Do not trust analytic heading_error_s: independently differentiate
+                # the exported heading-error field at off-grid stations.
+                heading_error_left = np.asarray(trajectory.evaluate(geometry_stations-step).heading_error)
+                heading_error_right = np.asarray(trajectory.evaluate(geometry_stations+step).heading_error)
+                fd_heading_rate = np.angle(np.exp(1j * (heading_error_right-heading_error_left))) / (2*step)
                 diagnostics.append(_diagnostic(
-                    "xy_heading_rate_limit", np.abs(fd_heading_rate)-settings.maximum_curvature_rate,
+                    "xy_heading_rate", np.abs(fd_heading_rate-np.asarray(geometry.heading_error_s)),
                     geometry_stations, "1/m", tolerances["curvature_per_m"],
                 ))
+                if settings is not None:
+                    diagnostics.append(_diagnostic(
+                        "xy_heading_rate_limit", np.abs(fd_heading_rate)-settings.maximum_curvature_rate,
+                        geometry_stations, "1/m", tolerances["curvature_per_m"],
+                    ))
         else:
             diagnostics.append({"name": "xy_geometry", "passed": False,
                                 "maximum_violation": None, "worst_station": None,
@@ -485,5 +492,5 @@ def validate_line(solution, corridor, surface, settings=None, *, vehicle=None,
             model_feasible = True
         except Exception: model_feasible = False
     if model_feasible is False: dense_ok = False
-    geometry_ok = all(item["passed"] for item in final["diagnostics"] if item["name"] in {"xy_metric", "xy_heading", "xy_curvature", "xy_heading_rate", "xy_heading_rate_limit", "fold"})
+    geometry_ok = all(item["passed"] for item in final["diagnostics"] if item["name"] in {"xy_geometry", "xy_metric", "xy_heading", "xy_curvature", "xy_heading_rate", "xy_heading_rate_limit", "fold"})
     return {"checks":{"geometry_consistency":geometry_ok,"dense_feasibility":dense_ok}, "sampling_converged":converged, "samples_per_element":samples_per_element,"refinements_used":level+1,"sample_count":int(final["stations"].size),"diagnostics":final["diagnostics"],"sampling_history":history,"model_feasible":model_feasible,"surrogate_validated":dense_ok and model_feasible is None,"physically_validated":False,"missing_evidence":[],"tolerances":tolerances}

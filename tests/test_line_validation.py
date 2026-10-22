@@ -118,6 +118,65 @@ class LineValidationTest(unittest.TestCase):
         uncertainty = next(item for item in report["diagnostics"] if item["name"] == "derivative_uncertainty")
         self.assertFalse(uncertainty["passed"])
 
+    def test_no_contained_geometry_probes_fails_closed(self):
+        solution, corridor, surface = _fixture()
+        source = solution.trajectory
+
+        class EveryStationIsGeometryKnot:
+            def __init__(self, source):
+                self.reference = SimpleNamespace(source_station=np.linspace(0., 10., 100001))
+                self.spline = source.spline
+                self.station_map = source.station_map
+                self.source = source
+
+            def evaluate(self, station):
+                return self.source.evaluate(station)
+
+        solution.trajectory = EveryStationIsGeometryKnot(source)
+        report = validate_line(solution, corridor, surface, samples_per_element=4)
+        geometry = next(item for item in report["diagnostics"] if item["name"] == "xy_geometry")
+        self.assertFalse(geometry["passed"])
+        self.assertEqual(geometry["reason"], "no contained geometry finite-difference stencils")
+        self.assertFalse(report["checks"]["geometry_consistency"])
+        self.assertFalse(report["checks"]["dense_feasibility"])
+
+    def test_empty_geometry_knots_still_uses_contained_probes(self):
+        solution, corridor, surface = _fixture()
+        source = solution.trajectory
+
+        class EmptyGeometryKnots:
+            def __init__(self, source):
+                self.reference = SimpleNamespace(source_station=np.array([]))
+                self.spline = SimpleNamespace(control_distance=np.array([]))
+                self.station_map = source.station_map
+                self.source = source
+
+            def evaluate(self, station):
+                return self.source.evaluate(station)
+
+        solution.trajectory = EmptyGeometryKnots(source)
+        report = validate_line(solution, corridor, surface, samples_per_element=4)
+        self.assertNotIn("xy_geometry", {item["name"] for item in report["diagnostics"]})
+        self.assertTrue(report["checks"]["geometry_consistency"])
+        self.assertTrue(report["checks"]["dense_feasibility"])
+
+    def test_adaptive_span_stencils_are_batched_once(self):
+        solution, _, _ = _fixture()
+        source = solution.state_evaluator
+        class CountingState:
+            def __init__(self): self.calls = 0
+            def evaluate(self, station):
+                self.calls += 1
+                return source.evaluate(station)
+        counter = CountingState()
+        # Nonuniform cells and stations immediately next to a knot force
+        # span-adjusted one-sided stencils; all are still one vector query.
+        mesh = np.array([0., .03, 3., 10.])
+        stations = np.array([0., .03-1.e-15, .03+1.e-15, .04, 1., 3., 10.])
+        from simplified_vehicle_models.solvers.line_validation import _independent_speed_derivatives
+        _independent_speed_derivatives(counter, stations, mesh, .001)
+        self.assertEqual(counter.calls, 1)
+
     def test_speed_fd_sampling_batches_actual_evaluator_queries(self):
         solution, corridor, surface = _fixture()
         source = solution.state_evaluator
@@ -173,6 +232,25 @@ class LineValidationTest(unittest.TestCase):
         uncertainty = next(item for item in report["diagnostics"] if item["name"] == "derivative_uncertainty")
         self.assertFalse(uncertainty["passed"])
         self.assertFalse(report["checks"]["dense_feasibility"])
+
+    def test_optional_archived_gl_energy_evidence_retains_capability_failure(self):
+        # These immutable handoff artifacts are deliberately optional in a
+        # clean checkout.  When present, their independently written dense
+        # report documents the anti-false-green case: resolved actual FD
+        # dynamics yet a capability excursion above the unchanged 1e-6 gate.
+        import json
+        root = Path(__file__).resolve().parents[1] / "runs/no_tv_reliability/gl16_energy_accel_states_20261022"
+        reports = sorted(root.glob("fd_accuracy_validation_*.json"))
+        if not reports:
+            self.skipTest("optional archived GL-energy validation artifacts absent")
+        for path in reports:
+            evidence = json.loads(path.read_text())
+            self.assertTrue(evidence["checks"]["geometry_consistency"])
+            self.assertFalse(evidence["checks"]["dense_feasibility"])
+            by_name = {item["name"]: item for item in evidence["diagnostics"]}
+            self.assertTrue(by_name["dynamics_defect"]["passed"])
+            self.assertTrue(by_name["derivative_uncertainty"]["passed"])
+            self.assertGreater(by_name["acceleration_max"]["maximum_violation"], 1.e-6)
 
     def test_constant_speed_analytic_fixture_passes_dense_checks(self):
         solution, corridor, surface = _fixture()

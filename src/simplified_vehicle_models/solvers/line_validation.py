@@ -179,75 +179,58 @@ def _richardson_derivative(values: Callable[[float], float], station: float, ste
 
 def _independent_speed_derivatives(evaluator, stations: np.ndarray, mesh: np.ndarray,
                                    base_step: float) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Mesh-aware FD derivatives from actual evaluator speeds.
+    """Mesh-aware FD derivatives from independently evaluated speed values.
 
-    At an interior mesh knot this emits a left and right record at the same
-    station, preserving each physical residual rather than averaging a defect
-    away.  Elsewhere it keeps a central stencil inside one element, falling
-    back to its element's one-sided stencil when a probe is too close to a
-    knot.  Insufficient span or unresolved convergence is represented by a
-    false stability flag so the caller fails closed.
+    All selected adaptive stencil points are deduplicated and evaluated in one
+    vector call.  Knots are canonicalized to their mesh coordinate before the
+    stencil is selected, so a nearly identical station cannot accidentally use
+    a cross-knot central difference.
     """
     mesh = np.asarray(mesh, dtype=float)
     if mesh.ndim != 1 or mesh.size < 2 or not np.all(np.isfinite(mesh)) or np.any(np.diff(mesh) <= 0):
         raise ValueError("solution must provide a finite strictly increasing mesh")
-    output_s, derivatives, uncertainties, stable = [], [], [], []
-
-    cache: dict[float, float] = {}
-    # Most points use the common h/h2/h4 stencil.  Warm those actual values in
-    # one vector call; local-span stencils below retain the scalar cache
-    # fallback without turning a dense validation into O(samples) full state
-    # reconstructions.
-    offsets = base_step * np.asarray((-2., -1., -.5, -.25, 0., .25, .5, 1., 2.))
-    candidates = (np.asarray(stations, dtype=float)[:, None] + offsets).ravel()
-    candidates = np.unique(candidates[(candidates >= mesh[0]) & (candidates <= mesh[-1])])
-    try:
-        prefetched = np.asarray(evaluator.evaluate(candidates)["speed"], dtype=float).reshape(-1)
-        if prefetched.size == candidates.size and np.all(np.isfinite(prefetched)):
-            cache.update(zip(map(float, candidates), map(float, prefetched)))
-    except (KeyError, TypeError, ValueError, FloatingPointError):
-        pass
-
-    def speed_at(value: float) -> float:
-        if value not in cache:
-            result = evaluator.evaluate(np.asarray([value], dtype=float))
-            result = np.asarray(result["speed"], dtype=float).reshape(-1)
-            if result.size != 1 or not np.isfinite(result[0]):
-                raise ValueError("evaluator returned non-finite speed")
-            cache[value] = float(result[0])
-        return cache[value]
-
-    for station in np.asarray(stations, dtype=float):
-        matches = np.flatnonzero(np.isclose(mesh, station, rtol=0.0, atol=32*np.finfo(float).eps*max(1.0, abs(station))))
-        if matches.size:
-            node = int(matches[0])
+    records: list[tuple[float, float, str | None, bool]] = []
+    for requested in np.asarray(stations, dtype=float):
+        close = np.flatnonzero(np.isclose(mesh, requested, rtol=0.0,
+                                          atol=32*np.finfo(float).eps*max(1.0, abs(requested))))
+        station = float(mesh[int(close[0])]) if close.size else float(requested)
+        if close.size:
+            node = int(close[0])
             sides = (("right", mesh[node+1]-station),) if node == 0 else (("left", station-mesh[node-1]),) if node == mesh.size-1 else (("left", station-mesh[node-1]), ("right", mesh[node+1]-station))
-            for side, span in sides:
-                step = min(base_step, 0.49 * span)
-                if not np.isfinite(step) or step <= 0.0:
-                    derivative, uncertainty, resolved = np.nan, np.inf, False
-                else:
-                    derivative, uncertainty, resolved = _richardson_derivative(speed_at, float(station), step, side)
-                output_s.append(station); derivatives.append(derivative)
-                uncertainties.append(uncertainty); stable.append(resolved)
-            continue
-        element = int(np.searchsorted(mesh, station, side="right") - 1)
-        if element < 0 or element >= mesh.size-1:
-            output_s.append(station); derivatives.append(np.nan); uncertainties.append(np.inf); stable.append(False)
-            continue
-        left, right = station-mesh[element], mesh[element+1]-station
-        # A central stencil is preferred only when it can use the target step
-        # without grazing a knot.  Otherwise differentiate from the larger
-        # within-element side rather than crossing a C1-only join.
-        if min(left, right) >= 2.1 * base_step:
-            side, span = None, min(left, right)
         else:
-            side, span = ("right", right) if right >= left else ("left", left)
-        step = min(base_step, 0.49 * span)
-        if not np.isfinite(step) or step <= 0.0:
-            derivative, uncertainty, resolved = np.nan, np.inf, False
-        else:
-            derivative, uncertainty, resolved = _richardson_derivative(speed_at, float(station), step, side)
+            element = int(np.searchsorted(mesh, station, side="right") - 1)
+            if element < 0 or element >= mesh.size-1:
+                records.append((station, np.nan, None, False)); continue
+            left, right = station-mesh[element], mesh[element+1]-station
+            sides = ((None, min(left, right)),) if min(left, right) >= 2.1*base_step else ((("right", right) if right >= left else ("left", left)),)
+        for side, span in sides:
+            step = min(base_step, .49*span)
+            records.append((station, float(step), side, bool(np.isfinite(step) and step > 0.0)))
+
+    points: list[float] = []
+    for station, step, side, valid in records:
+        if not valid: continue
+        points.append(station)
+        for h in (step, step/2.0, step/4.0):
+            if side is None: points.extend((station-h, station+h))
+            elif side == "left": points.extend((station, station-h, station-2.0*h))
+            else: points.extend((station, station+h, station+2.0*h))
+    points_array = np.unique(np.asarray(points, dtype=float))
+    try:
+        values = np.asarray(evaluator.evaluate(points_array)["speed"], dtype=float).reshape(-1)
+    except (KeyError, TypeError, ValueError, FloatingPointError) as error:
+        raise ValueError("unable to independently sample evaluator speed") from error
+    if values.size != points_array.size or not np.all(np.isfinite(values)):
+        raise ValueError("evaluator returned non-finite speed samples")
+    cache = dict(zip(map(float, points_array), map(float, values)))
+    def speed_at(value: float) -> float:
+        try: return cache[value]
+        except KeyError as error: raise ValueError("missing planned FD sample") from error
+
+    output_s, derivatives, uncertainties, stable = [], [], [], []
+    for station, step, side, valid in records:
+        if valid: derivative, uncertainty, resolved = _richardson_derivative(speed_at, station, step, side)
+        else: derivative, uncertainty, resolved = np.nan, np.inf, False
         output_s.append(station); derivatives.append(derivative)
         uncertainties.append(uncertainty); stable.append(resolved)
     return (np.asarray(output_s), np.asarray(derivatives), np.asarray(uncertainties),
@@ -284,6 +267,20 @@ def validate_line(solution, corridor, surface, settings=None, *, vehicle=None,
     if samples_per_element < 4 or maximum_refinements < 1:
         raise ValueError("samples_per_element must be >= 4 and maximum_refinements >= 1")
     history, final, converged = [], None, False
+    try:
+        mesh_for_sampling = np.asarray(getattr(solution, "distance", ()), dtype=float)
+        if mesh_for_sampling.ndim != 1 or mesh_for_sampling.size < 2 or np.any(~np.isfinite(mesh_for_sampling)) or np.any(np.diff(mesh_for_sampling) <= 0):
+            raise ValueError("solution must provide a finite strictly increasing mesh")
+    except (TypeError, ValueError) as error:
+        failed = {"name": "derivative_uncertainty", "passed": False,
+                  "maximum_violation": None, "worst_station": None,
+                  "unit": "(m/s)/m", "tolerance": tolerances["dynamics_mps_per_m"],
+                  "reason": str(error), "stability_resolved": False}
+        return {"checks": {"geometry_consistency": False, "dense_feasibility": False},
+                "sampling_converged": False, "samples_per_element": samples_per_element,
+                "refinements_used": 0, "sample_count": 0, "diagnostics": [failed],
+                "sampling_history": [], "model_feasible": None, "surrogate_validated": False,
+                "physically_validated": False, "missing_evidence": [], "tolerances": tolerances}
     for level in range(maximum_refinements):
         stations = _sample_stations(solution, trajectory, corridor,
                                     samples_per_element * 2**level)
@@ -356,8 +353,9 @@ def validate_line(solution, corridor, surface, settings=None, *, vehicle=None,
             implied_uncertainty_unit["passed"] = bool(np.all(derivative_stable) and implied_uncertainty_unit["passed"])
             implied_uncertainty_unit["stability_resolved"] = bool(np.all(derivative_stable))
             diagnostics.append(implied_uncertainty_unit)
-            # Sampling error is an evidence budget, not a tolerance waiver:
-            # require the conservative residual-plus-uncertainty upper bound.
+            # This is an empirical residual-plus-error indicator, not a
+            # certified truncation bound.  It still consumes the evidence
+            # budget and never waives a physical residual.
             diagnostics.append(_diagnostic(
                 "dynamics_defect_upper_bound", dynamics + derivative_uncertainty,
                 interior, "(m/s)/m", tolerances["dynamics_mps_per_m"],
@@ -369,8 +367,21 @@ def validate_line(solution, corridor, surface, settings=None, *, vehicle=None,
             # Geometry stencils still need two centred spans; endpoint speed
             # derivatives above are valid one-sided evidence but cannot feed
             # these separate geometry checks.
-            geometry_stations = interior[(interior > stations[0]+2*step) &
-                                         (interior < stations[-1]-2*step)]
+            # Geometry source/control joins can have insufficient smoothness
+            # for central curvature/rate stencils.  Only FD-check contained
+            # stencils; analytic physical constraints remain sampled everywhere.
+            geometry_knots = np.unique(np.concatenate((
+                np.asarray(trajectory.reference.source_station, dtype=float),
+                np.asarray(trajectory.spline.control_distance, dtype=float),
+            )))
+            knot_index = np.searchsorted(geometry_knots, interior)
+            nearest_left = np.where(knot_index > 0, geometry_knots[np.maximum(knot_index-1, 0)], -np.inf)
+            nearest_right = np.where(knot_index < geometry_knots.size, geometry_knots[np.minimum(knot_index, geometry_knots.size-1)], np.inf)
+            contained_geometry = np.minimum(interior-nearest_left, nearest_right-interior) > 2.1*step
+            geometry_stations = np.unique(interior[(interior > stations[0]+2*step) &
+                (interior < stations[-1]-2*step) & contained_geometry])
+            if geometry_stations.size == 0:
+                raise ValueError("no contained geometry finite-difference stencils")
             geometry = trajectory.evaluate(geometry_stations)
             gl = trajectory.evaluate(geometry_stations-step)
             gr = trajectory.evaluate(geometry_stations+step)

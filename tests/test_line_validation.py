@@ -110,6 +110,14 @@ class LineValidationTest(unittest.TestCase):
         implied = next(item for item in report["diagnostics"] if item["name"] == "implied_acceleration")
         self.assertLess(implied["maximum_violation"], 1.e-6)
 
+    def test_malformed_state_mesh_fails_closed(self):
+        solution, corridor, surface = _fixture()
+        solution.distance = np.array([0., 5., 5., 10.])
+        report = validate_line(solution, corridor, surface)
+        self.assertFalse(report["checks"]["dense_feasibility"])
+        uncertainty = next(item for item in report["diagnostics"] if item["name"] == "derivative_uncertainty")
+        self.assertFalse(uncertainty["passed"])
+
     def test_speed_fd_sampling_batches_actual_evaluator_queries(self):
         solution, corridor, surface = _fixture()
         source = solution.state_evaluator

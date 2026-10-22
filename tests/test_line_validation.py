@@ -45,7 +45,8 @@ def _fixture(coefficients=None, *, state=None, corridor_width=1.0):
         trajectory, mesh, np.full(3, 10.), np.zeros(3), np.zeros(2),
     )
     solution = SimpleNamespace(distance=mesh, trajectory=trajectory,
-                               state_evaluator=evaluator, status="Solve_Succeeded")
+                               state_evaluator=evaluator, status="Solve_Succeeded",
+                               lap_time=2.0)
     return solution, corridor, surface
 
 

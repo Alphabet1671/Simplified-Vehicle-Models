@@ -736,7 +736,7 @@ class RunnerOrchestrationTest(unittest.TestCase):
                 "mesh_convergence", "replay_agreement", "geometry_consistency",
                 "dense_feasibility", "basis_convergence", "matched_baseline",
             })
-            self.assertEqual(summary["validation_status"], "incomplete")
+            self.assertEqual(summary["validation_status"], "solver_failed")
             self.assertFalse(summary["accepted"])
             self.assertFalse(summary["checks"]["corridor_containment"])
             self.assertEqual(summary["stages"][0]["spacing_m"], 5.0)

@@ -7,8 +7,9 @@ continuous-feasibility certificate.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
+
+from simplified_vehicle_models.formulations.point_mass import evaluate_equilibrium
 
 import numpy as np
 
@@ -26,6 +27,7 @@ DEFAULT_TOLERANCES = {
     "speed_mps": 1.0e-8,
     "acceleration_mps2": 1.0e-6,
     "dynamics_mps_per_m": 1.0e-6,
+    "curvature_per_m": 2.0e-5,
     "time_relative": 1.0e-5,
     "sampling_stability": 1.0e-7,
 }
@@ -139,107 +141,70 @@ def _sample_stations(solution, trajectory, corridor, samples_per_element: int) -
 
 
 def validate_line(solution, corridor, surface, settings=None, *, vehicle=None,
+                  equilibrium_callback: Callable[[float, float, float], Any] | None = None,
                   samples_per_element: int = 8, maximum_refinements: int = 4,
                   tolerance: Mapping[str, float] | None = None) -> dict[str, Any]:
-    """Independently inspect a spline solution's dense geometry/state/control.
+    """Independently inspect exported analytic geometry and reconstructed state.
 
-    ``vehicle`` may expose ``evaluate_equilibrium(speed, curvature, acceleration)``.
-    Its successful evaluation establishes only *model* feasibility, never
-    empirical physical validation.  Missing evaluator/trajectory returns an
-    incomplete report; no nodal reconstruction is substituted.
+    A callback must return ``False`` or an object with ``is_feasible=False`` to
+    fail model feasibility.  With a point-mass vehicle the repository's original
+    ``evaluate_equilibrium`` is used directly; no capability-table result is
+    relabelled as live-model validation.
     """
-    tolerances = dict(DEFAULT_TOLERANCES)
-    if tolerance:
-        tolerances.update(tolerance)
-    trajectory = getattr(solution, "trajectory", None)
-    evaluator = getattr(solution, "state_evaluator", None)
-    missing = []
-    if trajectory is None:
-        missing.append("authoritative trajectory")
-    if evaluator is None or not callable(getattr(evaluator, "evaluate", None)):
-        missing.append("dense state evaluator")
+    tolerances = dict(DEFAULT_TOLERANCES); tolerances.update(tolerance or {})
+    trajectory, evaluator = getattr(solution, "trajectory", None), getattr(solution, "state_evaluator", None)
+    missing = (["authoritative trajectory"] if trajectory is None else []) + (["dense state evaluator"] if evaluator is None or not callable(getattr(evaluator, "evaluate", None)) else [])
     if missing:
-        return {"checks": {"geometry_consistency": None, "dense_feasibility": None},
-                "sampling_converged": False, "missing_evidence": missing,
-                "diagnostics": [], "model_feasible": None,
-                "physically_validated": False, "tolerances": tolerances}
+        return {"checks": {"geometry_consistency": None, "dense_feasibility": None}, "sampling_converged": False, "missing_evidence": missing, "diagnostics": [], "model_feasible": None, "physically_validated": False, "tolerances": tolerances}
     if samples_per_element < 4 or maximum_refinements < 1:
         raise ValueError("samples_per_element must be >= 4 and maximum_refinements >= 1")
-
-    prior = None
-    final: dict[str, Any] | None = None
-    converged = False
+    history, final = [], None
     for level in range(maximum_refinements):
-        stations = _sample_stations(solution, trajectory, corridor, samples_per_element * (2 ** level))
-        geometry = trajectory.evaluate(stations)
-        state = evaluator.evaluate(stations)
-        offset, metric = np.asarray(geometry.offset), np.asarray(geometry.metric)
-        curvature = np.asarray(geometry.curvature)
-        speed, acceleration = np.asarray(state["speed"]), np.asarray(state["acceleration"])
-        speed_rate, rhs = np.asarray(state["speed_rate"]), np.asarray(state["rhs_speed_rate"])
-        diagnostics: list[dict[str, Any]] = []
-        lower = _interpolate(stations, corridor.distance, corridor.minimum, closed=bool(corridor.is_closed))
-        upper = _interpolate(stations, corridor.distance, corridor.maximum, closed=bool(corridor.is_closed))
-        diagnostics.append(_diagnostic("corridor", np.maximum(lower-offset, offset-upper), stations, "m", tolerances["corridor_m"]))
-        diagnostics.append(_diagnostic("fold", -np.asarray(geometry.fold_factor), stations, "1", tolerances["fold"]))
-        diagnostics.append(_diagnostic("speed_domain", np.where(speed > 0.0, 0.0, 1.0), stations, "m/s", tolerances["speed_mps"]))
-        diagnostics.append(_diagnostic("dynamics_defect", np.abs(speed_rate-rhs), stations, "(m/s)/m", tolerances["dynamics_mps_per_m"]))
-        try:
-            amax = _bilinear(surface, speed, curvature, "acceleration_max")
-            amin = _bilinear(surface, speed, curvature, "acceleration_min")
-            ceiling = _interpolate(curvature, surface.curvature, surface.speed_ceiling, closed=False)
-            diagnostics.extend((
-                _diagnostic("acceleration_max", acceleration-amax, stations, "m/s^2", tolerances["acceleration_mps2"]),
-                _diagnostic("acceleration_min", amin-acceleration, stations, "m/s^2", tolerances["acceleration_mps2"]),
-                _diagnostic("speed_ceiling", speed-ceiling, stations, "m/s", tolerances["speed_mps"]),
-            ))
-        except (AttributeError, ValueError) as error:
-            diagnostics.append({"name": "capability_domain", "passed": False, "maximum_violation": None,
-                                "worst_station": None, "unit": "", "tolerance": None, "reason": str(error)})
-        # Finite-difference XY tangent agrees with analytic trajectory heading/metric.
-        span = float(stations[-1] - stations[0]); step = max(1e-6, min(1e-3, span * 1e-5))
-        interior = stations[(stations > stations[0] + step) & (stations < stations[-1] - step)]
+        stations = _sample_stations(solution, trajectory, corridor, samples_per_element * 2**level)
+        geo, state = trajectory.evaluate(stations), evaluator.evaluate(stations)
+        offset, metric, curvature = map(np.asarray, (geo.offset, geo.metric, geo.curvature))
+        speed, acceleration = map(np.asarray, (state["speed"], state["acceleration"]))
+        diagnostics = []
+        lower = _interpolate(stations, corridor.distance, corridor.minimum, closed=bool(corridor.is_closed)); upper = _interpolate(stations, corridor.distance, corridor.maximum, closed=bool(corridor.is_closed))
+        diagnostics.extend((_diagnostic("corridor", np.maximum(lower-offset, offset-upper), stations, "m", tolerances["corridor_m"]), _diagnostic("fold", float(getattr(settings, "fold_guard", 0.0))-np.asarray(geo.fold_factor), stations, "1", tolerances["fold"]), _diagnostic("speed_domain", np.where(speed >= max(float(getattr(settings, "minimum_speed", 0.0)), np.finfo(float).eps), 0.0, 1.0), stations, "m/s", tolerances["speed_mps"])))
+        if settings is not None:
+            diagnostics.extend((_diagnostic("heading_limit", np.abs(np.asarray(geo.heading_error))-settings.maximum_heading, stations, "rad", tolerances["heading_rad"]), _diagnostic("heading_rate_limit", np.abs(np.asarray(geo.heading_error_s))-settings.maximum_curvature_rate, stations, "1/m", tolerances["curvature_per_m"])))
+        # Differentiate speed values independently.  Never trust evaluator RHS.
+        step = max(1e-6, min(1e-3, float(stations[-1]-stations[0])*1e-5)); interior = stations[(stations > stations[0]+step) & (stations < stations[-1]-step)]
         if interior.size:
-            left, right = trajectory.evaluate(interior-step), trajectory.evaluate(interior+step)
-            dx = (np.asarray(right.north)-np.asarray(left.north))/(2*step)
-            dy = (np.asarray(right.east)-np.asarray(left.east))/(2*step)
-            fd_metric = np.hypot(dx, dy)
-            fd_heading = np.arctan2(dy, dx)
-            analytic_heading = np.asarray(trajectory.evaluate(interior).heading)
-            heading_error = np.abs(np.angle(np.exp(1j*(fd_heading-analytic_heading))))
-            diagnostics.extend((
-                _diagnostic("xy_metric", np.abs(fd_metric-np.asarray(trajectory.evaluate(interior).metric)), interior, "m/m", tolerances["geometry_m"]),
-                _diagnostic("xy_heading", heading_error, interior, "rad", tolerances["heading_rad"]),
-            ))
-        else:
-            diagnostics.append({"name": "xy_geometry", "passed": False, "maximum_violation": None,
-                                "worst_station": None, "unit": "", "tolerance": None})
-        maximum = max((item["maximum_violation"] for item in diagnostics if item["maximum_violation"] is not None), default=np.inf)
-        final = {"stations": stations, "diagnostics": diagnostics, "maximum": maximum}
-        if prior is not None and abs(maximum-prior) <= tolerances["sampling_stability"]:
-            converged = True
-            break
-        prior = maximum
+            left, right = evaluator.evaluate(interior-step), evaluator.evaluate(interior+step)
+            dv = (np.asarray(right["speed"])-np.asarray(left["speed"]))/ (2*step)
+            g = np.asarray(trajectory.evaluate(interior).metric); a = np.asarray(evaluator.evaluate(interior)["acceleration"]); v = np.asarray(evaluator.evaluate(interior)["speed"])
+            diagnostics.extend((_diagnostic("dynamics_defect", np.abs(dv-a*g/v), interior, "(m/s)/m", tolerances["dynamics_mps_per_m"]), _diagnostic("implied_acceleration", np.abs(v*dv/g-a), interior, "m/s^2", tolerances["acceleration_mps2"])))
+            gl, gr = trajectory.evaluate(interior-step), trajectory.evaluate(interior+step)
+            dx, dy = (np.asarray(gr.north)-np.asarray(gl.north))/(2*step), (np.asarray(gr.east)-np.asarray(gl.east))/(2*step)
+            fd_heading = np.arctan2(dy, dx); heading = np.asarray(trajectory.evaluate(interior).heading)
+            fd_curvature = np.gradient(np.unwrap(fd_heading), interior) / np.asarray(trajectory.evaluate(interior).metric)
+            diagnostics.extend((_diagnostic("xy_metric", np.abs(np.hypot(dx,dy)-np.asarray(trajectory.evaluate(interior).metric)), interior, "m/m", tolerances["geometry_m"]), _diagnostic("xy_heading", np.abs(np.angle(np.exp(1j*(fd_heading-heading)))), interior, "rad", tolerances["heading_rad"]), _diagnostic("xy_curvature", np.abs(fd_curvature-np.asarray(trajectory.evaluate(interior).curvature)), interior, "1/m", tolerances["curvature_per_m"])))
+        else: diagnostics.append({"name":"xy_geometry", "passed":False, "maximum_violation":None, "worst_station":None, "unit":"", "tolerance":None})
+        try:
+            amax, amin = _bilinear(surface,speed,curvature,"acceleration_max"), _bilinear(surface,speed,curvature,"acceleration_min"); ceiling = _interpolate(curvature,surface.curvature,surface.speed_ceiling,closed=False)
+            diagnostics.extend((_diagnostic("acceleration_max", acceleration-amax, stations,"m/s^2",tolerances["acceleration_mps2"]), _diagnostic("acceleration_min",amin-acceleration,stations,"m/s^2",tolerances["acceleration_mps2"]), _diagnostic("speed_ceiling",speed-ceiling,stations,"m/s",tolerances["speed_mps"])))
+        except (AttributeError, ValueError) as error: diagnostics.append({"name":"capability_domain","passed":False,"maximum_violation":None,"worst_station":None,"unit":"","tolerance":None,"reason":str(error)})
+        # Independent trapezoid integral of physical dt/ds = metric / speed.
+        time_value = float(np.sum(np.diff(stations) * ((metric/speed)[:-1] + (metric/speed)[1:]) / 2.0)) if np.all(speed > 0) else np.inf
+        diagnostics.append(_diagnostic("lap_time", np.full(stations.shape, abs(time_value-float(solution.lap_time))/max(1.0,abs(float(solution.lap_time))),), stations, "relative", tolerances["time_relative"]))
+        final = {"stations":stations, "diagnostics":diagnostics, "time":time_value}; history.append({item["name"]:item["maximum_violation"] for item in diagnostics})
+        if len(history) > 1 and all((history[-1].get(name) is not None and history[-2].get(name) is not None and abs(history[-1][name]-history[-2][name]) <= tolerances["sampling_stability"]) for name in history[-1]): break
     assert final is not None
+    converged = len(history) > 1 and level < maximum_refinements
     dense_ok = converged and all(item["passed"] for item in final["diagnostics"])
+    callback = equilibrium_callback
+    if callback is None and vehicle is not None:
+        callback = lambda v,k,a: evaluate_equilibrium(vehicle, v, k, a)
     model_feasible = None
-    if vehicle is not None:
-        callback = getattr(vehicle, "evaluate_equilibrium", None)
-        if not callable(callback):
-            model_feasible = False
-        else:
-            try:
-                for v, k, a in zip(speed, curvature, acceleration):
-                    result = callback(float(v), float(k), float(a))
-                    if result is False:
-                        raise ValueError("evaluate_equilibrium returned false")
-                model_feasible = True
-            except Exception:
-                model_feasible = False
-    geometry_ok = all(item["passed"] for item in final["diagnostics"] if item["name"] in {"xy_metric", "xy_heading", "fold"})
-    return {"checks": {"geometry_consistency": geometry_ok, "dense_feasibility": dense_ok},
-            "sampling_converged": converged, "samples_per_element": samples_per_element,
-            "refinements_used": level + 1, "sample_count": int(final["stations"].size),
-            "diagnostics": final["diagnostics"], "model_feasible": model_feasible,
-            "surrogate_validated": dense_ok and model_feasible is None,
-            "physically_validated": False, "missing_evidence": [], "tolerances": tolerances}
+    if callback is not None:
+        try:
+            for v,k,a in zip(speed,curvature,acceleration):
+                result = callback(float(v),float(k),float(a))
+                if result is False or getattr(result, "is_feasible", True) is False: raise ValueError("live equilibrium infeasible")
+            model_feasible = True
+        except Exception: model_feasible = False
+    if model_feasible is False: dense_ok = False
+    geometry_ok = all(item["passed"] for item in final["diagnostics"] if item["name"] in {"xy_metric","xy_heading","xy_curvature","fold"})
+    return {"checks":{"geometry_consistency":geometry_ok,"dense_feasibility":dense_ok}, "sampling_converged":converged, "samples_per_element":samples_per_element,"refinements_used":level+1,"sample_count":int(final["stations"].size),"diagnostics":final["diagnostics"],"sampling_history":history,"model_feasible":model_feasible,"surrogate_validated":dense_ok and model_feasible is None,"physically_validated":False,"missing_evidence":[],"tolerances":tolerances}

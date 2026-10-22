@@ -991,7 +991,7 @@ def run(args) -> dict:
     # Preserve legacy gates as evidence, but strict acceptance additionally
     # requires independently-dense geometry/state evidence and all mandated
     # refinement/baseline/replay evidence.  Never infer unavailable evidence.
-    solver_succeeded = str(getattr(finest, "status", "Solve_Succeeded")) in {
+    solver_succeeded = str(getattr(finest, "status", "")) in {
         "Solve_Succeeded", "success", "succeeded",
     }
     dense_report = validate_line(finest, corridor, surface, settings, vehicle=vehicle)

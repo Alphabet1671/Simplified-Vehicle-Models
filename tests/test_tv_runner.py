@@ -312,7 +312,7 @@ class PipelineModeTest(unittest.TestCase):
             self.assertEqual(summary["capability_mode"], "ideal")
             self.assertEqual(summary["solver"], "legacy")
             self.assertEqual(summary["rounds"], 0)
-            self.assertTrue(summary["accepted"])
+            self.assertFalse(summary["accepted"])
             self.assertEqual(summary["replay_time_s"], 57.95)
             self.assertAlmostEqual(summary["replay_lap_s"], 57.95)
             self.assertEqual(summary["solver_tolerance"], 1.0e-6)
@@ -498,7 +498,7 @@ class PipelineModeTest(unittest.TestCase):
                           summary["check_unavailable"])
             self.assertTrue(summary["checks"]["corridor_containment"])
             self.assertTrue(summary["checks"]["replay_agreement"])
-            self.assertTrue(summary["accepted"])
+            self.assertFalse(summary["accepted"])
 
     def test_recorded_mode_mismatch_is_an_error(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -562,7 +562,7 @@ class PipelineModeTest(unittest.TestCase):
             self.assertEqual(summary["replay_adapter"], "point-mass")
             self.assertFalse(summary["controller_aware"])
             self.assertEqual(summary["rounds"], 2)
-            self.assertTrue(summary["accepted"])
+            self.assertFalse(summary["accepted"])
             self.assertEqual(summary["replay_time_s"], 57.9)
             self.assertTrue(summary["checks"]["replay_agreement"])
             self.assertIsNone(summary["checks"]["mesh_convergence"])
@@ -668,7 +668,7 @@ class PipelineModeTest(unittest.TestCase):
             summary = runner.run(args)
             self.assertTrue(summary["controller_aware"])
             self.assertEqual(summary["replay_kind"], "controller_adapter")
-            self.assertTrue(summary["accepted"])
+            self.assertFalse(summary["accepted"])
 
     def test_allocation_gates_use_same_surface_totals_and_unavailable_references(self):
         CONTROL_POLICIES["cap-two"] = _CapPolicy
@@ -694,7 +694,7 @@ class PipelineModeTest(unittest.TestCase):
             )
             fixture.mocks["check_zero_corridor_matches_envelope"].assert_not_called()
             fixture.mocks["check_replay_agreement"].assert_not_called()
-            self.assertTrue(summary["accepted"])
+            self.assertFalse(summary["accepted"])
             self.assertTrue(summary["controller_aware"])
             self.assertEqual(summary["replay_kind"], "point_mass_parity")
 
@@ -740,7 +740,7 @@ class PipelineModeTest(unittest.TestCase):
             self.assertEqual(summary["zero_corridor_reference_s"], 10.5)
             self.assertEqual(summary["spline_type"], "open-natural")
             self.assertEqual(summary["replay_kind"], "point_mass_parity")
-            self.assertTrue(summary["accepted"])
+            self.assertFalse(summary["accepted"])
 
     def test_failed_available_gate_makes_accepted_false(self):
         CONTROL_POLICIES["cap-two"] = _CapPolicy
@@ -801,7 +801,8 @@ class PipelineModeTest(unittest.TestCase):
                     self.assertEqual(
                         summary["checks"]["replay_agreement"], expected,
                     )
-                    self.assertEqual(summary["accepted"], expected)
+                    self.assertFalse(summary["accepted"])
+                    self.assertEqual(summary["validation_status"], "incomplete" if expected else "failed")
 
     def test_spline_rejects_path_smoothing_before_output_or_solver(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -889,7 +890,7 @@ class CliWiringTest(unittest.TestCase):
                 "--control-mode", "closed_loop", "--control-policy", "policy",
                 "--replay-adapter", "point-mass", "--solver", "spline",
             ])
-        self.assertEqual(status, 0)
+        self.assertEqual(status, 1)
         args = run.call_args.args[0]
         self.assertEqual(args.control_mode, "closed_loop")
         self.assertEqual(args.control_policy, "policy")
@@ -903,7 +904,7 @@ class CliWiringTest(unittest.TestCase):
                 "--track", "track.xml", "--formulation", "formulation.xml",
                 "--surface", "surface.npz", "--output", "out",
                 "--legacy-solver",
-            ]), 0)
+            ]), 1)
         self.assertTrue(run.call_args.args[0].legacy_solver)
 
     def test_compare_control_modes_flag_dispatches(self):
@@ -946,8 +947,8 @@ class CliWiringTest(unittest.TestCase):
         self.assertEqual(status, 1)
         compare.assert_called_once()
 
-    def test_unavailable_gate_is_not_treated_as_a_failure(self):
-        self.assertTrue(runner._checks_pass({
+    def test_unavailable_gate_blocks_strict_validation(self):
+        self.assertFalse(runner._checks_pass({
             "mesh_convergence": None, "corridor_containment": True,
         }))
         self.assertFalse(runner._checks_pass({
@@ -960,7 +961,7 @@ class CliWiringTest(unittest.TestCase):
             self.assertEqual(runner.main([
                 "--track", "track.xml", "--formulation", "formulation.xml",
                 "--surface", "surface.npz", "--output", "out",
-            ]), 0)
+            ]), 1)
 
 
 class ControlModeComparisonTest(unittest.TestCase):
@@ -985,6 +986,7 @@ class ControlModeComparisonTest(unittest.TestCase):
             "maximum_violation": 0.0,
             "rounds": 2 if mode == "closed_loop" else 0,
             "accepted": True,
+            "validation_status": "numerically_validated",
             "saturation": ["braking"] if mode == "allocation" else [],
             "checks": {
                 "zero_corridor_matches_envelope": (
@@ -1089,6 +1091,8 @@ class ControlModeComparisonTest(unittest.TestCase):
             def fake_run(mode_args):
                 summary = self._summary_for(mode_args.control_mode)
                 if mode_args.control_mode == "ideal":
+                    summary["validation_status"] = "failed"
+                    summary["accepted"] = False
                     summary["checks"]["corridor_containment"] = False
                 return summary
 

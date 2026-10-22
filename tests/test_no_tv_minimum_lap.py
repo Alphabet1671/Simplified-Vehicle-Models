@@ -87,8 +87,11 @@ class NoTvMinimumLapHarnessTest(unittest.TestCase):
             self.assertTrue(created[0].joined)
             self.assertEqual(result["status"], "wall_timeout")
             self.assertFalse(result["accepted"])
-            saved = json.loads((Path(directory) / "attempt" / "result.json").read_text())
-            self.assertEqual(saved["error_type"], "TimeoutError")
+            attempt = Path(directory) / "attempt"
+            worker_evidence = json.loads((attempt / "result.json").read_text())
+            timeout = json.loads((attempt / "timeout_result.json").read_text())
+            self.assertEqual(worker_evidence["status"], "partial")
+            self.assertEqual(timeout["error_type"], "TimeoutError")
 
     def test_worker_exit_without_result_is_persisted_as_failure(self):
         class Process:
@@ -107,17 +110,28 @@ class NoTvMinimumLapHarnessTest(unittest.TestCase):
             self.assertFalse(result["solver_succeeded"])
             self.assertFalse(result["accepted"])
 
-    def test_source_hashes_include_xml_and_referenced_assets(self):
+    def test_source_hashes_recursively_include_data_and_source_dependencies(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            xml = root / "track.xml"; csv = root / "track.csv"
+            xml, child = root / "track.xml", root / "child.xml"
+            csv, binary = root / "track.csv", root / "surface.npz"
             csv.write_text("distance,x_north,y_east\n", encoding="utf-8")
-            xml.write_text('<model><data ref="track.csv" /></model>', encoding="utf-8")
+            binary.write_bytes(b"fixture")
+            child.write_text('<model><source ref="surface.npz" /></model>', encoding="utf-8")
+            xml.write_text('<model><data ref="track.csv" /><source ref="child.xml" /></model>', encoding="utf-8")
             hashes = harness.source_hashes(xml)
-            self.assertEqual(set(hashes), {str(xml.resolve()), str(csv.resolve())})
+            self.assertEqual(set(hashes), {str(xml.resolve()), str(child.resolve()),
+                                           str(csv.resolve()), str(binary.resolve())})
             self.assertTrue(all(len(value) == 64 for value in hashes.values()))
 
-    def test_aggregate_compares_completed_artifacts_and_stays_incomplete(self):
+    def test_source_hashes_reject_missing_recursive_dependency(self):
+        with tempfile.TemporaryDirectory() as directory:
+            xml = Path(directory) / "track.xml"
+            xml.write_text('<model><source ref="missing.xml" /></model>', encoding="utf-8")
+            with self.assertRaisesRegex(FileNotFoundError, "dependency"):
+                harness.source_hashes(xml)
+
+    def test_aggregate_separates_unqualified_candidates_from_refinement(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory); case = root / "acceleration"; case.mkdir()
             for attempt, offset in (("mesh-5_basis-35_centerline", 0.0),
@@ -126,18 +140,49 @@ class NoTvMinimumLapHarnessTest(unittest.TestCase):
                 np.savez(target / "solution.npz", distance=np.array([0., 1.]),
                          offset=np.array([offset, offset]), speed=np.array([10., 11.]),
                          curvature=np.array([0., 0.]))
-            def row(mesh, artifact):
-                return {"request": {"case": {"name": "acceleration"},
+            def row(mesh, artifact, *, seed="centerline", settings=None, hashes=None, dense=True):
+                return {"request": {"case": {"name": "acceleration"}, "seed": seed,
+                        "settings": settings if settings is not None else {"tolerance": 1e-6},
+                        "source_hashes": hashes if hashes is not None else {"input": "a"},
                         "mesh_spacing_m": mesh, "basis_spacing_m": 35.0},
-                        "artifact": artifact, "objective_s": 5.0}
-            report = harness.aggregate([row(5.0, "mesh-5_basis-35_centerline/solution.npz"),
-                                        row(2.5, "mesh-2.5_basis-35_centerline/solution.npz")], root)
-        self.assertEqual(len(report["comparisons"]), 1)
-        self.assertGreater(report["comparisons"][0]["rms_path"], 0.0)
-        self.assertIn("rms_speed", report["comparisons"][0])
-        self.assertIn("rms_curvature", report["comparisons"][0])
+                        "surface_representation": "signed_transient_normalized_v1",
+                        "artifact": artifact, "objective_s": 5.0, "solver_succeeded": True,
+                        "dense_original_model": {"checks": {"geometry_consistency": True,
+                        "dense_feasibility": dense}, "model_feasible": dense}}
+            first = row(5.0, "mesh-5_basis-35_centerline/solution.npz", dense=False)
+            second = row(2.5, "mesh-2.5_basis-35_centerline/solution.npz", seed="low_amplitude_offset")
+            report = harness.aggregate([first, second], root)
+        self.assertEqual(len(report["candidate_diagnostics"]), 1)
+        self.assertGreater(report["candidate_diagnostics"][0]["rms_path"], 0.0)
+        self.assertIn("rms_speed", report["candidate_diagnostics"][0])
+        self.assertIn("rms_curvature", report["candidate_diagnostics"][0])
+        self.assertEqual(report["mesh_refinement"], [])
+        self.assertEqual(report["basis_refinement"], [])
         self.assertFalse(report["strict_aggregate"]["accepted"])
         self.assertEqual(report["strict_aggregate"]["status"], "incomplete")
+
+    def test_aggregate_qualifies_only_one_axis_with_matching_conditions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); case = root / "acceleration"; case.mkdir()
+            rows = []
+            for attempt, mesh, basis in (("m5b35", 5.0, 35.0), ("m25b35", 2.5, 35.0),
+                                         ("m5b175", 5.0, 17.5)):
+                target = case / attempt; target.mkdir()
+                np.savez(target / "solution.npz", distance=np.array([0., 1.]),
+                         offset=np.array([mesh, basis]), speed=np.array([10., 11.]),
+                         curvature=np.array([0., 0.]))
+                rows.append({"request": {"case": {"name": "acceleration"}, "seed": "centerline",
+                             "settings": {"tolerance": 1e-6}, "source_hashes": {"input": "same"},
+                             "mesh_spacing_m": mesh, "basis_spacing_m": basis},
+                             "surface_representation": "signed_transient_normalized_v1",
+                             "artifact": f"{attempt}/solution.npz", "objective_s": 5.0,
+                             "solver_succeeded": True, "dense_original_model": {"checks": {
+                             "geometry_consistency": True, "dense_feasibility": True}, "model_feasible": True}})
+            report = harness.aggregate(rows, root)
+        self.assertEqual(len(report["mesh_refinement"]), 1)
+        self.assertEqual(report["mesh_refinement"][0]["kind"], "mesh_refinement")
+        self.assertEqual(len(report["basis_refinement"]), 1)
+        self.assertEqual(report["basis_refinement"][0]["kind"], "basis_refinement")
 
     def test_mocked_solver_status_failure_cannot_be_accepted(self):
         # This exercises the only status-to-acceptance contract used by the worker.

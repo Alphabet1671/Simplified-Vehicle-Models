@@ -14,7 +14,7 @@ Example (a deliberately small smoke matrix)::
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass
 import hashlib
 import json
 import math
@@ -105,16 +105,36 @@ def _sha256(path: Path) -> str:
 
 
 def source_hashes(*paths: Path) -> dict[str, str]:
-    """Hash direct inputs and XML referenced assets with stable absolute keys."""
+    """Recursively hash direct inputs and XML ``source``/``data`` dependencies.
+
+    References are resolved relative to their declaring XML. Missing targets are a
+    setup error, rather than silently omitted provenance. ``visited`` makes cyclic
+    XML reference graphs deterministic and finite.
+    """
     assets: set[Path] = set()
-    for supplied in paths:
+    visited: set[Path] = set()
+
+    def visit(supplied: Path) -> None:
         path = Path(supplied).resolve()
+        if path in visited:
+            return
+        if not path.is_file():
+            raise FileNotFoundError(f"input dependency does not exist: {path}")
+        visited.add(path)
         assets.add(path)
-        if path.suffix == ".xml":
-            root = ET.parse(path).getroot()
-            assets.update((path.parent / node.get("ref")).resolve()
-                          for node in root.findall("./data") if node.get("ref"))
-    return {str(path): _sha256(path) for path in sorted(assets) if path.is_file()}
+        if path.suffix.lower() != ".xml":
+            return
+        root = ET.parse(path).getroot()
+        for node in root.iter():
+            if node.tag not in {"source", "data"}:
+                continue
+            reference = node.get("ref") or node.get("path")
+            if reference:
+                visit(path.parent / reference)
+
+    for supplied in paths:
+        visit(Path(supplied))
+    return {str(path): _sha256(path) for path in sorted(assets)}
 
 
 def load_surface_dispatch(path: Path):
@@ -266,10 +286,10 @@ def run_bounded_worker(request: dict, output: Path) -> dict:
                   "solver_succeeded": False, "validation_status": "solver_failed",
                   "error_type": "TimeoutError", "error": "worker exceeded wall cap",
                   "wall_cap_s": request["wall_cap_s"]}
-        # The timeout verdict is authoritative even if a child was interrupted
-        # while writing its result. This is an attempt-private directory, not a
-        # prior run, so replacing the partial worker result cannot overwrite data.
-        _write_json_new_or_replace(result_path, result, initial=False)
+        # Preserve a child result, including a partial one, as worker evidence.
+        # The parent verdict is written separately and is authoritative for the
+        # matrix row, so a timeout can never inherit a late success result.
+        _write_json_new_or_replace(output / "timeout_result.json", result, initial=True)
     elif result_path.exists():
         result = json.loads(result_path.read_text(encoding="utf-8"))
     else:
@@ -289,9 +309,39 @@ def _rms_difference(left: Path, right: Path) -> dict:
         return answer
 
 
+def _dense_live_qualified(row: dict) -> bool:
+    """Require successful solve plus dense geometry, feasibility, and live model."""
+    dense = row.get("dense_original_model", {})
+    checks = dense.get("checks", {})
+    return (row.get("solver_succeeded") is True and row.get("artifact") is not None
+            and checks.get("geometry_consistency") is True
+            and checks.get("dense_feasibility") is True
+            and dense.get("model_feasible") is True)
+
+
+def _same_refinement_conditions(left: dict, right: dict) -> bool:
+    """Forbid seed/settings/source changes from masquerading as refinement."""
+    a, b = left["request"], right["request"]
+    return (a.get("seed") == b.get("seed") and a.get("settings") == b.get("settings")
+            and a.get("source_hashes") == b.get("source_hashes")
+            and left.get("surface_representation") == right.get("surface_representation"))
+
+
+def _comparison(case: str, left: dict, right: dict, output: Path, *, kind: str) -> dict | None:
+    try:
+        metrics = _rms_difference(output / case / left["artifact"], output / case / right["artifact"])
+    except (FileNotFoundError, ValueError):
+        return None
+    return {"case": case, "kind": kind,
+            "left": {"mesh_m": left["request"]["mesh_spacing_m"], "basis_m": left["request"]["basis_spacing_m"], "time_s": left.get("objective_s")},
+            "right": {"mesh_m": right["request"]["mesh_spacing_m"], "basis_m": right["request"]["basis_spacing_m"], "time_s": right.get("objective_s")},
+            "time_difference_s": (left.get("objective_s") - right.get("objective_s")) if left.get("objective_s") is not None and right.get("objective_s") is not None else None,
+            **metrics}
+
+
 def aggregate(results: list[dict], output: Path) -> dict:
-    """Report only comparisons backed by two completed solution artifacts."""
-    comparisons = []
+    """Separate candidate differences from qualified one-axis refinement evidence."""
+    candidate_diagnostics, mesh_refinement, basis_refinement = [], [], []
     by_case: dict[str, list[dict]] = {}
     for item in results:
         by_case.setdefault(item["request"]["case"]["name"], []).append(item)
@@ -299,16 +349,28 @@ def aggregate(results: list[dict], output: Path) -> dict:
         completed = [row for row in rows if row.get("artifact")]
         for index, left in enumerate(completed):
             for right in completed[index + 1:]:
-                if left["request"]["mesh_spacing_m"] == right["request"]["mesh_spacing_m"] and left["request"]["basis_spacing_m"] == right["request"]["basis_spacing_m"]:
+                mesh_equal = left["request"]["mesh_spacing_m"] == right["request"]["mesh_spacing_m"]
+                basis_equal = left["request"]["basis_spacing_m"] == right["request"]["basis_spacing_m"]
+                if mesh_equal and basis_equal:
                     continue
-                try:
-                    metrics = _rms_difference(output / name / left["artifact"], output / name / right["artifact"])
-                except (FileNotFoundError, ValueError):
+                candidate = _comparison(name, left, right, output, kind="unqualified_candidate")
+                if candidate is not None:
+                    candidate_diagnostics.append(candidate)
+                if not (_dense_live_qualified(left) and _dense_live_qualified(right)
+                        and _same_refinement_conditions(left, right)):
                     continue
-                comparisons.append({"case": name, "left": {"mesh_m": left["request"]["mesh_spacing_m"], "basis_m": left["request"]["basis_spacing_m"], "time_s": left.get("objective_s")}, "right": {"mesh_m": right["request"]["mesh_spacing_m"], "basis_m": right["request"]["basis_spacing_m"], "time_s": right.get("objective_s")}, "time_difference_s": (left.get("objective_s") - right.get("objective_s")) if left.get("objective_s") is not None and right.get("objective_s") is not None else None, **metrics})
-    return {"attempts": len(results), "comparisons": comparisons,
+                if basis_equal and not mesh_equal:
+                    evidence = _comparison(name, left, right, output, kind="mesh_refinement")
+                    if evidence is not None:
+                        mesh_refinement.append(evidence)
+                elif mesh_equal and not basis_equal:
+                    evidence = _comparison(name, left, right, output, kind="basis_refinement")
+                    if evidence is not None:
+                        basis_refinement.append(evidence)
+    return {"attempts": len(results), "candidate_diagnostics": candidate_diagnostics,
+            "mesh_refinement": mesh_refinement, "basis_refinement": basis_refinement,
             "strict_aggregate": {"accepted": False, "status": "incomplete",
-              "reason": "requires completed mesh and basis refinement plus matched baseline and replay; none is supplied automatically"}}
+              "reason": "requires qualified independent mesh and basis refinement plus matched baseline and replay; none is supplied automatically"}}
 
 
 def run_matrix(args) -> dict:

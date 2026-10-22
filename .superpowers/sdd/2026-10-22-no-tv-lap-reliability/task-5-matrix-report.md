@@ -24,9 +24,12 @@ runner file was changed.
 - `load_surface_dispatch(path)` explicitly loads either legacy or signed capability
   representation; it never substitutes one for the other.
 - `run_bounded_worker(request, output)` writes a request, starts a spawn-safe
-  filesystem worker, terminates and joins on wall timeout, and persists a result.
-- `run_matrix(args)` saves after every attempt and hashes sources before/after.
-- `aggregate(...)` compares only completed artifact pairs and leaves strict
+  filesystem worker, terminates and joins on wall timeout, retains any child result,
+  and writes a separate authoritative timeout result.
+- `run_matrix(args)` saves after every attempt and recursively hashes sources/data
+  dependencies before/after.
+- `aggregate(...)` separates unqualified candidate comparisons from qualified
+  same-seed/settings/source, one-axis mesh/basis evidence, and leaves strict
   acceptance incomplete without mesh, basis, matched-baseline, and replay evidence.
 
 ## Matrix declaration
@@ -46,9 +49,10 @@ PYTHONPATH=src python3 -m unittest tests.test_no_tv_minimum_lap -v
 ```
 
 The focused test module verifies construction, starts, caps/rungs, finite JSON,
-exclusive output, timeout termination/join, missing-worker result persistence,
-source hashes, and fail-closed strict status. It does not execute a full matrix or
-claim solver/event acceptance.
+exclusive output, timeout termination/join while preserving a partial child result,
+missing-worker result persistence, recursive XML source/data hashes and missing-
+dependency rejection, qualified one-axis refinement separation, and fail-closed
+strict status. It does not execute a full matrix or claim solver/event acceptance.
 
 ## Current measured evidence and limits
 

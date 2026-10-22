@@ -41,7 +41,9 @@ an explicit `legacy_capability_surface` choice; no absent signed coverage falls
 back to legacy automatically. Every attempt records the representation, full
 formulation/surface paths, a capability/formulation provenance check, and SHA-256
 hashes of the formulation, cache, track XML, and referenced track assets before
-and after the matrix.
+and after the matrix. Hash discovery recursively follows XML `data` and `source`
+references relative to the declaring XML, rejects missing dependencies, and stops
+safely at cyclic XML references.
 
 The signed product cache remains under provenance review. Its presence is not a
 claim of physical acceptance.
@@ -66,11 +68,12 @@ PYTHONPATH=src:/tmp/casadi-runtime-2026-10-20 python3 -m \
 
 The output directory must not exist. Before spawning a worker, the harness writes
 its complete `request.json`. Each attempt has its own exclusive directory,
-`result.json`, and (only on an accepted solver return) `solution.npz`. Workers use
-Python's spawn context and only filesystem request/result communication. The parent
-terminates and joins a worker that reaches the wall cap, then writes a
-`wall_timeout` failure. A worker error, missing result, non-success solver status,
-or dense failure is persisted and is never converted into a `SplineSolution`
+`result.json`, and (only on a successful solver return, before dense validation)
+`solution.npz`. Workers use Python's spawn context and only filesystem request/result
+communication. The parent terminates and joins a worker that reaches the wall cap,
+then writes the authoritative `timeout_result.json`; it retains any existing child
+`result.json` as worker evidence. A worker error, missing result, non-success solver
+status, or dense failure is persisted and is never converted into a `SplineSolution`
 acceptance. JSON uses `null` for all non-finite diagnostics.
 
 Recorded fields include actual settings, mesh and basis spacing, requested seed,
@@ -82,8 +85,12 @@ accepted solution.
 
 ## Evidence interpretation
 
-When two completed solution artifacts exist, the aggregate reports objective-time
-difference and RMS path, speed, and curvature differences. It does not claim
+Completed artifact pairs appear as explicitly unqualified candidate diagnostics
+(time difference and RMS path, speed, and curvature), including dense-failed results.
+They are not convergence evidence. Qualified refinement comparisons require both
+rows to have solver success, dense geometry and feasibility success, live original
+model feasibility, identical seed/settings/source hashes/representation, and exactly
+one changed axis: mesh at fixed basis or basis at fixed mesh. It does not claim
 convergence for a missing mesh/basis rung. Strict aggregate status is intentionally
 `incomplete` until **all** of these have independent evidence:
 

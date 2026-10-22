@@ -39,6 +39,7 @@ from simplified_vehicle_models.solvers.capability_profile import capability_prof
 from simplified_vehicle_models.tracks.line_trajectory import OffsetTrajectory
 from simplified_vehicle_models.solvers.qss_line_ocp import QssSettings, build_mesh, track_sample
 from simplified_vehicle_models.solvers.qss_spline_ocp import initial_guess, solve_spline_line
+from simplified_vehicle_models.solvers.profile_line_seed import build_profile_line_seed
 from simplified_vehicle_models.tracks.corridor import corridor_from_track
 from simplified_vehicle_models.tracks.offset_spline import OffsetSpline
 from simplified_vehicle_models.tracks.profile import load_track
@@ -205,7 +206,8 @@ def build_attempt(case: MatrixCase, *, mesh_spacing_m: float, basis_spacing_m: f
                   dense_maximum_refinements: int = DEFAULT_DENSE_MAXIMUM_REFINEMENTS,
                   diagnostic_rungs: bool = False,
                   hessian_approximation: str = "exact",
-                   matched_reference: bool = False) -> dict:
+                  matched_reference: bool = False, seed_profile: str = "none",
+                  strict_profile_seed: bool = False) -> dict:
     """Build a fully serializable solve request; this has no solver side effects."""
     allowed_meshes = DEFAULT_MESH_SPACINGS + ((DIAGNOSTIC_MESH_SPACING,) if diagnostic_rungs else ())
     allowed_basis = diagnostic_rungs or basis_spacing_m in DEFAULT_BASIS_SPACINGS
@@ -225,6 +227,8 @@ def build_attempt(case: MatrixCase, *, mesh_spacing_m: float, basis_spacing_m: f
     if (not isinstance(hessian_approximation, str)
             or hessian_approximation not in {"exact", "limited-memory"}):
         raise ValueError("hessian_approximation must be exact or limited-memory")
+    if seed_profile not in {"none", "energy-nlp"}:
+        raise ValueError("seed_profile must be none or energy-nlp")
     settings = QssSettings(tolerance=_validate_finite_positive("nlp_tolerance", nlp_tolerance),
                            maximum_iterations=int(maximum_iterations),
                            start_speed=float(case.start_speed_mps), open_regularisation=1e-6,
@@ -238,7 +242,8 @@ def build_attempt(case: MatrixCase, *, mesh_spacing_m: float, basis_spacing_m: f
         "mesh_rung_status": "preregistered" if mesh_spacing_m in DEFAULT_MESH_SPACINGS else "diagnostic_not_preregistered",
         "basis_rung_status": "preregistered" if basis_spacing_m in DEFAULT_BASIS_SPACINGS else "diagnostic_not_preregistered",
         "formulation": str(Path(formulation).resolve()), "surface": str(Path(surface).resolve()),
-        "matched_reference": bool(matched_reference),
+        "matched_reference": bool(matched_reference), "seed_profile": seed_profile,
+        "strict_profile_seed": bool(strict_profile_seed),
         "no_torque_vectoring": True, "mode_switches": False, "controller_globals": False,
     }
 
@@ -421,6 +426,26 @@ def _attempt_worker(request_path: str, result_path: str, artifact_path: str) -> 
         coefficients = _seed_for(spline, request["seed"])
         seed[:spline.control_count] = coefficients
         result["initial_seed"] = _seed_domain_report(track, corridor, spline, coefficients)
+        result["profile_seed"] = {"requested": request.get("seed_profile", "none"),
+                                  "used": False, "fallback": None}
+        if request.get("seed_profile", "none") == "energy-nlp":
+            # A profile seed is centreline-only.  Preserve the declared offset
+            # perturbation by retaining the established seed whenever requested.
+            if request["seed"] != "centerline":
+                result["profile_seed"].update({"fallback": "declared-offset-perturbation",
+                                                "diagnostics": {"available": False, "reason": "profile-centreline-only"}})
+                if request.get("strict_profile_seed", False):
+                    raise RuntimeError("strict profile seed requires the centerline seed")
+            else:
+                profile_seed, diagnostics = build_profile_line_seed(track, corridor, surface, mesh, spline, settings)
+                result["profile_seed"]["diagnostics"] = diagnostics
+                if profile_seed is not None:
+                    seed = profile_seed
+                    result["profile_seed"]["used"] = True
+                else:
+                    result["profile_seed"]["fallback"] = "explicit-old-seed"
+                    if request.get("strict_profile_seed", False):
+                        raise RuntimeError(f"strict profile seed failed: {diagnostics.get('reason')}")
         solution = solve_spline_line(track, corridor, surface, mesh, spline, settings, seed=seed)
         np.savez_compressed(artifact_path, distance=solution.distance, offset=solution.offset,
                              heading_error=solution.heading_error, curvature=solution.curvature,
@@ -699,7 +724,9 @@ def run_matrix(args) -> dict:
                         dense_maximum_refinements=getattr(args, "dense_maximum_refinements", DEFAULT_DENSE_MAXIMUM_REFINEMENTS),
                         diagnostic_rungs=getattr(args, "diagnostic_rungs", False),
                         hessian_approximation=getattr(args, "hessian_approximation", "exact"),
-                        matched_reference=getattr(args, "matched_reference", False))
+                        matched_reference=getattr(args, "matched_reference", False),
+                        seed_profile=getattr(args, "seed_profile", "none"),
+                        strict_profile_seed=getattr(args, "strict_profile_seed", False))
                     # Each spawned solve owns a fresh input snapshot. Do not reuse
                     # the matrix-start hashes: sources can change between attempts.
                     request["source_hashes"] = source_hashes(case.track, form, surface)
@@ -751,6 +778,10 @@ def main(argv=None):
                         help="allow and label non-preregistered mesh or basis diagnostic rungs")
     parser.add_argument("--matched-reference", action="store_true",
                         help="compute optional analytic-path fixed capability references (.5/.25 convergence)")
+    parser.add_argument("--seed-profile", choices=("none", "energy-nlp"), default="none",
+                        help="optional fixed-path energy NLP initializer; default preserves old seed")
+    parser.add_argument("--strict-profile-seed", action="store_true",
+                        help="fail the worker rather than use the explicit old seed on profile failure")
     parser.add_argument("--wall-cap-s", type=float, default=300.0)
     parser.add_argument("--base-commit", default="6286c5fbb02217fc21148fdc0be276728f13b99c")
     args = parser.parse_args(argv)

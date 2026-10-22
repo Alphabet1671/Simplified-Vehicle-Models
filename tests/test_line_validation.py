@@ -7,6 +7,7 @@ import numpy as np
 from simplified_vehicle_models.compiler.compile import compile_formulation
 from simplified_vehicle_models.formulations.point_mass import point_mass_view_of_planar
 from simplified_vehicle_models.formulations.point_mass_capability import CapabilitySurface
+from simplified_vehicle_models.formulations.signed_capability import load_signed_transient_capability
 from simplified_vehicle_models.solvers.line_validation import (
     REQUIRED_NUMERICAL_CHECKS, strict_validation, validate_line, validation_status,
 )
@@ -15,6 +16,7 @@ from simplified_vehicle_models.solvers.qss_spline_ocp import _SplineStateEvaluat
 from simplified_vehicle_models.tracks.corridor import Corridor
 from simplified_vehicle_models.tracks.line_trajectory import OffsetTrajectory, ReferenceCurve
 from simplified_vehicle_models.tracks.offset_spline import OffsetSpline
+from simplified_vehicle_models.tracks.profile import load_track
 from simplified_vehicle_models.tracks.types import PathCoordinates
 
 
@@ -232,6 +234,38 @@ class LineValidationTest(unittest.TestCase):
         uncertainty = next(item for item in report["diagnostics"] if item["name"] == "derivative_uncertainty")
         self.assertFalse(uncertainty["passed"])
         self.assertFalse(report["checks"]["dense_feasibility"])
+
+    def test_optional_archived_gl_energy_states_revalidate_capability_failure(self):
+        import json
+        root = Path(__file__).resolve().parents[1] / "runs/no_tv_reliability/gl16_energy_accel_states_20261022"
+        artifacts = sorted(root.glob("states_*.npz"))
+        chart = Path(__file__).resolve().parents[1] / "runs/no_tv_reliability/signed_lp_fullrange_product_20261022.npz"
+        if len(artifacts) != 2 or not chart.is_file():
+            self.skipTest("optional archived GL-energy states or signed chart absent")
+        track = load_track(Path(__file__).resolve().parents[1] / "models/tracks/fsae_2026_acceleration.xml")
+        corridor = Corridor(track.distance, np.full(track.distance.shape, -2.35),
+                            np.full(track.distance.shape, 2.35), "archived", False)
+        surface = load_signed_transient_capability(chart)
+        formulation = Path(__file__).resolve().parents[1] / "models/formulations/iem24_murphy_real_planar_7dof.xml"
+        vehicle = point_mass_view_of_planar(compile_formulation(str(formulation)).model)
+        spline = OffsetSpline(track, 35.)
+        for artifact in artifacts:
+            with np.load(artifact, allow_pickle=False) as state:
+                trajectory = OffsetTrajectory(ReferenceCurve(track), spline, state["coefficients"])
+                evaluator = _SplineStateEvaluator(trajectory, state["distance"], state["speed"],
+                                                   state["acceleration"], state["midpoint_acceleration"])
+                tag = artifact.stem.split("_", 1)[1]
+                result = json.loads((root / f"result_{tag}.json").read_text())
+                solution = SimpleNamespace(distance=state["distance"], trajectory=trajectory,
+                                           state_evaluator=evaluator, lap_time=result["time_s"])
+                report = validate_line(solution, corridor, surface, vehicle=vehicle)
+            by_name = {item["name"]: item for item in report["diagnostics"]}
+            self.assertTrue(report["checks"]["geometry_consistency"])
+            self.assertTrue(report["model_feasible"])
+            self.assertTrue(by_name["dynamics_defect"]["passed"])
+            self.assertTrue(by_name["derivative_uncertainty"]["passed"])
+            self.assertGreater(by_name["acceleration_max"]["maximum_violation"], 1.e-6)
+            self.assertFalse(report["checks"]["dense_feasibility"])
 
     def test_optional_archived_gl_energy_evidence_retains_capability_failure(self):
         # These immutable handoff artifacts are deliberately optional in a

@@ -7,7 +7,7 @@ from unittest.mock import patch
 import numpy as np
 
 from simplified_vehicle_models.tracks.profile import load_track
-from tools.diagnostics.compare_qss_track_boundaries import track_view, make_cases
+from tools.diagnostics.compare_qss_track_boundaries import track_view, make_cases, residuals
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -77,6 +77,54 @@ class TrackBoundaryViewsTest(unittest.TestCase):
                 track_view(track, is_closed=False, length=length)
         with self.assertRaises(ValueError):
             track_view(track, is_closed=True, length=200.0)
+
+    def test_residual_labels_identify_current_per_node_row_families(self):
+        # The exact fallback mirrors build_ocp's append order: 22 rows/element
+        # after midpoint-speed and dense-corridor safeguards were introduced.
+        count = 2
+        rows = 22 * count + 3
+        built = dict(count=count, control_count=count + 1, offset_basis=None,
+                     is_closed=False, g_lower=np.zeros(rows), g_upper=np.zeros(rows),
+                     x_lower=np.zeros(1), x_upper=np.zeros(1))
+        values = np.zeros(1)
+        cases = {
+            0: 'element_0:hs_offset',
+            3: 'element_0:midpoint_speed_domain',
+            4: 'element_0:interior_corridor_t25',
+            7: 'element_0:node_start:curvature_domain',
+            8: 'element_0:node_start:capability_acceleration_min',
+            rows - 3: 'open_boundary_start_heading',
+            rows - 2: 'open_boundary_end_heading',
+            rows - 1: 'open_boundary_start_speed',
+        }
+        for index, expected in cases.items():
+            with self.subTest(index=index):
+                constraints = np.zeros(rows)
+                constraints[index] = 1.0
+                metrics = residuals(values, constraints, built)
+                self.assertEqual(metrics['worst_constraint'], expected)
+                self.assertEqual(metrics['hs_defect_violation'], 1.0 if index == 0 else 0.0)
+
+    def test_residuals_prefer_builder_row_metadata_when_present(self):
+        built = dict(count=1, g_lower=np.zeros(2), g_upper=np.zeros(2),
+                     x_lower=np.zeros(1), x_upper=np.zeros(1),
+                     constraint_row_metadata=('builder:hs_offset', 'builder:custom_limit'))
+        metrics = residuals(np.zeros(1), np.array([0.0, 1.0]), built)
+        self.assertEqual(metrics['worst_constraint'], 'builder:custom_limit')
+        self.assertEqual(metrics['hs_defect_violation'], 0.0)
+
+    def test_residual_labels_identify_closed_final_boundary_rows(self):
+        count = 1
+        rows = 22 * count + 3
+        built = dict(count=count, control_count=count + 1, offset_basis=None,
+                     is_closed=True, g_lower=np.zeros(rows), g_upper=np.zeros(rows),
+                     x_lower=np.zeros(1), x_upper=np.zeros(1))
+        for index, expected in enumerate(('closed_boundary_offset', 'closed_boundary_heading',
+                                          'closed_boundary_speed'), start=rows - 3):
+            with self.subTest(index=index):
+                constraints = np.zeros(rows)
+                constraints[index] = 1.0
+                self.assertEqual(residuals(np.zeros(1), constraints, built)['worst_constraint'], expected)
 
 
 def has_casadi():

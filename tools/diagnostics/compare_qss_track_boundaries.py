@@ -68,29 +68,75 @@ def common_seed(mesh, speed: float):
                            np.zeros(nodes), np.zeros(nodes), np.zeros(nodes - 1), np.zeros(nodes - 1)])
 
 
+def _fallback_constraint_rows(built, constraint_count):
+    """Name the current per-node builder rows, with deliberately strict guards.
+
+    ``build_ocp`` currently does not expose row metadata.  Keep this fallback
+    coupled to its append order rather than silently accepting a different NLP:
+    per element it appends three HS defects, a midpoint-speed denominator guard,
+    two quarter-point corridor rows, one midpoint corridor row, and three sets
+    of five physical-limit rows.  Both topologies append three final boundary
+    rows, but their meanings differ.
+    """
+    count = int(built['count'])
+    if built.get('offset_basis') is not None or int(built.get('control_count', count + 1)) != count + 1:
+        raise ValueError('residual fallback only supports the per-node offset layout')
+    rows_per_element = 22
+    boundary_rows = 3
+    if constraint_count != rows_per_element * count + boundary_rows:
+        raise ValueError('per-node constraint layout changed; update diagnostic row mapping')
+
+    labels, hs_indices = [], []
+    limit_names = ('curvature_domain', 'capability_acceleration_min',
+                   'capability_acceleration_max', 'speed_ceiling', 'fold_guard')
+    for element in range(count):
+        prefix = f'element_{element}'
+        for state in ('offset', 'heading', 'speed'):
+            hs_indices.append(len(labels))
+            labels.append(f'{prefix}:hs_{state}')
+        labels.extend((f'{prefix}:midpoint_speed_domain',
+                       f'{prefix}:interior_corridor_t25',
+                       f'{prefix}:interior_corridor_t75',
+                       f'{prefix}:interior_corridor_midpoint'))
+        for sample in ('node_start', 'midpoint', 'node_end'):
+            labels.extend(f'{prefix}:{sample}:{limit}' for limit in limit_names)
+    if bool(built.get('is_closed', False)):
+        labels.extend(('closed_boundary_offset', 'closed_boundary_heading',
+                       'closed_boundary_speed'))
+    else:
+        labels.extend(('open_boundary_start_heading', 'open_boundary_end_heading',
+                       'open_boundary_start_speed'))
+    return labels, np.asarray(hs_indices, dtype=int)
+
+
+def _constraint_rows(built, constraint_count):
+    """Prefer optional builder row labels; otherwise use the guarded fallback."""
+    metadata = built.get('constraint_row_metadata')
+    if metadata is None:
+        layout = built.get('constraint_layout')
+        metadata = layout.get('row_labels') if isinstance(layout, dict) else None
+    if metadata is None:
+        return _fallback_constraint_rows(built, constraint_count)
+    if len(metadata) != constraint_count or not all(isinstance(label, str) for label in metadata):
+        raise ValueError('builder constraint row metadata does not match constraints')
+    labels = list(metadata)
+    hs_indices = np.asarray([index for index, label in enumerate(labels)
+                             if ':hs_' in label], dtype=int)
+    if hs_indices.size == 0:
+        raise ValueError('builder constraint row metadata has no HS defect rows')
+    return labels, hs_indices
+
+
 def residuals(values, constraints, built):
     gv = np.maximum(np.maximum(built['g_lower'] - constraints, 0.0), constraints - built['g_upper'])
     xv = np.maximum(np.maximum(built['x_lower'] - values, 0.0), values - built['x_upper'])
     eq = built['g_lower'] == built['g_upper']
-    # The unmodified per-node builder emits 21 rows per element, first three HS defects.
-    count = built['count']
-    if constraints.size != 21 * count + 3:
-        raise ValueError('per-node constraint layout changed; update diagnostic row mapping')
-    defect_indices = np.arange(21 * count).reshape(count, 21)[:, :3].ravel()
+    if constraints.size != built['g_lower'].size or constraints.size != built['g_upper'].size:
+        raise ValueError('constraint values and bounds have inconsistent sizes')
+    labels, defect_indices = _constraint_rows(built, constraints.size)
     worst = int(np.argmax(gv))
-    if worst >= 21 * count:
-        category = f'endpoint_{worst - 21 * count}'
-    else:
-        element, row = divmod(worst, 21)
-        if row < 3:
-            category = f'element_{element}:hs_{("offset", "heading", "speed")[row]}'
-        elif row < 6:
-            category = f'element_{element}:interior_corridor'
-        else:
-            sample, limit = divmod(row - 6, 5)
-            category = f'element_{element}:{("node_start", "midpoint", "node_end")[sample]}:{("curvature_domain", "acceleration_min", "acceleration_max", "speed_ceiling", "fold")[limit]}'
     return dict(constraint_violation=float(np.max(gv)), bound_violation=float(np.max(xv)),
-                equality_violation=float(np.max(gv[eq])), worst_constraint=category,
+                equality_violation=float(np.max(gv[eq])), worst_constraint=labels[worst],
                 hs_defect_violation=float(np.max(gv[defect_indices])))
 
 
@@ -109,7 +155,7 @@ def solve_diagnostic(track, corridor, surface, settings, spacing, *, speed_cap=N
     if settings.offset_control_spacing is not None:
         raise ValueError('primary diagnostic requires the shared per-node layout')
     mesh = build_mesh(track, spacing)
-    built = build_ocp(track, corridor, surface, mesh, settings)
+    built = dict(build_ocp(track, corridor, surface, mesh, settings), is_closed=bool(track.is_closed))
     if speed_cap is not None:
         if not np.isfinite(speed_cap) or speed_cap < max(settings.minimum_speed, settings.start_speed):
             raise ValueError('speed cap must be finite and at least the start speed')

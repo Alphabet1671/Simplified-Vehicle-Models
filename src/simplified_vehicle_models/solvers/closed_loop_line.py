@@ -257,6 +257,11 @@ def correct_to_replay(track, corridor, surface, mesh, spline, settings, controll
                 raise ValueError(
                     "analytic trajectory replay requires explicit reference_distance mapping"
                 )
+        if getattr(solution, "trajectory", None) is not None:
+            mapped_station = np.asarray(sample.reference_distance, dtype=float)
+            source_mesh = np.asarray(solution.distance, dtype=float)
+            if mapped_station[0] > source_mesh[0] or mapped_station[-1] < source_mesh[-1]:
+                raise ValueError("replay station mapping does not cover the OCP mesh")
         last_replay_time = float(sample.lap_time)
         last_feasible = bool(sample.feasible)
 

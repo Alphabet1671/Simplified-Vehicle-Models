@@ -102,7 +102,7 @@ def path_from_solution(track, solution, *, smoothing: float = 0.0) -> PathCoordi
         # The attached trajectory is the accepted candidate: do not re-fit XY
         # or interpolate offsets.  Caller-selected stations retain explicit
         # reference/path correspondence through ``trajectory.station_map``.
-        return trajectory.to_path(np.asarray(track.distance, dtype=float))
+        return trajectory.sample_path(np.asarray(track.distance, dtype=float))
     if track.path_coordinates is None:
         raise ValueError("track has no signed path coordinates")
     if not track.is_closed:

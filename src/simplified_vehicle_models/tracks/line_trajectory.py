@@ -7,6 +7,7 @@ silently treating source station as metres on an offset path.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from typing import Any
 
 import numpy as np
@@ -330,6 +331,43 @@ class OffsetTrajectory:
         return TrajectoryEvaluation(*(_scalar_or_array(v, scalar) for v in (
             north, east, heading, psi, curvature, psi_s, n, metric, fold
         )))
+
+    def sample_path(self, station: object, *, heading_tolerance: float = 1.8e-3,
+                    chord_angle_tolerance: float = 1.8e-3,
+                    chord_length_tolerance: float = 9.0e-4,
+                    maximum_nodes: int = 200000) -> PathCoordinates:
+        """Adaptively sample the identical analytic curve for strict CSV loading."""
+        s, _ = _check_station(station, self.reference.start, self.reference.end,
+                              self.reference.is_closed)
+        if s.size < 2 or np.any(np.diff(s) <= 0.0):
+            raise ValueError("sample_path station must be a strictly increasing sequence")
+        for name, value in (("heading_tolerance", heading_tolerance),
+                            ("chord_angle_tolerance", chord_angle_tolerance),
+                            ("chord_length_tolerance", chord_length_tolerance)):
+            if not np.isfinite(value) or value <= 0.0:
+                raise ValueError(f"{name} must be finite and positive")
+        values = list(map(float, s)); index = 0
+        while index < len(values) - 1:
+            if len(values) > maximum_nodes:
+                raise ValueError("adaptive trajectory export exceeded node limit")
+            left, right = values[index], values[index + 1]
+            item = self.evaluate(np.array([left, right]))
+            x, y = np.asarray(item.north), np.asarray(item.east)
+            heading = np.unwrap(np.asarray(item.heading)); curvature = np.asarray(item.curvature)
+            length = float(self.station_map.to_path(right) - self.station_map.to_path(left))
+            chord = float(np.hypot(x[1] - x[0], y[1] - y[0]))
+            chord_heading = math.atan2(y[1] - y[0], x[1] - x[0])
+            heading_error = abs((chord_heading - .5*(heading[0] + heading[1]) + np.pi) % (2*np.pi) - np.pi)
+            trapezoid_error = abs((heading[1] - heading[0]) - .5*(curvature[0] + curvature[1])*length)
+            length_error = abs(chord - length) / max(length, 1e-12)
+            if (heading_error <= chord_angle_tolerance and trapezoid_error <= heading_tolerance
+                    and length_error <= chord_length_tolerance):
+                index += 1
+            elif right - left <= 1e-12:
+                raise ValueError("adaptive trajectory export did not meet loader tolerances")
+            else:
+                values.insert(index + 1, .5*(left + right))
+        return self.to_path(np.asarray(values, dtype=float))
 
     def to_path(self, station: object) -> PathCoordinates:
         s, _ = _check_station(station, self.reference.start, self.reference.end, self.reference.is_closed)

@@ -80,12 +80,21 @@ exception/failure is retained explicitly with false reference checks rather
 than crashing the worker or erasing the candidate artifact.
 
 At aggregation, strict `numerically_validated` status is possible only per
-case when actual same-condition source/settings/seed-qualified pairs establish
-both a mesh axis and a distinct realized-grid basis axis, and both endpoints
-carry passing matched baseline and replay evidence.  Nominal `35/17.5` labels
-with the same realized control grid remain ineligible.  Every requested case
-must meet those conditions before the matrix aggregate can pass; unresolved or
-candidate-only cases keep it incomplete.
+case when one actual same-condition source/settings/seed-qualified edge
+establishes each mesh and distinct realized-grid basis axis, and both endpoints
+of that exact edge carry passing matched baseline and replay evidence.  Edges
+are never unioned or re-paired across configurations. Solver-returned rows also
+need an actual success status in addition to dense/live checks; a failed status
+cannot qualify even if a diagnostic payload says true. Nominal `35/17.5` labels
+with the same realized control grid remain ineligible.
+
+The default aggregate always evaluates all six preregistered cases and requires
+coverage of every registered mesh (`5`, `2.5`, `1.25 m`) and nominal basis rung
+(`35`, `17.5 m`) with actual passing reference/dense/live rows. Diagnostic
+rungs (including `.625 m` and custom bases) remain recorded as diagnostics and
+cannot establish global study coverage. Thus a bounded subset can report its
+per-case evidence but cannot mark the full study accepted; missing, unresolved,
+or candidate-only cases keep it incomplete.
 
 Nominal basis spacing alone is not treated as an actual basis refinement.
 Every result records its realized `control_count` and `control_station_m`; two

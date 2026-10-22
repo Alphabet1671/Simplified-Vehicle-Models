@@ -290,6 +290,12 @@ def _profile_boundary(case: MatrixCase) -> tuple[str, float | None]:
     raise ValueError(f"unsupported reference start treatment {case.start_treatment!r}")
 
 
+def _profile_failure_record(step: float, error: Exception) -> dict:
+    return {"step_m": step, "converged": False, "status": "exception",
+            "iterations": None, "lap_time_s": None, "max_change": None,
+            "error": f"{type(error).__name__}: {error}"}
+
+
 def _fixed_path_profile_evidence(solution, case: MatrixCase, surface) -> dict:
     """Run independent table references on analytic candidate and centerline paths.
 
@@ -313,22 +319,35 @@ def _fixed_path_profile_evidence(solution, case: MatrixCase, surface) -> dict:
         baseline_trajectory = OffsetTrajectory(trajectory.reference, trajectory.spline,
                                                np.zeros_like(trajectory.coefficients))
         baseline_path = baseline_trajectory.to_path(stations)
-        candidate_profiles, baseline_profiles = [], []
+        candidate_profiles, baseline_profiles = {}, {}
         for step in REFERENCE_PROFILE_STEPS:
-            candidate = capability_profile(candidate_path, surface, boundary=boundary,
-                                           start_speed=start_speed, step=step,
-                                           trajectory=trajectory)
-            baseline = capability_profile(baseline_path, surface, boundary=boundary,
-                                          start_speed=start_speed, step=step,
-                                          trajectory=baseline_trajectory)
-            candidate_record, baseline_record = _profile_record(candidate), _profile_record(baseline)
-            candidate_record["step_m"] = step; baseline_record["step_m"] = step
-            candidate_profiles.append((candidate, candidate_record))
-            baseline_profiles.append((baseline, baseline_record))
+            try:
+                candidate = capability_profile(candidate_path, surface, boundary=boundary,
+                                               start_speed=start_speed, step=step,
+                                               trajectory=trajectory)
+                record = _profile_record(candidate); record["step_m"] = step
+                candidate_profiles[step] = (candidate, record)
+            except Exception as error:
+                candidate_profiles[step] = (None, _profile_failure_record(step, error))
+            try:
+                baseline = capability_profile(baseline_path, surface, boundary=boundary,
+                                              start_speed=start_speed, step=step,
+                                              trajectory=baseline_trajectory)
+                record = _profile_record(baseline); record["step_m"] = step
+                baseline_profiles[step] = (baseline, record)
+            except Exception as error:
+                baseline_profiles[step] = (None, _profile_failure_record(step, error))
         # The .5/.25 pair is the declared sampled-time convergence evidence; 1 m
         # remains persisted as a coarse diagnostic, not a substitute endpoint.
-        candidate_fine, candidate_half = candidate_profiles[-1][0], candidate_profiles[-2][0]
-        baseline_fine, baseline_half = baseline_profiles[-1][0], baseline_profiles[-2][0]
+        candidate_fine, candidate_half = candidate_profiles[.25][0], candidate_profiles[.5][0]
+        baseline_fine, baseline_half = baseline_profiles[.25][0], baseline_profiles[.5][0]
+        if any(item is None for item in (candidate_fine, candidate_half, baseline_fine, baseline_half)):
+            return {"available": False,
+                    "candidate": {"profiles": [candidate_profiles[step][1] for step in REFERENCE_PROFILE_STEPS]},
+                    "baseline": {"profiles": [baseline_profiles[step][1] for step in REFERENCE_PROFILE_STEPS]},
+                    "replay": {"available": False}, "matched_baseline": False,
+                    "replay_agreement": False, "empirical": False,
+                    "reason": "one or more declared fixed-path profiles failed"}
         candidate_convergence = _relative_difference(candidate_half.lap_time, candidate_fine.lap_time)
         baseline_convergence = _relative_difference(baseline_half.lap_time, baseline_fine.lap_time)
         candidate_ok = (candidate_half.converged and candidate_fine.converged
@@ -356,11 +375,11 @@ def _fixed_path_profile_evidence(solution, case: MatrixCase, surface) -> dict:
         replay_ok = candidate_ok and replay_time is not None and replay_time <= REPLAY_TIME_AGREEMENT_RELATIVE
         baseline_margin = PHYSICAL_TIME_RELATIVE_TOLERANCE * max(1.0, abs(baseline_fine.lap_time))
         baseline_ok = baseline_ok and candidate_fine.lap_time <= baseline_fine.lap_time + baseline_margin
-        return {"available": True, "candidate": {"profiles": [record for _, record in candidate_profiles],
+        return {"available": True, "candidate": {"profiles": [candidate_profiles[step][1] for step in REFERENCE_PROFILE_STEPS],
                 "time_convergence_relative": candidate_convergence, "converged": candidate_ok},
-                "baseline": {"profiles": [record for _, record in baseline_profiles],
+                "baseline": {"profiles": [baseline_profiles[step][1] for step in REFERENCE_PROFILE_STEPS],
                 "time_convergence_relative": baseline_convergence,
-                "converged": baseline_half.converged and baseline_fine.converged},
+                "converged": baseline_ok},
                 "replay": {"available": True, "lap_time_relative_difference": replay_time,
                 "rms_speed_mps": rms_speed, "rms_path_m": rms_path,
                 "boundary": boundary, "start_speed_mps": start_speed,
@@ -432,8 +451,9 @@ def _attempt_worker(request_path: str, result_path: str, artifact_path: str) -> 
             reference = _fixed_path_profile_evidence(solution, case, surface)
             checks["matched_baseline"] = reference["matched_baseline"]
             checks["replay_agreement"] = reference["replay_agreement"]
-        strict = strict_validation(solution.status in SUCCESS_STATUSES, checks, REQUIRED_NUMERICAL_CHECKS)
-        result.update({"status": str(solution.status), "solver_succeeded": True,
+        solver_succeeded = solution.status in SUCCESS_STATUSES
+        strict = strict_validation(solver_succeeded, checks, REQUIRED_NUMERICAL_CHECKS)
+        result.update({"status": str(solution.status), "solver_succeeded": solver_succeeded,
                        "accepted": False, "objective_s": solution.lap_time,
                        "objective_value": solution.objective_value,
                        "iterations": solution.iterations,
@@ -501,7 +521,11 @@ def _dense_live_qualified(row: dict) -> bool:
     """Require successful solve plus dense geometry, feasibility, and live model."""
     dense = row.get("dense_original_model", {})
     checks = dense.get("checks", {})
-    return (row.get("solver_succeeded") is True and row.get("artifact") is not None
+    status = row.get("status")
+    # Historical records without a status predate this gate and remain diagnostic
+    # only; current worker records always carry one and must be success statuses.
+    return (status in SUCCESS_STATUSES and row.get("solver_succeeded") is True
+            and row.get("artifact") is not None
             and checks.get("geometry_consistency") is True
             and checks.get("dense_feasibility") is True
             and dense.get("model_feasible") is True)
@@ -546,38 +570,29 @@ def _reference_qualified(row: dict) -> bool:
             and reference.get("empirical") is False)
 
 
-def _comparison_endpoint_rows(rows: list[dict], comparisons: list[dict]) -> list[dict]:
-    """Recover only the rows named by qualified comparison endpoints."""
-    selected = []
+def _qualified_edge(comparisons: list[dict], *, kind: str) -> dict | None:
+    """Choose one complete qualified refinement edge; never union edge endpoints."""
     for comparison in comparisons:
-        for endpoint in (comparison["left"], comparison["right"]):
-            for row in rows:
-                request = row.get("request", {})
-                matches_id = endpoint.get("attempt_id") is not None and row.get("attempt_id") == endpoint["attempt_id"]
-                matches_legacy = (endpoint.get("attempt_id") is None
-                                  and request.get("mesh_spacing_m") == endpoint["mesh_m"]
-                                  and request.get("basis_spacing_m") == endpoint["basis_m"]
-                                  and row.get("objective_s") == endpoint["time_s"])
-                if matches_id or matches_legacy:
-                    selected.append(row)
-    return selected
-
-
-def _qualified_evidence_pair(items: list[dict], *, maximum_relative_time: float) -> dict | None:
-    """Return the best qualifying pair only when both endpoints carry evidence."""
-    eligible = [item for item in items if _dense_live_qualified(item) and _reference_qualified(item)]
-    for left_index, left in enumerate(eligible):
-        for right in eligible[left_index + 1:]:
-            relative = _relative_difference(float(left.get("objective_s", math.nan)),
-                                            float(right.get("objective_s", math.nan)))
-            if relative is not None and relative <= maximum_relative_time:
-                return {"left_attempt": left.get("attempt_id"), "right_attempt": right.get("attempt_id"),
-                        "time_relative_difference": relative,
-                        "maximum_relative_time": maximum_relative_time}
+        left, right = comparison["left"], comparison["right"]
+        rungs = ((left["mesh_m"], right["mesh_m"]) if kind == "mesh_refinement"
+                 else (left["basis_m"], right["basis_m"]))
+        preregistered = (all(rung in DEFAULT_MESH_SPACINGS for rung in rungs)
+                         if kind == "mesh_refinement"
+                         else all(rung in DEFAULT_BASIS_SPACINGS for rung in rungs))
+        if (comparison.get("reference_qualified") is True and preregistered
+                and comparison.get("time_relative_difference") is not None
+                and comparison["time_relative_difference"] <= REFERENCE_TIME_CONVERGENCE_RELATIVE):
+            return {"left_attempt": left.get("attempt_id"), "right_attempt": right.get("attempt_id"),
+                    "time_relative_difference": comparison["time_relative_difference"],
+                    "maximum_relative_time": REFERENCE_TIME_CONVERGENCE_RELATIVE,
+                    "kind": kind}
     return None
 
 
-def aggregate(results: list[dict], output: Path, *, source_data_unchanged: bool = True) -> dict:
+def aggregate(results: list[dict], output: Path, *, source_data_unchanged: bool = True,
+              expected_cases: tuple[str, ...] | None = None,
+              required_mesh_rungs: tuple[float, ...] = DEFAULT_MESH_SPACINGS,
+              required_basis_rungs: tuple[float, ...] = DEFAULT_BASIS_SPACINGS) -> dict:
     """Separate candidate differences from qualified one-axis refinement evidence.
 
     A final matrix source mismatch invalidates every qualified comparison, even if
@@ -619,22 +634,34 @@ def aggregate(results: list[dict], output: Path, *, source_data_unchanged: bool 
                         evidence["reference_qualified"] = (_reference_qualified(left)
                                                            and _reference_qualified(right))
                         basis_refinement.append(evidence)
+    expected_cases = tuple(expected_cases) if expected_cases is not None else tuple(default_cases())
     case_status = {}
-    for name, rows in by_case.items():
-        qualified_mesh = [item for item in mesh_refinement if item["case"] == name and item.get("reference_qualified") is True]
-        qualified_basis = [item for item in basis_refinement if item["case"] == name and item.get("reference_qualified") is True]
-        mesh_pair = _qualified_evidence_pair(
-            _comparison_endpoint_rows(rows, qualified_mesh),
-            maximum_relative_time=REFERENCE_TIME_CONVERGENCE_RELATIVE)
-        basis_pair = _qualified_evidence_pair(
-            _comparison_endpoint_rows(rows, qualified_basis),
-            maximum_relative_time=REFERENCE_TIME_CONVERGENCE_RELATIVE)
-        accepted = bool(source_data_unchanged and mesh_pair and basis_pair)
+    for name in expected_cases:
+        rows = by_case.get(name, [])
+        qualified_mesh = [item for item in mesh_refinement if item["case"] == name]
+        qualified_basis = [item for item in basis_refinement if item["case"] == name]
+        mesh_pair = _qualified_edge(qualified_mesh, kind="mesh_refinement")
+        basis_pair = _qualified_edge(qualified_basis, kind="basis_refinement")
+        # Complete declared-rung coverage is distinct from a diagnostic edge:
+        # .625 m and custom bases remain visible but cannot qualify this study.
+        actual_mesh = {float(row["request"]["mesh_spacing_m"]) for row in rows
+                       if _dense_live_qualified(row) and _reference_qualified(row)}
+        actual_basis = {float(row["request"]["basis_spacing_m"]) for row in rows
+                        if _dense_live_qualified(row) and _reference_qualified(row)
+                        and row.get("actual_basis", {}).get("control_station_m") is not None}
+        mesh_coverage = set(required_mesh_rungs).issubset(actual_mesh)
+        basis_coverage = set(required_basis_rungs).issubset(actual_basis)
+        accepted = bool(source_data_unchanged and mesh_pair and basis_pair
+                        and mesh_coverage and basis_coverage)
         case_status[name] = {"mesh_evidence": mesh_pair, "basis_evidence": basis_pair,
+                             "mesh_rung_coverage": sorted(actual_mesh),
+                             "basis_rung_coverage": sorted(actual_basis),
+                             "required_mesh_rungs": list(required_mesh_rungs),
+                             "required_basis_rungs": list(required_basis_rungs),
                              "accepted": accepted,
                              "status": "numerically_validated" if accepted else "incomplete",
                              "empirical": False}
-    all_cases_accepted = bool(case_status) and all(value["accepted"] for value in case_status.values())
+    all_cases_accepted = bool(expected_cases) and all(value["accepted"] for value in case_status.values())
     return {"attempts": len(results), "candidate_diagnostics": candidate_diagnostics,
             "mesh_refinement": mesh_refinement, "basis_refinement": basis_refinement,
             "case_status": case_status,
@@ -693,8 +720,13 @@ def run_matrix(args) -> dict:
     manifest["source_hashes_after"] = source_hashes(*(case.track for case in selected), form, surface)
     manifest["source_data_unchanged"] = manifest["source_hashes_before"] == manifest["source_hashes_after"]
     # Artifact paths stay relative to their case directory (attempt/solution.npz).
+    # A bounded subset may yield per-case diagnostics, but never a whole-study
+    # green result: aggregate against the complete preregistered case matrix.
     manifest["aggregate"] = aggregate(manifest["results"], output,
-                                      source_data_unchanged=manifest["source_data_unchanged"])
+                                      source_data_unchanged=manifest["source_data_unchanged"],
+                                      expected_cases=tuple(cases),
+                                      required_mesh_rungs=tuple(DEFAULT_MESH_SPACINGS),
+                                      required_basis_rungs=tuple(DEFAULT_BASIS_SPACINGS))
     _write_json_new_or_replace(output / "matrix.json", manifest)
     return manifest
 

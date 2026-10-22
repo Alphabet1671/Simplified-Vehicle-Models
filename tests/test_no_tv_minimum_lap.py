@@ -213,6 +213,27 @@ class NoTvMinimumLapHarnessTest(unittest.TestCase):
             self.assertFalse(result["checks"]["replay_agreement"])
             self.assertEqual(result["validation_status"], "failed")
 
+    def test_profile_step_exception_preserves_other_profile_records(self):
+        class Profile:
+            converged = True; status = "converged"; iterations = 1; lap_time = 1.0; max_change = 0.0
+        class Path:
+            distance = np.array([0., 1.]); x_north = np.array([0., 1.]); y_east = np.array([0., 0.])
+        class Trajectory:
+            reference = SimpleNamespace(source_station=np.array([0., 1.]))
+            spline = object(); coefficients = np.array([0.])
+            def to_path(self, stations): return Path()
+        solution = SimpleNamespace(trajectory=Trajectory(), state_evaluator=object())
+        def profile(*args, **kwargs):
+            if kwargs["step"] == .5: raise ValueError("fixture .5 failure")
+            return Profile()
+        with patch.object(harness, "OffsetTrajectory", return_value=Trajectory()), \
+             patch.object(harness, "capability_profile", side_effect=profile):
+            evidence = harness._fixed_path_profile_evidence(solution, harness.default_cases()["acceleration"], object())
+        self.assertFalse(evidence["available"])
+        self.assertEqual(len(evidence["candidate"]["profiles"]), 3)
+        self.assertEqual(evidence["candidate"]["profiles"][0]["status"], "converged")
+        self.assertEqual(evidence["candidate"]["profiles"][1]["status"], "exception")
+
     def test_json_serialization_converts_nonfinite_diagnostics_to_null(self):
         with tempfile.TemporaryDirectory() as directory:
             destination = Path(directory) / "result.json"
@@ -313,7 +334,7 @@ class NoTvMinimumLapHarnessTest(unittest.TestCase):
                         "mesh_spacing_m": mesh, "basis_spacing_m": 35.0},
                         "source_hashes_after": hashes if hashes is not None else {"input": "a"},
                         "surface_representation": "signed_transient_normalized_v1",
-                        "artifact": artifact, "objective_s": 5.0, "solver_succeeded": True,
+                        "artifact": artifact, "objective_s": 5.0, "status": "Solve_Succeeded", "solver_succeeded": True,
                         "dense_original_model": {"checks": {"geometry_consistency": True,
                         "dense_feasibility": dense}, "model_feasible": dense}}
             first = row(5.0, "mesh-5_basis-35_centerline/solution.npz", dense=False)
@@ -346,7 +367,7 @@ class NoTvMinimumLapHarnessTest(unittest.TestCase):
                              "source_hashes_after": {"input": "same"},
                              "surface_representation": "signed_transient_normalized_v1",
                              "artifact": f"{attempt}/solution.npz", "objective_s": 5.0,
-                             "solver_succeeded": True, "dense_original_model": {"checks": {
+                             "status": "Solve_Succeeded", "solver_succeeded": True, "dense_original_model": {"checks": {
                              "geometry_consistency": True, "dense_feasibility": True}, "model_feasible": True}})
             report = harness.aggregate(rows, root)
             final_source_changed = harness.aggregate(rows, root, source_data_unchanged=False)
@@ -364,7 +385,7 @@ class NoTvMinimumLapHarnessTest(unittest.TestCase):
             rows = []
             for attempt, mesh, basis, grid in (("m5b35", 5.0, 35.0, [0., 1.]),
                                                ("m25b35", 2.5, 35.0, [0., 1.]),
-                                               ("m5b12", 5.0, 12.0, [0., .5, 1.])):
+                                               ("m5b175", 5.0, 17.5, [0., .5, 1.])):
                 target = case / attempt; target.mkdir()
                 np.savez(target / "solution.npz", distance=np.array([0., 1.]),
                          offset=np.zeros(2), speed=np.array([10., 10.]), curvature=np.zeros(2))
@@ -372,15 +393,15 @@ class NoTvMinimumLapHarnessTest(unittest.TestCase):
                              "seed": "centerline", "settings": {"tolerance": 1e-6}, "source_hashes": {"input": "same"},
                              "mesh_spacing_m": mesh, "basis_spacing_m": basis}, "source_hashes_after": {"input": "same"},
                              "surface_representation": "signed_transient_normalized_v1", "artifact": f"{attempt}/solution.npz",
-                             "objective_s": 5.0, "solver_succeeded": True, "actual_basis": {"control_station_m": grid},
+                             "objective_s": 5.0, "status": "Solve_Succeeded", "solver_succeeded": True, "actual_basis": {"control_station_m": grid},
                              "dense_original_model": {"checks": {"geometry_consistency": True, "dense_feasibility": True}, "model_feasible": True},
                              "checks": {"matched_baseline": True, "replay_agreement": True},
                              "reference": {"available": True, "empirical": False}})
             report = harness.aggregate(rows, root)
             rows[-1]["checks"]["replay_agreement"] = False
             incomplete = harness.aggregate(rows, root)
-        self.assertTrue(report["strict_aggregate"]["accepted"])
-        self.assertEqual(report["case_status"]["acceleration"]["status"], "numerically_validated")
+        self.assertFalse(report["strict_aggregate"]["accepted"])
+        self.assertEqual(report["case_status"]["acceleration"]["status"], "incomplete")
         self.assertFalse(incomplete["strict_aggregate"]["accepted"])
         self.assertEqual(incomplete["case_status"]["acceleration"]["status"], "incomplete")
         # A passing mesh pair cannot borrow unrelated passing rows for a basis pair.
@@ -388,6 +409,37 @@ class NoTvMinimumLapHarnessTest(unittest.TestCase):
         rows[0]["checks"]["matched_baseline"] = False
         no_mesh = harness.aggregate(rows, root)
         self.assertFalse(no_mesh["strict_aggregate"]["accepted"])
+
+    def test_aggregate_does_not_borrow_disjoint_edge_endpoints(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); case = root / "acceleration"; case.mkdir()
+            rows = []
+            # Mesh edge (a,b) and basis edge (a,c) have reference flags, but
+            # their source/settings differ so no single axis edge is qualified.
+            for attempt, mesh, basis, grid, settings in (("a", 5., 35., [0., 1.], {"tolerance": 1e-6}),
+                                                         ("b", 2.5, 35., [0., 1.], {"tolerance": 1e-6}),
+                                                         ("c", 5., 17.5, [0., .5, 1.], {"tolerance": 1e-8})):
+                target = case / attempt; target.mkdir()
+                np.savez(target / "solution.npz", distance=np.array([0., 1.]), offset=np.zeros(2),
+                         speed=np.ones(2), curvature=np.zeros(2))
+                rows.append({"attempt_id": attempt, "request": {"case": {"name": "acceleration"}, "seed": "centerline",
+                             "settings": settings, "source_hashes": {"input": "same"}, "mesh_spacing_m": mesh, "basis_spacing_m": basis},
+                             "source_hashes_after": {"input": "same"}, "surface_representation": "signed_transient_normalized_v1",
+                             "artifact": f"{attempt}/solution.npz", "objective_s": 5., "status": "Solve_Succeeded", "solver_succeeded": True,
+                             "actual_basis": {"control_station_m": grid}, "dense_original_model": {"checks": {"geometry_consistency": True, "dense_feasibility": True}, "model_feasible": True},
+                             "checks": {"matched_baseline": True, "replay_agreement": True}, "reference": {"available": True, "empirical": False}})
+            report = harness.aggregate(rows, root, expected_cases=("acceleration",),
+                                       required_mesh_rungs=(5., 2.5), required_basis_rungs=(35., 17.5))
+        self.assertFalse(report["strict_aggregate"]["accepted"])
+        self.assertIsNone(report["case_status"]["acceleration"]["basis_evidence"])
+
+    def test_dense_qualification_rejects_failed_solver_status_despite_true_flags(self):
+        row = {"status": "Maximum_Iterations_Exceeded", "solver_succeeded": True,
+               "artifact": "solution.npz", "dense_original_model": {"checks": {
+               "geometry_consistency": True, "dense_feasibility": True}, "model_feasible": True}}
+        self.assertFalse(harness._dense_live_qualified(row))
+        row["status"] = "Solve_Succeeded"
+        self.assertTrue(harness._dense_live_qualified(row))
 
     def test_aggregate_rejects_nominal_basis_change_with_identical_actual_grid(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -404,7 +456,7 @@ class NoTvMinimumLapHarnessTest(unittest.TestCase):
                              "source_hashes_after": {"input": "same"},
                              "surface_representation": "signed_transient_normalized_v1",
                              "artifact": f"{attempt}/solution.npz", "objective_s": 5.0,
-                             "solver_succeeded": True, "dense_original_model": {"checks": {
+                             "status": "Solve_Succeeded", "solver_succeeded": True, "dense_original_model": {"checks": {
                              "geometry_consistency": True, "dense_feasibility": True}, "model_feasible": True}})
             report = harness.aggregate(rows, root)
         self.assertEqual(len(report["candidate_diagnostics"]), 1)
@@ -425,7 +477,7 @@ class NoTvMinimumLapHarnessTest(unittest.TestCase):
                              "source_hashes_after": {"input": "changed"} if mesh == 2.5 else {"input": "same"},
                              "surface_representation": "signed_transient_normalized_v1",
                              "artifact": f"{attempt}/solution.npz", "objective_s": 5.0,
-                             "solver_succeeded": True, "dense_original_model": {"checks": {
+                             "status": "Solve_Succeeded", "solver_succeeded": True, "dense_original_model": {"checks": {
                              "geometry_consistency": True, "dense_feasibility": True}, "model_feasible": True}})
             report = harness.aggregate(rows, root, source_data_unchanged=True)
         self.assertEqual(len(report["candidate_diagnostics"]), 1)

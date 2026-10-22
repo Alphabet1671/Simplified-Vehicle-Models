@@ -63,6 +63,7 @@ class ReplayAdapterTest(unittest.TestCase):
         self.assertEqual(sample.lap_time, 9.5)
         self.assertTrue(sample.feasible)
         np.testing.assert_array_equal(sample.speed, lap.speed)
+        self.assertIsNone(sample.reference_distance)
         self.assertFalse(PointMassReplay(object(), LapMode.FLYING).consumes_controller)
 
     def test_point_mass_replay_rejects_a_controller(self):

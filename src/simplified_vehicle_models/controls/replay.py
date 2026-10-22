@@ -84,8 +84,11 @@ class PointMassReplay:
             )
         lap = solve_lap(self.vehicle, track, self.lap_mode,
                         tolerance=self.tolerance, maximum_iterations=self.maximum_iterations)
-        return ReplaySample(track.distance, lap.speed, bool(lap.converged),
-                            float(lap.lap_time), tuple(lap.active_longitudinal_constraint))
+        return ReplaySample(
+            track.distance, lap.speed, bool(lap.converged), float(lap.lap_time),
+            tuple(lap.active_longitudinal_constraint),
+            None if path.reference_distance is None else np.asarray(path.reference_distance, dtype=float),
+        )
 
 
 REPLAY_ADAPTERS = {}

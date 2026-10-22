@@ -58,7 +58,7 @@ DEFAULT_SPLINE_CONTROL_SPACING = 10.0
 #: Generated artifacts whose reuse would overwrite a previous run.
 GENERATED_LINE_ARTIFACTS = (
     "line.csv", "racing_line.csv", "racing_line_track.csv",
-    "racing_line_track.xml", "rebuilt_width.csv", "summary.json",
+    "racing_line_track.xml", "rebuilt_width.csv", "trajectory.npz", "summary.json",
 )
 #: Acceptance checks that every controller-mode comparison must report.
 GATE_NAMES = (
@@ -239,6 +239,55 @@ def _write_rebuilt_track(source: Path, output: Path, path) -> tuple[Path, Path]:
     ET.indent(root, space="  ")
     ET.ElementTree(root).write(xml_path, encoding="utf-8", xml_declaration=True)
     return xml_path, csv_path
+
+
+def _write_trajectory_metadata(path: Path, solution) -> None:
+    """Persist exact spline trajectory state needed to reproduce an export."""
+    trajectory = getattr(solution, "trajectory", None)
+    if trajectory is None:
+        return
+    midpoint = getattr(solution, "midpoint_acceleration", None)
+    if midpoint is None:
+        raise ValueError("analytic spline solution is missing midpoint acceleration")
+    reference_station = np.asarray(trajectory.reference.source_station, dtype=float)
+    reference = trajectory.reference.evaluate(reference_station)
+    arrays = {
+        "source_reference_station": reference_station,
+        "reference_north": np.asarray(reference.north, dtype=float),
+        "reference_east": np.asarray(reference.east, dtype=float),
+        "map_reference_station": np.asarray(trajectory.station_map.reference_station, dtype=float),
+        "path_station": np.asarray(trajectory.station_map.path_station, dtype=float),
+        "control_station": np.asarray(trajectory.spline.control_distance, dtype=float),
+        "coefficients": np.asarray(solution.coefficients, dtype=float),
+        "node_station": np.asarray(solution.distance, dtype=float),
+        "node_speed": np.asarray(solution.speed, dtype=float),
+        "node_acceleration": np.asarray(solution.acceleration, dtype=float),
+        "midpoint_acceleration": np.asarray(midpoint, dtype=float),
+    }
+    if any(value.ndim != 1 or not np.all(np.isfinite(value)) for value in arrays.values()):
+        raise ValueError("analytic spline trajectory metadata must be finite one-dimensional arrays")
+    if (arrays["map_reference_station"].shape != arrays["path_station"].shape
+            or arrays["reference_north"].shape != arrays["source_reference_station"].shape
+            or arrays["reference_east"].shape != arrays["source_reference_station"].shape):
+        raise ValueError("trajectory reference and station map arrays must have matching shape")
+    if arrays["control_station"].shape != arrays["coefficients"].shape:
+        raise ValueError("trajectory controls and coefficients must have matching shape")
+    if (arrays["node_station"].shape != arrays["node_acceleration"].shape
+            or arrays["node_speed"].shape != arrays["node_station"].shape):
+        raise ValueError("trajectory node arrays must have matching shape")
+    if arrays["midpoint_acceleration"].size != arrays["node_station"].size - 1:
+        raise ValueError("trajectory midpoint accelerations must match mesh intervals")
+    metadata = json.dumps({
+        "schema_version": 1,
+        "reference_interpolant": "scipy.make_interp_spline",
+        "reference_degree": 5 if reference_station.size >= 6 else 3,
+        "is_closed": bool(trajectory.reference.is_closed),
+        "offset_control_spacing_m": float(trajectory.spline.control_spacing),
+    }, sort_keys=True)
+    # Do not overwrite a reproducibility artifact even if called outside runner
+    # preflight.
+    with path.open("xb") as handle:
+        np.savez_compressed(handle, metadata=np.array(metadata), **arrays)
 
 
 def _write_line(path: Path, solution, curvature_rate=None) -> None:
@@ -784,6 +833,8 @@ def run(args) -> dict:
         else None
     )
     _write_line(output / "line.csv", finest, line_rate)
+    if solver == "spline":
+        _write_trajectory_metadata(output / "trajectory.npz", finest)
     if solver == "spline" and path_smoothing != 0.0:
         raise ValueError("smoothing is not permitted for a spline trajectory export")
     rebuilt = path_from_solution(track, finest, smoothing=path_smoothing)

@@ -27,6 +27,19 @@ OK
 
 The runner/gate-only subset also passed 71 tests. Existing synthetic closed-loop replay fixtures were corrected to sample reference-grid speeds using `path.reference_distance`, rather than treating path arclength as reference station. A dedicated real `fsae_2026_skidpad` zero-offset regression exports through `_write_rebuilt_track` then loads the emitted XML, confirming adaptive exact arc-length sampling meets existing loader checks without source mutation.
 
+Additional Task 2 regressions passed in this completion:
+
+```text
+PYTHONPATH=src:/tmp/casadi-runtime-2026-10-20 python3 -m unittest \
+  tests.test_analytic_line_pipeline tests.test_replay_adapter \
+  tests.test_line_trajectory tests.test_qss_spline_ocp tests.test_racing_line \
+  tests.test_closed_loop_line tests.test_minimum_time_line_gate -q
+Ran 76 tests
+OK
+```
+
+They cover attached-trajectory authority and no-smoothing, reference-station (not path-arclength) interpolation of nonconstant widths on a denser export grid, a nonunit `XY=(2s,0)` metric yielding path length 20 m and elapsed time 2 s at cap 10, inward-circle slowdown localization (`ell=90` to `s=100`), and rejection of incomplete analytic replay mapping before an otherwise matching time can be accepted. Spline runner output also persists an exclusive-create `trajectory.npz` reproducibility artifact with source-reference XY samples, explicit source-to-path station map, interpolation/closure metadata, control grid and coefficients, node station/speed/acceleration, and midpoint accelerations. `PointMassReplay` now carries an existing `PathCoordinates.reference_distance` directly.
+
 ## Discrepancies and concerns
 
 The coarse circle fixture’s shared XY fit has finite curvature discrepancy (maximum observed about `7.3e-7 1/m`), so its assertion now tests interpolation-accuracy scale rather than exact equality to its stored curvature column. Solver constraints remain on the authoritative fitted geometry.

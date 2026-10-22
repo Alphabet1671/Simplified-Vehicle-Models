@@ -58,7 +58,23 @@ class NoTvMinimumLapHarnessTest(unittest.TestCase):
         self.assertEqual(tuple(serialized["settings"]["off_collocation_fractions"]),
                          harness.DEFAULT_OFF_COLLOCATION_FRACTIONS)
         self.assertEqual(request["settings"]["tolerance"], 1e-6)
+        self.assertEqual(request["settings"]["hessian_approximation"], "exact")
         self.assertEqual(request["dense_maximum_refinements"], 4)
+
+    def test_attempt_persists_explicit_hessian_approximation(self):
+        request = harness.build_attempt(harness.default_cases()["acceleration"],
+            mesh_spacing_m=5.0, basis_spacing_m=35.0, maximum_iterations=7,
+            wall_cap_s=3.0, seed_name="centerline", formulation=Path("form.xml"),
+            surface=Path("surface.npz"), hessian_approximation="limited-memory")
+        self.assertEqual(request["settings"]["hessian_approximation"], "limited-memory")
+
+    def test_invalid_hessian_approximation_is_rejected(self):
+        case = harness.default_cases()["acceleration"]
+        with self.assertRaisesRegex(ValueError, "hessian_approximation"):
+            harness.build_attempt(case, mesh_spacing_m=5.0, basis_spacing_m=35.0,
+                maximum_iterations=7, wall_cap_s=3.0, seed_name="centerline",
+                formulation=Path("form.xml"), surface=Path("surface.npz"),
+                hessian_approximation="bad-hessian")
 
     def test_explicit_dense_sites_and_invalid_controls_are_rejected(self):
         case = harness.default_cases()["acceleration"]

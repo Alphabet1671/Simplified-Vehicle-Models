@@ -937,7 +937,7 @@ def solve_spline_line(track, corridor, surface, mesh, spline,
             # final residual and bound gate.
             "ipopt.acceptable_iter": 0,
             "ipopt.max_iter": remaining_iterations,
-            "ipopt.hessian_approximation": "exact",
+            "ipopt.hessian_approximation": settings.hessian_approximation,
             "ipopt.nlp_scaling_method": "gradient-based",
             "ipopt.mu_strategy": "adaptive",
             "ipopt.print_level": 0,

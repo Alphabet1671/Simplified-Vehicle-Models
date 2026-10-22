@@ -195,7 +195,8 @@ def build_attempt(case: MatrixCase, *, mesh_spacing_m: float, basis_spacing_m: f
                   formulation: Path, surface: Path, nlp_tolerance: float = DEFAULT_NLP_TOLERANCE,
                   off_collocation_divisions: int | None = None,
                   dense_maximum_refinements: int = DEFAULT_DENSE_MAXIMUM_REFINEMENTS,
-                  diagnostic_rungs: bool = False) -> dict:
+                  diagnostic_rungs: bool = False,
+                  hessian_approximation: str = "exact") -> dict:
     """Build a fully serializable solve request; this has no solver side effects."""
     allowed_meshes = DEFAULT_MESH_SPACINGS + ((DIAGNOSTIC_MESH_SPACING,) if diagnostic_rungs else ())
     allowed_basis = diagnostic_rungs or basis_spacing_m in DEFAULT_BASIS_SPACINGS
@@ -212,10 +213,14 @@ def build_attempt(case: MatrixCase, *, mesh_spacing_m: float, basis_spacing_m: f
         raise ValueError("wall cap must be finite and positive")
     if seed_name not in {"centerline", "low_amplitude_offset"}: 
         raise ValueError("seed must be centerline or low_amplitude_offset")
+    if (not isinstance(hessian_approximation, str)
+            or hessian_approximation not in {"exact", "limited-memory"}):
+        raise ValueError("hessian_approximation must be exact or limited-memory")
     settings = QssSettings(tolerance=_validate_finite_positive("nlp_tolerance", nlp_tolerance),
                            maximum_iterations=int(maximum_iterations),
                            start_speed=float(case.start_speed_mps), open_regularisation=1e-6,
-                           off_collocation_fractions=_off_collocation_fractions(off_collocation_divisions))
+                           off_collocation_fractions=_off_collocation_fractions(off_collocation_divisions),
+                           hessian_approximation=hessian_approximation)
     return {
         "case": asdict(case), "mesh_spacing_m": float(mesh_spacing_m),
         "basis_spacing_m": float(basis_spacing_m), "seed": seed_name,
@@ -477,7 +482,8 @@ def run_matrix(args) -> dict:
                         nlp_tolerance=getattr(args, "nlp_tolerance", DEFAULT_NLP_TOLERANCE),
                         off_collocation_divisions=getattr(args, "off_collocation_divisions", None),
                         dense_maximum_refinements=getattr(args, "dense_maximum_refinements", DEFAULT_DENSE_MAXIMUM_REFINEMENTS),
-                        diagnostic_rungs=getattr(args, "diagnostic_rungs", False))
+                        diagnostic_rungs=getattr(args, "diagnostic_rungs", False),
+                        hessian_approximation=getattr(args, "hessian_approximation", "exact"))
                     # Each spawned solve owns a fresh input snapshot. Do not reuse
                     # the matrix-start hashes: sources can change between attempts.
                     request["source_hashes"] = source_hashes(case.track, form, surface)
@@ -515,6 +521,8 @@ def main(argv=None):
     parser.add_argument("--seeds", type=lambda x: x.split(","), default=["centerline", "low_amplitude_offset"])
     parser.add_argument("--maximum-iterations", type=int, default=200)
     parser.add_argument("--nlp-tolerance", type=float, default=DEFAULT_NLP_TOLERANCE)
+    parser.add_argument("--hessian-approximation", choices=("exact", "limited-memory"),
+                        default="exact", help="IPOPT Hessian model for the spline solve")
     parser.add_argument("--off-collocation-divisions", type=int, default=None,
                         help="explicit interior i/N sites excluding midpoint; omitted preserves legacy sites")
     parser.add_argument("--dense-maximum-refinements", type=int, default=DEFAULT_DENSE_MAXIMUM_REFINEMENTS)

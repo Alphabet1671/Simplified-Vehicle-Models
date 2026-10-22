@@ -98,6 +98,24 @@ class SplineGeometryTest(unittest.TestCase):
             np.testing.assert_allclose(rate_track, np.zeros(positions.size), atol=1.0e-9)
 
 
+class SplineHessianSettingsTest(unittest.TestCase):
+    def test_default_hessian_approximation_is_exact(self) -> None:
+        from simplified_vehicle_models.solvers.qss_line_ocp import QssSettings
+        self.assertEqual(QssSettings().hessian_approximation, "exact")
+
+    def test_invalid_hessian_approximation_is_rejected(self) -> None:
+        from simplified_vehicle_models.solvers.qss_line_ocp import QssSettings, _validate_inputs
+        with self.assertRaisesRegex(ValueError, "hessian_approximation"):
+            _validate_inputs(None, None, None, None,
+                             QssSettings(hessian_approximation="not-a-hessian"))
+
+    def test_legacy_solver_rejects_nondefault_hessian_before_casadi_import(self) -> None:
+        from simplified_vehicle_models.solvers.qss_line_ocp import QssSettings, solve_line
+        with self.assertRaisesRegex(ValueError, "solve_spline_line"):
+            solve_line(None, None, None, None,
+                       QssSettings(hessian_approximation="limited-memory"))
+
+
 @unittest.skipUnless(CASADI, "CasADi is not installed")
 class SplineTranscriptionTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -949,22 +967,30 @@ class SplineTranscriptionTest(unittest.TestCase):
             np.full((3, 3), 3.), np.full((3, 3), -8.), np.full(3, 30.), "straight",
         )
         mesh = np.linspace(0., 20., 17)
-        settings = QssSettings(start_speed=10., maximum_iterations=2000)
-        solution = solve_spline_line(track, corridor, surface, mesh,
-                                     OffsetSpline(track, control_spacing=5.), settings)
-        self.assertEqual(solution.status, "Solve_Succeeded")
-        stations = np.linspace(0., 20., 257)
-        dense = solution.state_evaluator.evaluate(stations)
-        self.assertLessEqual(float(np.max(dense["acceleration"])), 3.0 + 2.e-6)
-        self.assertGreaterEqual(float(np.min(dense["acceleration"])), -8.0 - 2.e-6)
-        analytic = (np.sqrt(10.0**2 + 2.0 * 3.0 * 20.0) - 10.0) / 3.0
-        self.assertAlmostEqual(solution.lap_time, analytic, delta=2.0e-3)
-        self.assertEqual(solution.time_quadrature,
-                         "gauss_legendre_16_energy_hermite_knot_union_v1")
-        self.assertEqual(solution.time_quadrature_metadata["order"], 16)
-        report = validate_line(solution, corridor, surface, samples_per_element=8)
-        peak = next(item for item in report["diagnostics"] if item["name"] == "acceleration_max")
-        self.assertTrue(peak["passed"])
+        solutions = {}
+        for hessian_approximation in ("exact", "limited-memory"):
+            with self.subTest(hessian_approximation=hessian_approximation):
+                settings = QssSettings(start_speed=10., maximum_iterations=2000,
+                                       hessian_approximation=hessian_approximation)
+                solution = solve_spline_line(
+                    track, corridor, surface, mesh, OffsetSpline(track, control_spacing=5.), settings,
+                )
+                self.assertEqual(solution.status, "Solve_Succeeded")
+                stations = np.linspace(0., 20., 257)
+                dense = solution.state_evaluator.evaluate(stations)
+                self.assertLessEqual(float(np.max(dense["acceleration"])), 3.0 + 2.e-6)
+                self.assertGreaterEqual(float(np.min(dense["acceleration"])), -8.0 - 2.e-6)
+                analytic = (np.sqrt(10.0**2 + 2.0 * 3.0 * 20.0) - 10.0) / 3.0
+                self.assertAlmostEqual(solution.lap_time, analytic, delta=2.0e-3)
+                self.assertEqual(solution.time_quadrature,
+                                 "gauss_legendre_16_energy_hermite_knot_union_v1")
+                self.assertEqual(solution.time_quadrature_metadata["order"], 16)
+                report = validate_line(solution, corridor, surface, samples_per_element=8)
+                peak = next(item for item in report["diagnostics"] if item["name"] == "acceleration_max")
+                self.assertTrue(peak["passed"])
+                solutions[hessian_approximation] = solution
+        self.assertAlmostEqual(solutions["limited-memory"].lap_time,
+                               solutions["exact"].lap_time, delta=2.0e-3)
 
     def test_spline_solution_respects_dense_corridor(self) -> None:
         from simplified_vehicle_models.solvers.qss_line_ocp import QssSettings, build_mesh

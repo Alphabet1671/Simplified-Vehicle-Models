@@ -13,6 +13,9 @@ import numpy as np
 from simplified_vehicle_models.core.types import FloatArray
 
 
+HESSIAN_APPROXIMATIONS = ("exact", "limited-memory")
+
+
 @dataclass(frozen=True, slots=True)
 class QssSettings:
     """Transcription and solver settings."""
@@ -30,6 +33,10 @@ class QssSettings:
     # Interior sites for spline-OCP physical constraints.  They supplement the
     # Hermite--Simpson midpoint; they are not extra dynamics defects.
     off_collocation_fractions: tuple[float, ...] = (0.125, 0.25, 0.75, 0.875)
+    # IPOPT curvature model used only by the spline transcription.  The legacy
+    # per-node solver rejects a non-default selection rather than silently
+    # changing its established exact-Hessian behavior.
+    hessian_approximation: str = "exact"
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,6 +71,12 @@ def _validate_inputs(track, corridor, surface, mesh, settings):
         raise ValueError("regularisation must be finite and nonnegative")
     if not isinstance(settings.tolerance_homotopy, (bool, np.bool_)):
         raise ValueError("tolerance_homotopy must be a boolean")
+    if (not isinstance(settings.hessian_approximation, str)
+            or settings.hessian_approximation not in HESSIAN_APPROXIMATIONS):
+        raise ValueError(
+            "hessian_approximation must be one of "
+            f"{', '.join(HESSIAN_APPROXIMATIONS)}"
+        )
     if not math.isfinite(settings.start_speed) or settings.start_speed < 0.0:
         raise ValueError("start_speed must be finite and nonnegative")
     if not math.isfinite(settings.open_regularisation) or settings.open_regularisation < 0.0:
@@ -546,6 +559,11 @@ def _tolerance_schedule(settings: QssSettings) -> tuple[float, ...]:
 
 def solve_line(track, corridor, surface, mesh, settings: QssSettings, *, seed: FloatArray | None = None) -> QssSolution:
     """Solve the free-line minimum-time problem on a fixed mesh."""
+    if settings.hessian_approximation != "exact":
+        raise ValueError(
+            "hessian_approximation='limited-memory' is supported only by "
+            "solve_spline_line; solve_line requires 'exact'"
+        )
     import casadi as ca
     built=build_ocp(track,corridor,surface,mesh,settings); count=built["count"]
     vector=initial_guess(track,corridor,surface,mesh,settings) if seed is None else np.asarray(seed,dtype=float).ravel()

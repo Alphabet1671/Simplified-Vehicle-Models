@@ -74,11 +74,15 @@ class LineValidationTest(unittest.TestCase):
 
     def test_actual_hermite_last_cell_control_overshoot_is_detected(self):
         solution, corridor, surface = _fixture()
-        # Real Task-2 evaluator: node controls are legal but the last element's
-        # midpoint quadratic control peaks above the amax=3 surface off-node.
+        # Real Task-2 evaluator: *all* node and midpoint collocation controls
+        # satisfy amax=3, yet the last quadratic control reaches 3.45 at x=.25.
+        node_acceleration = np.array([3., 3., -.6])
+        midpoint_acceleration = np.array([3., 3.])
+        self.assertTrue(np.all(node_acceleration <= 3.))
+        self.assertTrue(np.all(midpoint_acceleration <= 3.))
         solution.state_evaluator = _SplineStateEvaluator(
             solution.trajectory, solution.distance, np.array([10., 11.4, 12.8]),
-            np.array([3., 3., 3.]), np.array([3., 3.45]),
+            node_acceleration, midpoint_acceleration,
         )
         # Use its independently reconstructed physical time, avoiding an
         # intentional time diagnostic from masking the acceleration assertion.
@@ -91,7 +95,8 @@ class LineValidationTest(unittest.TestCase):
         peak = next(item for item in report["diagnostics"] if item["name"] == "acceleration_max")
         self.assertFalse(report["checks"]["dense_feasibility"])
         self.assertGreater(peak["maximum_violation"], .44)
-        self.assertGreater(peak["worst_station"], 7.0)
+        self.assertGreater(peak["worst_station"], 5.0)
+        self.assertLess(peak["worst_station"], 7.5)
 
     def test_dense_trajectory_not_supplied_nodes_detects_corridor_excursion(self):
         # The supplied solution has no nodal offset field: only the analytic

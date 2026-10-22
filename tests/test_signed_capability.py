@@ -147,6 +147,8 @@ class LinearProgramSignedCapabilityTest(unittest.TestCase):
                 construction_subdivisions=2, validation_grid=(5, 5),
                 heldout_validation_grid=(4, 4), cut_plane_attempts=0)
         self.assertEqual(chart.build_settings["interval_fit"], "linear_program")
+        self.assertEqual(chart.build_settings["vehicle_physics_hash"], "synthetic")
+        self.assertNotIn("model_hash", chart.build_settings)
         self.assertGreater(float((chart.acceleration_max-chart.acceleration_min).min()), 3.7)
         self.assertEqual(chart.validation["heldout_endpoint_checks"], 32)
 
@@ -155,3 +157,62 @@ class LinearProgramSignedCapabilityTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "interval_fit"):
             signed.build_signed_transient_capability(object(), interval_fit="unreviewed", curvature=np.array([0., .1]))
         self.assertEqual(signed.build_signed_transient_capability.__kwdefaults__["interval_fit"], "common_interval")
+
+class LinearProgramValidationTest(unittest.TestCase):
+    def test_lp_rejects_malformed_settings_before_physics(self):
+        from unittest.mock import patch
+        import simplified_vehicle_models.formulations.signed_capability as signed
+        cases = (
+            {"scan_points": 81.0}, {"refinement_steps": True},
+            {"speed_scan_points": "25"}, {"construction_subdivisions": 2.0},
+            {"endpoint_buffer": float("nan")}, {"domain_backoff": float("nan")},
+            {"minimum_interval_width": float("nan")}, {"acceleration_range": (-1.,)},
+            {"acceleration_range": (-1., float("nan"))}, {"acceleration_range": (1., -1.)},
+        )
+        base = dict(interval_fit="linear_program", curvature=np.array([-.1, .1]),
+                    u=np.array([0., 1.]), validation_grid=(2, 2), heldout_validation_grid=(2, 2))
+        for bad in cases:
+            with self.subTest(bad=bad), patch.object(signed, "maximum_vehicle_speed") as mechanical:
+                with self.assertRaisesRegex(ValueError, "invalid linear-program"):
+                    signed.build_signed_transient_capability(object(), **(base | bad))
+                mechanical.assert_not_called()
+
+
+class SignedCapabilityCliTest(unittest.TestCase):
+    def test_cli_rejects_existing_and_dangling_output_before_compile(self):
+        from unittest.mock import patch
+        from tools.model_data import build_signed_capability as cli
+        with tempfile.TemporaryDirectory() as directory:
+            for name, dangling in (("existing.npz", False), ("dangling.npz", True)):
+                output = Path(directory) / name
+                if dangling:
+                    output.symlink_to(Path(directory) / "missing.npz")
+                else:
+                    output.touch()
+                with self.subTest(name=name), patch.object(cli, "compile_formulation") as compile_:
+                    with self.assertRaises(SystemExit) as exit_:
+                        cli.main(["--formulation", str(FORMULATION), "--output", str(output)])
+                    self.assertEqual(exit_.exception.code, 2)
+                    compile_.assert_not_called()
+
+    def test_cli_uses_only_mode_specific_builder_arguments(self):
+        from unittest.mock import patch
+        from tools.model_data import build_signed_capability as cli
+        class Chart:
+            representation = "signed_transient_normalized_v1"
+            provenance_hash = "vehicle"
+            build_settings = {}
+            validation = {}
+        with tempfile.TemporaryDirectory() as directory:
+            for fit in ("linear_program", "common_interval"):
+                output = Path(directory) / f"{fit}.npz"
+                with self.subTest(fit=fit), patch.object(cli, "compile_formulation", return_value=type("X", (), {"model": object()})()), \
+                     patch.object(cli, "point_mass_view_of_planar", return_value=object()), \
+                     patch.object(cli, "build_signed_transient_capability", return_value=Chart()) as build, \
+                     patch.object(cli, "save_signed_transient_capability"):
+                    self.assertEqual(cli.main(["--formulation", str(FORMULATION), "--output", str(output), "--interval-fit", fit]), 0)
+                    kwargs = build.call_args.kwargs
+                    self.assertEqual(kwargs["interval_fit"], fit)
+                    self.assertEqual("minimum_interval_width" in kwargs, fit == "linear_program")
+                    self.assertEqual(build.return_value.build_settings["source_manifest"]["formulation_path"], str(FORMULATION.resolve()))
+                    self.assertRegex(build.return_value.build_settings["source_manifest"]["formulation_sha256"], r"^[0-9a-f]{64}$")

@@ -6,6 +6,7 @@ original-physics validation rather than saving placeholders.
 """
 from __future__ import annotations
 import argparse
+import hashlib
 import os
 from pathlib import Path
 import sys
@@ -15,6 +16,15 @@ if __package__ in (None, ""):
 from simplified_vehicle_models.compiler.compile import compile_formulation
 from simplified_vehicle_models.formulations.point_mass import point_mass_view_of_planar
 from simplified_vehicle_models.formulations.signed_capability import build_signed_transient_capability, save_signed_transient_capability
+
+
+def _sha256(path: Path) -> str:
+    """Return a manifest hash of an input source file."""
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -34,6 +44,8 @@ def main(argv: list[str] | None = None) -> int:
     # symlink, preserving exclusive output semantics without needless work.
     if os.path.lexists(args.output):
         parser.error(f"refusing to overwrite existing output: {args.output}")
+    source_manifest = {"formulation_path": str(args.formulation.resolve()),
+                       "formulation_sha256": _sha256(args.formulation)}
     vehicle=point_mass_view_of_planar(compile_formulation(str(args.formulation)).model)
     common = dict(curvature=np.linspace(-args.curvature_limit,args.curvature_limit,args.curvature_count),
         u=np.linspace(0.,1.,args.u_count), maximum_speed=args.maximum_speed,
@@ -43,8 +55,9 @@ def main(argv: list[str] | None = None) -> int:
         validation_grid=(113,211), heldout_validation_grid=(107,199), cut_plane_attempts=2)
     chart=build_signed_transient_capability(vehicle, interval_fit=args.interval_fit,
         **(common | (lp if args.interval_fit == "linear_program" else {})))
+    chart.build_settings["source_manifest"] = source_manifest
     save_signed_transient_capability(chart,args.output)
-    print(f"wrote {args.output} representation={chart.representation} hash={chart.provenance_hash} fit={chart.build_settings.get('interval_fit', 'common_interval')} LP={chart.validation.get('LP_status', 'not-applicable')}")
+    print(f"wrote {args.output} representation={chart.representation} vehicle_physics_hash={chart.provenance_hash} source_sha256={source_manifest['formulation_sha256']} fit={chart.build_settings.get('interval_fit', 'common_interval')} LP={chart.validation.get('LP_status', 'not-applicable')}")
     return 0
 if __name__ == "__main__":
     raise SystemExit(main())

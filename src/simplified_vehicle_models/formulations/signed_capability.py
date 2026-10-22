@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import json
 import math
+import numbers
 from pathlib import Path
 from typing import Callable
 
@@ -360,12 +361,17 @@ def _build_linear_program_signed_transient_capability(
             or np.any(np.diff(u) <= 0) or u[0] != 0. or u[-1] != 1.):
         raise ValueError("curvature and u must be increasing axes with u=[0,1]")
     grids = (validation_grid, heldout_validation_grid)
+    integer_settings = (scan_points, refinement_steps, speed_scan_points, construction_subdivisions, cut_plane_attempts)
     finite_settings = (speed_floor, endpoint_buffer, domain_backoff, minimum_interval_width)
-    finite_maximum_speed = maximum_speed is None or math.isfinite(float(maximum_speed))
+    valid_integer_settings = all(isinstance(x, numbers.Integral) and not isinstance(x, bool) for x in integer_settings)
+    valid_finite_settings = all(isinstance(x, numbers.Real) and not isinstance(x, bool) and math.isfinite(float(x)) for x in finite_settings)
+    finite_maximum_speed = maximum_speed is None or (isinstance(maximum_speed, numbers.Real) and not isinstance(maximum_speed, bool) and math.isfinite(float(maximum_speed)))
     valid_grids = all(isinstance(grid, tuple) and len(grid) == 2 and all(
-        isinstance(x, int) and not isinstance(x, bool) and x >= 2 for x in grid) for grid in grids)
-    if (not valid_grids or not isinstance(cut_plane_attempts, int) or isinstance(cut_plane_attempts, bool)
-            or not all(math.isfinite(float(x)) for x in finite_settings) or not finite_maximum_speed):
+        isinstance(x, numbers.Integral) and not isinstance(x, bool) and x >= 2 for x in grid) for grid in grids)
+    valid_range = (isinstance(acceleration_range, tuple) and len(acceleration_range) == 2
+        and all(isinstance(x, numbers.Real) and not isinstance(x, bool) and math.isfinite(float(x)) for x in acceleration_range)
+        and acceleration_range[0] < acceleration_range[1])
+    if not (valid_grids and valid_integer_settings and valid_finite_settings and finite_maximum_speed and valid_range):
         raise ValueError("invalid linear-program signed capability build settings")
     if (speed_floor <= 0 or scan_points < 3 or refinement_steps < 1 or speed_scan_points < 3
             or construction_subdivisions < 1 or endpoint_buffer < 0 or domain_backoff < 0
@@ -444,7 +450,7 @@ def _build_linear_program_signed_transient_capability(
     held_checks, held_failures=validate(lo,hi,heldout_validation_grid)
     if held_failures:
         raise ValueError("linear-program chart refused: independent validation failure")
-    settings={"interval_fit":"linear_program","fit_method":"sparse_shared_vertex_linear_program","acceleration_range":list(acceleration_range),"scan_points":scan_points,"refinement_steps":refinement_steps,"speed_scan_points":speed_scan_points,"maximum_speed":top,"endpoint_buffer":endpoint_buffer,"domain_backoff":domain_backoff,"minimum_interval_width":minimum_interval_width,"construction_subdivisions":construction_subdivisions,"actual_u":u.tolist(),"actual_curvature":curvature.tolist(),"model_hash":capability_hash(vehicle),"conservatism":"sampled inward buffer/domain backoff, not universal physical optimum"}
+    settings={"interval_fit":"linear_program","fit_method":"sparse_shared_vertex_linear_program","acceleration_range":list(acceleration_range),"scan_points":scan_points,"refinement_steps":refinement_steps,"speed_scan_points":speed_scan_points,"maximum_speed":top,"endpoint_buffer":endpoint_buffer,"domain_backoff":domain_backoff,"minimum_interval_width":minimum_interval_width,"construction_subdivisions":construction_subdivisions,"actual_u":u.tolist(),"actual_curvature":curvature.tolist(),"vehicle_physics_hash":capability_hash(vehicle),"conservatism":"sampled inward buffer/domain backoff, not universal physical optimum"}
     validation={"sampled":True,"construction_probe_count_initial":(u.size-1)*construction_subdivisions*(curvature.size-1)*construction_subdivisions + (u.size-1)*construction_subdivisions + (curvature.size-1)*construction_subdivisions + 1,"sample_counts":{"live_interval_evaluations":len(cache),"LP_vertices":n,"LP_constraints":len(probes)},"cut_plane_passes":passes,"validation_grid":list(validation_grid),"heldout_validation_grid":list(heldout_validation_grid),"validation_endpoint_checks":passes[-1]["endpoint_checks"],"heldout_endpoint_checks":held_checks,"failures":[],"LP_status":status,"claim":"distinct dense original-physics validation passed; sampled evidence only, not continuum certification"}
     return SignedTransientCapability(u,curvature,hi,lo,domains,speed_floor,capability_hash(vehicle),settings,validation)
 

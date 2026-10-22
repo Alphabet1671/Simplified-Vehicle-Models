@@ -1,0 +1,147 @@
+"""Tests for closed-loop replay correction of the spline minimum-time line."""
+
+import tempfile
+import unittest
+from pathlib import Path
+
+import numpy as np
+
+from simplified_vehicle_models.solvers.closed_loop_line import (
+    CAP_MARGIN,
+    ReplaySample,
+    correct_to_replay,
+)
+from simplified_vehicle_models.solvers.qss_line_ocp import QssSettings, build_mesh
+from simplified_vehicle_models.solvers.qss_spline_ocp import solve_spline_line
+from simplified_vehicle_models.tracks.corridor import corridor_from_track
+from simplified_vehicle_models.tracks.offset_spline import OffsetSpline
+from simplified_vehicle_models.tracks.profile import load_track
+from tests.test_qss_spline_ocp import _surface
+from tests.test_track_width import _write_circle_track
+
+
+def _case(directory: str, *, spacing: float = 3.0):
+    """Build the circle track, corridor, spline, mesh, and settings for a test."""
+    track = load_track(_write_circle_track(
+        Path(directory), radius=40.0, nodes=72, half_width=3.0,
+    ))
+    corridor = corridor_from_track(track)
+    spline = OffsetSpline(track, control_spacing=10.0)
+    mesh = build_mesh(track, spacing)
+    return track, corridor, spline, mesh, QssSettings(maximum_iterations=2000)
+
+
+class ClosedLoopCorrectionTest(unittest.TestCase):
+    def test_caps_are_lowered_when_replay_is_infeasible(self):
+        with tempfile.TemporaryDirectory() as directory:
+            track = load_track(_write_circle_track(Path(directory), radius=40.0, nodes=72,
+                                                   half_width=3.0))
+            corridor = corridor_from_track(track)
+            spline = OffsetSpline(track, control_spacing=10.0)
+            mesh = build_mesh(track, 3.0)
+            calls = []
+
+            def replay(path, controller):
+                calls.append(path.distance.copy())
+                return ReplaySample(path.distance, np.full(path.distance.size, 8.0), False,
+                                    float(path.lap_length / 8.0), ('speed',))
+
+            result = correct_to_replay(track, corridor, _surface(), mesh, spline,
+                                       QssSettings(maximum_iterations=2000), None, replay,
+                                       maximum_rounds=2)
+            self.assertEqual(result.rounds, 2)
+            self.assertFalse(result.accepted)
+            self.assertGreaterEqual(len(calls), 2)
+            self.assertTrue(np.all(result.speed_caps[-1] <= result.speed_caps[0]))
+            self.assertTrue(np.any(result.speed_caps[-1] < result.speed_caps[0]))
+
+    def test_matching_feasible_replay_is_accepted_on_the_first_round(self):
+        with tempfile.TemporaryDirectory() as directory:
+            track, corridor, spline, mesh, settings = _case(directory, spacing=5.0)
+            surface = _surface()
+            baseline = solve_spline_line(
+                track, corridor, surface, mesh, spline, settings,
+            )
+
+            def replay(path, controller):
+                # The speed trace is deliberately inconsistent with the reported
+                # time to prove that the adapter's own lap time is authoritative.
+                return ReplaySample(
+                    path.distance, np.full(path.distance.size, 8.0), True,
+                    baseline.lap_time,
+                )
+
+            result = correct_to_replay(
+                track, corridor, surface, mesh, spline, settings, None, replay,
+            )
+
+            self.assertTrue(result.accepted)
+            self.assertEqual(result.rounds, 1)
+            self.assertEqual(len(result.speed_caps), 1)
+            np.testing.assert_allclose(
+                result.speed_caps[0], baseline.speed, rtol=0.0, atol=1.0e-9,
+            )
+            self.assertFalse(result.speed_caps[0].flags.writeable)
+            self.assertEqual(result.cap_margin, CAP_MARGIN)
+            self.assertAlmostEqual(result.replay_time, baseline.lap_time)
+
+    def test_time_disagreement_lowers_caps_until_replay_matches(self):
+        with tempfile.TemporaryDirectory() as directory:
+            track, corridor, spline, mesh, settings = _case(directory, spacing=5.0)
+            surface = _surface()
+            baseline = solve_spline_line(
+                track, corridor, surface, mesh, spline, settings,
+            )
+            slow_speed = 0.9 * np.asarray(baseline.speed, dtype=float)
+            cap = np.maximum(
+                np.minimum(np.asarray(baseline.speed, dtype=float), slow_speed)
+                - CAP_MARGIN,
+                settings.minimum_speed,
+            )
+            capped = solve_spline_line(
+                track, corridor, surface, mesh, spline, settings, speed_cap=cap,
+            )
+            calls = []
+
+            def replay(path, controller):
+                calls.append(path.distance.copy())
+                if len(calls) == 1:
+                    return ReplaySample(
+                        path.distance,
+                        np.interp(path.distance, baseline.distance, slow_speed),
+                        True, baseline.lap_time / 0.9,
+                    )
+                return ReplaySample(
+                    path.distance,
+                    np.interp(path.distance, capped.distance, capped.speed),
+                    True, capped.lap_time,
+                )
+
+            result = correct_to_replay(
+                track, corridor, surface, mesh, spline, settings, None, replay,
+                maximum_rounds=3,
+            )
+
+            self.assertTrue(result.accepted)
+            self.assertEqual(result.rounds, 2)
+            self.assertEqual(len(calls), 2)
+            self.assertEqual(len(result.speed_caps), 2)
+            self.assertTrue(np.all(result.speed_caps[1] <= result.speed_caps[0]))
+            self.assertTrue(np.any(result.speed_caps[1] < result.speed_caps[0]))
+            self.assertAlmostEqual(result.replay_time, capped.lap_time)
+
+    def test_rejects_invalid_correction_controls(self):
+        def replay(path, controller):
+            raise AssertionError("validation must run before any replay")
+
+        arguments = (None, None, None, None, None, None, None, replay)
+        with self.assertRaises(ValueError):
+            correct_to_replay(*arguments, tolerance=-0.01)
+        with self.assertRaises(TypeError):
+            correct_to_replay(*arguments, tolerance=True)
+        with self.assertRaises(ValueError):
+            correct_to_replay(*arguments, maximum_rounds=0)
+        with self.assertRaises(TypeError):
+            correct_to_replay(*arguments, maximum_rounds=True)
+        with self.assertRaises(TypeError):
+            correct_to_replay(None, None, None, None, None, None, None, None)

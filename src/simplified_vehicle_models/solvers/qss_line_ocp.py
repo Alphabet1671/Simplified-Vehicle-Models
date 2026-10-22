@@ -370,6 +370,9 @@ def build_ocp(track, corridor, surface, mesh, settings: QssSettings):
         fm=rates((sm[0],sm[1],sm[2]),(am[i],qm[i]),kmid)
         defect=s1-s0-h/6*(f0+4*fm+f1)
         for row in range(3): add(defect[row],0.0,0.0)
+        # The Hermite midpoint speed is a denominator in the time rate; keep it
+        # positive even when the node speeds sit on the solver floor.
+        add(sm[2],float(settings.minimum_speed),float("inf"))
         def time_rate(offset,heading,speed,curvature):
             return (1-curvature*offset)/(speed*ca.cos(heading))
         objective += h/6*(time_rate(n[i],psi[i],v[i],float(k0[i]))+4*time_rate(sm[0],sm[1],sm[2],kmid)+time_rate(n[i+1],psi[i+1],v[i+1],float(k0[i+1])))

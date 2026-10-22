@@ -109,6 +109,66 @@ class CapabilitySurfaceTest(unittest.TestCase):
             np.testing.assert_allclose(getattr(restored, field), getattr(self.surface, field))
         self.assertEqual(restored.provenance_hash, self.surface.provenance_hash)
 
+    def test_round_trip_preserves_controller_provenance(self):
+        mask = np.ones(self.surface.acceleration_max.shape, dtype=bool)
+        mask[0, 0] = False
+        surface = type(self.surface)(
+            self.surface.speed, self.surface.curvature,
+            self.surface.acceleration_max, self.surface.acceleration_min,
+            self.surface.speed_ceiling, self.surface.provenance_hash,
+            "allocation", "controller-abc", mask,
+        )
+        with tempfile.TemporaryDirectory() as name:
+            path = Path(name) / "surface.npz"
+            save_capability_surface(surface, path)
+            restored = load_capability_surface(path)
+        self.assertEqual(restored.mode, "allocation")
+        self.assertEqual(restored.controller_hash, "controller-abc")
+        self.assertFalse(restored.feasible_mask[0, 0])
+        self.assertTrue(restored.feasible_mask[1, 1])
+        self.assertFalse(restored.feasible_mask.flags.writeable)
+
+    def test_load_defaults_old_cache_to_an_ideal_surface(self):
+        with tempfile.TemporaryDirectory() as name:
+            path = Path(name) / "old.npz"
+            np.savez_compressed(
+                path, speed=self.surface.speed, curvature=self.surface.curvature,
+                acceleration_max=self.surface.acceleration_max,
+                acceleration_min=self.surface.acceleration_min,
+                speed_ceiling=self.surface.speed_ceiling,
+                provenance_hash=np.asarray(self.surface.provenance_hash),
+            )
+            restored = load_capability_surface(path)
+        self.assertEqual(restored.mode, "ideal")
+        self.assertEqual(restored.controller_hash, "")
+        self.assertIsNone(restored.feasible_mask)
+
+    def test_six_positional_arguments_stay_ideal(self):
+        surface = type(self.surface)(
+            self.surface.speed, self.surface.curvature,
+            self.surface.acceleration_max, self.surface.acceleration_min,
+            self.surface.speed_ceiling, self.surface.provenance_hash,
+        )
+        self.assertEqual(surface.mode, "ideal")
+        self.assertEqual(surface.controller_hash, "")
+        self.assertIsNone(surface.feasible_mask)
+
+    def test_invalid_provenance_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "mode"):
+            type(self.surface)(
+                self.surface.speed, self.surface.curvature,
+                self.surface.acceleration_max, self.surface.acceleration_min,
+                self.surface.speed_ceiling, self.surface.provenance_hash,
+                "not-a-mode",
+            )
+        with self.assertRaisesRegex(ValueError, "feasible_mask"):
+            type(self.surface)(
+                self.surface.speed, self.surface.curvature,
+                self.surface.acceleration_max, self.surface.acceleration_min,
+                self.surface.speed_ceiling, self.surface.provenance_hash,
+                "ideal", "", np.ones((2, 2), dtype=bool),
+            )
+
     def test_rejects_bad_curvature_limit(self):
         with self.assertRaises(ValueError):
             build_capability_surface(self.vehicle, curvature_limit=0.0)

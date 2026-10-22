@@ -105,6 +105,7 @@ class AllocationCapabilityBackend:
         amin = np.empty_like(ideal_surface.acceleration_min)
         feasible_mask = np.ones(amax.shape, dtype=bool)
         ceiling = np.empty_like(ideal_surface.speed_ceiling)
+        policy_hash = controller_hash(self.policy)
         flags = {'non_monotone': False, 'infeasible_cells': 0,
                  'saturation_tags': set(),
                  'curvature_limit': float(curvature_limit),
@@ -137,9 +138,23 @@ class AllocationCapabilityBackend:
                     ceiling[j] = grid.speed[i]
                     break
             ceiling[j] = min(float(ideal_surface.speed_ceiling[j]), float(ceiling[j]))
+        if flags['infeasible_cells']:
+            # A zeroed cell is not a legal hold-speed capability. Refuse the
+            # whole sample instead of letting a downstream consumer treat the
+            # placeholder as physics.
+            cells = np.argwhere(~feasible_mask)
+            examples = ", ".join(
+                f"(v={grid.speed[i]:.6g} m/s, kappa={grid.curvature[j]:.6g} 1/m)"
+                for i, j in cells[:8]
+            )
+            raise ValueError(
+                f'allocation capability marks {int(cells.shape[0])} (v, kappa) '
+                f'cell(s) infeasible: {examples}; refusing to treat the '
+                'zero-acceleration placeholder as a legal capability')
         surface = CapabilitySurface(grid.speed, grid.curvature, amax, amin, ceiling,
-                                    ideal_surface.provenance_hash)
+                                    ideal_surface.provenance_hash, self.mode,
+                                    policy_hash, feasible_mask)
         flags['saturation_tags'] = sorted(flags['saturation_tags'])
         return SampledCapability(surface, ideal_surface.provenance_hash,
-                                 controller_hash(self.policy), self.mode,
+                                 policy_hash, self.mode,
                                  metadata=flags, feasible_mask=feasible_mask)

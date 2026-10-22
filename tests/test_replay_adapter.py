@@ -63,6 +63,13 @@ class ReplayAdapterTest(unittest.TestCase):
         self.assertEqual(sample.lap_time, 9.5)
         self.assertTrue(sample.feasible)
         np.testing.assert_array_equal(sample.speed, lap.speed)
+        self.assertFalse(PointMassReplay(object(), LapMode.FLYING).consumes_controller)
+
+    def test_point_mass_replay_rejects_a_controller(self):
+        path = _open_path()
+        replay = PointMassReplay(object(), LapMode.STANDING_START)
+        with self.assertRaisesRegex(ValueError, 'ignores the controller'):
+            replay(path, object())
 
     def test_open_path_rejects_flying_but_allows_standing_start(self):
         path = _open_path()

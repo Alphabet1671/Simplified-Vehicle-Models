@@ -11,8 +11,8 @@ See [minimum-time-line.md](minimum-time-line.md) for the stage 1 point-mass pipe
 | `--control-mode` | Capability source | Default solver | Real-track TV run | What is established |
 |---|---|---|---|---|
 | `ideal` | provenance-checked capability cache through the ideal backend | `legacy` | No TV claim (not a TV mode) | Existing stage 1 point-mass pipeline; unchanged default path |
-| `allocation` | `AllocationCapabilityBackend` samples a memoryless policy over `(v, κ)` | `legacy` (`--solver spline` opt-in) | **NOT RUN** | Backend contract, controller hash, stateful-policy rejection, infeasible-cell masking, `amax <= ideal` on the feasible mask |
-| `closed_loop` | ideal, or allocation when a non-stateful policy is supplied | requires explicit `--solver spline` | **NOT RUN** as TV | Correction loop contract with test doubles; open course rejected; mesh convergence unavailable; point-mass adapter is a parity seam |
+| `allocation` | `AllocationCapabilityBackend` samples a memoryless policy over `(v, κ)` | `legacy` (`--solver spline` opt-in) | **NOT RUN** | Backend contract, controller hash, stateful-policy rejection, infeasible-cell rejection, `amax <= ideal` on the feasible mask |
+| `closed_loop` | ideal, or allocation when a non-stateful policy is supplied | requires explicit `--solver spline` | **NOT RUN** as TV | Correction loop contract with test doubles; open course rejected; mesh convergence unavailable; point-mass adapter is a parity seam and rejects a supplied controller |
 
 The runner exposes `--control-mode`, `--control-policy`, `--replay-adapter`, `--solver`, and `--compare-control-modes`. `CONTROL_POLICIES` is empty, so `allocation` and policy-aware `closed_loop` cannot be configured on any track in this repository state. `REPLAY_ADAPTERS` contains only `point-mass`.
 
@@ -22,11 +22,11 @@ The runner exposes `--control-mode`, `--control-policy`, `--replay-adapter`, `--
 
 `tests/test_capability_backend.py` covers the capability backend:
 
-- `ideal` mode returns a surface with the vehicle provenance hash and an empty controller hash.
-- `allocation` mode treats the policy as an oracle over `(speed, curvature)`, returns a non-empty controller hash, and records `curvature_limit`, `scan_points`, and `policy_name` in metadata.
+- `ideal` mode returns a surface with the vehicle provenance hash, mode `ideal`, and an empty controller hash.
+- `allocation` mode treats the policy as an oracle over `(speed, curvature)`, returns a non-empty controller hash, records that hash and `mode='allocation'` on the returned `CapabilitySurface`, and records `curvature_limit`, `scan_points`, and `policy_name` in metadata.
 - A stateful policy is rejected in allocation mode with a `ValueError`; only a memoryless policy may be sampled.
-- An always-infeasible policy marks cells infeasible (`feasible_mask=False`) and zeroes their accelerations and ceiling. The zero placeholder is a mask, not a legal hold-speed capability. Downstream code must honour the mask; the runner fails on any infeasible sampled cell.
-- Saturation tags are collected at both interval endpoints, including braking-side tags.
+- A sample with any infeasible cell raises `ValueError` from the backend. The zeroed placeholder is never returned as a legal hold-speed capability, so direct library use cannot silently consume one; the runner's own infeasible-cell check remains as defence in depth.
+- Saturation tags are collected only at the two feasible acceleration endpoints (and only at the upper endpoint when the interval is a point), not across the whole control range. Braking-side tags at the lower endpoint are recorded too.
 - A non-monotone feasible set is flagged and falls back to the widest feasible scan run.
 - `test_allocation_never_exceeds_ideal` asserts that, on every feasible mask cell, allocation `acceleration_max` is at most the ideal value and `acceleration_min` is at least the ideal value, with at least one strictly narrower cell so the bound is not vacuous.
 
@@ -40,6 +40,7 @@ The cubic-spline offset transcription is opt-in (`--solver spline`). The default
 
 - `test_spline_solution_respects_dense_corridor` solves a closed 40 m circle with 3 m edges, then evaluates the spline at 25 samples per mesh element and checks every offset against corridor bounds sampled with `track_sample`. A 1e-6 m numerical allowance is used. This checks the represented line between nodes, not only at nodes.
 - Existing tests cover periodic and clamped bases, zero-corridor parity with the node solver, heading and curvature-rate bounds, decision layout and scaling, and invalid speed-cap/spline rejection.
+- The zero-corridor fast path is selected only when every sampled bound (nodes, midpoints, and quarter points) is exactly zero. A nonzero bound between nodes keeps the general transcription. The Hermite midpoint speed also has a `minimum_speed` lower bound in both transcriptions, so its use as a denominator cannot become nonpositive.
 
 The lap-time objective integrates the per-track-distance time `den / (v cos ψ)`, where `den = 1 - κ₀ n` is the offset-frame metric factor, not `1 / (v cos ψ)`. The `den` factor enters because a lateral offset changes the vehicle-path length relative to track distance. The implementation and its comment are in [qss_spline_ocp.py](../../src/simplified_vehicle_models/solvers/qss_spline_ocp.py).
 
@@ -47,15 +48,19 @@ The lap-time objective integrates the per-track-distance time `den / (v cos ψ)`
 
 `tests/test_closed_loop_line.py` covers the correction loop with test-double replays:
 
-- Each round solves the spline OCP, rebuilds the path, calls the replay adapter, and accepts only when the sample is feasible and the replay time is within a one-sided 1% tolerance of the OCP time. A faster replay is accepted without tightening caps.
+- Each round solves the spline OCP, rebuilds the path, calls the replay adapter, and accepts only when the sample is feasible and the replay time is within a two-sided 1% relative tolerance of the OCP time. A replay that is materially faster is not accepted silently; it lowers the caps and is re-solved like a slow replay.
 - An infeasible replay lowers the speed cap by a fixed 0.1 m/s margin and re-solves.
 - A solver failure under a cap returns `accepted=False` with the attempts and caps recorded.
 - `test_closed_loop_rejects_a_replay_that_never_becomes_feasible` uses a replay that is always infeasible and asserts `accepted=False` with `rounds == maximum_rounds` (3), three recorded caps, and a finite replay time. This proves the budget is exhausted rather than the loop stopping early.
+- `PointMassReplay` declares `consumes_controller = False` and raises when a controller is supplied. It remains usable with `controller=None` as a parity seam, but it cannot be reported as a controller-aware replay. The runner also rejects `closed_loop` with a `--control-policy` unless the selected adapter declares that it consumes the controller.
 
 Runner-level constraints (from `tests/test_tv_runner.py` and the Task 8 artifacts):
 
 - `closed_loop` on an open course is rejected before any output is created, because the OCP time excludes a launch while the adapter replay includes its own standing start.
-- `closed_loop` mesh convergence is recorded as `None` with a `check_unavailable` reason. The written line is normally the correction loop's finest re-solve, which is not the pre-correction ladder's fine stage. If the first correction solve fails, the pre-correction finest line is retained with `accepted=False`; the gate still stays unavailable because the normal path writes a different line. The comparison treats an explicit `None` as unavailable, not as a pass.
+- `closed_loop` mesh convergence is always recorded as `None` with a `check_unavailable` reason. The written line is normally the correction loop's finest re-solve, which is not the pre-correction ladder's fine stage; when the first correction solve fails, the pre-correction finest line is retained with `accepted=False` and the gate is still `None`. The gate is never derived from the pre-correction ladder. The comparison treats an explicit `None` as unavailable, not as a pass.
+- `closed_loop` also records `zero_corridor_matches_envelope` as `None` with a `check_unavailable` reason; the ideal centreline envelope is not an independent reference for a controller-limited surface. Its `replay_agreement` gate is the actual absolute relative replay/OCP difference plus replay feasibility, not the correction loop's `accepted` flag alone.
+- `allocation` records `zero_corridor_matches_envelope` and `replay_agreement` as `None` with reasons. Its `free_line_not_slower` gate compares the free line with the zero-corridor control solved on the same allocation surface.
+- `accepted` requires every available required gate to be true, plus correction acceptance for `closed_loop`. It is not written true when a gate is false.
 - `closed_loop` rejects `--path-smoothing > 0` because the unsmoothed path is what the adapter replayed.
 
 ## 3. Controller and replay provenance
@@ -64,7 +69,9 @@ No production TV controller name or hash exists in this repository state. The po
 
 No stateful controller is registered. The allocation backend would reject one; a stateful policy could only be used through `closed_loop` with a replay adapter that owns its own state.
 
-The only registered replay adapter is `point-mass` (`PointMassReplay`). It rebuilds a track from the path and runs the existing point-mass lap solver. It is a parity seam: it proves the correction loop can call an adapter and compare times. It is not a TV controller, it does not replay a transient-vehicle model, and a `closed_loop` run driven by it is not a TV lap.
+The only registered replay adapter is `point-mass` (`PointMassReplay`). It rebuilds a track from the path and runs the existing point-mass lap solver. It is a parity seam: it proves the correction loop can call an adapter and compare times. It is not a TV controller, it does not replay a transient-vehicle model, and a `closed_loop` run driven by it is not a TV lap. It raises when a controller is supplied, so a policy cannot be silently attached to it; the runner rejects that combination before solving.
+
+Capability caches now carry `mode`, `controller_hash`, and `feasible_mask`, and these fields survive save/load. The runner rejects an allocation cache offered as `--surface` for `ideal` mode, and rejects an allocation cache whose controller hash does not match the requested policy. A replay adapter that drives a controller must declare `consumes_controller = True`; the runner rejects `closed_loop` with a policy otherwise.
 
 ## 4. Real-track run matrix
 

@@ -39,7 +39,7 @@ The corridor is `assumed` unless the track declares `surveyed` width provenance.
 6. Rebuild the finest line as a path. Write the rebuilt XML and CSV into the run directory. A closed track uses the periodic offset path. An open track fits a cubic spline through the OCP nodes and samples it on the track grid, so heading and curvature stay mutually consistent. Widths are carried by source node and projected onto the rebuilt path's local normals; a tangent change above 0.25 rad is rejected because the projection is not a continuous boundary reconstruction. Load the rebuilt path and calculate its replay lap time.
 7. Sample corridor minimum and maximum values at the solution nodes. Exclude the repeated terminal node on a closed track. This tests containment on the solution mesh. It is not a proof of containment between mesh nodes.
 
-For an open course, the OCP fixes heading at both ends and fixes the start speed. Lateral offset remains a free corridor decision at both ends. The default start speed is the solver minimum speed, because the distance-domain dynamics divide by speed. Set `QssSettings.start_speed` to change it. The OCP uses a small lateral regularisation on open courses to remove a null direction on straight sections.
+For an open course, the legacy node transcription fixes heading at both ends and fixes the start speed. The spline transcription derives heading from the spline at every node and collocation point, so open endpoint heading is free rather than fixed; the endpoint offset remains a free corridor decision. The default start speed is the solver minimum speed, because the distance-domain dynamics divide by speed. Set `QssSettings.start_speed` to change it. The OCP uses a small lateral regularisation on open courses to remove a null direction on straight sections.
 
 Set `QssSettings.offset_control_spacing` or `--offset-spacing` to replace the per-node offset variables with linear control points spaced along the track. This reduced basis can converge where the per-node formulation fails, but it represents a coarser lateral line.
 
@@ -51,13 +51,15 @@ The OCP uses a quasi-steady model. It does not model transient dynamics, sidesli
 
 The runner writes `summary.json`, `line.csv`, `racing_line.csv`, `racing_line_track.xml`, and `racing_line_track.csv` in the output directory. The five checks are:
 
-1. `zero_corridor_matches_envelope`: zero-corridor OCP, including any open-course launch interval, and the centreline reference differ by no more than 1%. For a closed track the reference is the flying-lap envelope. For an open course it is the one-dimensional capability-surface integration from rest, because the point-mass standing-start envelope is not the same model.
-2. `free_line_not_slower`: the finest free-line time, including any open-course launch interval, is no greater than the centreline envelope time. An open course allows a 0.2% numerical allowance because a straight course has no lateral gain.
+1. `zero_corridor_matches_envelope`: zero-corridor OCP, including any open-course launch interval, and the centreline reference differ by no more than 1%. For a closed track the reference is the flying-lap envelope. For an open course it is the one-dimensional capability-surface integration from rest, because the point-mass standing-start envelope is not the same model. This gate is recorded as `null` with a `check_unavailable` reason for `allocation` and `closed_loop`: the ideal centreline envelope is not an independent reference for a controller-limited surface.
+2. `free_line_not_slower`: the finest free-line time, including any open-course launch interval, is no greater than the zero-corridor control solved on the same capability surface. For `ideal` the reference is the centreline envelope. An open course allows a 0.2% numerical allowance because a straight course has no lateral gain.
 3. `corridor_containment`: every solution-node offset lies between the corridor bounds, with a 1e-6 m numerical allowance. Sampling is periodic only for a closed track.
-4. `mesh_convergence`: the two finest lap times differ by no more than 0.5%.
-5. `replay_agreement`: rebuilt-path replay and finest OCP times differ by no more than 1%.
+4. `mesh_convergence`: the two finest lap times differ by no more than 0.5%. This gate is `null` for `closed_loop`, because the correction loop writes a line that is not the pre-correction ladder's fine stage.
+5. `replay_agreement`: the replay and the finest OCP time differ by no more than 1% in absolute relative terms. For `closed_loop` the replay must also report a feasible controller lap. For `allocation` the gate is `null`: there is no allocation replay, and the rebuilt-path point-mass replay is not the allocation controller. For `ideal` the rebuilt-path point-mass replay is the reference.
 
-`summary.json` contains measured lap times, gain, solver iterations, stage wall times, maximum constraint violation, track/corridor provenance, and a boolean for each check. A non-surveyed width source sets `conditional_result` to true. The command exits with status 1 if a completed run has any failed check; a setup or solver error exits with status 2.
+`accepted` is true only when every available required gate is true; an explicit `null` is unavailable, not a pass. A controller result also requires its correction loop to accept the final replay. The command exits with status 1 when a completed run is not accepted or has any failed check; a setup or solver error exits with status 2.
+
+`summary.json` contains measured lap times, gain, solver iterations, stage wall times, maximum constraint violation, track/corridor provenance, role-keyed track and referenced-asset SHA-256 hashes (`track_source_hashes`), the solver tolerance, the spline type (`null` for the legacy transcription), replay provenance, and a boolean or `null` for each check. A non-surveyed width source sets `conditional_result` to true.
 
 ## 6. How to run it
 

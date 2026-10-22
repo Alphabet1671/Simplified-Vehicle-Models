@@ -55,7 +55,7 @@ reconstructed Hermite–Simpson offset.
 - Heading error: `ψ = atan(n' / den)`.
 - Path/vehicle curvature: differentiate `atan(n'/den)` with respect to `s`.
 - The only dynamic state is speed `v(s)`; acceleration `a(s)` is the control.
-- Lap time: `T = ∫ ds / (v cos ψ)`.
+- Lap time: `T = ∫ den / (v cos ψ) ds`, with `den` as defined above.
 - Speed dynamics: `dv/ds = a den / (v cos ψ)`.
 - Constraints at nodes and collocation points:
   - corridor: `n_min(s) ≤ n(s) ≤ n_max(s)`;

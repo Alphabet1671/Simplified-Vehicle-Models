@@ -47,14 +47,19 @@ class ReplayAdapter(Protocol):
 class PointMassReplay:
     """Baseline replay without TV; used to validate the seam and parity.
 
-    ``controller`` is accepted for interface parity and ignored, because the
-    point-mass lap solver already produces the driven speed profile.
+    ``controller`` is optional only so an un-controlled parity run can call the
+    adapter with ``None``. Supplying a controller raises: this adapter ignores
+    it, so accepting one would mislabel a point-mass replay as a
+    controller-aware result.
 
     A ``FLYING`` replay needs a periodic lap, so an open path with
     ``LapMode.FLYING`` is rejected: ``solve_lap`` would apply its periodic
     boundary and silently wrap the course.  ``LapMode.STANDING_START`` remains
     valid for an open path.
     """
+
+    #: This adapter does not drive the supplied controller.
+    consumes_controller = False
 
     def __init__(self, vehicle, lap_mode: LapMode, tolerance=1e-6, maximum_iterations=200):
         self.vehicle = vehicle
@@ -63,6 +68,12 @@ class PointMassReplay:
         self.maximum_iterations = maximum_iterations
 
     def __call__(self, path, controller=None):
+        if controller is not None:
+            raise ValueError(
+                'PointMassReplay ignores the controller and cannot produce a '
+                'controller-aware replay; use an adapter that drives the '
+                'controller instead'
+            )
         track = track_from_path(path)
         if not track.is_closed and self.lap_mode is LapMode.FLYING:
             raise ValueError(

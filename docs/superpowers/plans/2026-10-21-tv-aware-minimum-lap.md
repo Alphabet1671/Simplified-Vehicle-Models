@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- The lap-time objective is exactly `T = ∫ ds / (v cos ψ)`; do not replace it with a distance or energy objective.
+- The lap-time objective is exactly `T = ∫ den / (v cos ψ) ds`, where `den = 1 - κ0 n`; do not replace it with a distance or energy objective.
 - The 2D lateral corridor is mandatory. A centerline-only run is a diagnostic, never an accepted result.
 - Existing track XML/CSV files are immutable. New tests use in-memory views or temporary fixtures.
 - `ideal` mode must reproduce the current production solver before either controller mode is trusted.

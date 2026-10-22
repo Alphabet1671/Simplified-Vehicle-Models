@@ -55,6 +55,26 @@ class GateCheckTest(unittest.TestCase):
         self.assertFalse(check_corridor_containment([], [], []))
         self.assertFalse(check_corridor_containment([0.0], [1.0], [-1.0]))
 
+    def test_source_hashes_use_role_keys_and_include_referenced_assets(self) -> None:
+        from tools.run.solve_minimum_time_line import _source_hashes
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "track.xml"
+            source.write_text(
+                '<model schema-version="1.0" type="track-model" subtype="closed-xy-profile">'
+                '<metadata><title>fixture</title></metadata>'
+                '<data ref="geometry.csv" /><data role="width" ref="width.csv" />'
+                '</model>', encoding="utf-8",
+            )
+            (root / "geometry.csv").write_text("distance,x_north,y_east\n",
+                                               encoding="utf-8")
+            (root / "width.csv").write_text("distance,left,right\n",
+                                            encoding="utf-8")
+            hashes = _source_hashes(source)
+        self.assertEqual(set(hashes), {"track_xml", "track_csv", "width_csv"})
+        self.assertTrue(all(len(value) == 64 for value in hashes.values()))
+
     def test_rebuilt_track_rejects_duplicate_width_roles(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

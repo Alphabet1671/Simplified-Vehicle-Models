@@ -3,6 +3,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
@@ -11,6 +12,7 @@ from simplified_vehicle_models.solvers import closed_loop_line
 from simplified_vehicle_models.solvers.closed_loop_line import (
     CAP_MARGIN,
     ReplaySample,
+    _matches,
     correct_to_replay,
 )
 from simplified_vehicle_models.solvers.qss_line_ocp import QssSettings, build_mesh
@@ -53,6 +55,7 @@ class ClosedLoopCorrectionTest(unittest.TestCase):
                                        maximum_rounds=2)
             self.assertEqual(result.rounds, 2)
             self.assertFalse(result.accepted)
+            self.assertFalse(result.feasible)
             self.assertGreaterEqual(len(calls), 2)
             self.assertTrue(np.all(result.speed_caps[-1] <= result.speed_caps[0]))
             self.assertTrue(np.any(result.speed_caps[-1] < result.speed_caps[0]))
@@ -78,6 +81,7 @@ class ClosedLoopCorrectionTest(unittest.TestCase):
             )
 
             self.assertTrue(result.accepted)
+            self.assertTrue(result.feasible)
             self.assertEqual(result.rounds, 1)
             self.assertEqual(len(result.speed_caps), 1)
             np.testing.assert_allclose(
@@ -132,14 +136,14 @@ class ClosedLoopCorrectionTest(unittest.TestCase):
             self.assertTrue(np.any(result.speed_caps[1] < result.speed_caps[0]))
             self.assertAlmostEqual(result.replay_time, capped.lap_time)
 
-    def test_replay_faster_than_the_ocp_is_accepted_without_correction(self):
+    def test_replay_faster_within_tolerance_is_accepted_without_correction(self):
         with tempfile.TemporaryDirectory() as directory:
             track, corridor, spline, mesh, settings = _case(directory, spacing=5.0)
             surface = _surface()
             baseline = solve_spline_line(
                 track, corridor, surface, mesh, spline, settings,
             )
-            faster = 0.95 * baseline.lap_time
+            faster = 0.995 * baseline.lap_time
 
             def replay(path, controller):
                 return ReplaySample(
@@ -151,13 +155,29 @@ class ClosedLoopCorrectionTest(unittest.TestCase):
             )
 
             self.assertTrue(result.accepted)
+            self.assertTrue(result.feasible)
             self.assertEqual(result.rounds, 1)
             self.assertEqual(len(result.speed_caps), 1)
             self.assertAlmostEqual(result.replay_time, faster)
-            # A faster replay must not tighten the caps for another solve.
+            # An in-tolerance replay must not tighten the caps for another solve.
             np.testing.assert_allclose(
                 result.speed_caps[0], baseline.speed, rtol=0.0, atol=1.0e-9,
             )
+
+    def test_matches_is_two_sided_within_tolerance(self):
+        solution = SimpleNamespace(lap_time=100.0)
+        def sample(replay_time, feasible=True):
+            return ReplaySample(
+                np.array([0.0, 1.0]), np.array([5.0, 5.0]), feasible,
+                replay_time,
+            )
+
+        self.assertTrue(_matches(solution, sample(99.5), 0.01))
+        self.assertTrue(_matches(solution, sample(100.5), 0.01))
+        # A materially faster replay is not silently accepted as agreement.
+        self.assertFalse(_matches(solution, sample(98.9), 0.01))
+        self.assertFalse(_matches(solution, sample(101.1), 0.01))
+        self.assertFalse(_matches(solution, sample(100.0, feasible=False), 0.01))
 
     def test_solver_failure_under_a_cap_returns_an_unaccepted_result(self):
         with tempfile.TemporaryDirectory() as directory:

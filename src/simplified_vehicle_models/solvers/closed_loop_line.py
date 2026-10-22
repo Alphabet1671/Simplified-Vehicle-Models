@@ -5,10 +5,10 @@ state, rate limits, or allocation logic can be slower than the surface predicts.
 This module closes that loop: solve the spline OCP, rebuild the path, replay it
 with the controller, and lower a per-node speed cap where the replay is slower
 or infeasible.  The OCP is then re-solved under the cap.  A correction is
-accepted only when the final replay is feasible and no slower than the OCP
-within a relative tolerance.  A re-solve that fails (for example because a
-floored cap is infeasible) is reported as an unaccepted result rather than
-raised out of the correction loop.
+accepted only when the final replay is feasible and within the requested
+two-sided relative tolerance of the OCP.  A re-solve that fails (for example
+because a floored cap is infeasible) is reported as an unaccepted result rather
+than raised out of the correction loop.
 
 The replay adapter owns its integration method and its open/closed start
 treatment.  The correction loop therefore uses ``ReplaySample.lap_time``
@@ -55,7 +55,14 @@ class ReplaySample:
 
 
 class ReplayProtocol(Protocol):
-    """Callable replay seam: ``replay(path, controller) -> ReplaySample``."""
+    """Callable replay seam: ``replay(path, controller) -> ReplaySample``.
+
+    An adapter that drives ``controller`` should declare
+    ``consumes_controller = True`` so a caller can reject a policy attached to
+    an adapter that only implements a parity seam.
+    """
+
+    consumes_controller: bool
 
     def __call__(self, path, controller) -> ReplaySample: ...
 
@@ -67,8 +74,9 @@ class CorrectionResult:
     ``rounds`` is the number of OCP solve attempts, ``replay_time`` is the last
     completed replay's lap time (NaN if no replay completed), and
     ``speed_caps`` holds the cap in force in every round that reached a replay.
-    ``accepted`` is true only when the final replay is feasible and no slower
-    than the OCP within the requested tolerance.
+    ``feasible`` reports whether the last completed replay was feasible;
+    ``accepted`` is true only when the final replay is feasible and within the
+    requested two-sided tolerance of the OCP.
     """
 
     rounds: int
@@ -76,6 +84,7 @@ class CorrectionResult:
     speed_caps: tuple[np.ndarray, ...]
     cap_margin: float
     accepted: bool
+    feasible: bool = False
 
 
 def _validate_controls(tolerance, maximum_rounds) -> tuple[float, int]:
@@ -147,11 +156,12 @@ def _next_cap(mesh, replay, ocp_speed, previous, minimum_speed, margin):
 
 
 def _matches(solution, sample, tolerance: float) -> bool:
-    """Return true for a feasible replay that is no slower than the OCP.
+    """Return true for a feasible replay that agrees with the OCP time.
 
-    Cap correction can only lower speeds, so a replay faster than the OCP is
-    already within the controller's demonstrated capability and must be
-    accepted; the relative tolerance is applied only on the slow side.
+    The comparison is two-sided: the replay must reproduce the OCP lap time
+    within the relative tolerance. A replay that is materially faster is
+    evidence that the OCP is suboptimal or that the adapter is inconsistent, so
+    it is not accepted silently.
     """
     if not bool(sample.feasible):
         return False
@@ -161,7 +171,7 @@ def _matches(solution, sample, tolerance: float) -> bool:
         return False
     if not (math.isfinite(replay_time) and replay_time > 0.0):
         return False
-    return replay_time <= ocp_time * (1.0 + tolerance)
+    return abs(replay_time - ocp_time) <= tolerance * ocp_time
 
 
 def correct_to_replay(track, corridor, surface, mesh, spline, settings, controller,
@@ -170,12 +180,12 @@ def correct_to_replay(track, corridor, surface, mesh, spline, settings, controll
     """Re-solve the spline line until its replay is feasible and not slower.
 
     The first round solves without a speed cap.  A failed round whose replay is
-    slower or infeasible lowers the per-node cap to
+    outside the two-sided tolerance or infeasible lowers the per-node cap to
     ``min(v_ocp, v_replay) - CAP_MARGIN`` (never above the previous cap) and
     re-solves with that cap.  The loop stops after ``maximum_rounds`` solve
     attempts, or as soon as a replay is feasible and
 
-    ``replay_time <= ocp_time * (1 + tolerance)``.
+    ``abs(replay_time - ocp_time) <= tolerance * ocp_time``.
 
     A re-solve that raises ``RuntimeError`` (for example an infeasible floored
     cap) ends the loop with ``accepted=False``; the result still reports the
@@ -193,6 +203,7 @@ def correct_to_replay(track, corridor, surface, mesh, spline, settings, controll
     last_replay_time = math.nan
     rounds = 0
     accepted = False
+    last_feasible = False
 
     for _ in range(maximum_rounds):
         rounds += 1
@@ -206,6 +217,7 @@ def correct_to_replay(track, corridor, surface, mesh, spline, settings, controll
         sample = replay(path, controller)
         _validate_replay(sample)
         last_replay_time = float(sample.lap_time)
+        last_feasible = bool(sample.feasible)
 
         effective = np.array(solution.speed if cap is None else cap, dtype=float)
         effective.setflags(write=False)
@@ -226,4 +238,5 @@ def correct_to_replay(track, corridor, surface, mesh, spline, settings, controll
         speed_caps=tuple(caps),
         cap_margin=CAP_MARGIN,
         accepted=accepted,
+        feasible=last_feasible,
     )

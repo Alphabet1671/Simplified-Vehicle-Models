@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import csv
 from dataclasses import dataclass, replace
+import hashlib
 import json
 from pathlib import Path
 import sys
@@ -99,6 +100,36 @@ def _validate_output_paths(source: Path, output: Path) -> None:
                 raise ValueError(
                     f"output artifact would overwrite source track asset: {source_asset}"
                 )
+
+
+def _source_hashes(source: Path) -> dict[str, str]:
+    """Return role-keyed SHA-256 hashes for the track XML and its assets.
+
+    The role keys follow the repository's ``track_xml``/``track_csv``/
+    ``width_csv`` convention. Missing references are omitted rather than
+    raising: the runner has already validated the inputs it consumes, and a hash
+    manifest is reporting metadata.
+    """
+    source = Path(source)
+    root = ET.parse(source).getroot()
+    entries = [("track_xml", source)]
+    counts: dict[str, int] = {}
+    for element in root.findall("./data"):
+        reference = element.get("ref")
+        if not reference:
+            continue
+        role = element.get("role")
+        key = "track_csv" if role is None else f"{role}_csv"
+        counts[key] = counts.get(key, 0) + 1
+        if counts[key] > 1:
+            key = f"{key}_{counts[key]}"
+        entries.append((key, source.parent / reference))
+    hashes = {}
+    for key, path in entries:
+        if not path.is_file():
+            continue
+        hashes[key] = hashlib.sha256(path.read_bytes()).hexdigest()
+    return hashes
 
 
 def _write_rebuilt_track(source: Path, output: Path, path) -> tuple[Path, Path]:
@@ -346,6 +377,17 @@ class _CachedIdealCapabilityBackend(IdealCapabilityBackend):
             and np.array_equal(grid.curvature, self._cached_surface.curvature)
         ):
             raise ValueError("cached ideal surface is not aligned with the requested grid")
+        if getattr(self._cached_surface, "mode", "ideal") != "ideal":
+            raise ValueError(
+                "cached ideal surface is not an ideal capability cache: "
+                f"mode is {getattr(self._cached_surface, 'mode', 'ideal')!r}"
+            )
+        cached_mask = getattr(self._cached_surface, "feasible_mask", None)
+        if cached_mask is not None and not np.all(cached_mask):
+            raise ValueError(
+                "cached ideal surface records infeasible cells; refusing to "
+                "relabel a zeroed placeholder as an ideal capability"
+            )
         mask = np.ones(self._cached_surface.acceleration_max.shape, dtype=bool)
         return SampledCapability(
             self._cached_surface, self._cached_surface.provenance_hash, "",
@@ -390,6 +432,67 @@ def _reject_infeasible_cells(sampled) -> None:
         f"allocation capability marks {int(cells.shape[0])} (v, kappa) cell(s) "
         f"infeasible: {examples}; refusing to treat the zero-acceleration "
         "placeholder as a hold-speed capability"
+    )
+
+
+def _validate_surface_cache(surface, mode, policy) -> None:
+    """Reject a cache whose recorded provenance is not usable for this run.
+
+    ``--surface`` names the capability source. It is normally an ideal cache,
+    which every mode may use as its base. An allocation cache is accepted only
+    for the controller mode and policy that produced it; an allocation cache
+    must never be relabelled as ideal.
+    """
+    cache_mode = str(getattr(surface, "mode", "ideal"))
+    cache_hash = str(getattr(surface, "controller_hash", ""))
+    if cache_mode not in CONTROL_MODES:
+        raise ValueError(
+            f"capability cache records unknown mode {cache_mode!r}"
+        )
+    if cache_mode == "ideal":
+        if cache_hash:
+            raise ValueError(
+                "capability cache records mode 'ideal' with a non-empty "
+                f"controller hash {cache_hash!r}"
+            )
+        mask = getattr(surface, "feasible_mask", None)
+        if mask is not None and not np.all(mask):
+            raise ValueError(
+                "ideal capability cache records infeasible cells; an ideal "
+                "surface must not carry a zeroed placeholder"
+            )
+        return
+    if cache_mode == "allocation":
+        if mode == "ideal":
+            raise ValueError(
+                "--surface is an allocation capability cache; refusing to "
+                "launder an allocation cache as the ideal surface"
+            )
+        mask = getattr(surface, "feasible_mask", None)
+        if mask is not None and not np.all(mask):
+            raise ValueError(
+                "allocation capability cache records infeasible cells; "
+                "refusing to reuse a zeroed placeholder"
+            )
+        if policy is None:
+            raise ValueError(
+                "--surface is an allocation capability cache, which requires "
+                "the --control-policy that produced it"
+            )
+        if mode == "closed_loop" and bool(getattr(policy, "is_stateful", False)):
+            raise ValueError(
+                "closed_loop with a stateful policy requires an ideal --surface "
+                "cache; an allocation cache cannot represent its hidden state"
+            )
+        expected = policy_controller_hash(policy)
+        if cache_hash != expected:
+            raise ValueError(
+                "capability cache controller hash mismatch: expected "
+                f"{expected}, got {cache_hash}"
+            )
+        return
+    raise ValueError(
+        f"capability cache mode {cache_mode!r} is not valid for --surface"
     )
 
 
@@ -557,8 +660,17 @@ def run(args) -> dict:
     expected_hash = capability_hash(vehicle)
     if ideal_surface.provenance_hash != expected_hash:
         raise ValueError(f"capability surface provenance hash mismatch: expected {expected_hash}, got {ideal_surface.provenance_hash}")
+    _validate_surface_cache(ideal_surface, mode, policy)
     lap_mode = LapMode.FLYING if track.is_closed else LapMode.STANDING_START
     replay_adapter = _build_replay_adapter(args, vehicle, lap_mode)
+    if (mode == "closed_loop" and policy is not None
+            and not bool(getattr(replay_adapter, "consumes_controller", False))):
+        raise ValueError(
+            "closed_loop with --control-policy requires a replay adapter that "
+            "consumes the controller; the registered point-mass adapter ignores "
+            "it and cannot produce a controller-aware result"
+        )
+    controller_aware = bool(mode != "ideal" and policy is not None)
 
     base_settings = QssSettings(offset_control_spacing=getattr(args, "offset_spacing", None))
     settings = base_settings
@@ -626,8 +738,8 @@ def run(args) -> dict:
     recorded_mode = selection.capability_mode
 
     rounds = 0
-    accepted = True
     replay_time = float("nan")
+    correction = None
     saturation = list(selection.saturation)
     if mode == "closed_loop":
         correction_mesh = build_mesh(track, spacings[-1])
@@ -638,7 +750,6 @@ def run(args) -> dict:
         if captured:
             finest = captured[-1]
         rounds = int(correction.rounds)
-        accepted = bool(correction.accepted)
         replay_time = float(correction.replay_time)
         for sample in samples:
             saturation.extend(sample.saturation)
@@ -690,25 +801,71 @@ def run(args) -> dict:
     containment = check_corridor_containment(containment_offset, minimum, maximum)
     zero_total = zero_solution.lap_time + launch
     free_total = finest.lap_time + launch
-    zero_reference = (
-        centreline_lap.lap_time if track.is_closed
-        else capability_envelope_time(track, surface, settings, start_speed=0.0)
-    )
+    check_unavailable = {}
+    if mode == "ideal":
+        zero_reference = (
+            centreline_lap.lap_time if track.is_closed
+            else capability_envelope_time(track, surface, settings, start_speed=0.0)
+        )
+        zero_gate = check_zero_corridor_matches_envelope(
+            open_loop=zero_reference, ocp=zero_total, tolerance=0.01,
+        )
+        free_reference = centreline_lap.lap_time
+        replay_gate = check_replay_agreement(
+            ocp=free_total, replay=replay_time, tolerance=0.01,
+        )
+    else:
+        # The ideal centreline envelope is not a valid reference for a
+        # controller-limited surface, and there is no independent
+        # controller-mode zero-corridor reference. Do not launder the ideal
+        # solve_lap time into a pass.
+        zero_reference = None
+        zero_gate = None
+        check_unavailable["zero_corridor_matches_envelope"] = (
+            "controller-mode capability is not the ideal point-mass surface; "
+            "the ideal centreline envelope is not an independent reference for "
+            "allocation or closed-loop times"
+        )
+        # Compare the free line with the zero-corridor control solved on the
+        # same surface, not with the ideal vehicle envelope.
+        free_reference = zero_total
+        if mode == "allocation":
+            replay_gate = None
+            check_unavailable["replay_agreement"] = (
+                "allocation mode has no controller replay adapter; the "
+                "rebuilt-path point-mass replay is not the allocation controller"
+            )
+        else:
+            feasible = bool(correction.feasible) if correction is not None else False
+            replay_gate = (
+                check_replay_agreement(
+                    ocp=free_total, replay=replay_time, tolerance=0.01,
+                )
+                and feasible
+            )
     checks = {
-        "zero_corridor_matches_envelope": check_zero_corridor_matches_envelope(open_loop=zero_reference, ocp=zero_total, tolerance=0.01),
+        "zero_corridor_matches_envelope": zero_gate,
         "free_line_not_slower": check_free_line_not_slower(
-            centreline=centreline_lap.lap_time, free=free_total,
+            centreline=free_reference, free=free_total,
             tolerance=0.0 if track.is_closed else 0.002,
         ),
         "corridor_containment": containment,
         "mesh_convergence": mesh_ok,
-        # Closed loop's own acceptance is a one-sided replay comparison; the
-        # symmetric point-mass gate would reject a legitimately faster replay.
-        "replay_agreement": (
-            bool(accepted) if mode == "closed_loop"
-            else check_replay_agreement(ocp=free_total, replay=replay_time, tolerance=0.01)
-        ),
+        "replay_agreement": replay_gate,
     }
+    # Acceptance requires every available required gate; an explicit None is
+    # unavailable, not a pass. A controller result additionally needs its own
+    # correction loop to accept the final replay.
+    available_gates_pass = all(
+        value is None or bool(value) for value in checks.values()
+    )
+    if mode == "closed_loop" and correction is not None:
+        accepted = bool(correction.accepted) and available_gates_pass
+    else:
+        accepted = available_gates_pass
+    gain_reference = (
+        centreline_lap.lap_time if mode == "ideal" else zero_total
+    )
     summary = {
         "track": str(Path(args.track)), "track_closed": bool(track.is_closed),
         "corridor_provenance": corridor.provenance,
@@ -723,10 +880,13 @@ def run(args) -> dict:
         "ocp_zero_corridor_including_launch_s": zero_total,
         "ocp_free_line_including_launch_s": free_total,
         "replay_lap_s": replay_time,
-        "free_line_gain_s": centreline_lap.lap_time - free_total,
-        "free_line_gain_percent": 100.0 * (centreline_lap.lap_time - free_total) / centreline_lap.lap_time,
+        "free_line_gain_s": gain_reference - free_total,
+        "free_line_gain_percent": 100.0 * (gain_reference - free_total) / gain_reference,
         "stages": [{"spacing_m": spacing, "iterations": stage.iterations, "wall_seconds": wall_seconds, "lap_time_s": stage.lap_time} for spacing, stage, wall_seconds in zip(spacings, stages, stage_wall_seconds)],
         "maximum_violation": finest.maximum_violation, "checks": checks,
+        "track_source_hashes": _source_hashes(Path(args.track)),
+        "solver_tolerance": float(settings.tolerance),
+        "spline_type": type(spline).__name__ if spline is not None else None,
     }
     if recorded_mode != mode:
         raise ValueError(
@@ -739,15 +899,20 @@ def run(args) -> dict:
         "requested_control_mode": mode,
         "solver": solver,
         "replay_adapter": getattr(args, "replay_adapter", None),
+        "replay_kind": (
+            "controller_adapter" if mode == "closed_loop"
+            else "point_mass_path_replay"
+        ),
+        "controller_aware": controller_aware,
         "replay_time_s": replay_time,
         "rounds": rounds,
         "accepted": bool(accepted),
         "saturation": sorted(set(saturation)),
     })
     if mesh_unavailable_reason is not None:
-        summary["check_unavailable"] = {
-            "mesh_convergence": mesh_unavailable_reason,
-        }
+        check_unavailable["mesh_convergence"] = mesh_unavailable_reason
+    if check_unavailable:
+        summary["check_unavailable"] = check_unavailable
     if solver == "spline":
         summary["spline_control_spacing_m"] = float(spline.control_spacing)
     if selection.cache_path is not None:
@@ -881,13 +1046,12 @@ def compare_control_modes(args, comparison_path: Path | None = None) -> dict:
         unavailable_gates = []
         for name in GATE_NAMES:
             # A missing gate is a failure; an explicit None means the gate is
-            # recorded as unavailable (currently only the closed-loop mesh
-            # convergence check).
+            # recorded as unavailable with a check_unavailable reason.
             value = raw_checks[name] if name in raw_checks else False
             checks[name] = value
             if value is True:
                 continue
-            if name == "mesh_convergence" and value is None:
+            if value is None:
                 unavailable_gates.append(name)
             else:
                 failed_gates.append(name)

@@ -65,8 +65,17 @@ def _regrid(surface, grid):
     amin = RegularGridInterpolator(points, surface.acceleration_min)(
         (grid.speed[:, None], grid.curvature[None, :]))
     ceiling = np.interp(grid.curvature, surface.curvature, surface.speed_ceiling)
+    mask = None
+    if surface.feasible_mask is not None:
+        if not np.all(surface.feasible_mask):
+            # A boolean feasibility mask is not interpolable. Refuse to drop
+            # infeasible cells rather than relabel a zeroed placeholder as legal.
+            raise ValueError(
+                "cannot regrid a capability surface with infeasible cells")
+        mask = np.ones(amax.shape, dtype=bool)
     return CapabilitySurface(grid.speed, grid.curvature, amax, amin, ceiling,
-                             surface.provenance_hash)
+                             surface.provenance_hash, surface.mode,
+                             surface.controller_hash, mask)
 
 
 class IdealCapabilityBackend:
@@ -79,7 +88,11 @@ class IdealCapabilityBackend:
         raw = build_capability_surface(
             self.vehicle, curvature_limit=curvature_limit,
             speed_points=grid.speed.size, curvature_points=grid.curvature.size)
-        surface = _regrid(raw, grid)
-        mask = np.ones(surface.acceleration_max.shape, dtype=bool)
+        regridded = _regrid(raw, grid)
+        mask = np.ones(regridded.acceleration_max.shape, dtype=bool)
+        surface = CapabilitySurface(
+            regridded.speed, regridded.curvature, regridded.acceleration_max,
+            regridded.acceleration_min, regridded.speed_ceiling,
+            regridded.provenance_hash, self.mode, '', mask)
         return SampledCapability(surface, surface.provenance_hash, '', self.mode,
                                  feasible_mask=mask)

@@ -357,6 +357,99 @@ class SplineTranscriptionTest(unittest.TestCase):
                 OffsetSpline(open_view, control_spacing=20.0), QssSettings(),
             )
 
+    def test_zero_corridor_detection_covers_midpoints_and_quarters(self) -> None:
+        from simplified_vehicle_models.solvers.qss_spline_ocp import (
+            _is_zero_corridor,
+        )
+
+        zeros = np.zeros(5)
+        self.assertTrue(_is_zero_corridor(zeros, zeros, zeros, zeros, zeros, zeros))
+        bump = np.zeros(5)
+        bump[2] = -0.25
+        self.assertFalse(_is_zero_corridor(zeros, zeros, zeros, zeros, bump, zeros))
+        self.assertFalse(_is_zero_corridor(zeros, zeros, zeros, bump, zeros, zeros))
+        self.assertFalse(_is_zero_corridor(zeros, bump, zeros, zeros, zeros, zeros))
+
+    def test_nonzero_corridor_between_nodes_keeps_the_free_path(self) -> None:
+        from simplified_vehicle_models.solvers.qss_line_ocp import (
+            QssSettings, build_mesh, track_sample,
+        )
+        from simplified_vehicle_models.solvers.qss_spline_ocp import build_spline_ocp
+
+        track = self._track()
+        base = corridor_from_track(track)
+        mesh = build_mesh(track, 10.0)
+        midpoints = 0.5 * (mesh[:-1] + mesh[1:])
+        chosen = None
+        for index in range(track.distance.size):
+            minimum = np.zeros_like(base.minimum)
+            maximum = np.zeros_like(base.maximum)
+            minimum[index] = -0.5
+            maximum[index] = 0.5
+            node_lower = track_sample(
+                minimum, base.distance, mesh, closed=True,
+                period=float(track.lap_length),
+            )
+            node_upper = track_sample(
+                maximum, base.distance, mesh, closed=True,
+                period=float(track.lap_length),
+            )
+            mid_lower = track_sample(
+                minimum, base.distance, midpoints, closed=True,
+                period=float(track.lap_length),
+            )
+            if (np.all(node_lower == 0.0) and np.all(node_upper == 0.0)
+                    and np.any(mid_lower != 0.0)):
+                chosen = (minimum, maximum)
+                break
+        self.assertIsNotNone(
+            chosen, "fixture must be zero at mesh nodes but nonzero at a midpoint",
+        )
+        corridor = Corridor(
+            base.distance, chosen[0], chosen[1], base.provenance, True,
+        )
+        built = build_spline_ocp(
+            track, corridor, _surface(), mesh,
+            OffsetSpline(track, control_spacing=20.0), QssSettings(),
+        )
+        controls = built["control_count"]
+        self.assertTrue(np.any(built["x_lower"][:controls] < 0.0))
+        self.assertTrue(np.any(built["x_upper"][:controls] > 0.0))
+
+    def test_midpoint_speed_has_a_minimum_speed_lower_bound(self) -> None:
+        import casadi as ca
+
+        from simplified_vehicle_models.solvers.qss_line_ocp import QssSettings, build_mesh
+        from simplified_vehicle_models.solvers.qss_spline_ocp import build_spline_ocp
+
+        track = self._track()
+        corridor = _zero_corridor(track, is_closed=True)
+        mesh = build_mesh(track, 5.0)
+        settings = QssSettings()
+        built = build_spline_ocp(
+            track, corridor, _surface(), mesh,
+            OffsetSpline(track, control_spacing=20.0), settings,
+        )
+        nodes = mesh.size
+        count = built["count"]
+        controls = built["control_count"]
+        values = np.zeros(controls + 3 * nodes - 1)
+        values[controls:controls + nodes] = settings.minimum_speed
+        # Alternate node accelerations so the Hermite midpoint speed is driven
+        # far below the node floor while every node remains within its limits.
+        values[controls + nodes:controls + 2 * nodes] = np.where(
+            np.arange(nodes) % 2 == 0, -8.0, 3.0,
+        )
+        evaluate = ca.Function("g", [built["nlp"]["x"]], [built["nlp"]["g"]])
+        g = np.asarray(evaluate(values), dtype=float).ravel()
+        lower_only = (
+            (built["g_lower"] == 0.0) & (built["g_upper"] == np.inf)
+        )
+        self.assertTrue(np.any(lower_only))
+        self.assertLess(
+            float(np.min(g[lower_only])), -1.0,
+        )
+
     def test_spline_solution_respects_dense_corridor(self) -> None:
         from simplified_vehicle_models.solvers.qss_line_ocp import QssSettings, build_mesh
         from simplified_vehicle_models.solvers.qss_spline_ocp import solve_spline_line

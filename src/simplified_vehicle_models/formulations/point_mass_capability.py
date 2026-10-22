@@ -21,15 +21,28 @@ from simplified_vehicle_models.formulations.point_mass import (
 )
 
 
+#: Control modes a capability surface can be sampled for.
+CAPABILITY_MODES = ("ideal", "allocation", "closed_loop")
+
+
 @dataclass(frozen=True, slots=True)
 class CapabilitySurface:
-    """Sampled acceleration limits indexed by speed and curvature."""
+    """Sampled acceleration limits indexed by speed and curvature.
+
+    ``mode``, ``controller_hash``, and ``feasible_mask`` record the provenance
+    of a sampled surface.  They default to an ideal surface (mode ``ideal``, no
+    controller, every cell feasible) so a six-positional-argument construction,
+    and a cache written before these fields existed, stays valid.
+    """
     speed: FloatArray
     curvature: FloatArray
     acceleration_max: FloatArray
     acceleration_min: FloatArray
     speed_ceiling: FloatArray
     provenance_hash: str
+    mode: str = "ideal"
+    controller_hash: str = ""
+    feasible_mask: FloatArray | None = None
 
     def __post_init__(self) -> None:
         for name in ("speed", "curvature", "acceleration_max", "acceleration_min", "speed_ceiling"):
@@ -44,6 +57,16 @@ class CapabilitySurface:
             raise ValueError("acceleration_min must match acceleration_max")
         if self.speed_ceiling.shape != self.curvature.shape:
             raise ValueError("speed_ceiling must match curvature")
+        if not isinstance(self.mode, str) or self.mode not in CAPABILITY_MODES:
+            raise ValueError(f"mode must be one of {CAPABILITY_MODES}")
+        if not isinstance(self.controller_hash, str):
+            raise ValueError("controller_hash must be a string")
+        if self.feasible_mask is not None:
+            mask = np.array(self.feasible_mask, dtype=bool, copy=True)
+            if mask.shape != self.acceleration_max.shape:
+                raise ValueError("feasible_mask must match the capability grid")
+            mask.setflags(write=False)
+            object.__setattr__(self, "feasible_mask", mask)
 
 
 def _type_tag(value) -> str:
@@ -174,13 +197,27 @@ def build_capability_surface(vehicle, *, curvature_limit: float, speed_points: i
 
 def save_capability_surface(surface: CapabilitySurface, path: str | Path) -> Path:
     destination = Path(path); destination.parent.mkdir(parents=True, exist_ok=True)
+    feasible_mask = (
+        np.empty((0, 0), dtype=bool) if surface.feasible_mask is None
+        else surface.feasible_mask
+    )
     np.savez_compressed(destination, speed=surface.speed, curvature=surface.curvature,
         acceleration_max=surface.acceleration_max, acceleration_min=surface.acceleration_min,
-        speed_ceiling=surface.speed_ceiling, provenance_hash=np.asarray(surface.provenance_hash))
+        speed_ceiling=surface.speed_ceiling, provenance_hash=np.asarray(surface.provenance_hash),
+        mode=np.asarray(surface.mode), controller_hash=np.asarray(surface.controller_hash),
+        feasible_mask=feasible_mask)
     return destination
 
 
 def load_capability_surface(path: str | Path) -> CapabilitySurface:
     with np.load(Path(path), allow_pickle=False) as data:
+        keys = set(data.files)
+        # Caches written before provenance fields existed are ideal surfaces.
+        mode = str(data["mode"]) if "mode" in keys else "ideal"
+        controller_hash = str(data["controller_hash"]) if "controller_hash" in keys else ""
+        feasible_mask = data["feasible_mask"] if "feasible_mask" in keys else None
+        if feasible_mask is not None and feasible_mask.size == 0:
+            feasible_mask = None
         return CapabilitySurface(data["speed"], data["curvature"], data["acceleration_max"],
-            data["acceleration_min"], data["speed_ceiling"], str(data["provenance_hash"]))
+            data["acceleration_min"], data["speed_ceiling"], str(data["provenance_hash"]),
+            mode, controller_hash, feasible_mask)

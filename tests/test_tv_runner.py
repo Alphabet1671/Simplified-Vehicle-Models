@@ -41,13 +41,15 @@ class _NeverPolicy:
         return ControlResponse(False, 0.0, 0.0)
 
 
-def _surface(hash_value="hash"):
+def _surface(hash_value="hash", *, mode="ideal", controller_hash="",
+             feasible_mask=None):
     speed = np.linspace(1.0, 30.0, 4)
     curvature = np.linspace(-0.2, 0.2, 4)
     shape = (speed.size, curvature.size)
     return CapabilitySurface(
         speed, curvature, np.full(shape, 3.0), np.full(shape, -8.0),
-        np.full(curvature.size, 25.0), hash_value,
+        np.full(curvature.size, 25.0), hash_value, mode, controller_hash,
+        feasible_mask,
     )
 
 
@@ -313,6 +315,12 @@ class PipelineModeTest(unittest.TestCase):
             self.assertTrue(summary["accepted"])
             self.assertEqual(summary["replay_time_s"], 57.95)
             self.assertAlmostEqual(summary["replay_lap_s"], 57.95)
+            self.assertEqual(summary["solver_tolerance"], 1.0e-6)
+            self.assertIsNone(summary["spline_type"])
+            self.assertIn("track_xml", summary["track_source_hashes"])
+            self.assertEqual(
+                len(summary["track_source_hashes"]["track_xml"]), 64,
+            )
             self.assertTrue((Path(directory) / "output" / "summary.json").is_file())
             fixture.mocks["solve_ladder"].assert_called_once()
 
@@ -330,6 +338,7 @@ class PipelineModeTest(unittest.TestCase):
             self.assertEqual(summary["solver"], "spline")
             self.assertEqual(summary["control_mode"], "ideal")
             self.assertEqual(summary["spline_control_spacing_m"], 10.0)
+            self.assertEqual(summary["spline_type"], "OffsetSpline")
             self.assertEqual(summary["stages"][-1]["spacing_m"], 2.0)
 
     def test_allocation_samples_a_hash_named_cache(self):
@@ -466,6 +475,7 @@ class PipelineModeTest(unittest.TestCase):
         correction = CorrectionResult(
             rounds=1, replay_time=57.9,
             speed_caps=(np.full(5, 10.0),), cap_margin=0.1, accepted=True,
+            feasible=True,
         )
         with tempfile.TemporaryDirectory() as directory:
             args = _args(
@@ -480,11 +490,15 @@ class PipelineModeTest(unittest.TestCase):
             ).enter(args)
             summary = runner.run(args)
             self.assertIsNone(summary["checks"]["mesh_convergence"])
+            self.assertIsNone(summary["checks"]["zero_corridor_matches_envelope"])
             self.assertIn("check_unavailable", summary)
             self.assertIn("corrected line",
                           summary["check_unavailable"]["mesh_convergence"])
+            self.assertIn("zero_corridor_matches_envelope",
+                          summary["check_unavailable"])
             self.assertTrue(summary["checks"]["corridor_containment"])
             self.assertTrue(summary["checks"]["replay_agreement"])
+            self.assertTrue(summary["accepted"])
 
     def test_recorded_mode_mismatch_is_an_error(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -527,9 +541,9 @@ class PipelineModeTest(unittest.TestCase):
         from simplified_vehicle_models.solvers.closed_loop_line import CorrectionResult
 
         correction = CorrectionResult(
-            rounds=2, replay_time=9.5,
+            rounds=2, replay_time=57.9,
             speed_caps=(np.array([10.0, 10.0, 10.0, 10.0, 10.0]),),
-            cap_margin=0.1, accepted=True,
+            cap_margin=0.1, accepted=True, feasible=True,
         )
         with tempfile.TemporaryDirectory() as directory:
             args = _args(
@@ -546,11 +560,159 @@ class PipelineModeTest(unittest.TestCase):
             self.assertEqual(summary["control_mode"], "closed_loop")
             self.assertEqual(summary["capability_mode"], "ideal")
             self.assertEqual(summary["replay_adapter"], "point-mass")
+            self.assertFalse(summary["controller_aware"])
             self.assertEqual(summary["rounds"], 2)
             self.assertTrue(summary["accepted"])
-            self.assertEqual(summary["replay_time_s"], 9.5)
+            self.assertEqual(summary["replay_time_s"], 57.9)
             self.assertTrue(summary["checks"]["replay_agreement"])
             self.assertIsNone(summary["checks"]["mesh_convergence"])
+            self.assertIsNone(summary["checks"]["zero_corridor_matches_envelope"])
+
+    def test_surface_cache_provenance_is_validated(self):
+        ideal = _surface()
+        runner._validate_surface_cache(ideal, "ideal", None)
+        allocation = _surface(
+            mode="allocation", controller_hash=policy_controller_hash(_CapPolicy()),
+        )
+        runner._validate_surface_cache(allocation, "allocation", _CapPolicy())
+        with self.assertRaisesRegex(ValueError, "launder"):
+            runner._validate_surface_cache(allocation, "ideal", None)
+        with self.assertRaisesRegex(ValueError, "controller hash mismatch"):
+            runner._validate_surface_cache(allocation, "allocation", _NeverPolicy())
+        with self.assertRaisesRegex(ValueError, "requires.*control-policy"):
+            runner._validate_surface_cache(allocation, "allocation", None)
+
+        class StatefulPolicy(_CapPolicy):
+            is_stateful = True
+
+        with self.assertRaisesRegex(ValueError, "stateful"):
+            runner._validate_surface_cache(
+                allocation, "closed_loop", StatefulPolicy(),
+            )
+
+    def test_allocation_cache_cannot_be_used_as_the_ideal_surface(self):
+        with tempfile.TemporaryDirectory() as directory:
+            args = _args(directory)
+            allocation = _surface(
+                mode="allocation",
+                controller_hash=policy_controller_hash(_CapPolicy()),
+            )
+            fixture = _RunnerFixture(
+                self, spline=False, stages=[_solution(57.9), _solution(57.9)],
+                zero=_solution(57.9), surface=allocation,
+            ).enter(args)
+            with self.assertRaisesRegex(ValueError, "launder"):
+                runner.run(args)
+            fixture.mocks["solve_line"].assert_not_called()
+            fixture.mocks["solve_ladder"].assert_not_called()
+            self.assertFalse((Path(directory) / "output").exists())
+
+    def test_closed_loop_with_a_policy_rejects_a_controller_ignoring_adapter(self):
+        CONTROL_POLICIES["cap-two"] = _CapPolicy
+        self.addCleanup(CONTROL_POLICIES.pop, "cap-two", None)
+        with tempfile.TemporaryDirectory() as directory:
+            args = _args(
+                directory, control_mode="closed_loop", control_policy="cap-two",
+                replay_adapter="point-mass", solver="spline",
+            )
+            zero = _solution(57.9, spline=True)
+            stages = [_solution(57.95, spline=True), _solution(57.9, spline=True)]
+            fixture = _RunnerFixture(
+                self, spline=True, stages=stages, zero=zero, closed_loop=True,
+            ).enter(args)
+            with self.assertRaisesRegex(ValueError, "consumes the controller"):
+                runner.run(args)
+            fixture.mocks["solve_spline_line"].assert_not_called()
+            self.assertFalse((Path(directory) / "output").exists())
+
+    def test_allocation_gates_use_same_surface_totals_and_unavailable_references(self):
+        CONTROL_POLICIES["cap-two"] = _CapPolicy
+        self.addCleanup(CONTROL_POLICIES.pop, "cap-two", None)
+        with tempfile.TemporaryDirectory() as directory:
+            args = _args(
+                directory, control_mode="allocation", control_policy="cap-two",
+                solver="spline",
+            )
+            zero = _solution(57.9, spline=True)
+            stages = [_solution(57.95, spline=True), _solution(57.9, spline=True)]
+            fixture = _RunnerFixture(
+                self, spline=True, stages=stages, zero=zero,
+            ).enter(args)
+            summary = runner.run(args)
+            self.assertIsNone(summary["checks"]["zero_corridor_matches_envelope"])
+            self.assertIsNone(summary["checks"]["replay_agreement"])
+            self.assertIn("zero_corridor_matches_envelope",
+                          summary["check_unavailable"])
+            self.assertIn("replay_agreement", summary["check_unavailable"])
+            fixture.mocks["check_free_line_not_slower"].assert_called_once_with(
+                centreline=57.9, free=57.9, tolerance=0.0,
+            )
+            fixture.mocks["check_zero_corridor_matches_envelope"].assert_not_called()
+            fixture.mocks["check_replay_agreement"].assert_not_called()
+            self.assertTrue(summary["accepted"])
+            self.assertTrue(summary["controller_aware"])
+            self.assertEqual(summary["replay_kind"], "point_mass_path_replay")
+
+    def test_failed_available_gate_makes_accepted_false(self):
+        CONTROL_POLICIES["cap-two"] = _CapPolicy
+        self.addCleanup(CONTROL_POLICIES.pop, "cap-two", None)
+        with tempfile.TemporaryDirectory() as directory:
+            args = _args(
+                directory, control_mode="allocation", control_policy="cap-two",
+                solver="spline",
+            )
+            zero = _solution(57.9, spline=True)
+            stages = [_solution(57.95, spline=True), _solution(57.9, spline=True)]
+            fixture = _RunnerFixture(
+                self, spline=True, stages=stages, zero=zero,
+            ).enter(args)
+            fixture.mocks["check_corridor_containment"].return_value = False
+            summary = runner.run(args)
+            self.assertFalse(summary["checks"]["corridor_containment"])
+            self.assertFalse(summary["accepted"])
+
+    def test_closed_loop_replay_gate_uses_times_and_feasibility(self):
+        from tools.gates.check_minimum_time_line import (
+            check_replay_agreement as real_replay_gate,
+        )
+        from simplified_vehicle_models.solvers.closed_loop_line import CorrectionResult
+
+        def correction(replay_time, feasible):
+            return CorrectionResult(
+                rounds=1, replay_time=replay_time,
+                speed_caps=(np.full(5, 10.0),), cap_margin=0.1,
+                accepted=True, feasible=feasible,
+            )
+
+        cases = (
+            ("time", 60.0, True, False),
+            ("feasible", 57.9, False, False),
+            ("match", 57.9, True, True),
+        )
+        for name, replay_time, feasible, expected in cases:
+            with self.subTest(case=name, replay_time=replay_time,
+                              feasible=feasible):
+                with tempfile.TemporaryDirectory() as directory:
+                    args = _args(
+                        directory, control_mode="closed_loop",
+                        replay_adapter="point-mass", solver="spline",
+                    )
+                    zero = _solution(57.9, spline=True)
+                    stages = [_solution(57.95, spline=True),
+                              _solution(57.9, spline=True)]
+                    fixture = _RunnerFixture(
+                        self, spline=True, stages=stages, zero=zero,
+                        closed_loop=True,
+                        correction=correction(replay_time, feasible),
+                    ).enter(args)
+                    fixture.mocks["check_replay_agreement"].side_effect = (
+                        real_replay_gate
+                    )
+                    summary = runner.run(args)
+                    self.assertEqual(
+                        summary["checks"]["replay_agreement"], expected,
+                    )
+                    self.assertEqual(summary["accepted"], expected)
 
     def test_closed_loop_rejects_path_smoothing(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -704,11 +866,13 @@ class ControlModeComparisonTest(unittest.TestCase):
             "accepted": True,
             "saturation": ["braking"] if mode == "allocation" else [],
             "checks": {
-                "zero_corridor_matches_envelope": True,
+                "zero_corridor_matches_envelope": (
+                    True if mode == "ideal" else None
+                ),
                 "free_line_not_slower": True,
                 "corridor_containment": True,
                 "mesh_convergence": None if mode == "closed_loop" else True,
-                "replay_agreement": True,
+                "replay_agreement": None if mode == "allocation" else True,
             },
         }
 
@@ -751,8 +915,14 @@ class ControlModeComparisonTest(unittest.TestCase):
             self.assertEqual(stored["failed_gates"]["allocation"], [])
             self.assertEqual(stored["failed_gates"]["closed_loop"], [])
             self.assertIsNone(stored["mesh_converged"]["closed_loop"])
-            self.assertEqual(stored["unavailable_gates"]["closed_loop"],
-                             ["mesh_convergence"])
+            self.assertEqual(
+                stored["unavailable_gates"]["closed_loop"],
+                ["zero_corridor_matches_envelope", "mesh_convergence"],
+            )
+            self.assertEqual(
+                stored["unavailable_gates"]["allocation"],
+                ["zero_corridor_matches_envelope", "replay_agreement"],
+            )
             self.assertTrue(
                 stored["modes"]["ideal"]["checks"]["corridor_containment"])
             with self.assertRaises(FileExistsError):
@@ -811,8 +981,10 @@ class ControlModeComparisonTest(unittest.TestCase):
                              ["corridor_containment"])
             self.assertEqual(comparison["modes"]["allocation"]["status"], "ok")
             self.assertEqual(comparison["modes"]["closed_loop"]["status"], "ok")
-            self.assertEqual(comparison["modes"]["closed_loop"]["unavailable_gates"],
-                             ["mesh_convergence"])
+            self.assertEqual(
+                comparison["modes"]["closed_loop"]["unavailable_gates"],
+                ["zero_corridor_matches_envelope", "mesh_convergence"],
+            )
 
     def test_comparison_requires_policy_and_adapter_before_running(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -26,6 +26,8 @@ class IdealBackendTest(unittest.TestCase):
         self.assertEqual(sampled.mode, 'ideal')
         self.assertEqual(sampled.vehicle_hash, 'vehicle-hash')
         self.assertEqual(sampled.controller_hash, '')
+        self.assertEqual(sampled.surface.mode, 'ideal')
+        self.assertEqual(sampled.surface.controller_hash, '')
         np.testing.assert_array_equal(sampled.surface.speed, surface.speed)
         np.testing.assert_array_equal(sampled.surface.curvature, surface.curvature)
 
@@ -145,6 +147,10 @@ class AllocationBackendTest(unittest.TestCase):
         self.assertTrue(np.any(np.isclose(sampled.surface.acceleration_max, 2.0,
                                           atol=1e-2)))
         self.assertTrue(np.all(sampled.feasible_mask))
+        self.assertEqual(sampled.surface.mode, 'allocation')
+        self.assertEqual(sampled.surface.controller_hash, sampled.controller_hash)
+        np.testing.assert_array_equal(sampled.surface.feasible_mask,
+                                      sampled.feasible_mask)
         self.assertEqual(sampled.metadata['curvature_limit'], 0.1)
         self.assertEqual(sampled.metadata['scan_points'], 17)
         self.assertEqual(sampled.metadata['policy_name'], 'cap-at-two')
@@ -169,7 +175,7 @@ class AllocationBackendTest(unittest.TestCase):
                                  ideal_surface=_ideal_surface(grid))
         self.assertTrue(sampled.metadata['non_monotone'])
 
-    def test_infeasible_cells_are_masked_and_zeroed(self):
+    def test_infeasible_cells_are_rejected_not_zeroed(self):
         class NeverPolicy:
             name = 'never'
             provenance_hash = 'never-v1'
@@ -179,13 +185,10 @@ class AllocationBackendTest(unittest.TestCase):
                 return ControlResponse(False, 0.0, 0.0)
 
         grid = CapabilityGrid(np.array([1.0, 5.0, 10.0]), np.array([-0.1, 0.0, 0.1]))
-        sampled = AllocationCapabilityBackend(object(), NeverPolicy()).sample(
-            grid, curvature_limit=0.1, ideal_surface=_ideal_surface(grid))
-        self.assertFalse(np.any(sampled.feasible_mask))
-        self.assertEqual(sampled.metadata['infeasible_cells'], 9)
-        np.testing.assert_array_equal(sampled.surface.acceleration_max, 0.0)
-        np.testing.assert_array_equal(sampled.surface.acceleration_min, 0.0)
-        np.testing.assert_array_equal(sampled.surface.speed_ceiling, 0.0)
+        with self.assertRaisesRegex(
+                ValueError, r'infeasible.*zero-acceleration'):
+            AllocationCapabilityBackend(object(), NeverPolicy()).sample(
+                grid, curvature_limit=0.1, ideal_surface=_ideal_surface(grid))
 
     def test_saturation_tags_are_recorded(self):
         class SaturatedPolicy(_CapPolicy):

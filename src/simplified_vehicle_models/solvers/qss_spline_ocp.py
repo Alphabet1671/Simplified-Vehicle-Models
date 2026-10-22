@@ -139,6 +139,11 @@ def _sample_corridor(values, corridor, positions, track):
     )
 
 
+def _is_zero_corridor(*bounds) -> bool:
+    """Return true only when every sampled corridor bound is exactly zero."""
+    return all(np.all(np.asarray(values) == 0.0) for values in bounds)
+
+
 def build_spline_ocp(track, corridor, surface, mesh, spline, settings: QssSettings,
                      speed_cap=None):
     """Build the spline CasADi NLP and its variable/constraint bounds.
@@ -172,8 +177,9 @@ def build_spline_ocp(track, corridor, surface, mesh, spline, settings: QssSettin
     mid_upper = _sample_corridor(corridor.maximum, corridor, midpoints, track)
     quarter_lower = _sample_corridor(corridor.minimum, corridor, quarters, track)
     quarter_upper = _sample_corridor(corridor.maximum, corridor, quarters, track)
-    zero_corridor = (
-        np.allclose(corridor_lower, 0.0) and np.allclose(corridor_upper, 0.0)
+    zero_corridor = _is_zero_corridor(
+        corridor_lower, corridor_upper, mid_lower, mid_upper,
+        quarter_lower, quarter_upper,
     )
     cap_values = _speed_cap_values(speed_cap, nodes)
     cap_mid = (
@@ -281,6 +287,9 @@ def build_spline_ocp(track, corridor, surface, mesh, spline, settings: QssSettin
         )
         add(speed[index + 1] - speed[index]
             - h / 6.0 * (f0 + 4.0 * f_mid + f1), 0.0, 0.0)
+        # The Hermite midpoint speed is a denominator in the dynamics and the
+        # objective; keep it positive even when the node speeds are at the floor.
+        add(midpoint_speed - float(settings.minimum_speed), 0.0, math.inf)
         # Time per unit track distance is den / (v cos(psi)); den enters because
         # the offset path is longer than the centreline arc it is measured on.
         objective += h / 6.0 * (

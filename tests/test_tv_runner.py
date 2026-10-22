@@ -338,7 +338,7 @@ class PipelineModeTest(unittest.TestCase):
             self.assertEqual(summary["solver"], "spline")
             self.assertEqual(summary["control_mode"], "ideal")
             self.assertEqual(summary["spline_control_spacing_m"], 10.0)
-            self.assertEqual(summary["spline_type"], "OffsetSpline")
+            self.assertEqual(summary["spline_type"], "closed-periodic")
             self.assertEqual(summary["stages"][-1]["spacing_m"], 2.0)
 
     def test_allocation_samples_a_hash_named_cache(self):
@@ -552,7 +552,7 @@ class PipelineModeTest(unittest.TestCase):
             )
             zero = _solution(57.9, spline=True)
             stages = [_solution(57.95, spline=True), _solution(57.9, spline=True)]
-            _RunnerFixture(
+            fixture = _RunnerFixture(
                 self, spline=True, stages=stages, zero=zero, closed_loop=True,
                 correction=correction,
             ).enter(args)
@@ -567,6 +567,10 @@ class PipelineModeTest(unittest.TestCase):
             self.assertTrue(summary["checks"]["replay_agreement"])
             self.assertIsNone(summary["checks"]["mesh_convergence"])
             self.assertIsNone(summary["checks"]["zero_corridor_matches_envelope"])
+            self.assertIsNone(summary["checks"]["free_line_not_slower"])
+            self.assertIn("free_line_not_slower", summary["check_unavailable"])
+            self.assertEqual(summary["replay_kind"], "point_mass_parity")
+            fixture.mocks["check_free_line_not_slower"].assert_not_called()
 
     def test_surface_cache_provenance_is_validated(self):
         ideal = _surface()
@@ -625,6 +629,47 @@ class PipelineModeTest(unittest.TestCase):
             fixture.mocks["solve_spline_line"].assert_not_called()
             self.assertFalse((Path(directory) / "output").exists())
 
+    def test_closed_loop_with_a_consuming_adapter_records_controller_replay(self):
+        from simplified_vehicle_models.controls.replay import (
+            REPLAY_ADAPTERS, register_replay,
+        )
+        from simplified_vehicle_models.solvers.closed_loop_line import CorrectionResult
+
+        class ConsumingReplay:
+            consumes_controller = True
+
+            def __init__(self, vehicle, lap_mode):
+                self.vehicle = vehicle
+                self.lap_mode = lap_mode
+
+            def __call__(self, path, controller):
+                raise AssertionError("the patched correction loop must not replay")
+
+        register_replay("test-consuming", ConsumingReplay)
+        self.addCleanup(REPLAY_ADAPTERS.pop, "test-consuming", None)
+        CONTROL_POLICIES["cap-two"] = _CapPolicy
+        self.addCleanup(CONTROL_POLICIES.pop, "cap-two", None)
+        correction = CorrectionResult(
+            rounds=1, replay_time=57.9,
+            speed_caps=(np.full(5, 10.0),), cap_margin=0.1,
+            accepted=True, feasible=True,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            args = _args(
+                directory, control_mode="closed_loop", control_policy="cap-two",
+                replay_adapter="test-consuming", solver="spline",
+            )
+            zero = _solution(57.9, spline=True)
+            stages = [_solution(57.95, spline=True), _solution(57.9, spline=True)]
+            _RunnerFixture(
+                self, spline=True, stages=stages, zero=zero, closed_loop=True,
+                correction=correction,
+            ).enter(args)
+            summary = runner.run(args)
+            self.assertTrue(summary["controller_aware"])
+            self.assertEqual(summary["replay_kind"], "controller_adapter")
+            self.assertTrue(summary["accepted"])
+
     def test_allocation_gates_use_same_surface_totals_and_unavailable_references(self):
         CONTROL_POLICIES["cap-two"] = _CapPolicy
         self.addCleanup(CONTROL_POLICIES.pop, "cap-two", None)
@@ -651,7 +696,51 @@ class PipelineModeTest(unittest.TestCase):
             fixture.mocks["check_replay_agreement"].assert_not_called()
             self.assertTrue(summary["accepted"])
             self.assertTrue(summary["controller_aware"])
-            self.assertEqual(summary["replay_kind"], "point_mass_path_replay")
+            self.assertEqual(summary["replay_kind"], "point_mass_parity")
+
+    def test_allocation_open_uses_same_surface_capability_envelope(self):
+        CONTROL_POLICIES["cap-two"] = _CapPolicy
+        self.addCleanup(CONTROL_POLICIES.pop, "cap-two", None)
+        open_track = SimpleNamespace(
+            is_closed=False, has_edges=True, width_provenance="assumed",
+            lap_length=4.0, distance=_distance(),
+            curvature=np.zeros(_distance().size),
+        )
+        open_corridor = SimpleNamespace(
+            distance=_distance(), minimum=np.full(5, -2.0),
+            maximum=np.full(5, 2.0), provenance="assumed", is_closed=False,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            args = _args(
+                directory, control_mode="allocation", control_policy="cap-two",
+                solver="spline",
+            )
+            zero = _solution(57.9, spline=True)
+            stages = [_solution(57.95, spline=True), _solution(57.9, spline=True)]
+            fixture = _RunnerFixture(
+                self, spline=True, stages=stages, zero=zero,
+                track=open_track, corridor=open_corridor,
+            ).enter(args)
+            with (
+                patch.object(runner, "launch_time", return_value=0.5),
+                patch.object(runner, "capability_envelope_time",
+                             return_value=10.5) as envelope,
+            ):
+                summary = runner.run(args)
+            # The reference is the allocation surface, not the ideal vehicle.
+            self.assertEqual(envelope.call_args.args[1].mode, "allocation")
+            fixture.mocks["check_zero_corridor_matches_envelope"].assert_called_once_with(
+                open_loop=10.5, ocp=58.4, tolerance=0.01,
+            )
+            fixture.mocks["check_free_line_not_slower"].assert_called_once_with(
+                centreline=10.5, free=58.4, tolerance=0.002,
+            )
+            self.assertTrue(summary["checks"]["zero_corridor_matches_envelope"])
+            self.assertTrue(summary["checks"]["free_line_not_slower"])
+            self.assertEqual(summary["zero_corridor_reference_s"], 10.5)
+            self.assertEqual(summary["spline_type"], "open-natural")
+            self.assertEqual(summary["replay_kind"], "point_mass_parity")
+            self.assertTrue(summary["accepted"])
 
     def test_failed_available_gate_makes_accepted_false(self):
         CONTROL_POLICIES["cap-two"] = _CapPolicy
@@ -869,7 +958,9 @@ class ControlModeComparisonTest(unittest.TestCase):
                 "zero_corridor_matches_envelope": (
                     True if mode == "ideal" else None
                 ),
-                "free_line_not_slower": True,
+                "free_line_not_slower": (
+                    None if mode == "closed_loop" else True
+                ),
                 "corridor_containment": True,
                 "mesh_convergence": None if mode == "closed_loop" else True,
                 "replay_agreement": None if mode == "allocation" else True,
@@ -917,7 +1008,8 @@ class ControlModeComparisonTest(unittest.TestCase):
             self.assertIsNone(stored["mesh_converged"]["closed_loop"])
             self.assertEqual(
                 stored["unavailable_gates"]["closed_loop"],
-                ["zero_corridor_matches_envelope", "mesh_convergence"],
+                ["zero_corridor_matches_envelope", "free_line_not_slower",
+                 "mesh_convergence"],
             )
             self.assertEqual(
                 stored["unavailable_gates"]["allocation"],
@@ -983,7 +1075,8 @@ class ControlModeComparisonTest(unittest.TestCase):
             self.assertEqual(comparison["modes"]["closed_loop"]["status"], "ok")
             self.assertEqual(
                 comparison["modes"]["closed_loop"]["unavailable_gates"],
-                ["zero_corridor_matches_envelope", "mesh_convergence"],
+                ["zero_corridor_matches_envelope", "free_line_not_slower",
+                 "mesh_convergence"],
             )
 
     def test_comparison_requires_policy_and_adapter_before_running(self):

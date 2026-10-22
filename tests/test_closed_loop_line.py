@@ -13,6 +13,7 @@ from simplified_vehicle_models.solvers.closed_loop_line import (
     CAP_MARGIN,
     ReplaySample,
     _matches,
+    _next_cap,
     correct_to_replay,
 )
 from simplified_vehicle_models.solvers.qss_line_ocp import QssSettings, build_mesh
@@ -178,6 +179,60 @@ class ClosedLoopCorrectionTest(unittest.TestCase):
         self.assertFalse(_matches(solution, sample(98.9), 0.01))
         self.assertFalse(_matches(solution, sample(101.1), 0.01))
         self.assertFalse(_matches(solution, sample(100.0, feasible=False), 0.01))
+
+    def test_next_cap_only_lowers_where_replay_is_slower(self):
+        mesh = np.array([0.0, 1.0, 2.0])
+        ocp = np.array([10.0, 10.0, 10.0])
+        # faster, slower, equal to the OCP speed
+        replay = ReplaySample(
+            mesh, np.array([12.0, 8.0, 10.0]), True, 1.0,
+        )
+        cap = _next_cap(mesh, replay, ocp, None, 0.5, CAP_MARGIN)
+        np.testing.assert_allclose(cap, [10.0, 8.0 - CAP_MARGIN, 10.0])
+        # A previous lower cap still wins and is never raised.
+        previous = np.array([9.0, 9.0, 9.0])
+        capped = _next_cap(mesh, replay, ocp, previous, 0.5, CAP_MARGIN)
+        np.testing.assert_allclose(capped, [9.0, 8.0 - CAP_MARGIN, 9.0])
+        # A replay that is faster at every node keeps the OCP speed.
+        fast = ReplaySample(mesh, np.array([11.0, 12.0, 13.0]), True, 1.0)
+        np.testing.assert_allclose(
+            _next_cap(mesh, fast, ocp, None, 0.5, CAP_MARGIN), ocp,
+        )
+
+    def test_materially_faster_replay_does_not_reduce_caps(self):
+        with tempfile.TemporaryDirectory() as directory:
+            track, corridor, spline, mesh, settings = _case(directory, spacing=5.0)
+            surface = _surface()
+            baseline = solve_spline_line(
+                track, corridor, surface, mesh, spline, settings,
+            )
+            calls = []
+
+            def replay(path, controller):
+                calls.append(path.distance.copy())
+                # Faster than the OCP at every node, paired with a materially
+                # faster reported lap. This must not lower any node's cap.
+                speed = np.full(path.distance.size, 30.0)
+                reported = (
+                    baseline.lap_time if len(calls) > 1
+                    else 0.9 * baseline.lap_time
+                )
+                return ReplaySample(path.distance, speed, True, reported)
+
+            result = correct_to_replay(
+                track, corridor, surface, mesh, spline, settings, None, replay,
+                maximum_rounds=2,
+            )
+
+            self.assertTrue(result.accepted)
+            self.assertEqual(len(calls), 2)
+            self.assertEqual(len(result.speed_caps), 2)
+            # The faster replay is not a reason to lower any node's cap, so the
+            # second solve uses exactly the first solve's speed profile.
+            np.testing.assert_allclose(
+                result.speed_caps[1], result.speed_caps[0],
+                rtol=0.0, atol=1.0e-9,
+            )
 
     def test_solver_failure_under_a_cap_returns_an_unaccepted_result(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -137,9 +137,17 @@ def _validate_replay(sample) -> None:
 
 
 def _cap_from_replay(mesh, replay, ocp_speed, margin):
-    """Return the per-node cap implied by one replay's achieved speed."""
+    """Return the per-node cap implied by one replay's achieved speed.
+
+    Only a node where the replay is slower than the OCP tightens the cap. A
+    faster replay is evidence of inconsistency, not permission to reduce the
+    OCP speed, so those nodes keep the OCP speed and rely on the two-sided
+    acceptance check instead of a needless cap reduction.
+    """
     replay_speed = np.interp(mesh, replay.distance, replay.speed)
-    return np.minimum(ocp_speed, replay_speed) - margin
+    return np.where(
+        replay_speed < ocp_speed, replay_speed - margin, ocp_speed,
+    )
 
 
 def _next_cap(mesh, replay, ocp_speed, previous, minimum_speed, margin):

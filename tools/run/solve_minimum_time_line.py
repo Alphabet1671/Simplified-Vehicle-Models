@@ -811,44 +811,74 @@ def run(args) -> dict:
             open_loop=zero_reference, ocp=zero_total, tolerance=0.01,
         )
         free_reference = centreline_lap.lap_time
+        free_gate = check_free_line_not_slower(
+            centreline=free_reference, free=free_total,
+            tolerance=0.0 if track.is_closed else 0.002,
+        )
         replay_gate = check_replay_agreement(
             ocp=free_total, replay=replay_time, tolerance=0.01,
         )
+    elif mode == "allocation":
+        # Allocation has no replay caps on the free line, so a same-surface
+        # zero reference is meaningful. Never compare against the ideal
+        # solve_lap envelope.
+        replay_gate = None
+        check_unavailable["replay_agreement"] = (
+            "allocation mode has no controller replay adapter; the "
+            "rebuilt-path point-mass replay is not the allocation controller"
+        )
+        if track.is_closed:
+            zero_reference = None
+            zero_gate = None
+            check_unavailable["zero_corridor_matches_envelope"] = (
+                "closed-track allocation has no independent zero-corridor "
+                "reference: the zero OCP is solved on the same allocation "
+                "surface and is not an independent check"
+            )
+            free_reference = zero_total
+            free_gate = check_free_line_not_slower(
+                centreline=free_reference, free=free_total, tolerance=0.0,
+            )
+        else:
+            # The capability envelope starts from rest on the same surface and
+            # is independent of the zero OCP mesh.
+            zero_reference = capability_envelope_time(
+                track, surface, settings, start_speed=0.0,
+            )
+            zero_gate = check_zero_corridor_matches_envelope(
+                open_loop=zero_reference, ocp=zero_total, tolerance=0.01,
+            )
+            free_reference = zero_reference
+            free_gate = check_free_line_not_slower(
+                centreline=free_reference, free=free_total, tolerance=0.002,
+            )
     else:
-        # The ideal centreline envelope is not a valid reference for a
-        # controller-limited surface, and there is no independent
-        # controller-mode zero-corridor reference. Do not launder the ideal
-        # solve_lap time into a pass.
+        # closed_loop writes a replay-capped corrected line. The zero OCP is
+        # uncapped and on a different mesh, so neither comparison has a valid
+        # same-cap reference yet. Do not turn that mismatch into a pass/fail.
         zero_reference = None
         zero_gate = None
         check_unavailable["zero_corridor_matches_envelope"] = (
-            "controller-mode capability is not the ideal point-mass surface; "
-            "the ideal centreline envelope is not an independent reference for "
-            "allocation or closed-loop times"
+            "closed_loop records a replay-capped corrected line; the "
+            "zero-corridor OCP is uncapped, so no same-cap zero reference exists"
         )
-        # Compare the free line with the zero-corridor control solved on the
-        # same surface, not with the ideal vehicle envelope.
         free_reference = zero_total
-        if mode == "allocation":
-            replay_gate = None
-            check_unavailable["replay_agreement"] = (
-                "allocation mode has no controller replay adapter; the "
-                "rebuilt-path point-mass replay is not the allocation controller"
+        free_gate = None
+        check_unavailable["free_line_not_slower"] = (
+            "closed_loop records a replay-capped corrected line; the "
+            "zero-corridor OCP is uncapped and on a different mesh, so no "
+            "same-cap zero reference exists yet"
+        )
+        feasible = bool(correction.feasible) if correction is not None else False
+        replay_gate = (
+            check_replay_agreement(
+                ocp=free_total, replay=replay_time, tolerance=0.01,
             )
-        else:
-            feasible = bool(correction.feasible) if correction is not None else False
-            replay_gate = (
-                check_replay_agreement(
-                    ocp=free_total, replay=replay_time, tolerance=0.01,
-                )
-                and feasible
-            )
+            and feasible
+        )
     checks = {
         "zero_corridor_matches_envelope": zero_gate,
-        "free_line_not_slower": check_free_line_not_slower(
-            centreline=free_reference, free=free_total,
-            tolerance=0.0 if track.is_closed else 0.002,
-        ),
+        "free_line_not_slower": free_gate,
         "corridor_containment": containment,
         "mesh_convergence": mesh_ok,
         "replay_agreement": replay_gate,
@@ -864,7 +894,7 @@ def run(args) -> dict:
     else:
         accepted = available_gates_pass
     gain_reference = (
-        centreline_lap.lap_time if mode == "ideal" else zero_total
+        centreline_lap.lap_time if mode == "ideal" else free_reference
     )
     summary = {
         "track": str(Path(args.track)), "track_closed": bool(track.is_closed),
@@ -886,7 +916,10 @@ def run(args) -> dict:
         "maximum_violation": finest.maximum_violation, "checks": checks,
         "track_source_hashes": _source_hashes(Path(args.track)),
         "solver_tolerance": float(settings.tolerance),
-        "spline_type": type(spline).__name__ if spline is not None else None,
+        "spline_type": (
+            ("closed-periodic" if track.is_closed else "open-natural")
+            if spline is not None else None
+        ),
     }
     if recorded_mode != mode:
         raise ValueError(
@@ -900,8 +933,9 @@ def run(args) -> dict:
         "solver": solver,
         "replay_adapter": getattr(args, "replay_adapter", None),
         "replay_kind": (
-            "controller_adapter" if mode == "closed_loop"
-            else "point_mass_path_replay"
+            "controller_adapter"
+            if mode == "closed_loop" and controller_aware
+            else "point_mass_parity"
         ),
         "controller_aware": controller_aware,
         "replay_time_s": replay_time,

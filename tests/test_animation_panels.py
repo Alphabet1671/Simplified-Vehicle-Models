@@ -73,6 +73,18 @@ def track_geometry():
     return TrackGeometry(100.0 * np.sin(s), 100.0 * np.cos(s) - 100.0, 628.0, True)
 
 
+def integrated_course(time, speed, direction, lo, hi):
+    """Course from the trapezoid-integrated world-velocity samples, inclusive."""
+    velocity = speed[lo:hi + 1] * np.exp(1j * direction[lo:hi + 1])
+    displacement = np.trapezoid(velocity, time[lo:hi + 1])
+    return np.angle(displacement)
+
+
+def angular_residual(actual, expected):
+    """Signed smallest difference between two angles."""
+    return np.angle(np.exp(1j * (actual - expected)))
+
+
 def axes_for(visibility):
     style = AnimationStyle()
     figure = Figure(figsize=style.figure_size, dpi=style.dpi)
@@ -609,6 +621,20 @@ class DegradedPanelTest(unittest.TestCase):
         np.testing.assert_allclose(np.arctan2(y[1] - y[0], x[1] - x[0]), -0.02, atol=1e-12)
 
 
+class KinematicsTest(unittest.TestCase):
+
+    def test_integrated_course_weights_an_accelerating_turn(self):
+        time = np.array([0.0, 1.0, 2.0])
+        speed = np.array([1.0, 5.0, 9.0])
+        direction = np.array([0.0, np.pi / 4, np.pi / 2])
+        course = integrated_course(time, speed, direction, 0, 2)
+        expected = np.angle((1.0 + 5.0 * np.exp(1j * np.pi / 4)) / 2
+                            + (5.0 * np.exp(1j * np.pi / 4) + 9.0j) / 2)
+        unweighted_mean = np.mean(direction)
+        self.assertAlmostEqual(angular_residual(course, expected), 0.0, places=12)
+        self.assertGreater(abs(angular_residual(course, unweighted_mean)), 0.05)
+
+
 class RecordedRunTest(unittest.TestCase):
     """Panels on a short run of each real plant, recorded by the runner."""
 
@@ -650,17 +676,20 @@ class RecordedRunTest(unittest.TestCase):
             record = self.runs[model]
             moving = record.channel_values("speed") > 2.0
             t = record.time
+            speed = record.channel_values("speed").astype(float)
             x = record.channel_values("position-x").astype(float)
             y = record.channel_values("position-y").astype(float)
             psi = record.channel_values("heading-world").astype(float)
             beta = record.channel_values("body-slip-angle").astype(float)
             lo, hi = np.flatnonzero(moving)[0] + 5, record.rows - 5
             course = np.arctan2(y[hi] - y[lo], x[hi] - x[lo])
-            direction = np.mean(np.unwrap(psi[lo:hi] + beta[lo:hi]))
-            self.assertLess(abs(course - direction), 0.05, model)
-            # the body heading alone is a worse match whenever the car carries slip
-            self.assertLess(abs(course - direction),
-                            abs(course - np.mean(psi[lo:hi])) + 0.05, model)
+            velocity_course = integrated_course(t, speed, psi + beta, lo, hi)
+            error = abs(angular_residual(course, velocity_course))
+            self.assertLess(error, 0.05, model)
+            # The body heading alone is a worse match whenever the car carries slip.
+            body_course = integrated_course(t, speed, psi, lo, hi)
+            self.assertLess(error,
+                            abs(angular_residual(course, body_course)) + 0.05, model)
 
     def test_planar_plant_hides_attitude_by_default_and_shows_it_approximate_on_request(self):
         _, hidden, _ = self.build("planar-7dof")

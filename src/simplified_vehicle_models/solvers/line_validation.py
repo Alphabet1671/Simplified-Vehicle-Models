@@ -118,8 +118,12 @@ def _diagnostic(name: str, violation: np.ndarray, station: np.ndarray, unit: str
                 "worst_station": None, "unit": unit, "tolerance": tolerance}
     index = int(np.argmax(violation))
     maximum = float(violation[index])
+    failed = station[violation > tolerance]
     return {"name": name, "passed": maximum <= tolerance,
             "maximum_violation": maximum, "worst_station": float(station[index]),
+            # Preserve all sampled physical offenders for bounded local mesh
+            # selection, rather than making a wrapper chase only the global peak.
+            "refinement_stations": [float(value) for value in failed],
             "unit": unit, "tolerance": tolerance}
 
 
@@ -437,21 +441,42 @@ def validate_line(solution, corridor, surface, settings=None, *, vehicle=None,
                                 "unit": "", "tolerance": None})
         try:
             if getattr(surface, "representation", None) == "signed_transient_normalized_v1":
-                bounds = [surface.limits(float(v), float(k)) for v, k in zip(speed, curvature)]
-                amin = np.asarray([item[0] for item in bounds])
-                amax = np.asarray([item[1] for item in bounds])
-                ceiling = np.asarray([surface.domain_speed(float(k)) for k in curvature])
+                bounds, ceiling_values = [], []
+                for station, v, k in zip(stations, speed, curvature):
+                    try:
+                        bounds.append(surface.limits(float(v), float(k)))
+                        ceiling_values.append(surface.domain_speed(float(k)))
+                    except (AttributeError, ValueError) as error:
+                        # Preserve the first actual unsupported query instead of
+                        # clipping it into the table domain.
+                        diagnostics.append({"name": "capability_domain", "passed": False,
+                                            "maximum_violation": None,
+                                            "worst_station": float(station), "unit": "",
+                                            "tolerance": None,
+                                            "value": {"speed": float(v), "curvature": float(k)},
+                                            "reason": str(error)})
+                        break
+                else:
+                    amin = np.asarray([item[0] for item in bounds])
+                    amax = np.asarray([item[1] for item in bounds])
+                    ceiling = np.asarray(ceiling_values)
+                    diagnostics.append(_diagnostic("acceleration_max", acceleration-amax,
+                                                    stations, "m/s^2", tolerances["acceleration_mps2"]))
+                    diagnostics.append(_diagnostic("acceleration_min", amin-acceleration,
+                                                    stations, "m/s^2", tolerances["acceleration_mps2"]))
+                    diagnostics.append(_diagnostic("speed_ceiling", speed-ceiling,
+                                                    stations, "m/s", tolerances["speed_mps"]))
             else:
                 amax = _bilinear(surface, speed, curvature, "acceleration_max")
                 amin = _bilinear(surface, speed, curvature, "acceleration_min")
                 ceiling = _interpolate(curvature, surface.curvature, surface.speed_ceiling,
                                    closed=False)
-            diagnostics.append(_diagnostic("acceleration_max", acceleration-amax,
-                                           stations, "m/s^2", tolerances["acceleration_mps2"]))
-            diagnostics.append(_diagnostic("acceleration_min", amin-acceleration,
-                                           stations, "m/s^2", tolerances["acceleration_mps2"]))
-            diagnostics.append(_diagnostic("speed_ceiling", speed-ceiling,
-                                           stations, "m/s", tolerances["speed_mps"]))
+                diagnostics.append(_diagnostic("acceleration_max", acceleration-amax,
+                                                stations, "m/s^2", tolerances["acceleration_mps2"]))
+                diagnostics.append(_diagnostic("acceleration_min", amin-acceleration,
+                                                stations, "m/s^2", tolerances["acceleration_mps2"]))
+                diagnostics.append(_diagnostic("speed_ceiling", speed-ceiling,
+                                                stations, "m/s", tolerances["speed_mps"]))
         except (AttributeError, ValueError) as error:
             diagnostics.append({"name": "capability_domain", "passed": False,
                                 "maximum_violation": None, "worst_station": None,

@@ -348,6 +348,22 @@ class LineValidationTest(unittest.TestCase):
         self.assertIsNone(report["checks"]["dense_feasibility"])
         self.assertIn("dense state evaluator", report["missing_evidence"])
 
+    def test_signed_capability_domain_records_first_actual_station_and_query(self):
+        solution, corridor, _ = _fixture()
+        class SignedSurface:
+            representation = "signed_transient_normalized_v1"
+            def limits(self, speed, curvature):
+                if speed > 9.:
+                    raise ValueError("speed outside signed chart")
+                return -8., 3.
+            def domain_speed(self, curvature): return 25.
+        report = validate_line(solution, corridor, SignedSurface(), samples_per_element=4)
+        domain = next(item for item in report["diagnostics"] if item["name"] == "capability_domain")
+        self.assertFalse(domain["passed"])
+        self.assertEqual(domain["worst_station"], 0.0)
+        self.assertEqual(domain["value"], {"speed": 10.0, "curvature": 0.0})
+        self.assertIn("outside signed chart", domain["reason"])
+
     def test_domains_and_zero_speed_fail_dense_check(self):
         solution, corridor, surface = _fixture()
         # Unsupported speed forces capability-domain failure rather than extrapolation.

@@ -247,7 +247,9 @@ def run(args) -> dict:
     )
     finest = stages[-1]
     _write_line(output / "line.csv", finest)
-    rebuilt = path_from_solution(track, finest)
+    rebuilt = path_from_solution(
+        track, finest, smoothing=float(getattr(args, "path_smoothing", 0.0)),
+    )
     _write_line(output / "racing_line.csv", finest)
     xml_path, csv_path = _write_rebuilt_track(Path(args.track).resolve(), output, rebuilt)
     replay_track = load_track(xml_path)
@@ -292,6 +294,7 @@ def run(args) -> dict:
         "corridor_provenance": corridor.provenance,
         "constant_half_width_m": half_width,
         "offset_control_spacing_m": settings.offset_control_spacing,
+        "path_smoothing_m": float(getattr(args, "path_smoothing", 0.0)),
         "conditional_result": track.width_provenance != "surveyed", "margin_m": args.margin,
         "mesh_spacing_m": float(spacings[-1]), "centreline_envelope_s": centreline_lap.lap_time,
         "zero_corridor_reference_s": zero_reference,
@@ -330,6 +333,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--offset-spacing", type=float, default=None,
         help="control-point spacing for a reduced linear offset basis",
+    )
+    parser.add_argument(
+        "--path-smoothing", type=float, default=0.0,
+        help="post-reconstruction path smoothing in metres",
     )
     args = parser.parse_args(argv)
     try:

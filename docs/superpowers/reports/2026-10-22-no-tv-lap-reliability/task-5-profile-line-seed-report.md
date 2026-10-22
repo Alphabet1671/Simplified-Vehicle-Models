@@ -28,7 +28,7 @@ No solver default, physics, tolerance, TV behavior, source data, or profile/refe
 
 ```text
 PYTHONPATH=src:/tmp/no-tv-casadi-runtime python3 -m unittest tests.test_profile_line_seed tests.test_no_tv_minimum_lap -q
-Ran 34 tests in 0.060s
+Ran 37 tests in 0.064s
 OK
 ```
 

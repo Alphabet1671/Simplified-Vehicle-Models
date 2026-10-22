@@ -194,6 +194,28 @@ class ClosedLoopCorrectionTest(unittest.TestCase):
             self.assertTrue(np.isfinite(result.replay_time))
             self.assertAlmostEqual(result.replay_time, replay_times[-1])
 
+    def test_closed_loop_rejects_a_replay_that_never_becomes_feasible(self):
+        with tempfile.TemporaryDirectory() as directory:
+            track = load_track(_write_circle_track(Path(directory), radius=40.0, nodes=72,
+                                                   half_width=3.0))
+            corridor = corridor_from_track(track)
+            spline = OffsetSpline(track, control_spacing=10.0)
+            mesh = build_mesh(track, 3.0)
+
+            def always_infeasible(path, controller):
+                return ReplaySample(path.distance, np.full(path.distance.size, 8.0), False,
+                                    float(path.lap_length / 8.0), ('speed',))
+
+            result = correct_to_replay(track, corridor, _surface(), mesh, spline,
+                                       QssSettings(maximum_iterations=2000), None,
+                                       always_infeasible, maximum_rounds=3)
+            self.assertFalse(result.accepted)
+            self.assertEqual(result.rounds, 3)
+            # Every round reached a replay, so the budget was exhausted rather
+            # than the loop stopping early on an accepted or failed solve.
+            self.assertEqual(len(result.speed_caps), 3)
+            self.assertTrue(np.isfinite(result.replay_time))
+
     def test_rejects_invalid_correction_controls(self):
         def replay(path, controller):
             raise AssertionError("validation must run before any replay")

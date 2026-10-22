@@ -1,6 +1,6 @@
 # Minimum-Time Racing Line
 
-This page describes the stage 1 quasi-steady minimum-time line pipeline. It uses Simplified Technical English. See [forward-driver.md](forward-driver.md) for the separate forward simulation.
+This page describes the stage 1 quasi-steady minimum-time line pipeline. It uses Simplified Technical English. See [forward-driver.md](forward-driver.md) for the separate forward simulation. See [tv-aware-minimum-lap.md](tv-aware-minimum-lap.md) for the controller-aware decision record and the statement that no production TV policy or TV replay adapter is registered.
 
 ## 1. Purpose
 
@@ -42,6 +42,8 @@ The corridor is `assumed` unless the track declares `surveyed` width provenance.
 For an open course, the OCP fixes heading at both ends and fixes the start speed. Lateral offset remains a free corridor decision at both ends. The default start speed is the solver minimum speed, because the distance-domain dynamics divide by speed. Set `QssSettings.start_speed` to change it. The OCP uses a small lateral regularisation on open courses to remove a null direction on straight sections.
 
 Set `QssSettings.offset_control_spacing` or `--offset-spacing` to replace the per-node offset variables with linear control points spaced along the track. This reduced basis can converge where the per-node formulation fails, but it represents a coarser lateral line.
+
+The lap-time objective integrates the time per unit track distance `den / (v cos ψ)`, not `1 / (v cos ψ)`. Here `den = 1 - κ₀ n` is the offset-frame metric factor: a lateral offset changes the vehicle-path length relative to track distance, so `den` must multiply the integrand. See [qss_spline_ocp.py](../../src/simplified_vehicle_models/solvers/qss_spline_ocp.py).
 
 The OCP uses a quasi-steady model. It does not model transient dynamics, sideslip, suspension, or 14DoF states.
 

@@ -287,3 +287,20 @@ class AllocationBackendTest(unittest.TestCase):
             AllocationCapabilityBackend(object(), _CapPolicy(), mode='closed_loop')
         self.assertEqual(
             AllocationCapabilityBackend(object(), _CapPolicy()).mode, 'allocation')
+
+    def test_allocation_never_exceeds_ideal(self):
+        grid = CapabilityGrid(np.linspace(1.0, 30.0, 5), np.linspace(-0.2, 0.2, 5))
+        ideal = _ideal_surface(grid)
+        sampled = AllocationCapabilityBackend(object(), _CapPolicy()).sample(
+            grid, curvature_limit=0.2, ideal_surface=ideal)
+        mask = sampled.feasible_mask
+        # A mask with no feasible cell would make the bound checks vacuous.
+        self.assertTrue(np.any(mask))
+        self.assertTrue(np.all(sampled.surface.acceleration_max[mask]
+                               <= ideal.acceleration_max[mask] + 1e-9))
+        self.assertTrue(np.all(sampled.surface.acceleration_min[mask]
+                               >= ideal.acceleration_min[mask] - 1e-9))
+        # The policy caps acceleration at 2 m/s2 below the ideal 5 m/s2, so at
+        # least one feasible cell must be strictly narrower than the ideal.
+        self.assertTrue(np.any(sampled.surface.acceleration_max[mask]
+                               < ideal.acceleration_max[mask] - 1e-6))

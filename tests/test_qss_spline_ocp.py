@@ -8,6 +8,7 @@ import unittest
 import numpy as np
 
 from simplified_vehicle_models.formulations.point_mass_capability import CapabilitySurface
+from simplified_vehicle_models.solvers.qss_line_ocp import track_sample
 from simplified_vehicle_models.tracks.corridor import Corridor, corridor_from_track
 from simplified_vehicle_models.tracks.offset_spline import OffsetSpline
 from simplified_vehicle_models.tracks.profile import load_track
@@ -355,6 +356,32 @@ class SplineTranscriptionTest(unittest.TestCase):
                 track, corridor, _surface(), mesh,
                 OffsetSpline(open_view, control_spacing=20.0), QssSettings(),
             )
+
+    def test_spline_solution_respects_dense_corridor(self) -> None:
+        from simplified_vehicle_models.solvers.qss_line_ocp import QssSettings, build_mesh
+        from simplified_vehicle_models.solvers.qss_spline_ocp import solve_spline_line
+
+        with tempfile.TemporaryDirectory() as directory:
+            track = load_track(_write_circle_track(Path(directory), radius=40.0, nodes=72,
+                                                   half_width=3.0))
+            base = corridor_from_track(track)
+            corridor = Corridor(base.distance, base.minimum, base.maximum, base.provenance, True)
+            mesh = build_mesh(track, 3.0)
+            spline = OffsetSpline(track, control_spacing=10.0)
+            solution = solve_spline_line(track, corridor, _surface(), mesh, spline,
+                                         QssSettings(maximum_iterations=2000))
+        self.assertEqual(solution.status, 'Solve_Succeeded')
+        self.assertLessEqual(solution.maximum_violation, 1.0e-6)
+        self.assertTrue(np.any(base.maximum > base.minimum))
+        positions = np.linspace(0.0, track.lap_length, 25 * (mesh.size - 1) + 1)
+        self.assertEqual(positions.size, 25 * (mesh.size - 1) + 1)
+        offset = spline.evaluate(solution.coefficients, positions)[0]
+        lower = track_sample(corridor.minimum, corridor.distance, positions,
+                             closed=track.is_closed, period=track.lap_length)
+        upper = track_sample(corridor.maximum, corridor.distance, positions,
+                             closed=track.is_closed, period=track.lap_length)
+        self.assertTrue(np.all(offset >= lower - 1e-6))
+        self.assertTrue(np.all(offset <= upper + 1e-6))
 
 
 if __name__ == "__main__":

@@ -752,6 +752,127 @@ class SplineTranscriptionTest(unittest.TestCase):
                             np.linspace(0., 2., 2001))
         self.assertLess(abs(fine - coarse), 1.e-7)
 
+    def test_gl16_time_is_symbolic_numeric_and_low_start_analytic(self) -> None:
+        """GL16 removes the launch Simpson bias and is the reporting contract."""
+        import casadi as ca
+        from types import SimpleNamespace
+        from simplified_vehicle_models.solvers.qss_line_ocp import QssSettings
+        from simplified_vehicle_models.solvers.qss_spline_ocp import (
+            _SplineStateEvaluator, build_spline_ocp, physical_time_quadrature,
+        )
+        from simplified_vehicle_models.tracks.line_trajectory import OffsetTrajectory, ReferenceCurve
+        from simplified_vehicle_models.tracks.types import PathCoordinates
+
+        length, v0, acceleration = 2.0, .5, 3.0
+        distance = np.linspace(0.0, length, 5)
+        track = SimpleNamespace(
+            distance=distance, curvature=np.zeros(5), lap_length=length,
+            path_coordinates=PathCoordinates(distance, distance, np.zeros(5),
+                                             np.zeros(5), np.zeros(5), False),
+            is_closed=False,
+        )
+        spline = OffsetSpline(track, control_spacing=length)
+        trajectory = OffsetTrajectory(ReferenceCurve(track), spline,
+                                      np.zeros(spline.control_count))
+        mesh = np.linspace(0.0, length, 9)
+        speed = np.sqrt(v0**2 + 2.0 * acceleration * mesh)
+        vend = float(speed[-1])
+        evaluator = _SplineStateEvaluator(
+            trajectory, mesh, speed,
+            np.full(mesh.size, acceleration), np.full(mesh.size - 1, acceleration),
+        )
+        analytic = 2.0 * length / (v0 + vend)
+        numeric = physical_time_quadrature(trajectory, evaluator, mesh)
+        self.assertAlmostEqual(numeric, analytic, delta=1.e-11)
+        nodes32, weights32 = np.polynomial.legendre.leggauss(32)
+        stations32 = np.concatenate([
+            left + (right - left) * .5 * (nodes32 + 1.0)
+            for left, right in zip(mesh[:-1], mesh[1:])
+        ])
+        gl32 = float(np.sum((length / (mesh.size - 1)) * .5 * np.tile(weights32, mesh.size - 1)
+                            / evaluator.evaluate(stations32)["speed"]))
+        self.assertAlmostEqual(numeric, gl32, delta=1.e-12)
+
+        settings = QssSettings(start_speed=v0)
+        corridor = Corridor(distance, np.zeros(5), np.zeros(5), "straight", False)
+        built = build_spline_ocp(track, corridor, _surface(), mesh, spline, settings)
+        values = np.zeros(built["control_count"] + 3 * mesh.size - 1)
+        start = built["control_count"]
+        nodes = mesh.size
+        values[start:start + nodes] = speed
+        values[start + nodes:start + 2 * nodes] = acceleration
+        values[start + 2 * nodes:] = acceleration
+        symbolic = float(ca.Function("gl16_objective", [built["nlp"]["x"]],
+                                     [built["nlp"]["f"]])(values))
+        self.assertAlmostEqual(symbolic, numeric, delta=1.e-12)
+
+    def test_time_panel_knots_merge_near_coincident_sites(self) -> None:
+        """Optimizer and replay coalesce nearly identical source/control knots."""
+        from simplified_vehicle_models.solvers.qss_spline_ocp import _time_quadrature_panels
+        mesh = np.array([0.0, 1.0, 2.0])
+        left, right, sites = _time_quadrature_panels(
+            mesh, np.array([0.0, .5, .5 + 1.e-13, 1.5, 2.0]),
+        )
+        np.testing.assert_allclose(left, [0.0, .5, 1.0, 1.5])
+        np.testing.assert_allclose(right, [.5, 1.0, 1.5, 2.0])
+        self.assertEqual(sites.size, 4 * 16)
+        with self.assertRaisesRegex(ValueError, "strictly increasing"):
+            _time_quadrature_panels(np.array([0.0, 0.0]), ())
+
+    def test_gl16_symbolic_numeric_parity_on_offset_variable_metric(self) -> None:
+        """The shared GL rule includes analytic offset geometry, not just W."""
+        import casadi as ca
+        from types import SimpleNamespace
+        from simplified_vehicle_models.solvers.qss_line_ocp import QssSettings
+        from simplified_vehicle_models.solvers.qss_spline_ocp import (
+            _SplineStateEvaluator, build_spline_ocp, physical_time_quadrature,
+        )
+        from simplified_vehicle_models.tracks.line_trajectory import OffsetTrajectory, ReferenceCurve
+        from simplified_vehicle_models.tracks.types import PathCoordinates
+
+        distance = np.linspace(0.0, 2.0, 9)
+        north, east = distance, .15 * distance**2
+        track = SimpleNamespace(
+            distance=distance, curvature=np.zeros_like(distance), lap_length=2.0,
+            path_coordinates=PathCoordinates(distance, north, east, np.zeros_like(distance),
+                                             np.zeros_like(distance), False),
+            is_closed=False,
+        )
+        mesh = np.array([0.0, 1.0, 2.0])
+        spline = OffsetSpline(track, control_spacing=.5)
+        coefficients = np.linspace(-.08, .12, spline.control_count)
+        trajectory = OffsetTrajectory(ReferenceCurve(track), spline, coefficients)
+        speed = np.array([5.0, 5.2, 5.4])
+        acceleration = np.array([.2, .25, .3])
+        midpoint_acceleration = np.array([.225, .275])
+        evaluator = _SplineStateEvaluator(trajectory, mesh, speed, acceleration,
+                                          midpoint_acceleration)
+        numeric = physical_time_quadrature(trajectory, evaluator, mesh)
+        settings = QssSettings(start_speed=5.0, open_regularisation=0.0)
+        corridor = Corridor(distance, np.full(distance.size, -1.0),
+                            np.full(distance.size, 1.0), "variable", False)
+        built = build_spline_ocp(track, corridor, _surface(), mesh, spline, settings)
+        values = np.zeros(built["control_count"] + 3 * mesh.size - 1)
+        controls = built["control_count"]
+        values[:controls] = coefficients
+        values[controls:controls + mesh.size] = speed
+        values[controls + mesh.size:controls + 2 * mesh.size] = acceleration
+        values[controls + 2 * mesh.size:] = midpoint_acceleration
+        symbolic = float(ca.Function("offset_gl16_objective", [built["nlp"]["x"]],
+                                     [built["nlp"]["f"]])(values))
+        self.assertAlmostEqual(symbolic, numeric, delta=2.e-13)
+        nodes32, weights32 = np.polynomial.legendre.leggauss(32)
+        panels = trajectory._knots()
+        left = np.maximum(panels[:-1], mesh[0])
+        right = np.minimum(panels[1:], mesh[-1])
+        sites32 = np.concatenate([a + (b - a) * .5 * (nodes32 + 1.0)
+                                  for a, b in zip(left, right)])
+        gl32 = float(np.sum(np.repeat((right - left) * .5, weights32.size)
+                            * np.tile(weights32, left.size)
+                            * np.asarray(trajectory.evaluate(sites32).metric)
+                            / evaluator.evaluate(sites32)["speed"]))
+        self.assertAlmostEqual(numeric, gl32, delta=2.e-12)
+
     def test_energy_hs_variable_metric_residual_converges(self) -> None:
         """Nonlinear metric remains an HS approximation whose dense residual falls."""
         from types import SimpleNamespace
@@ -838,6 +959,9 @@ class SplineTranscriptionTest(unittest.TestCase):
         self.assertGreaterEqual(float(np.min(dense["acceleration"])), -8.0 - 2.e-6)
         analytic = (np.sqrt(10.0**2 + 2.0 * 3.0 * 20.0) - 10.0) / 3.0
         self.assertAlmostEqual(solution.lap_time, analytic, delta=2.0e-3)
+        self.assertEqual(solution.time_quadrature,
+                         "gauss_legendre_16_energy_hermite_knot_union_v1")
+        self.assertEqual(solution.time_quadrature_metadata["order"], 16)
         report = validate_line(solution, corridor, surface, samples_per_element=8)
         peak = next(item for item in report["diagnostics"] if item["name"] == "acceleration_max")
         self.assertTrue(peak["passed"])

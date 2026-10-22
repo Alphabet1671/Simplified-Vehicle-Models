@@ -162,6 +162,8 @@ class AnalyticLinePipelineTest(unittest.TestCase):
                 acceleration=np.linspace(-1.0, 1.0, 11),
                 midpoint_acceleration=np.linspace(-0.8, 0.8, 10),
                 state_representation="energy_hs_v1",
+                time_quadrature="gauss_legendre_16_energy_hermite_knot_union_v1",
+                time_quadrature_metadata={"rule": "gauss_legendre", "order": 16},
             )
             from tools.run.solve_minimum_time_line import _write_trajectory_metadata
             artifact = Path(name) / "trajectory.npz"
@@ -175,6 +177,9 @@ class AnalyticLinePipelineTest(unittest.TestCase):
                 metadata = __import__("json").loads(str(data["metadata"]))
                 self.assertEqual(metadata["schema_version"], 1)
                 self.assertEqual(metadata["state_representation"], "energy_hs_v1")
+                self.assertEqual(metadata["time_quadrature"],
+                                 "gauss_legendre_16_energy_hermite_knot_union_v1")
+                self.assertEqual(metadata["time_quadrature_metadata"]["order"], 16)
                 self.assertTrue(metadata["is_closed"])
                 self.assertEqual(metadata["reference_interpolant"], "scipy.make_interp_spline")
                 np.testing.assert_allclose(data["source_reference_station"], trajectory.reference.source_station)

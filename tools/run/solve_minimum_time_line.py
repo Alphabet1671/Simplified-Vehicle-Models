@@ -315,6 +315,8 @@ def _write_trajectory_metadata(path: Path, solution) -> None:
         "reference_degree": 5 if reference_station.size >= 6 else 3,
         "is_closed": bool(trajectory.reference.is_closed),
         "offset_control_spacing_m": float(trajectory.spline.control_spacing),
+        "time_quadrature": str(getattr(solution, "time_quadrature", "legacy_unspecified")),
+        "time_quadrature_metadata": getattr(solution, "time_quadrature_metadata", None),
     }, sort_keys=True)
     # Do not overwrite a reproducibility artifact even if called outside runner
     # preflight.

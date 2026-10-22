@@ -15,7 +15,7 @@ speed, leaving the terminal speed and the endpoint offsets free.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import math
 
 import numpy as np
@@ -31,6 +31,28 @@ from simplified_vehicle_models.solvers.qss_line_ocp import (
     _validate_solver_result,
     track_sample,
 )
+
+
+# This is part of the trajectory representation contract: the optimizer and
+# reported physical time both integrate G / sqrt(W_H) at these exact sites.
+TIME_QUADRATURE_NAME = "gauss_legendre_16_energy_hermite_knot_union_v1"
+_TIME_GL_NODES, _TIME_GL_WEIGHTS = np.polynomial.legendre.leggauss(16)
+_TIME_ELEMENT_FRACTIONS = 0.5 * (_TIME_GL_NODES + 1.0)
+_TIME_ELEMENT_WEIGHTS = 0.5 * _TIME_GL_WEIGHTS
+
+
+def _time_quadrature_metadata() -> dict[str, object]:
+    """Return the serialized contract for optimizer and reported physical time."""
+    return {
+        "name": TIME_QUADRATURE_NAME,
+        "rule": "gauss_legendre",
+        "order": 16,
+        "state": "energy_hermite_cubic",
+        "integrand": "trajectory_metric / sqrt(energy_hermite)",
+        "geometry_panels": "mesh_union_reference_and_offset_knots",
+        "element_fraction_nodes": _TIME_ELEMENT_FRACTIONS.tolist(),
+        "element_fraction_weights": _TIME_ELEMENT_WEIGHTS.tolist(),
+    }
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,6 +75,8 @@ class SplineSolution:
     objective_value: float | None = None
     state_evaluator: object | None = None
     state_representation: str = "energy_hs_v1"
+    time_quadrature: str = TIME_QUADRATURE_NAME
+    time_quadrature_metadata: dict[str, object] = field(default_factory=_time_quadrature_metadata)
 
 
 def _reference_curve(track):
@@ -176,6 +200,67 @@ class _SplineStateEvaluator:
                 for key, value in result.items()}
 
 
+def _merged_time_geometry_knots(mesh, geometry_knots=()) -> np.ndarray:
+    """Merge near-coincident geometry knots with the trajectory-map policy."""
+    mesh = np.asarray(mesh, dtype=float)
+    if (mesh.ndim != 1 or mesh.size < 2 or not np.all(np.isfinite(mesh))
+            or np.any(np.diff(mesh) <= 0.0)):
+        raise ValueError("time-quadrature mesh must be finite and strictly increasing")
+    candidates = np.asarray(geometry_knots, dtype=float).ravel()
+    if candidates.size and (not np.all(np.isfinite(candidates))):
+        raise ValueError("time-quadrature geometry knots must be finite")
+    raw = np.sort(np.r_[mesh[0], candidates, mesh[-1]])
+    tolerance = 1.0e-11 * max(1.0, float(mesh[-1] - mesh[0]))
+    knots = raw[np.r_[True, np.diff(raw) > tolerance]]
+    knots[0], knots[-1] = mesh[0], mesh[-1]
+    return knots
+
+
+def _time_quadrature_panels(mesh, geometry_knots=()) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Split every mesh element at analytic-geometry knots and return GL sites.
+
+    The cubic energy state is smooth within a mesh element, but the source XY
+    and offset splines need not be smooth across their respective knots.  Both
+    the symbolic objective and replay therefore use this exact panelization.
+    """
+    mesh = np.asarray(mesh, dtype=float)
+    candidates = _merged_time_geometry_knots(mesh, geometry_knots)
+    starts: list[float] = []
+    ends: list[float] = []
+    tolerance = 1.0e-11 * max(1.0, float(mesh[-1] - mesh[0]))
+    for left, right in zip(mesh[:-1], mesh[1:]):
+        interior = candidates[(candidates > left + tolerance) & (candidates < right - tolerance)]
+        boundaries = np.r_[left, np.unique(interior), right]
+        starts.extend(boundaries[:-1])
+        ends.extend(boundaries[1:])
+    left = np.asarray(starts, dtype=float)
+    right = np.asarray(ends, dtype=float)
+    width = right - left
+    if np.any(width <= 0.0):
+        raise ValueError("time-quadrature panels must have positive width")
+    stations = (left[:, None] + width[:, None] * _TIME_ELEMENT_FRACTIONS).ravel()
+    return left, right, stations
+
+
+def physical_time_quadrature(trajectory, evaluator, mesh) -> float:
+    """Integrate represented physical time using the shared knot-aware GL16 rule.
+
+    ``evaluator`` supplies the same cubic energy-Hermite state used by the
+    optimizer; ``trajectory`` supplies the authoritative analytic path metric.
+    This deliberately does not include the independent open-path regularizer.
+    """
+    geometry_knots = np.r_[trajectory.reference.source_station,
+                           trajectory.spline.control_distance]
+    left, right, stations = _time_quadrature_panels(mesh, geometry_knots)
+    speed = np.asarray(evaluator.evaluate(stations)["speed"], dtype=float).reshape(
+        left.size, _TIME_ELEMENT_FRACTIONS.size,
+    )
+    metric = np.asarray(trajectory.evaluate(stations).metric, dtype=float).reshape(speed.shape)
+    if not (np.all(np.isfinite(speed)) and np.all(np.isfinite(metric))) or np.any(speed <= 0.0):
+        raise ValueError("physical-time quadrature requires finite positive represented speed")
+    return float(np.sum((right - left)[:, None] * _TIME_ELEMENT_WEIGHTS * metric / speed))
+
+
 def _validate_spline(track, spline) -> int:
     """Validate that ``spline`` matches the track's distance domain."""
     control_count = getattr(spline, "control_count", None)
@@ -250,12 +335,23 @@ def build_spline_ocp(track, corridor, surface, mesh, spline, settings: QssSettin
     off_values, off_first, off_second = spline.basis(off_sites)
 
     reference = _reference_curve(track)
+    time_left, time_right, time_sites = _time_quadrature_panels(
+        mesh, np.r_[reference.source_station, spline.control_distance],
+    )
+    time_values, time_first, time_second = spline.basis(time_sites)
+    time_panel_element = np.searchsorted(mesh, time_left, side="right") - 1
+    time_panel_element = np.clip(time_panel_element, 0, count - 1)
+    time_element = np.repeat(time_panel_element, _TIME_ELEMENT_FRACTIONS.size)
+    time_coordinate = (time_sites - mesh[time_element]) / widths[time_element]
     node_reference = reference.evaluate(mesh)
     mid_reference = reference.evaluate(midpoints)
+    time_reference = reference.evaluate(time_sites)
     k0_nodes, dk0_nodes = np.asarray(node_reference.curvature), np.asarray(node_reference.curvature_s)
     k0_mids, dk0_mids = np.asarray(mid_reference.curvature), np.asarray(mid_reference.curvature_s)
+    k0_time, dk0_time = np.asarray(time_reference.curvature), np.asarray(time_reference.curvature_s)
     h_nodes, hs_nodes = np.asarray(node_reference.metric), np.asarray(node_reference.metric_s)
     h_mids, hs_mids = np.asarray(mid_reference.metric), np.asarray(mid_reference.metric_s)
+    h_time, hs_time = np.asarray(time_reference.metric), np.asarray(time_reference.metric_s)
     corridor_lower = _sample_corridor(corridor.minimum, corridor, mesh, track)
     corridor_upper = _sample_corridor(corridor.maximum, corridor, mesh, track)
     mid_lower = _sample_corridor(corridor.minimum, corridor, midpoints, track)
@@ -291,6 +387,9 @@ def build_spline_ocp(track, corridor, surface, mesh, spline, settings: QssSettin
     n_off = spline_field(off_values)
     n_first_off = spline_field(off_first)
     n_second_off = spline_field(off_second)
+    n_time = spline_field(time_values)
+    n_first_time = spline_field(time_first)
+    n_second_time = spline_field(time_second)
 
     off_reference = reference.evaluate(off_sites)
     k0_off = np.asarray(off_reference.curvature)
@@ -310,6 +409,9 @@ def build_spline_ocp(track, corridor, surface, mesh, spline, settings: QssSettin
         ]
         off_geometry = [
             (1.0, 0.0, 0.0, float(k0_off[i]), float(h_off[i])) for i in range(off_sites.size)
+        ]
+        time_geometry = [
+            (1.0, 0.0, 0.0, float(k0_time[i]), float(h_time[i])) for i in range(time_sites.size)
         ]
     else:
         node_geometry = [
@@ -332,6 +434,13 @@ def build_spline_ocp(track, corridor, surface, mesh, spline, settings: QssSettin
                 float(h_off[i]), float(hs_off[i]), float(k0_off[i]), float(dk0_off[i]),
             )
             for i in range(off_sites.size)
+        ]
+        time_geometry = [
+            _spline_geometry(
+                n_time[i], n_first_time[i], n_second_time[i],
+                float(h_time[i]), float(hs_time[i]), float(k0_time[i]), float(dk0_time[i]),
+            )
+            for i in range(time_sites.size)
         ]
 
     signed = getattr(surface, "representation", None) == "signed_transient_normalized_v1"
@@ -411,7 +520,16 @@ def build_spline_ocp(track, corridor, surface, mesh, spline, settings: QssSettin
                 + 4*x*(1 - x) * mid_acceleration[index]
                 + 2*(x - 0.5)*(x - 1) * acceleration[index])
 
+    # Binding physical-time objective: exactly the same knot-union GL16 rule
+    # as ``physical_time_quadrature`` below.  The open-path regularizer remains
+    # a separate explicit penalty and is intentionally not physical time.
     objective = 0
+    for site in range(time_sites.size):
+        panel = site // _TIME_ELEMENT_FRACTIONS.size
+        energy = hermite_energy(int(time_element[site]), float(time_coordinate[site]))
+        objective += ((time_right[panel] - time_left[panel])
+                      * _TIME_ELEMENT_WEIGHTS[site % _TIME_ELEMENT_FRACTIONS.size]
+                      * time_geometry[site][4] / energy_speed(energy))
     for index in range(count):
         h = float(widths[index])
         node0 = node_geometry[index]
@@ -451,13 +569,6 @@ def build_spline_ocp(track, corridor, surface, mesh, spline, settings: QssSettin
             speed[index + 1] ** 2,
         ):
             add(energy_coefficient - minimum_energy, 0.0, math.inf)
-        # Time per unit track distance is den / (v cos(psi)); den enters because
-        # the offset path is longer than the centreline arc it is measured on.
-        objective += h / 6.0 * (
-            metric0 / speed[index]
-            + 4.0 * metric_mid / midpoint_speed
-            + metric1 / speed[index + 1]
-        )
         if (not track.is_closed and not zero_corridor
                 and settings.open_regularisation > 0.0):
             # On a straight open section the lateral offset has no intrinsic
@@ -564,6 +675,8 @@ def build_spline_ocp(track, corridor, surface, mesh, spline, settings: QssSettin
         "control_count": control_count,
         "spline": spline,
         "reference": reference,
+        "time_quadrature_panel_count": int(time_left.size),
+        "time_quadrature_site_count": int(time_sites.size),
         # Diagnostic-only mapping in element-major/fraction-major order. It
         # preserves the NLP layout while allowing regressions to identify a
         # particular physical off-site capability row.
@@ -876,19 +989,11 @@ def solve_spline_line(track, corridor, surface, mesh, spline,
     trajectory = OffsetTrajectory(built["reference"], spline, blocks["coefficients"])
     evaluated = trajectory.evaluate(built["mesh"])
     # ``result['f']`` includes optional open regularisation; report physical time separately.
-    metric = np.asarray(evaluated.metric, dtype=float)
     evaluator = _SplineStateEvaluator(
         trajectory, built["mesh"], blocks["speed"], blocks["acceleration"],
         blocks["mid_acceleration"],
     )
-    midpoint = 0.5 * (built["mesh"][:-1] + built["mesh"][1:])
-    midpoint_speed = np.asarray(evaluator.evaluate(midpoint)["speed"], dtype=float)
-    midpoint_metric = np.asarray(trajectory.evaluate(midpoint).metric, dtype=float)
-    physical_time = float(np.sum(np.diff(built["mesh"]) / 6.0 * (
-        metric[:-1] / blocks["speed"][:-1]
-        + 4.0 * midpoint_metric / midpoint_speed
-        + metric[1:] / blocks["speed"][1:]
-    )))
+    physical_time = physical_time_quadrature(trajectory, evaluator, built["mesh"])
     return SplineSolution(
         distance=np.asarray(built["mesh"], dtype=float),
         offset=np.asarray(evaluated.offset),
@@ -905,4 +1010,8 @@ def solve_spline_line(track, corridor, surface, mesh, spline,
         midpoint_acceleration=np.array(blocks["mid_acceleration"], copy=True),
         objective_value=objective,
         state_evaluator=evaluator,
+        time_quadrature_metadata=_time_quadrature_metadata() | {
+            "panel_count": int(built["time_quadrature_panel_count"]),
+            "site_count": int(built["time_quadrature_site_count"]),
+        },
     )

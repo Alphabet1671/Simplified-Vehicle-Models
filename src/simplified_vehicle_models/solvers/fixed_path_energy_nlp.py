@@ -114,8 +114,9 @@ def fixed_path_energy_profile(path, surface, *, boundary: str = "flying", start_
 
     # Explicitly bounded seed: it merely initializes IPOPT, not a frozen sweep
     # state.  The NLP is free to brake, accelerate, and change every non-pinned W.
-    seed_speed = float(initial_speed) if initial_speed is not None else max(floor, min(float(np.min(node_cap)), node_cap[0]))
-    seed_speed = min(seed_speed, float(np.min(node_cap)))
+    all_caps = np.r_[node_cap, mid_cap]
+    seed_speed = float(initial_speed) if initial_speed is not None else max(floor, float(np.min(all_caps)))
+    seed_speed = min(seed_speed, float(np.min(all_caps)))
     initial_w = np.full(distance.size, seed_speed * seed_speed)
     if boundary == "rolling":
         initial_w[0] = start_speed * start_speed

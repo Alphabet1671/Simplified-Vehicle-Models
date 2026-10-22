@@ -44,6 +44,25 @@ class FixedPathEnergyNlpTest(unittest.TestCase):
         self.assertFalse(nonexact.converged)
         self.assertEqual(nonexact.diagnostics["return_status"], "Solved_To_Acceptable_Level")
 
+    def test_default_seed_honours_lower_analytic_midpoint_cap(self):
+        # Nodes lie at the generous curvature-chart endpoints, while the exact
+        # segment midpoint reaches an interior cap dip.  Capture x0 rather than
+        # feigning a physically feasible solve from the rolling pinned endpoint.
+        dipped = SignedTransientCapability(np.array([0., 1.]), np.array([0., .5, 1.]),
+            np.full((2, 3), 2.), np.full((2, 3), -4.), np.array([30., 1., 30.]),
+            .5, "midpoint-cap-dip")
+        captured = {}
+        class Solver:
+            def __call__(self, **kwargs):
+                captured["x0"] = np.asarray(kwargs["x0"], dtype=float)
+                return {"x": np.array([25., 1.]), "f": 1.}
+            def stats(self):
+                return {"success": False, "return_status": "Maximum_Iterations_Exceeded", "iter_count": 1}
+        with patch("casadi.nlpsol", return_value=Solver()):
+            fixed_path_energy_profile(Path(np.array([0., 1.]), np.array([0., 1.])), dipped,
+                                      boundary="rolling", start_speed=5., step=1.)
+        self.assertLessEqual(math.sqrt(captured["x0"][1]), 1.)
+
     def test_rolling_straight_constant_acceleration_matches_analytic_time(self):
         result = fixed_path_energy_profile(Path(np.array([0., 10.]), np.zeros(2)), chart(upper=2.),
                                            boundary="rolling", start_speed=3., step=1.)

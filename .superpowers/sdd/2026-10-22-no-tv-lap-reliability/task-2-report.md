@@ -25,7 +25,7 @@ Ran 110 tests
 OK
 ```
 
-The runner/gate-only subset also passed 71 tests. Existing synthetic closed-loop replay fixtures were corrected to sample reference-grid speeds using `path.reference_distance`, rather than treating path arclength as reference station.
+The runner/gate-only subset also passed 71 tests. Existing synthetic closed-loop replay fixtures were corrected to sample reference-grid speeds using `path.reference_distance`, rather than treating path arclength as reference station. A dedicated real `fsae_2026_skidpad` zero-offset regression exports through `_write_rebuilt_track` then loads the emitted XML, confirming adaptive exact arc-length sampling meets existing loader checks without source mutation.
 
 ## Discrepancies and concerns
 

@@ -259,6 +259,27 @@ class GateCheckTest(unittest.TestCase):
             self.assertEqual(rows[1].get("role"), None)
 
 
+class ExactSplineExportTest(unittest.TestCase):
+    def test_adaptive_zero_offset_skidpad_round_trips_loader(self) -> None:
+        """Exact arc-length export is resampled, not replaced by chord lengths."""
+        from simplified_vehicle_models.tracks.line_trajectory import ReferenceCurve, OffsetTrajectory
+        from simplified_vehicle_models.tracks.offset_spline import OffsetSpline
+        source = Path("models/tracks/fsae_2026_skidpad.xml")
+        track = load_track(source)
+        spline = OffsetSpline(track, control_spacing=10.0)
+        trajectory = OffsetTrajectory(ReferenceCurve(track), spline,
+                                      np.zeros(spline.control_count))
+        path = trajectory.sample_path(track.distance)
+        self.assertGreater(path.distance.size, track.distance.size)
+        self.assertIsNotNone(path.reference_distance)
+        with tempfile.TemporaryDirectory() as directory:
+            xml_path, _ = _write_rebuilt_track(source, Path(directory), path)
+            rebuilt = load_track(xml_path)
+        self.assertGreater(rebuilt.path_coordinates.distance[-1], 0.0)
+        np.testing.assert_allclose(path.distance[-1], trajectory.station_map.path_end,
+                                   rtol=0.0, atol=1e-7)
+
+
 class RunnerOrchestrationTest(unittest.TestCase):
     def test_requested_tracks_match_current_runner_scope(self) -> None:
         from tools.run.solve_minimum_time_line import _validate_track_for_line_pipeline

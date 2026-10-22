@@ -733,8 +733,11 @@ class RunnerOrchestrationTest(unittest.TestCase):
             self.assertEqual(solve_ladder.call_args.kwargs["spacings"], (5.0, 2.0, 1.0))
             self.assertEqual(set(summary["checks"]), {
                 "zero_corridor_matches_envelope", "free_line_not_slower", "corridor_containment",
-                "mesh_convergence", "replay_agreement",
+                "mesh_convergence", "replay_agreement", "geometry_consistency",
+                "dense_feasibility", "basis_convergence", "matched_baseline",
             })
+            self.assertEqual(summary["validation_status"], "incomplete")
+            self.assertFalse(summary["accepted"])
             self.assertFalse(summary["checks"]["corridor_containment"])
             self.assertEqual(summary["stages"][0]["spacing_m"], 5.0)
             self.assertEqual(summary["stages"][-1]["spacing_m"], 1.0)
@@ -752,7 +755,7 @@ class RunnerOrchestrationTest(unittest.TestCase):
                     "--half-width", "2.45", "--spacings", "10,5",
                     "--offset-spacing", "35", "--path-smoothing", "3",
                 ]),
-                0,
+                1,
             )
         args = run.call_args.args[0]
         self.assertEqual(args.half_width, 2.45)

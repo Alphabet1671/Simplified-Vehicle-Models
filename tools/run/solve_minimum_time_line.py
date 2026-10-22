@@ -38,6 +38,9 @@ from simplified_vehicle_models.solvers.qss_line_ocp import (
     solve_ladder, track_sample, _offset_basis,
 )
 from simplified_vehicle_models.solvers.qss_spline_ocp import _geometry, solve_spline_line
+from simplified_vehicle_models.solvers.line_validation import (
+    REQUIRED_NUMERICAL_CHECKS, strict_validation, validate_line,
+)
 from simplified_vehicle_models.results.traces import LapMode
 from simplified_vehicle_models.tracks.corridor import Corridor, corridor_from_track
 from simplified_vehicle_models.tracks.offset_spline import OffsetSpline
@@ -104,6 +107,19 @@ def _validate_output_paths(source: Path, output: Path, *, reject_existing: bool 
             raise FileExistsError(
                 f"output artifact already exists; refusing to overwrite: {candidate}"
             )
+
+
+def _json_safe(value):
+    """Replace non-finite floating diagnostics with JSON null recursively."""
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, np.floating):
+        value = float(value)
+    if isinstance(value, float) and not np.isfinite(value):
+        return None
+    return value
 
 
 def _source_hashes(source: Path) -> dict[str, str]:
@@ -972,16 +988,22 @@ def run(args) -> dict:
         "mesh_convergence": mesh_ok,
         "replay_agreement": replay_gate,
     }
-    # Acceptance requires every available required gate; an explicit None is
-    # unavailable, not a pass. A controller result additionally needs its own
-    # correction loop to accept the final replay.
-    available_gates_pass = all(
-        value is None or bool(value) for value in checks.values()
-    )
-    if mode == "closed_loop" and correction is not None:
-        accepted = bool(correction.accepted) and available_gates_pass
-    else:
-        accepted = available_gates_pass
+    # Preserve legacy gates as evidence, but strict acceptance additionally
+    # requires independently-dense geometry/state evidence and all mandated
+    # refinement/baseline/replay evidence.  Never infer unavailable evidence.
+    solver_succeeded = str(getattr(finest, "status", "Solve_Succeeded")) in {
+        "Solve_Succeeded", "success", "succeeded",
+    }
+    dense_report = validate_line(finest, corridor, surface, settings, vehicle=vehicle)
+    checks.update(dense_report["checks"])
+    # The existing mesh gate is relevant to the mandated mesh evidence.  Basis
+    # refinement and matched same-geometry baseline are not yet run by runner;
+    # record them explicitly unavailable rather than making a green claim.
+    checks["mesh_convergence"] = mesh_ok
+    checks["basis_convergence"] = None
+    checks["matched_baseline"] = None
+    strict = strict_validation(solver_succeeded, checks, REQUIRED_NUMERICAL_CHECKS)
+    accepted = strict["accepted"]
     gain_reference = (
         centreline_lap.lap_time if mode == "ideal" else free_reference
     )
@@ -1003,6 +1025,7 @@ def run(args) -> dict:
         "free_line_gain_percent": 100.0 * (gain_reference - free_total) / gain_reference,
         "stages": [{"spacing_m": spacing, "iterations": stage.iterations, "wall_seconds": wall_seconds, "lap_time_s": stage.lap_time} for spacing, stage, wall_seconds in zip(spacings, stages, stage_wall_seconds)],
         "maximum_violation": finest.maximum_violation, "checks": checks,
+        "dense_validation": dense_report,
         "track_source_hashes": _source_hashes(Path(args.track)),
         "solver_tolerance": float(settings.tolerance),
         "spline_type": (
@@ -1031,6 +1054,7 @@ def run(args) -> dict:
         "rounds": rounds,
         "accepted": bool(accepted),
         "saturation": sorted(set(saturation)),
+        **strict,
     })
     if mesh_unavailable_reason is not None:
         check_unavailable["mesh_convergence"] = mesh_unavailable_reason
@@ -1050,7 +1074,8 @@ def run(args) -> dict:
         summary["capability_cache"] = str(selection.cache_path)
     if selection.metadata:
         summary["capability_metadata"] = selection.metadata
-    (output / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    summary = _json_safe(summary)
+    (output / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8")
     print("Acceptance check                  Result")
     for name, passed in checks.items():
         print(f"{name:34} {str(passed).lower()}")
@@ -1187,7 +1212,9 @@ def compare_control_modes(args, comparison_path: Path | None = None) -> dict:
             else:
                 failed_gates.append(name)
         accepted = bool(summary.get("accepted", False))
-        status_ok = accepted and not failed_gates
+        # Do not reconstruct acceptance from the legacy gates.  The runner's
+        # strict tier accounts for mandatory dense/basis/baseline evidence.
+        status_ok = summary.get("validation_status") == "numerically_validated" and accepted
         modes[mode] = {
             "control_mode": summary.get("control_mode", mode),
             "controller_hash": summary.get("controller_hash", ""),
@@ -1233,14 +1260,14 @@ def compare_control_modes(args, comparison_path: Path | None = None) -> dict:
             f"comparison output already exists; refusing to overwrite: {comparison_path}"
         )
     comparison_path.write_text(
-        json.dumps(comparison, indent=2, sort_keys=True) + "\n", encoding="utf-8",
+        json.dumps(_json_safe(comparison), indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8",
     )
     return comparison
 
 
 def _checks_pass(checks) -> bool:
-    """Return true when every gate is true or explicitly recorded unavailable."""
-    return all(value is None or bool(value) for value in checks.values())
+    """Compatibility helper: only an explicit strict numerical tier passes."""
+    return bool(checks) and all(value is True for value in checks.values())
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1308,7 +1335,7 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:
         print(f"minimum-time-line pipeline failed: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 2
-    return 0 if _checks_pass(summary["checks"]) and summary.get("accepted", True) else 1
+    return 0 if summary.get("accepted") is True and summary.get("numerically_validated") is True else 1
 
 
 if __name__ == "__main__":

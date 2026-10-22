@@ -103,8 +103,8 @@ def fixed_path_energy_profile(path, surface, *, boundary: str = "flying", start_
         raise ValueError("rolling start_speed is outside the initial capability domain")
     if initial_speed is not None:
         initial_speed = _validate_scalar("initial_speed", initial_speed, positive=False)
-        if initial_speed < floor or initial_speed > float(np.min(node_cap)):
-            raise ValueError("initial_speed must lie inside every declared node capability domain")
+        if initial_speed < floor or initial_speed > float(min(np.min(node_cap), np.min(mid_cap))):
+            raise ValueError("initial_speed must lie inside every declared node and midpoint capability domain")
 
     try:
         import casadi as ca
@@ -123,22 +123,26 @@ def fixed_path_energy_profile(path, surface, *, boundary: str = "flying", start_
     W = ca.MX.sym("energy", distance.size)
     lookup = symbolic_lookup(surface, "fixed_path_energy")
     constraints, lower, upper = [], [], []
-    # W node domain bounds are variable bounds.  Include ordinary node lookup
-    # constraints too, so physical cap/normalization is independently explicit.
+    # Node speed-domain restrictions are variable bounds.  Each constant-energy
+    # segment acceleration is constrained at both physical endpoints *and* its
+    # energy midpoint; node (amin <= amax) itself is tautological and is not
+    # misrepresented as a dynamic capability constraint.
     lbw = np.full(distance.size, floor * floor)
     ubw = node_cap * node_cap
     if boundary == "rolling":
         lbw[0] = ubw[0] = start_speed * start_speed
     for i, k in enumerate(curvature):
-        vm = ca.sqrt(W[i])
-        amin, amax, domain = lookup(vm, float(k))
-        constraints += [W[i] - domain*domain, amin - amax]
-        lower += [-np.inf, -np.inf]; upper += [0., 0.]
+        _, _, domain = lookup(ca.sqrt(W[i]), float(k))
+        constraints.append(W[i] - domain*domain)
+        lower.append(-np.inf); upper.append(0.)
     for i, ds in enumerate(segment):
-        wm = .5*(W[i] + W[i+1])
-        vm = ca.sqrt(wm)
-        amin, amax, domain = lookup(vm, float(midpoint_curvature[i]))
         acceleration = (W[i+1] - W[i])/(2.*float(ds))
+        for node, curvature_value in ((i, curvature[i]), (i + 1, curvature[i + 1])):
+            amin, amax, _ = lookup(ca.sqrt(W[node]), float(curvature_value))
+            constraints += [acceleration-amin, acceleration-amax]
+            lower += [0., -np.inf]; upper += [np.inf, 0.]
+        wm = .5*(W[i] + W[i+1])
+        amin, amax, domain = lookup(ca.sqrt(wm), float(midpoint_curvature[i]))
         constraints += [wm-domain*domain, acceleration-amin, acceleration-amax]
         lower += [-np.inf, 0., -np.inf]; upper += [0., np.inf, 0.]
     if boundary == "flying":
@@ -148,41 +152,60 @@ def fixed_path_energy_profile(path, surface, *, boundary: str = "flying", start_
     options = {"print_time": False, "ipopt": {"print_level": 0, "max_iter": int(maximum_iterations),
                "tol": float(tolerance), "acceptable_tol": float(tolerance),
                "max_cpu_time": float(maximum_wall_seconds), "max_wall_time": float(maximum_wall_seconds)}}
-    started = time.monotonic()
+    graph_started = time.monotonic()
     try:
         solver = ca.nlpsol("fixed_path_energy_nlp", "ipopt", {"x": W, "f": objective,
                           "g": ca.vertcat(*constraints)}, options)
+    except Exception as error:
+        return _failure(distance, np.full(distance.shape, np.nan), reference, boundary, floor,
+                        "solver-exception", f"{type(error).__name__}: {error}",
+                        diagnostics={"graph_seconds": time.monotonic()-graph_started, "solve_seconds": 0.})
+    graph_seconds = time.monotonic()-graph_started
+    solve_started = time.monotonic()
+    try:
         solved = solver(x0=initial_w, lbx=lbw, ubx=ubw, lbg=lower, ubg=upper)
         stats = solver.stats()
     except Exception as error:
-        return _failure(distance, np.sqrt(np.maximum(initial_w, 0.)), reference, boundary, floor,
-                        "solver-exception", f"{type(error).__name__}: {error}", diagnostics={"wall_seconds": time.monotonic()-started})
-    wall = time.monotonic()-started
+        return _failure(distance, np.full(distance.shape, np.nan), reference, boundary, floor,
+                        "solver-exception", f"{type(error).__name__}: {error}",
+                        diagnostics={"graph_seconds": graph_seconds, "solve_seconds": time.monotonic()-solve_started})
+    solve_seconds = time.monotonic()-solve_started
     candidate_w = np.asarray(solved["x"], dtype=float).reshape(-1)
-    speed = np.sqrt(np.maximum(candidate_w, 0.))
     iterations = int(stats.get("iter_count", 0) or 0)
-    success = bool(stats.get("success", False)) and "succeed" in str(stats.get("return_status", "")).lower()
-    # Strict independent numeric proof: no symbolic clamp is used here.
-    worst = 0.
-    feasible = success and np.all(np.isfinite(candidate_w)) and np.all(np.isfinite(speed))
+    return_status = str(stats.get("return_status", ""))
+    success = bool(stats.get("success", False)) and return_status == "Solve_Succeeded"
+    # Strict independent numeric proof: no symbolic clamp is used here.  Do not
+    # manufacture a speed profile from an invalid negative-energy candidate.
+    worst = math.inf
+    feasible = (success and candidate_w.shape == distance.shape and np.all(np.isfinite(candidate_w))
+                and np.all(candidate_w > 0.0) and solve_seconds <= maximum_wall_seconds + 1.e-3)
+    speed = np.sqrt(candidate_w) if feasible else np.full(distance.shape, np.nan)
+    if feasible:
+        worst = 0.
     if feasible:
         if boundary == "flying": worst = max(worst, abs(candidate_w[0]-candidate_w[-1]))
         if boundary == "rolling": worst = max(worst, abs(speed[0]-start_speed))
         for v, k, cap in zip(speed, curvature, node_cap):
-            try: lo, hi = surface.limits(float(v), float(k))
+            try: surface.limits(float(v), float(k))
             except ValueError: feasible = False; break
-            worst = max(worst, max(0., v-cap), max(0., lo-hi))
+            worst = max(worst, max(0., v-cap))
         for i, ds in enumerate(segment):
-            vm = math.sqrt(.5*(candidate_w[i]+candidate_w[i+1]))
             acceleration = (candidate_w[i+1]-candidate_w[i])/(2.*ds)
+            for node, curvature_value in ((i, curvature[i]), (i + 1, curvature[i + 1])):
+                try: lo, hi = surface.limits(float(speed[node]), float(curvature_value))
+                except ValueError: feasible = False; break
+                worst = max(worst, max(0., lo-acceleration), max(0., acceleration-hi))
+            if not feasible: break
+            vm = math.sqrt(.5*(candidate_w[i]+candidate_w[i+1]))
             try: lo, hi = surface.limits(vm, float(midpoint_curvature[i]))
             except ValueError: feasible = False; break
             worst = max(worst, max(0., vm-mid_cap[i]), max(0., lo-acceleration), max(0., acceleration-hi))
-        feasible = feasible and worst <= tolerance and wall <= maximum_wall_seconds + 1.e-3
+        feasible = feasible and worst <= tolerance
     diagnostics = {"reference_kind": "fixed-path-energy-nlp", "claim": "local NLP candidate only",
                    "boundary": boundary, "floor": floor, "objective": float(solved["f"]),
-                   "wall_seconds": wall, "return_status": str(stats.get("return_status", "")),
-                   "primal_violation": worst, "iterations": iterations,
+                   "graph_seconds": graph_seconds, "solve_seconds": solve_seconds,
+                   "wall_budget_kind": "IPOPT internal soft solve budget",
+                   "return_status": return_status, "primal_violation": worst, "iterations": iterations,
                    "dual": stats.get("dual_inf", stats.get("dual_infeasibility"))}
     if not feasible:
         return _failure(distance, speed, reference, boundary, floor, "not-strictly-feasible",

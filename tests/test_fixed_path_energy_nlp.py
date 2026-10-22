@@ -2,6 +2,7 @@
 from dataclasses import dataclass
 import math
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 
@@ -25,6 +26,24 @@ def chart(*, upper=2., lower=-4., caps=(30., 30.)):
 
 @unittest.skipUnless(__import__("importlib").util.find_spec("casadi"), "CasADi unavailable")
 class FixedPathEnergyNlpTest(unittest.TestCase):
+    def _mocked_result(self, energy, *, success=True, return_status="Solve_Succeeded"):
+        class Solver:
+            def __call__(self, **kwargs):
+                return {"x": np.asarray(energy, dtype=float), "f": 1.}
+            def stats(self):
+                return {"success": success, "return_status": return_status, "iter_count": 1}
+        with patch("casadi.nlpsol", return_value=Solver()):
+            return fixed_path_energy_profile(Path(np.array([0., 1.]), np.zeros(2)), chart(),
+                                             boundary="rolling", start_speed=1., step=1.)
+
+    def test_negative_energy_and_nonexact_status_cannot_become_converged(self):
+        negative = self._mocked_result([1., -1.])
+        self.assertFalse(negative.converged)
+        self.assertTrue(np.all(np.isnan(negative.speed)))
+        nonexact = self._mocked_result([1., 5.], return_status="Solved_To_Acceptable_Level")
+        self.assertFalse(nonexact.converged)
+        self.assertEqual(nonexact.diagnostics["return_status"], "Solved_To_Acceptable_Level")
+
     def test_rolling_straight_constant_acceleration_matches_analytic_time(self):
         result = fixed_path_energy_profile(Path(np.array([0., 10.]), np.zeros(2)), chart(upper=2.),
                                            boundary="rolling", start_speed=3., step=1.)
@@ -52,13 +71,33 @@ class FixedPathEnergyNlpTest(unittest.TestCase):
         # alone cannot dissipate the required energy within the signed lower bound.
         energy_drop = np.diff(result.speed**2)
         self.assertTrue(np.any(energy_drop[:-1] < -1.e-7))
+        signed = chart(upper=4., lower=-2., caps=(30., 3.))
         for index, (left, right) in enumerate(zip(result.speed[:-1], result.speed[1:])):
             acceleration = (right**2-left**2)/2.
             midpoint_speed = math.sqrt(.5*(left**2+right**2))
             midpoint_curvature = 0. if index < 15 else .5
-            lower, upper = chart(upper=4., lower=-2., caps=(30., 3.)).limits(midpoint_speed, midpoint_curvature)
-            self.assertGreaterEqual(acceleration, lower-1.e-7)
-            self.assertLessEqual(acceleration, upper+1.e-7)
+            left_curvature = 0.
+            right_curvature = 0. if index < 15 else 1.
+            for speed, curvature in ((left, left_curvature), (right, right_curvature),
+                                     (midpoint_speed, midpoint_curvature)):
+                lower, upper = signed.limits(speed, curvature)
+                self.assertGreaterEqual(acceleration, lower-1.e-7)
+                self.assertLessEqual(acceleration, upper+1.e-7)
+
+    def test_endpoint_notch_constrains_segment_even_when_midpoint_is_legal(self):
+        # The acceleration ceiling at the right endpoint is 1, whereas the
+        # midpoint ceiling is 2.5.  A midpoint-only transcription could return
+        # a=2.5; node constraints require the physically legal a=1.
+        notched = SignedTransientCapability(np.array([0., 1.]), np.array([0., 1.]),
+            np.array([[4., 1.], [4., 1.]]), np.full((2, 2), -4.),
+            np.full(2, 30.), .5, "endpoint-notch")
+        result = fixed_path_energy_profile(Path(np.array([0., 1.]), np.array([0., 1.])), notched,
+                                           boundary="rolling", start_speed=1., step=1.)
+        self.assertTrue(result.converged, result.diagnostics)
+        self.assertAlmostEqual(result.speed[-1], math.sqrt(3.), places=6)
+        acceleration = (result.speed[-1]**2-result.speed[0]**2)/2.
+        self.assertLessEqual(acceleration, notched.limits(result.speed[-1], 1.)[1]+1.e-8)
+        self.assertGreater(acceleration, notched.limits(math.sqrt(2.), .5)[1]-2.)
 
     def test_closed_flying_requires_physical_endpoint_and_validates_periodic(self):
         closed = PathCoordinates(np.array([0., 5., 10.]), np.array([0., 1., 0.]),

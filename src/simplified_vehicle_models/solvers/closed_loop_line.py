@@ -185,13 +185,16 @@ def _matches(solution, sample, tolerance: float) -> bool:
 def correct_to_replay(track, corridor, surface, mesh, spline, settings, controller,
                       replay: ReplayProtocol, *, tolerance=0.01,
                       maximum_rounds=5) -> CorrectionResult:
-    """Re-solve the spline line until its replay is feasible and not slower.
+    """Re-solve the spline line until its replay is feasible and matches.
 
     The first round solves without a speed cap.  A failed round whose replay is
-    outside the two-sided tolerance or infeasible lowers the per-node cap to
-    ``min(v_ocp, v_replay) - CAP_MARGIN`` (never above the previous cap) and
-    re-solves with that cap.  The loop stops after ``maximum_rounds`` solve
-    attempts, or as soon as a replay is feasible and
+    outside the two-sided tolerance or infeasible lowers the per-node cap at
+    each node where the replay speed is below the OCP speed to
+    ``v_replay - CAP_MARGIN``; nodes where the replay is faster keep ``v_ocp``.
+    The resulting cap is never above the previous cap, and it is floored at the
+    solver minimum for representability.  The loop re-solves with that cap and
+    stops after ``maximum_rounds`` solve attempts, or as soon as a replay is
+    feasible and
 
     ``abs(replay_time - ocp_time) <= tolerance * ocp_time``.
 

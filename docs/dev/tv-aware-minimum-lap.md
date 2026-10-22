@@ -48,7 +48,7 @@ The lap-time objective integrates the per-track-distance time `den / (v cos ψ)`
 
 `tests/test_closed_loop_line.py` covers the correction loop with test-double replays:
 
-- Each round solves the spline OCP, rebuilds the path, calls the replay adapter, and accepts only when the sample is feasible and the replay time is within a two-sided 1% relative tolerance of the OCP time. A replay that is materially faster is not accepted silently; it lowers the caps and is re-solved like a slow replay.
+- Each round solves the spline OCP, rebuilds the path, calls the replay adapter, and accepts only when the sample is feasible and the replay time is within a two-sided 1% relative tolerance of the OCP time. A replay that is materially faster is not accepted silently: only nodes where the replay speed is below the OCP speed lower their cap by the margin, while nodes where the replay is faster keep the OCP speed, and the line is re-solved.
 - An infeasible replay lowers the speed cap by a fixed 0.1 m/s margin and re-solves.
 - A solver failure under a cap returns `accepted=False` with the attempts and caps recorded.
 - `test_closed_loop_rejects_a_replay_that_never_becomes_feasible` uses a replay that is always infeasible and asserts `accepted=False` with `rounds == maximum_rounds` (3), three recorded caps, and a finite replay time. This proves the budget is exhausted rather than the loop stopping early.

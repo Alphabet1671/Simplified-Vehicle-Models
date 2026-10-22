@@ -27,7 +27,8 @@ runner file was changed.
   filesystem worker, terminates and joins on wall timeout, retains any child result,
   and writes a separate authoritative timeout result.
 - `run_matrix(args)` saves after every attempt and recursively hashes sources/data
-  dependencies before/after.
+  dependencies before/after. Each attempt now owns a fresh pre-spawn source snapshot
+  and a completion snapshot; any in-attempt mutation makes that attempt candidate-only.
 - `aggregate(...)` separates unqualified candidate comparisons from qualified
   same-seed/settings/source, one-axis mesh/basis evidence, and leaves strict
   acceptance incomplete without mesh, basis, matched-baseline, and replay evidence.
@@ -53,6 +54,26 @@ exclusive output, timeout termination/join while preserving a partial child resu
 missing-worker result persistence, recursive XML source/data hashes and missing-
 dependency rejection, qualified one-axis refinement separation, and fail-closed
 strict status. It does not execute a full matrix or claim solver/event acceptance.
+
+## Source-snapshot qualification fix evidence (review follow-up)
+
+The harness now creates `request["source_hashes"]` immediately before every spawned
+attempt and records `result["source_hashes_after"]` immediately after it completes.
+A qualified comparison requires matching unchanged snapshots for both rows; attempted
+solutions and candidate RMS diagnostics are still retained when that requirement
+fails. The matrix-level initial/final source mismatch also disables every qualified
+mesh/basis refinement comparison, including rows whose individual snapshots match.
+
+```bash
+PYTHONPATH=src python3 -m unittest tests.test_no_tv_minimum_lap -v
+PYTHONPATH=src python3 -m py_compile tools/diagnostics/verify_no_tv_minimum_lap.py
+```
+
+**Result:** 14 focused tests passed. Regression coverage demonstrates source mutation
+between attempts selects a fresh request snapshot and invalidates aggregate refinement;
+mutation during an attempt rejects only qualified refinement while retaining candidate
+diagnostics; identical unchanged sources retain qualified mesh and basis one-axis
+comparisons. No full solver matrix was run.
 
 ## Current measured evidence and limits
 

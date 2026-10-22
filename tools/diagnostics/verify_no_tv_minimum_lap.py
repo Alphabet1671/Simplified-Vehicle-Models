@@ -319,10 +319,18 @@ def _dense_live_qualified(row: dict) -> bool:
             and dense.get("model_feasible") is True)
 
 
+def _attempt_sources_unchanged(row: dict) -> bool:
+    """Return whether one attempt retained its exact pre-spawn inputs."""
+    request = row.get("request", {})
+    return (request.get("source_hashes") is not None
+            and request.get("source_hashes") == row.get("source_hashes_after"))
+
+
 def _same_refinement_conditions(left: dict, right: dict) -> bool:
     """Forbid seed/settings/source changes from masquerading as refinement."""
     a, b = left["request"], right["request"]
     return (a.get("seed") == b.get("seed") and a.get("settings") == b.get("settings")
+            and _attempt_sources_unchanged(left) and _attempt_sources_unchanged(right)
             and a.get("source_hashes") == b.get("source_hashes")
             and left.get("surface_representation") == right.get("surface_representation"))
 
@@ -339,8 +347,13 @@ def _comparison(case: str, left: dict, right: dict, output: Path, *, kind: str) 
             **metrics}
 
 
-def aggregate(results: list[dict], output: Path) -> dict:
-    """Separate candidate differences from qualified one-axis refinement evidence."""
+def aggregate(results: list[dict], output: Path, *, source_data_unchanged: bool = True) -> dict:
+    """Separate candidate differences from qualified one-axis refinement evidence.
+
+    A final matrix source mismatch invalidates every qualified comparison, even if
+    individual attempts happened to preserve their own snapshots. Candidate
+    diagnostics remain available for investigation.
+    """
     candidate_diagnostics, mesh_refinement, basis_refinement = [], [], []
     by_case: dict[str, list[dict]] = {}
     for item in results:
@@ -356,7 +369,8 @@ def aggregate(results: list[dict], output: Path) -> dict:
                 candidate = _comparison(name, left, right, output, kind="unqualified_candidate")
                 if candidate is not None:
                     candidate_diagnostics.append(candidate)
-                if not (_dense_live_qualified(left) and _dense_live_qualified(right)
+                if not (source_data_unchanged and _dense_live_qualified(left)
+                        and _dense_live_qualified(right)
                         and _same_refinement_conditions(left, right)):
                     continue
                 if basis_equal and not mesh_equal:
@@ -396,10 +410,18 @@ def run_matrix(args) -> dict:
                     request = build_attempt(case, mesh_spacing_m=mesh, basis_spacing_m=basis,
                         maximum_iterations=args.maximum_iterations, wall_cap_s=args.wall_cap_s,
                         seed_name=seed, formulation=form, surface=surface)
-                    request["source_hashes"] = hashes_before
+                    # Each spawned solve owns a fresh input snapshot. Do not reuse
+                    # the matrix-start hashes: sources can change between attempts.
+                    request["source_hashes"] = source_hashes(case.track, form, surface)
                     attempt_name = f"mesh-{mesh:g}_basis-{basis:g}_{seed}"
                     result = run_bounded_worker(request, case_root / attempt_name)
                     result["attempt_id"] = f"{case.name}/{attempt_name}"
+                    # Hash after child completion, before the next request. Any
+                    # in-attempt mutation makes this row candidate-only, while its
+                    # result and artifact remain retained for diagnostics.
+                    result["source_hashes_after"] = source_hashes(case.track, form, surface)
+                    result["source_data_unchanged"] = (
+                        request["source_hashes"] == result["source_hashes_after"])
                     # Artifact is relative to its attempt directory until aggregation.
                     if result.get("artifact"):
                         result["artifact"] = f"{attempt_name}/{result['artifact']}"
@@ -408,7 +430,8 @@ def run_matrix(args) -> dict:
     manifest["source_hashes_after"] = source_hashes(*(case.track for case in selected), form, surface)
     manifest["source_data_unchanged"] = manifest["source_hashes_before"] == manifest["source_hashes_after"]
     # Artifact paths stay relative to their case directory (attempt/solution.npz).
-    manifest["aggregate"] = aggregate(manifest["results"], output)
+    manifest["aggregate"] = aggregate(manifest["results"], output,
+                                      source_data_unchanged=manifest["source_data_unchanged"])
     _write_json_new_or_replace(output / "matrix.json", manifest)
     return manifest
 

@@ -145,6 +145,7 @@ class NoTvMinimumLapHarnessTest(unittest.TestCase):
                         "settings": settings if settings is not None else {"tolerance": 1e-6},
                         "source_hashes": hashes if hashes is not None else {"input": "a"},
                         "mesh_spacing_m": mesh, "basis_spacing_m": 35.0},
+                        "source_hashes_after": hashes if hashes is not None else {"input": "a"},
                         "surface_representation": "signed_transient_normalized_v1",
                         "artifact": artifact, "objective_s": 5.0, "solver_succeeded": True,
                         "dense_original_model": {"checks": {"geometry_consistency": True,
@@ -174,15 +175,67 @@ class NoTvMinimumLapHarnessTest(unittest.TestCase):
                 rows.append({"request": {"case": {"name": "acceleration"}, "seed": "centerline",
                              "settings": {"tolerance": 1e-6}, "source_hashes": {"input": "same"},
                              "mesh_spacing_m": mesh, "basis_spacing_m": basis},
+                             "source_hashes_after": {"input": "same"},
                              "surface_representation": "signed_transient_normalized_v1",
                              "artifact": f"{attempt}/solution.npz", "objective_s": 5.0,
                              "solver_succeeded": True, "dense_original_model": {"checks": {
                              "geometry_consistency": True, "dense_feasibility": True}, "model_feasible": True}})
             report = harness.aggregate(rows, root)
+            final_source_changed = harness.aggregate(rows, root, source_data_unchanged=False)
         self.assertEqual(len(report["mesh_refinement"]), 1)
         self.assertEqual(report["mesh_refinement"][0]["kind"], "mesh_refinement")
         self.assertEqual(len(report["basis_refinement"]), 1)
         self.assertEqual(report["basis_refinement"][0]["kind"], "basis_refinement")
+        self.assertEqual(len(final_source_changed["candidate_diagnostics"]), 3)
+        self.assertEqual(final_source_changed["mesh_refinement"], [])
+        self.assertEqual(final_source_changed["basis_refinement"], [])
+
+    def test_aggregate_rejects_in_attempt_source_mutation_but_keeps_candidates(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); case = root / "acceleration"; case.mkdir()
+            rows = []
+            for attempt, mesh in (("m5", 5.0), ("m25", 2.5)):
+                target = case / attempt; target.mkdir()
+                np.savez(target / "solution.npz", distance=np.array([0., 1.]),
+                         offset=np.array([mesh, mesh]), speed=np.array([10., 11.]),
+                         curvature=np.array([0., 0.]))
+                rows.append({"request": {"case": {"name": "acceleration"}, "seed": "centerline",
+                             "settings": {"tolerance": 1e-6}, "source_hashes": {"input": "same"},
+                             "mesh_spacing_m": mesh, "basis_spacing_m": 35.0},
+                             "source_hashes_after": {"input": "changed"} if mesh == 2.5 else {"input": "same"},
+                             "surface_representation": "signed_transient_normalized_v1",
+                             "artifact": f"{attempt}/solution.npz", "objective_s": 5.0,
+                             "solver_succeeded": True, "dense_original_model": {"checks": {
+                             "geometry_consistency": True, "dense_feasibility": True}, "model_feasible": True}})
+            report = harness.aggregate(rows, root, source_data_unchanged=True)
+        self.assertEqual(len(report["candidate_diagnostics"]), 1)
+        self.assertEqual(report["mesh_refinement"], [])
+
+    def test_run_matrix_rejects_source_mutation_between_attempts(self):
+        case = harness.default_cases()["acceleration"]
+        args = SimpleNamespace(output=None, formulation=Path("form.xml"), surface=Path("surface.npz"),
+                               cases="acceleration", mesh_spacings=[5.0, 2.5], basis_spacings=[35.0],
+                               seeds=["centerline"], maximum_iterations=1, wall_cap_s=1.0,
+                               base_commit="fixture")
+        snapshots = iter([{"input": "initial"}, {"input": "initial"}, {"input": "initial"},
+                          {"input": "changed"}, {"input": "changed"}, {"input": "changed"}])
+        captured_requests = []
+        def fake_worker(request, output):
+            captured_requests.append(request)
+            return {"request": request, "artifact": None, "solver_succeeded": False}
+        with tempfile.TemporaryDirectory() as directory:
+            args.output = Path(directory) / "matrix"
+            with patch.object(harness, "default_cases", return_value={"acceleration": case}), \
+                 patch.object(harness, "source_hashes", side_effect=lambda *paths: next(snapshots)), \
+                 patch.object(harness, "load_surface_dispatch", return_value=(None, "fixture")), \
+                 patch.object(harness, "run_bounded_worker", side_effect=fake_worker):
+                manifest = harness.run_matrix(args)
+        self.assertEqual([request["source_hashes"] for request in captured_requests],
+                         [{"input": "initial"}, {"input": "changed"}])
+        self.assertTrue(manifest["results"][0]["source_data_unchanged"])
+        self.assertTrue(manifest["results"][1]["source_data_unchanged"])
+        self.assertFalse(manifest["source_data_unchanged"])
+        self.assertEqual(manifest["aggregate"]["mesh_refinement"], [])
 
     def test_mocked_solver_status_failure_cannot_be_accepted(self):
         # This exercises the only status-to-acceptance contract used by the worker.

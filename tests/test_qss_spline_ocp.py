@@ -112,7 +112,7 @@ class SplineTranscriptionTest(unittest.TestCase):
         defaults.update(kwargs)
         return load_track(_write_circle_track(self.directory, **defaults))
 
-    def test_signed_surface_solves_nonconstant_curvature_seed(self) -> None:
+    def test_signed_surface_solves_physical_seed(self) -> None:
         from simplified_vehicle_models.solvers.qss_line_ocp import QssSettings, build_mesh
         from simplified_vehicle_models.solvers.qss_spline_ocp import solve_spline_line
         track = self._track(radius=40.0)
@@ -122,8 +122,8 @@ class SplineTranscriptionTest(unittest.TestCase):
             build_mesh(view, 10.0), OffsetSpline(view, control_spacing=10.0),
             QssSettings(maximum_iterations=400, start_speed=.5),
         )
-        self.assertIn(solution.status, ("Solve_Succeeded", "Solved_To_Acceptable_Level"))
-        self.assertLessEqual(solution.maximum_violation, 1.e-5)
+        self.assertEqual(solution.status, "Solve_Succeeded")
+        self.assertLessEqual(solution.maximum_violation, QssSettings().tolerance)
 
     def test_zero_corridor_open_circle_matches_capability_envelope(self) -> None:
         from simplified_vehicle_models.solvers.qss_line_ocp import (

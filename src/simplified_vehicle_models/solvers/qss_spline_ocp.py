@@ -109,6 +109,11 @@ def _is_zero_corridor(*bounds) -> bool:
     return all(np.all(np.asarray(values) == 0.0) for values in bounds)
 
 
+def _capability_interior_margin(settings: QssSettings) -> float:
+    """Return a measured row-residual budget, not a continuous certificate."""
+    return 8.0 * float(settings.tolerance)
+
+
 class _SplineStateEvaluator:
     """Immutable Hermite--Simpson dense state/control evaluator."""
     def __init__(self, trajectory, mesh, speed, acceleration, midpoint_acceleration):
@@ -326,6 +331,7 @@ def build_spline_ocp(track, corridor, surface, mesh, spline, settings: QssSettin
     curvature_lower = float(surface.curvature[0])
     curvature_upper = float(surface.curvature[-1])
     fold_guard = float(settings.fold_guard)
+    capability_margin = _capability_interior_margin(settings)
 
     def limits(offset, psi, q, kappa, car_speed, car_acceleration,
                centreline_curvature):
@@ -334,8 +340,12 @@ def build_spline_ocp(track, corridor, surface, mesh, spline, settings: QssSettin
             float(settings.maximum_curvature_rate))
         add(kappa, curvature_lower, curvature_upper)
         lower_acceleration, upper_acceleration, domain_speed = lookup(car_speed, kappa)
-        add(car_acceleration - lower_acceleration, 0.0, math.inf)
-        acceleration_upper_index = add(upper_acceleration - car_acceleration, 0.0, math.inf)
+        # Reserve a multiple of the requested NLP residual for the quadratic
+        # control's interpolation against piecewise-linear chart faces.  This
+        # changes neither the objective nor independent dense tolerances.
+        add(car_acceleration - lower_acceleration, capability_margin, math.inf)
+        acceleration_upper_index = add(upper_acceleration - car_acceleration,
+                                       capability_margin, math.inf)
         add(domain_speed - car_speed, 0.0, math.inf)
         add(1.0 - centreline_curvature * offset, fold_guard, math.inf)
         return acceleration_upper_index
@@ -737,6 +747,11 @@ def solve_spline_line(track, corridor, surface, mesh, spline,
         options = {
             "ipopt.tol": tolerance,
             "ipopt.constr_viol_tol": tolerance,
+            # The strict public contract accepts only Solve_Succeeded.  Disable
+            # IPOPT's looser acceptable-level exit rather than treating status
+            # as numerical feasibility; `_validate_solver_result` remains the
+            # final residual and bound gate.
+            "ipopt.acceptable_iter": 0,
             "ipopt.max_iter": remaining_iterations,
             "ipopt.hessian_approximation": "exact",
             "ipopt.nlp_scaling_method": "gradient-based",

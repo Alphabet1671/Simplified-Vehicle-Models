@@ -486,6 +486,35 @@ class SplineTranscriptionTest(unittest.TestCase):
         self.assertTrue(np.any(matching))
         self.assertTrue(np.any(built["g_upper"][matching] == 3.0))
 
+    def test_capability_rows_reserve_strict_interior_nlp_margin(self) -> None:
+        """Chart faces retain an eight-residual interpolation budget."""
+        import casadi as ca
+
+        from simplified_vehicle_models.solvers.qss_line_ocp import QssSettings
+        from simplified_vehicle_models.solvers.qss_spline_ocp import build_spline_ocp
+
+        track = replace(self._track(), is_closed=False)
+        mesh = np.array([0.0, track.lap_length])
+        settings = QssSettings(start_speed=10.0, tolerance=2.5e-7)
+        built = build_spline_ocp(
+            track, _zero_corridor(track, is_closed=False), _surface(), mesh,
+            OffsetSpline(track, control_spacing=20.0), settings,
+        )
+        controls, nodes = built["control_count"], mesh.size
+        values = np.zeros(controls + 3 * nodes - 1)
+        values[controls:controls + nodes] = 10.0
+        values[controls + nodes:controls + 2 * nodes] = 3.0
+        values[controls + 2 * nodes:] = 3.0
+        g = np.asarray(ca.Function("capability_margin", [built["nlp"]["x"]],
+                                   [built["nlp"]["g"]])(values), dtype=float).ravel()
+        indices = np.r_[built["node_acceleration_upper_indices"],
+                        built["midpoint_acceleration_upper_indices"],
+                        built["off_site_acceleration_upper_indices"]]
+        np.testing.assert_allclose(g[indices], 0.0, atol=1.0e-12)
+        np.testing.assert_allclose(
+            built["g_lower"][indices], np.full(indices.size, 8.0 * settings.tolerance),
+        )
+
     def test_off_collocation_sites_add_physical_rows_without_extra_defects(self) -> None:
         """Eighth/quarter rows constrain capability, not more HS equalities."""
         from simplified_vehicle_models.solvers.qss_line_ocp import QssSettings
@@ -510,6 +539,12 @@ class SplineTranscriptionTest(unittest.TestCase):
             int(np.count_nonzero(protected["g_lower"] == protected["g_upper"])),
             int(np.count_nonzero(base["g_lower"] == base["g_upper"])),
         )
+        # The added rows remain physical inequalities; no off-site nonlinear
+        # dynamics equality is introduced into the HS transcription.
+        self.assertTrue(np.all(
+            protected["g_lower"][protected["off_site_acceleration_upper_indices"]]
+            < protected["g_upper"][protected["off_site_acceleration_upper_indices"]]
+        ))
 
     def test_quarter_capability_row_rejects_varying_surface_violation(self) -> None:
         """A physical amax notch missed by nodes/midpoint is constrained at 1/4."""

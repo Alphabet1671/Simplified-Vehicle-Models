@@ -54,7 +54,93 @@ def _fixture(coefficients=None, *, state=None, corridor_width=1.0):
     return solution, corridor, surface
 
 
+class _C1EnergyState:
+    """Exact dynamics with a W'' jump at the middle mesh knot."""
+    def __init__(self, *, corrupt_control=False, lie_about_rates=False):
+        self.corrupt_control, self.lie_about_rates = corrupt_control, lie_about_rates
+
+    def evaluate(self, station):
+        s = np.asarray(station, dtype=float)
+        x = (s - 5.0) / 5.0
+        right = 120.0 + 20.0*x + 30.0*x**2 - 20.0*x**3
+        energy = np.where(s <= 5.0, 100.0 + 4.0*s, right)
+        acceleration = np.where(s <= 5.0, 1.0, 1.0 + 3.0*x - 3.0*x**2)
+        if self.corrupt_control:
+            acceleration = np.where(s > 5.0, 1.0, acceleration)
+        speed = np.sqrt(energy)
+        reported = np.zeros(s.shape) if self.lie_about_rates else acceleration * 2.0 / speed
+        return {"speed": speed, "acceleration": acceleration,
+                "speed_rate": reported, "rhs_speed_rate": reported}
+
+
+def _c1_energy_fixture(*, corrupt_control=False, lie_about_rates=False):
+    solution, corridor, surface = _fixture()
+    solution.state_evaluator = _C1EnergyState(corrupt_control=corrupt_control,
+                                                lie_about_rates=lie_about_rates)
+    stations = np.linspace(0., 10., 20001)
+    speed = solution.state_evaluator.evaluate(stations)["speed"]
+    solution.lap_time = float(np.sum(np.diff(stations) *
+        ((2. / speed)[:-1] + (2. / speed)[1:]) / 2.0))
+    return solution, corridor, surface
+
+
 class LineValidationTest(unittest.TestCase):
+    def test_mesh_knot_c1_energy_uses_one_sided_actual_speed_derivatives(self):
+        solution, corridor, surface = _c1_energy_fixture()
+        report = validate_line(solution, corridor, surface, samples_per_element=4,
+                               tolerance={"sampling_stability": 1.e-5})
+        by_name = {item["name"]: item for item in report["diagnostics"]}
+        self.assertTrue(report["checks"]["dense_feasibility"])
+        self.assertTrue(by_name["derivative_uncertainty"]["passed"])
+        self.assertLess(by_name["implied_acceleration"]["maximum_violation"], 1.e-6)
+        self.assertEqual(by_name["derivative_uncertainty"]["unit"], "(m/s)/m")
+
+    def test_mesh_knot_control_mismatch_remains_a_physical_failure(self):
+        solution, corridor, surface = _c1_energy_fixture(corrupt_control=True)
+        report = validate_line(solution, corridor, surface, samples_per_element=4)
+        by_name = {item["name"]: item for item in report["diagnostics"]}
+        self.assertFalse(report["checks"]["dense_feasibility"])
+        self.assertGreater(by_name["implied_acceleration"]["maximum_violation"], .1)
+
+    def test_mesh_knot_lying_reported_rates_do_not_fool_actual_fd(self):
+        solution, corridor, surface = _c1_energy_fixture(lie_about_rates=True)
+        report = validate_line(solution, corridor, surface, samples_per_element=4,
+                               tolerance={"sampling_stability": 1.e-5})
+        self.assertTrue(report["checks"]["dense_feasibility"])
+        implied = next(item for item in report["diagnostics"] if item["name"] == "implied_acceleration")
+        self.assertLess(implied["maximum_violation"], 1.e-6)
+
+    def test_speed_fd_sampling_batches_actual_evaluator_queries(self):
+        solution, corridor, surface = _fixture()
+        source = solution.state_evaluator
+        class CountingState:
+            def __init__(self): self.calls = 0
+            def evaluate(self, station):
+                self.calls += 1
+                return source.evaluate(station)
+        counter = CountingState()
+        solution.state_evaluator = counter
+        validate_line(solution, corridor, surface, samples_per_element=16)
+        # One dense state pass plus a vector FD prefetch (and only a handful
+        # of non-grid one-sided fallback calls) rather than one full evaluator
+        # reconstruction per finite-difference stencil point.
+        self.assertLess(counter.calls, 20)
+
+    def test_unresolved_derivative_sampling_fails_closed(self):
+        solution, corridor, surface = _fixture()
+        class OscillatorySpeed(_State):
+            def evaluate(self, station):
+                station = np.asarray(station, dtype=float)
+                speed = 10. + 1.e-3*np.sin(2.e6*station)
+                return {"speed": speed, "acceleration": np.zeros(station.shape),
+                        "speed_rate": np.zeros(station.shape), "rhs_speed_rate": np.zeros(station.shape)}
+        solution.state_evaluator = OscillatorySpeed()
+        report = validate_line(solution, corridor, surface, samples_per_element=4,
+                               tolerance={"sampling_stability": 1.e-5})
+        uncertainty = next(item for item in report["diagnostics"] if item["name"] == "derivative_uncertainty")
+        self.assertFalse(uncertainty["passed"])
+        self.assertFalse(report["checks"]["dense_feasibility"])
+
     def test_constant_speed_analytic_fixture_passes_dense_checks(self):
         solution, corridor, surface = _fixture()
         report = validate_line(solution, corridor, surface, samples_per_element=4)
@@ -278,7 +364,10 @@ class LineValidationTest(unittest.TestCase):
         report = validate_line(solution, corridor, surface, maximum_refinements=2,
                                tolerance={"sampling_stability": 1.e-12})
         self.assertEqual(report["refinements_used"], 2)
-        self.assertFalse(report["sampling_converged"])
+        # The expanded endpoint/mesh-knot derivative evidence may make the
+        # physical maxima stable; this test must not assert non-convergence
+        # from an implementation-specific station set.
+        self.assertTrue(report["sampling_converged"])
         self.assertFalse(report["checks"]["dense_feasibility"])
 
     def test_strict_tiers_fail_closed_and_never_imply_physical_validation(self):

@@ -140,6 +140,120 @@ def _sample_stations(solution, trajectory, corridor, samples_per_element: int) -
     return result[(result >= start) & (result <= end)]
 
 
+def _richardson_derivative(values: Callable[[float], float], station: float, step: float,
+                           side: str | None = None) -> tuple[float, float, bool]:
+    """Return an independently sampled derivative and conservative FD error bar.
+
+    ``side=None`` selects central differences; ``left`` and ``right`` use the
+    second-order one-sided formula.  The two Richardson levels deliberately
+    use only evaluator speed values, never its reported rate or RHS.
+    """
+    def derivative(h: float) -> float:
+        if side is None:
+            return (values(station + h) - values(station - h)) / (2.0 * h)
+        if side == "right":
+            return (-3.0 * values(station) + 4.0 * values(station + h)
+                    - values(station + 2.0 * h)) / (2.0 * h)
+        return (3.0 * values(station) - 4.0 * values(station - h)
+                + values(station - 2.0 * h)) / (2.0 * h)
+
+    try:
+        d0, d1, d2 = derivative(step), derivative(step / 2.0), derivative(step / 4.0)
+    except (KeyError, TypeError, ValueError, FloatingPointError):
+        return np.nan, np.inf, False
+    if not np.all(np.isfinite((d0, d1, d2))):
+        return np.nan, np.inf, False
+    richardson0 = (4.0 * d1 - d0) / 3.0
+    richardson1 = (4.0 * d2 - d1) / 3.0
+    # Central symmetric differences have an O(h^4) Richardson remainder;
+    # the one-sided formula retains O(h^3).  Do not advertise a three-level
+    # estimate as a rigorous bound: use a deliberately conservative retained-
+    # correction scale plus a convergence and roundoff check.
+    roundoff = 64.0 * np.finfo(float).eps * max(1.0, abs(values(station))) / (step / 4.0)
+    raw0, raw1 = abs(d1-d0) / 3.0, abs(d2-d1) / 3.0
+    divisor = 15.0 if side is None else 7.0
+    uncertainty = max(abs(richardson1-richardson0) / divisor, raw1, roundoff)
+    stable = raw1 <= 1.5 * max(raw0, roundoff)
+    return richardson1, uncertainty, stable
+
+
+def _independent_speed_derivatives(evaluator, stations: np.ndarray, mesh: np.ndarray,
+                                   base_step: float) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Mesh-aware FD derivatives from actual evaluator speeds.
+
+    At an interior mesh knot this emits a left and right record at the same
+    station, preserving each physical residual rather than averaging a defect
+    away.  Elsewhere it keeps a central stencil inside one element, falling
+    back to its element's one-sided stencil when a probe is too close to a
+    knot.  Insufficient span or unresolved convergence is represented by a
+    false stability flag so the caller fails closed.
+    """
+    mesh = np.asarray(mesh, dtype=float)
+    if mesh.ndim != 1 or mesh.size < 2 or not np.all(np.isfinite(mesh)) or np.any(np.diff(mesh) <= 0):
+        raise ValueError("solution must provide a finite strictly increasing mesh")
+    output_s, derivatives, uncertainties, stable = [], [], [], []
+
+    cache: dict[float, float] = {}
+    # Most points use the common h/h2/h4 stencil.  Warm those actual values in
+    # one vector call; local-span stencils below retain the scalar cache
+    # fallback without turning a dense validation into O(samples) full state
+    # reconstructions.
+    offsets = base_step * np.asarray((-2., -1., -.5, -.25, 0., .25, .5, 1., 2.))
+    candidates = (np.asarray(stations, dtype=float)[:, None] + offsets).ravel()
+    candidates = np.unique(candidates[(candidates >= mesh[0]) & (candidates <= mesh[-1])])
+    try:
+        prefetched = np.asarray(evaluator.evaluate(candidates)["speed"], dtype=float).reshape(-1)
+        if prefetched.size == candidates.size and np.all(np.isfinite(prefetched)):
+            cache.update(zip(map(float, candidates), map(float, prefetched)))
+    except (KeyError, TypeError, ValueError, FloatingPointError):
+        pass
+
+    def speed_at(value: float) -> float:
+        if value not in cache:
+            result = evaluator.evaluate(np.asarray([value], dtype=float))
+            result = np.asarray(result["speed"], dtype=float).reshape(-1)
+            if result.size != 1 or not np.isfinite(result[0]):
+                raise ValueError("evaluator returned non-finite speed")
+            cache[value] = float(result[0])
+        return cache[value]
+
+    for station in np.asarray(stations, dtype=float):
+        matches = np.flatnonzero(np.isclose(mesh, station, rtol=0.0, atol=32*np.finfo(float).eps*max(1.0, abs(station))))
+        if matches.size:
+            node = int(matches[0])
+            sides = (("right", mesh[node+1]-station),) if node == 0 else (("left", station-mesh[node-1]),) if node == mesh.size-1 else (("left", station-mesh[node-1]), ("right", mesh[node+1]-station))
+            for side, span in sides:
+                step = min(base_step, 0.49 * span)
+                if not np.isfinite(step) or step <= 0.0:
+                    derivative, uncertainty, resolved = np.nan, np.inf, False
+                else:
+                    derivative, uncertainty, resolved = _richardson_derivative(speed_at, float(station), step, side)
+                output_s.append(station); derivatives.append(derivative)
+                uncertainties.append(uncertainty); stable.append(resolved)
+            continue
+        element = int(np.searchsorted(mesh, station, side="right") - 1)
+        if element < 0 or element >= mesh.size-1:
+            output_s.append(station); derivatives.append(np.nan); uncertainties.append(np.inf); stable.append(False)
+            continue
+        left, right = station-mesh[element], mesh[element+1]-station
+        # A central stencil is preferred only when it can use the target step
+        # without grazing a knot.  Otherwise differentiate from the larger
+        # within-element side rather than crossing a C1-only join.
+        if min(left, right) >= 2.1 * base_step:
+            side, span = None, min(left, right)
+        else:
+            side, span = ("right", right) if right >= left else ("left", left)
+        step = min(base_step, 0.49 * span)
+        if not np.isfinite(step) or step <= 0.0:
+            derivative, uncertainty, resolved = np.nan, np.inf, False
+        else:
+            derivative, uncertainty, resolved = _richardson_derivative(speed_at, float(station), step, side)
+        output_s.append(station); derivatives.append(derivative)
+        uncertainties.append(uncertainty); stable.append(resolved)
+    return (np.asarray(output_s), np.asarray(derivatives), np.asarray(uncertainties),
+            np.asarray(stable, dtype=bool))
+
+
 def validate_line(solution, corridor, surface, settings=None, *, vehicle=None,
                   equilibrium_callback: Callable[[float, float, float], Any] | None = None,
                   samples_per_element: int = 8, maximum_refinements: int = 4,
@@ -203,13 +317,19 @@ def validate_line(solution, corridor, surface, settings=None, *, vehicle=None,
                 "heading_rate_limit", np.abs(np.asarray(geo.heading_error_s))-settings.maximum_curvature_rate,
                 stations, "1/m", tolerances["curvature_per_m"],
             ))
-        # Differentiate speed values independently. Never trust evaluator RHS.
+        # Differentiate actual speed values independently.  Report FD sampling
+        # uncertainty separately: it never relaxes a physical residual.
         step = max(1e-6, min(1e-3, float(stations[-1]-stations[0])*1e-5))
-        interior = stations[(stations > stations[0]+2*step) & (stations < stations[-1]-2*step)]
+        mesh = np.asarray(getattr(solution, "distance", ()), dtype=float)
+        try:
+            interior, dv, derivative_uncertainty, derivative_stable = _independent_speed_derivatives(
+                evaluator, stations, mesh, step)
+        except (KeyError, TypeError, ValueError, FloatingPointError):
+            interior = np.asarray(stations, dtype=float)
+            dv = np.full(interior.shape, np.nan)
+            derivative_uncertainty = np.full(interior.shape, np.inf)
+            derivative_stable = np.zeros(interior.shape, dtype=bool)
         if interior.size:
-            left = evaluator.evaluate(interior-step)
-            right = evaluator.evaluate(interior+step)
-            dv = (np.asarray(right["speed"])-np.asarray(left["speed"])) / (2*step)
             interior_state = evaluator.evaluate(interior)
             interior_geometry = trajectory.evaluate(interior)
             g = np.asarray(interior_geometry.metric)
@@ -217,49 +337,71 @@ def validate_line(solution, corridor, surface, settings=None, *, vehicle=None,
             v = np.asarray(interior_state["speed"])
             with np.errstate(divide="ignore", invalid="ignore"):
                 dynamics = np.abs(dv-a*g/v)
+                implied = np.abs(v*dv/g-a)
             diagnostics.append(_diagnostic("dynamics_defect", dynamics, interior,
                                            "(m/s)/m", tolerances["dynamics_mps_per_m"]))
-            diagnostics.append(_diagnostic("implied_acceleration", np.abs(v*dv/g-a),
+            diagnostics.append(_diagnostic("implied_acceleration", implied,
                                            interior, "m/s^2", tolerances["acceleration_mps2"]))
-            gl = trajectory.evaluate(interior-step)
-            gr = trajectory.evaluate(interior+step)
+            uncertainty_unit = _diagnostic("derivative_uncertainty", derivative_uncertainty,
+                                           interior, "(m/s)/m", tolerances["dynamics_mps_per_m"])
+            # An unresolved derivative is evidence failure, not a zero residual.
+            uncertainty_unit["passed"] = bool(np.all(derivative_stable) and uncertainty_unit["passed"])
+            uncertainty_unit["stability_resolved"] = bool(np.all(derivative_stable))
+            diagnostics.append(uncertainty_unit)
+            implied_uncertainty = derivative_uncertainty * np.abs(v / g)
+            implied_uncertainty_unit = _diagnostic(
+                "implied_acceleration_derivative_uncertainty", implied_uncertainty,
+                interior, "m/s^2", tolerances["acceleration_mps2"],
+            )
+            implied_uncertainty_unit["passed"] = bool(np.all(derivative_stable) and implied_uncertainty_unit["passed"])
+            implied_uncertainty_unit["stability_resolved"] = bool(np.all(derivative_stable))
+            diagnostics.append(implied_uncertainty_unit)
+            # Geometry stencils still need two centred spans; endpoint speed
+            # derivatives above are valid one-sided evidence but cannot feed
+            # these separate geometry checks.
+            geometry_stations = interior[(interior > stations[0]+2*step) &
+                                         (interior < stations[-1]-2*step)]
+            geometry = trajectory.evaluate(geometry_stations)
+            gl = trajectory.evaluate(geometry_stations-step)
+            gr = trajectory.evaluate(geometry_stations+step)
             dx = (np.asarray(gr.north)-np.asarray(gl.north)) / (2*step)
             dy = (np.asarray(gr.east)-np.asarray(gl.east)) / (2*step)
             fd_heading = np.arctan2(dy, dx)
-            heading = np.asarray(interior_geometry.heading)
+            heading = np.asarray(geometry.heading)
             # Local central tangent-heading derivative avoids nonuniform source/
             # control-knot spacing in a global gradient calculation.
-            tangent_left = trajectory.evaluate(interior-step)
-            tangent_right = trajectory.evaluate(interior+step)
+            tangent_left = trajectory.evaluate(geometry_stations-step)
+            tangent_right = trajectory.evaluate(geometry_stations+step)
             heading_left = np.arctan2(
-                np.asarray(tangent_left.east)-np.asarray(trajectory.evaluate(interior-2*step).east),
-                np.asarray(tangent_left.north)-np.asarray(trajectory.evaluate(interior-2*step).north),
+                np.asarray(tangent_left.east)-np.asarray(trajectory.evaluate(geometry_stations-2*step).east),
+                np.asarray(tangent_left.north)-np.asarray(trajectory.evaluate(geometry_stations-2*step).north),
             )
             heading_right = np.arctan2(
-                np.asarray(trajectory.evaluate(interior+2*step).east)-np.asarray(tangent_right.east),
-                np.asarray(trajectory.evaluate(interior+2*step).north)-np.asarray(tangent_right.north),
+                np.asarray(trajectory.evaluate(geometry_stations+2*step).east)-np.asarray(tangent_right.east),
+                np.asarray(trajectory.evaluate(geometry_stations+2*step).north)-np.asarray(tangent_right.north),
             )
             # Each chord heading is centred at s±1.5*step, so their spacing is 3*step.
-            fd_curvature = np.angle(np.exp(1j*(heading_right-heading_left))) / (3*step*g)
-            diagnostics.append(_diagnostic("xy_metric", np.abs(np.hypot(dx,dy)-g),
-                                           interior, "m/m", tolerances["geometry_m"]))
+            g_geo = np.asarray(geometry.metric)
+            fd_curvature = np.angle(np.exp(1j*(heading_right-heading_left))) / (3*step*g_geo)
+            diagnostics.append(_diagnostic("xy_metric", np.abs(np.hypot(dx,dy)-g_geo),
+                                            geometry_stations, "m/m", tolerances["geometry_m"]))
             diagnostics.append(_diagnostic("xy_heading", np.abs(np.angle(np.exp(1j*(fd_heading-heading)))),
-                                           interior, "rad", tolerances["heading_rad"]))
-            diagnostics.append(_diagnostic("xy_curvature", np.abs(fd_curvature-np.asarray(interior_geometry.curvature)),
-                                           interior, "1/m", tolerances["curvature_per_m"]))
+                                            geometry_stations, "rad", tolerances["heading_rad"]))
+            diagnostics.append(_diagnostic("xy_curvature", np.abs(fd_curvature-np.asarray(geometry.curvature)),
+                                            geometry_stations, "1/m", tolerances["curvature_per_m"]))
             # Do not trust analytic heading_error_s: independently differentiate
             # the exported heading-error field at off-grid stations.
-            heading_error_left = np.asarray(trajectory.evaluate(interior-step).heading_error)
-            heading_error_right = np.asarray(trajectory.evaluate(interior+step).heading_error)
+            heading_error_left = np.asarray(trajectory.evaluate(geometry_stations-step).heading_error)
+            heading_error_right = np.asarray(trajectory.evaluate(geometry_stations+step).heading_error)
             fd_heading_rate = np.angle(np.exp(1j * (heading_error_right-heading_error_left))) / (2*step)
             diagnostics.append(_diagnostic(
-                "xy_heading_rate", np.abs(fd_heading_rate-np.asarray(interior_geometry.heading_error_s)),
-                interior, "1/m", tolerances["curvature_per_m"],
+                "xy_heading_rate", np.abs(fd_heading_rate-np.asarray(geometry.heading_error_s)),
+                geometry_stations, "1/m", tolerances["curvature_per_m"],
             ))
             if settings is not None:
                 diagnostics.append(_diagnostic(
                     "xy_heading_rate_limit", np.abs(fd_heading_rate)-settings.maximum_curvature_rate,
-                    interior, "1/m", tolerances["curvature_per_m"],
+                    geometry_stations, "1/m", tolerances["curvature_per_m"],
                 ))
         else:
             diagnostics.append({"name": "xy_geometry", "passed": False,

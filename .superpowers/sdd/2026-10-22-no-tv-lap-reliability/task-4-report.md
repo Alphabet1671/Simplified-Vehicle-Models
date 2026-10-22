@@ -44,6 +44,7 @@ The builder now constructs a usable live physical chart rather than stopping at 
 * This completes in about 24 seconds including an independent test stencil. The chart metadata records actual axes/backoff/refinement, construction and reconstruction-validation stencil counts, distinct live interval evaluations, and mean conservative interval loss.
 * An independent 37-by-19 `(u,k)` stencil (703 physical points, denser and different from construction) checks both reconstructed acceleration endpoints against original `evaluate_equilibrium`, including `u=1`, interior-`u`, edge-`k`, and interior-`k`; all pass. At the straight high-speed boundary it retains transient braking: approximately `[-15.2138, -4.0532] m/s²`, preserving the required negative maximum acceleration.
 * The spline numeric forward/backward seed now dispatches signed charts through physical `.limits()` (and only clamps a seed query to its local domain); a CasADi `solve_spline_line` smoke test with a nonconstant-domain signed fixture passes. Legacy surfaces retain their old lookup path.
+* Numeric/symbolic parity applies to valid physical `(v, k)` queries. Numeric `.limits()` rejects out-of-domain inputs. The symbolic lookup clamps only temporary rejected NLP iterates to avoid table extrapolation; explicit curvature and speed-domain constraint rows make that clamped value non-legal and it is not alternate capability semantics.
 
 ### Known limitation
 

@@ -302,7 +302,14 @@ def load_signed_transient_capability(path: str | Path) -> SignedTransientCapabil
 
 
 def symbolic_lookup(chart: SignedTransientCapability, prefix: str = "signed"):
-    """Return CasADi ``(amin, amax, domain)`` callables for physical ``(v,k)``."""
+    """Return CasADi physical ``(amin, amax, domain)`` lookup callables.
+
+    It agrees with :meth:`SignedTransientCapability.limits` on valid physical
+    queries only.  Unlike the numeric API, the symbolic lookup clamps temporary
+    out-of-domain NLP iterates to avoid extrapolating a table; the transcription
+    must add its curvature/speed-domain constraints, and no clamped value is a
+    legal capability assertion.
+    """
     import casadi as ca
     domain = ca.interpolant(prefix+"_domain", "linear", [chart.curvature.tolist()], chart.domain_speed_values.tolist())
     amin_grid = ca.interpolant(prefix+"_amin", "linear", [chart.u.tolist(), chart.curvature.tolist()], chart.acceleration_min.ravel(order="F").tolist())

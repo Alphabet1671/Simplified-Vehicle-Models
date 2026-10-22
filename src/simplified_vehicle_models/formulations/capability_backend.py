@@ -44,8 +44,20 @@ class SampledCapability:
             object.__setattr__(self, 'feasible_mask', mask)
 
 
+def _require_within_domain(surface, grid):
+    """Reject caller axes the builder surface cannot cover."""
+    for name in ('speed', 'curvature'):
+        requested = getattr(grid, name)
+        domain = getattr(surface, name)
+        if requested[0] < domain[0] or requested[-1] > domain[-1]:
+            raise ValueError(
+                f'{name} grid [{requested[0]:g}, {requested[-1]:g}] is outside '
+                f'the builder domain [{domain[0]:g}, {domain[-1]:g}]')
+
+
 def _regrid(surface, grid):
     """Interpolate a builder surface onto the caller's exact axes."""
+    _require_within_domain(surface, grid)
     from scipy.interpolate import RegularGridInterpolator
     points = (surface.speed, surface.curvature)
     amax = RegularGridInterpolator(points, surface.acceleration_max)(

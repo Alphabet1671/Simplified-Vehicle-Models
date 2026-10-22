@@ -58,3 +58,22 @@ class IdealBackendTest(unittest.TestCase):
         self.assertEqual(sampled.feasible_mask.shape, expected_max.shape)
         self.assertEqual(sampled.version, '1')
         self.assertEqual(sampled.metadata, {})
+
+    def test_out_of_domain_axes_raise_a_clear_value_error(self):
+        raw = CapabilitySurface(
+            np.array([0.5, 1.75, 3.0]), np.array([-1.0, 0.0, 1.0]),
+            np.ones((3, 3)), -np.ones((3, 3)), np.full(3, 5.0), 'vehicle-hash')
+        cases = (
+            ('speed', (0.4, 2.0, 3.0), (-1.0, 0.0, 1.0)),
+            ('curvature', (0.5, 2.0, 3.0), (-2.0, -1.0, 0.0)),
+        )
+        for name, speed, curvature in cases:
+            with self.subTest(axis=name):
+                grid = CapabilityGrid(np.array(speed), np.array(curvature))
+                with patch('simplified_vehicle_models.formulations.capability_backend.'
+                           'build_capability_surface', return_value=raw):
+                    with self.assertRaisesRegex(
+                            ValueError,
+                            f'{name} grid .* outside the builder domain'):
+                        IdealCapabilityBackend(object()).sample(
+                            grid, curvature_limit=1.0)

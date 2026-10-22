@@ -1,11 +1,12 @@
 from dataclasses import dataclass
 import math
+from pathlib import Path as FilePath
 import unittest
 
 import numpy as np
 
 from simplified_vehicle_models.formulations.point_mass_capability import CapabilitySurface
-from simplified_vehicle_models.formulations.signed_capability import SignedTransientCapability
+from simplified_vehicle_models.formulations.signed_capability import SignedTransientCapability, load_signed_transient_capability
 from simplified_vehicle_models.solvers.capability_profile import capability_profile, matched_profile_replay
 from simplified_vehicle_models.tracks.types import PathCoordinates
 
@@ -135,6 +136,61 @@ class CapabilityProfileTest(unittest.TestCase):
             lower, upper = chart.limits(vm, 0.)
             self.assertGreaterEqual(acceleration, lower-1.e-7)
             self.assertLessEqual(acceleration, upper+1.e-7)
+
+    def test_signed_affine_transition_escapes_high_speed_underdrive(self):
+        # At high speed amax is negative, but the physically connected low-speed
+        # branch has strong propulsion.  A min-only fixed point locks into the
+        # high-speed branch; exact affine-cell roots must select the largest
+        # reachable endpoint instead.
+        chart = SignedTransientCapability(np.array([0., .5, 1.]), np.array([0., 1.]),
+            np.array([[4., 4.], [2., 2.], [-2., -2.]]),
+            np.full((3, 2), -5.), np.full(2, 20.), .5, "synthetic")
+        result = capability_profile(Path(np.array([0., 1.]), np.zeros(2)), chart,
+                                    boundary="rolling", start_speed=1., step=1.)
+        self.assertTrue(result.converged)
+        self.assertGreater(result.speed[-1], 2.5)
+        a = (result.speed[-1]**2-1.)/2.
+        _, amax = chart.limits(math.sqrt(.5*(1.+result.speed[-1]**2)), 0.)
+        self.assertAlmostEqual(a, amax, places=6)
+
+    def test_signed_affine_backward_braking_root_previews_corner(self):
+        chart = SignedTransientCapability(np.array([0., 1.]), np.array([0., 1.]),
+            np.full((2, 2), 4.), np.array([[-1., -1.], [-5., -5.]]),
+            np.array([20., 3.]), .5, "synthetic")
+        result = capability_profile(Path(np.array([0., 1., 2.]), np.array([0., 0., 1.])), chart,
+                                    boundary="rolling", start_speed=2., step=1.)
+        self.assertTrue(result.converged)
+        self.assertGreater(result.speed[1], result.speed[2])
+        a = (result.speed[2]**2-result.speed[1]**2)/2.
+        amin, _ = chart.limits(math.sqrt(.5*(result.speed[1]**2+result.speed[2]**2)), .5)
+        self.assertGreaterEqual(a, amin-1.e-7)
+        self.assertLess(a, 0.)
+
+    def test_signed_nonmonotone_capability_selects_connected_maximum(self):
+        # The upper limit dips below zero then returns positive.  The requested
+        # endpoint lies beyond that dip, but only the connected low-speed branch
+        # is reachable and is selected without fixed-point seed dependence.
+        chart = SignedTransientCapability(np.array([0., .5, 1.]), np.array([0., 1.]),
+            np.array([[2., 2.], [-4., -4.], [2., 2.]]),
+            np.full((3, 2), -5.), np.full(2, 20.), .5, "synthetic")
+        result = capability_profile(Path(np.array([0., 3.]), np.zeros(2)), chart,
+                                    boundary="rolling", start_speed=1., step=3.)
+        self.assertTrue(result.converged)
+        self.assertLess(result.speed[-1], 4.)
+        a = (result.speed[-1]**2-1.)/6.
+        _, amax = chart.limits(math.sqrt(.5*(1.+result.speed[-1]**2)), 0.)
+        self.assertAlmostEqual(a, amax, places=6)
+
+    def test_actual_signed_acceleration_profile_matches_ocp_near_discretization(self):
+        root = FilePath(__file__).resolve().parents[1]
+        solution = np.load(root / "runs/no_tv_reliability/sixcase_signed_coarse_20261022/acceleration/mesh-5_basis-35_centerline/solution.npz")
+        chart = load_signed_transient_capability(root / "runs/no_tv_reliability/signed_lp_fullrange_product_20261022.npz")
+        path = PathCoordinates(solution["distance"], solution["curvature"], np.zeros_like(solution["distance"]),
+                               np.zeros_like(solution["distance"]), np.zeros_like(solution["distance"]), False)
+        result = capability_profile(path, chart, boundary="rolling", start_speed=10., step=.25)
+        self.assertTrue(result.converged)
+        self.assertLess(abs(result.lap_time-4.508858), 2.e-4)
+        self.assertGreater(result.speed[1], 10.)
 
     def test_rest_join_checks_interior_interpolated_curvature(self):
         chart = SignedTransientCapability(np.array([0., 1.]), np.array([0., 1.]),

@@ -83,6 +83,111 @@ def _surface_interface(surface):
     return cap, lambda v, k: _legacy_limits(surface, v, k), float(np.asarray(surface.speed, dtype=float)[0])
 
 
+def _signed_affine_cells(surface, curvature: float, which: str):
+    """Return physical-speed affine chart pieces at one fixed curvature.
+
+    A signed chart is bilinear in ``(u, curvature)``.  Once curvature is
+    fixed, each u-cell is exactly affine in *physical* speed; this exposes the
+    transition equations without extrapolating a sampled chart.
+    """
+    values = np.asarray(getattr(surface, which), dtype=float)
+    u = np.asarray(surface.u, dtype=float)
+    domain = float(surface.domain_speed(float(curvature)))
+    samples = np.asarray([np.interp(curvature, surface.curvature, row) for row in values])
+    scale = domain - float(surface.speed_floor)
+    cells = []
+    for index in range(u.size - 1):
+        lower = float(surface.speed_floor + u[index]*scale)
+        upper = float(surface.speed_floor + u[index + 1]*scale)
+        slope = float((samples[index + 1] - samples[index])/(upper-lower))
+        cells.append((lower, upper, slope, float(samples[index] - slope*lower)))
+    return cells
+
+
+def _quadratic_roots(a: float, b: float, c: float) -> list[float]:
+    """Return finite real roots, retaining the linear degenerate case."""
+    if abs(a) <= 1.e-14:
+        return [] if abs(b) <= 1.e-14 else [-c/b]
+    discriminant = b*b - 4.*a*c
+    if discriminant < -1.e-12:
+        return []
+    root = math.sqrt(max(0., discriminant))
+    return [(-b-root)/(2.*a), (-b+root)/(2.*a)]
+
+
+def _signed_transition(surface, *, vi: float, bound: float, curvature: float, ds: float,
+                       forward: bool, tolerance: float) -> float:
+    """Greatest chart-supported energy endpoint from affine cell enumeration.
+
+    The returned endpoint is asserted only when the enumerated feasible set is
+    connected.  Disconnected branches are refused rather than selected by a
+    seed-dependent fixed point.
+    """
+    if min(vi, bound) < surface.speed_floor:
+        raise RuntimeError("signed affine transition below chart floor is unsupported")
+    w_fixed, w_bound = vi*vi, bound*bound
+    lower = _signed_affine_cells(surface, curvature, "acceleration_min")
+    upper = _signed_affine_cells(surface, curvature, "acceleration_max")
+    edges = set()
+    for lo, hi, _, _ in lower + upper:
+        for speed in (lo, hi):
+            w = 2.*speed*speed-w_fixed
+            if 0. <= w <= w_bound:
+                edges.add(math.sqrt(.5*(w+w_fixed)))
+    m_min = math.sqrt(.5*w_fixed)
+    m_max = math.sqrt(.5*(w_fixed+w_bound))
+    edges.update((m_min, m_max))
+    # All chart boundaries are shared; use the exact lookup at every candidate
+    # to retain the public signed-axis/domain semantics.
+    for cells in (lower, upper):
+        for lo, hi, slope, intercept in cells:
+            if forward:
+                coefficients = (1., -ds*slope, -ds*intercept-w_fixed)
+            else:
+                coefficients = (1., ds*slope, ds*intercept-w_fixed)
+            for root in _quadratic_roots(*coefficients):
+                if m_min-tolerance <= root <= m_max+tolerance and lo-tolerance <= root <= hi+tolerance:
+                    edges.add(min(m_max, max(m_min, root)))
+    ordered = sorted(edges)
+
+    def feasible(m: float) -> bool:
+        if forward:
+            w = 2.*m*m-w_fixed
+            acceleration = (w-w_fixed)/(2.*ds)
+        else:
+            w = 2.*m*m-w_fixed
+            acceleration = (w_fixed-w)/(2.*ds)
+        if w < -tolerance or w > w_bound+tolerance:
+            return False
+        amin, amax = surface.limits(m, curvature)
+        return amin-tolerance <= acceleration <= amax+tolerance
+
+    intervals = []
+    for lo, hi in zip(ordered[:-1], ordered[1:]):
+        middle = .5*(lo+hi)
+        if feasible(middle):
+            intervals.append([lo, hi])
+    # A feasible endpoint can be the cap/boundary even when its neighbouring
+    # interval is infeasible.  It cannot provide a positive-length transition.
+    if not intervals:
+        # A stationary cap/bound has no open midpoint interval, but remains a
+        # valid zero-energy transition when it exactly satisfies the limits.
+        if feasible(m_max):
+            return math.sqrt(max(0., min(w_bound, 2.*m_max*m_max-w_fixed)))
+        raise RuntimeError("signed affine transition has no feasible energy interval")
+    merged = []
+    for lo, hi in intervals:
+        if merged and lo <= merged[-1][1] + tolerance:
+            merged[-1][1] = max(merged[-1][1], hi)
+        else:
+            merged.append([lo, hi])
+    if len(merged) != 1:
+        raise RuntimeError("signed affine transition has disconnected feasible branches")
+    m = merged[0][1]
+    w = 2.*m*m-w_fixed
+    return math.sqrt(max(0., min(w_bound, w)))
+
+
 def _path_samples(path, step: float, trajectory):
     for name in ("distance", "curvature", "is_closed"):
         if not hasattr(path, name):
@@ -234,6 +339,7 @@ def capability_profile(path, surface, *, boundary: str = "flying", start_speed=N
                                  False, status, iteration, change, reference,
                                  {"detail": detail, "boundary": boundary, "floor": floor})
 
+    signed_chart = hasattr(surface, "u") and hasattr(surface, "domain_speed")
     segment = np.diff(distance)
     max_change = math.inf
     for iteration in range(1, maximum_iterations + 1):
@@ -243,19 +349,24 @@ def capability_profile(path, surface, *, boundary: str = "flying", start_speed=N
             for i, ds in enumerate(segment):
                 vi, candidate = float(speed[i]), float(speed[i+1])
                 k = .5*(curvature[i] + curvature[i+1])
-                for _ in range(32):
-                    vm = math.sqrt(.5*(vi*vi + candidate*candidate))
-                    _, amax = limits(vm, k)
-                    radicand = vi*vi + 2.*amax*ds
-                    if radicand < -tolerance:
-                        raise RuntimeError("forward transition has no real energy state")
-                    updated = min(candidate, math.sqrt(max(0., radicand)))
-                    if abs(updated-candidate) <= tolerance:
-                        candidate = updated; break
-                    candidate = updated
+                if signed_chart and vi >= floor and candidate >= floor:
+                    speed[i+1] = _signed_transition(surface, vi=vi, bound=candidate,
+                                                    curvature=k, ds=ds, forward=True,
+                                                    tolerance=tolerance)
                 else:
-                    return failed("transition-failed", iteration, max_change, "forward fixed point did not converge")
-                speed[i+1] = candidate
+                    for _ in range(32):
+                        vm = math.sqrt(.5*(vi*vi + candidate*candidate))
+                        _, amax = limits(vm, k)
+                        radicand = vi*vi + 2.*amax*ds
+                        if radicand < -tolerance:
+                            raise RuntimeError("forward transition has no real energy state")
+                        updated = min(candidate, math.sqrt(max(0., radicand)))
+                        if abs(updated-candidate) <= tolerance:
+                            candidate = updated; break
+                        candidate = updated
+                    else:
+                        return failed("transition-failed", iteration, max_change, "forward fixed point did not converge")
+                    speed[i+1] = candidate
             if boundary == "flying":
                 speed[0] = speed[-1] = min(speed[0], speed[-1])
             elif boundary == "rolling": speed[0] = start_speed
@@ -264,19 +375,24 @@ def capability_profile(path, surface, *, boundary: str = "flying", start_speed=N
             for i in range(len(segment)-1, -1, -1):
                 vj, candidate = float(speed[i+1]), float(speed[i])
                 k = .5*(curvature[i] + curvature[i+1])
-                for _ in range(32):
-                    vm = math.sqrt(.5*(candidate*candidate + vj*vj))
-                    amin, _ = limits(vm, k)
-                    radicand = vj*vj - 2.*amin*segment[i]
-                    if radicand < -tolerance:
-                        raise RuntimeError("backward transition has no real energy state")
-                    updated = min(candidate, math.sqrt(max(0., radicand)))
-                    if abs(updated-candidate) <= tolerance:
-                        candidate = updated; break
-                    candidate = updated
+                if signed_chart and vj >= floor and candidate >= floor:
+                    speed[i] = _signed_transition(surface, vi=vj, bound=candidate,
+                                                  curvature=k, ds=segment[i], forward=False,
+                                                  tolerance=tolerance)
                 else:
-                    return failed("transition-failed", iteration, max_change, "backward fixed point did not converge")
-                speed[i] = candidate
+                    for _ in range(32):
+                        vm = math.sqrt(.5*(candidate*candidate + vj*vj))
+                        amin, _ = limits(vm, k)
+                        radicand = vj*vj - 2.*amin*segment[i]
+                        if radicand < -tolerance:
+                            raise RuntimeError("backward transition has no real energy state")
+                        updated = min(candidate, math.sqrt(max(0., radicand)))
+                        if abs(updated-candidate) <= tolerance:
+                            candidate = updated; break
+                        candidate = updated
+                    else:
+                        return failed("transition-failed", iteration, max_change, "backward fixed point did not converge")
+                    speed[i] = candidate
         except (ValueError, RuntimeError) as error:
             return failed("transition-domain-failed", iteration, max_change, str(error))
         if boundary == "flying": speed[0] = speed[-1] = min(speed[0], speed[-1])

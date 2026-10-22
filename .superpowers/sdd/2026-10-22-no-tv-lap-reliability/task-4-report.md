@@ -34,6 +34,27 @@ The focused live interval tests run in about 1.4 s. A diagnostic five-curvature/
 
 The build-time endpoint/edge/interior stencil is conservative numerical certification only, not a formal continuum proof. The present builder refuses a demonstrated broad coarse chart instead of relaxing limits or manufacturing zero holds. No controller integration, TV formulation, source-data mutation, or full OCP matrix was added.
 
+## Completion update — conservative real builder
+
+The builder now constructs a usable live physical chart rather than stopping at vertex checks. For every cell it evaluates the original NumPy equilibrium at the complete construction edge/interior stencil, takes that cell's common inner signed interval, and propagates the requirement to all four shared vertices (lower bound by maximum, upper by minimum). It then revalidates exact bilinear reconstruction. Failure triggers bounded true-axis refinement and increasing domain backoff; it refuses with the offending domain/common-interval/revalidation probe after the limit. It never supplies an artificial zero hold.
+
+### Measured narrow live chart
+
+* Settings: `curvature=[-.01, 0, .01] 1/m`, `u=linspace(0,1,9)`, `speed_floor=.5 m/s`, `maximum_speed=35.067452826 m/s`, acceleration scan `[-30,10] m/s²`/161 points, 20 endpoint refinements, 61 speed-domain points, endpoint buffer `.002 m/s²`, domain backoff `.002 m/s`, and a 4×4 per-cell construction stencil.
+* This completes in about 24 seconds including an independent test stencil. The chart metadata records actual axes/backoff/refinement, construction and reconstruction-validation stencil counts, distinct live interval evaluations, and mean conservative interval loss.
+* An independent 37-by-19 `(u,k)` stencil (703 physical points, denser and different from construction) checks both reconstructed acceleration endpoints against original `evaluate_equilibrium`, including `u=1`, interior-`u`, edge-`k`, and interior-`k`; all pass. At the straight high-speed boundary it retains transient braking: approximately `[-15.2138, -4.0532] m/s²`, preserving the required negative maximum acceleration.
+* The spline numeric forward/backward seed now dispatches signed charts through physical `.limits()` (and only clamps a seed query to its local domain); a CasADi `solve_spline_line` smoke test with a nonconstant-domain signed fixture passes. Legacy surfaces retain their old lookup path.
+
+### Known limitation
+
+The delivered live chart is intentionally narrow in curvature. A wider diagnostic around negative curved domain regions still discovers a **domain** failure at `k=-.05, u=1` when a linear interpolated Vdom (even after `.4 m/s` backoff) is `19.51896 m/s` with no feasible signed interval. That is correctly refused rather than inwardly fabricating acceleration bounds. Broader track coverage needs additional curvature knots and/or a domain representation that can conservatively bound this Vdom shape; it is not claimed here.
+
+## Tests
+
+With actual CasADi:
+
+* `PYTHONPATH=src:/tmp/casadi-runtime-2026-10-20 python3 -m unittest tests.test_signed_capability tests.test_qss_spline_ocp.SplineTranscriptionTest.test_signed_surface_solves_nonconstant_curvature_seed -v` — 8 tests pass.
+
 ## Commit
 
-`e7c14a1 feat: add signed transient capability chart`
+Pending final focused regression run and review.

@@ -495,12 +495,20 @@ def _envelope_guess(track, surface, mesh, settings: QssSettings, speed_cap=None)
     widths = np.diff(mesh)
 
     def amax(car_speed, car_curvature):
+        if signed:
+            # A forward/backward sweep reuses a speed at a neighbouring
+            # curvature; clamp its *seed query* to that local domain only.
+            car_speed = min(float(car_speed), surface.domain_speed(float(car_curvature)))
+            return surface.limits(car_speed, float(car_curvature))[1]
         return _bilinear(
             surface.acceleration_max, surface.speed, surface.curvature,
             car_speed, car_curvature,
         )
 
     def amin(car_speed, car_curvature):
+        if signed:
+            car_speed = min(float(car_speed), surface.domain_speed(float(car_curvature)))
+            return surface.limits(car_speed, float(car_curvature))[0]
         return _bilinear(
             surface.acceleration_min, surface.speed, surface.curvature,
             car_speed, car_curvature,

@@ -7,8 +7,9 @@ import numpy as np
 from simplified_vehicle_models.compiler.compile import compile_formulation
 from simplified_vehicle_models.formulations.point_mass import evaluate_equilibrium, point_mass_view_of_planar
 from simplified_vehicle_models.formulations.signed_capability import (
-    SignedTransientCapability, load_signed_transient_capability,
-    save_signed_transient_capability, signed_feasible_interval, symbolic_lookup,
+    SignedTransientCapability, build_signed_transient_capability,
+    load_signed_transient_capability, save_signed_transient_capability,
+    signed_feasible_interval, symbolic_lookup,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -57,6 +58,26 @@ class SignedCapabilityTest(unittest.TestCase):
         self.assertIsNotNone(valid)
         self.assertAlmostEqual(valid[0], -2.42649, delta=.01)
         self.assertAlmostEqual(valid[1], .47861, delta=.01)
+
+    def test_real_builder_conservative_dense_validation(self):
+        chart = build_signed_transient_capability(
+            self.vehicle, curvature=np.array([-.01, 0., .01]),
+            u=np.linspace(0., 1., 9), maximum_speed=35.067452826,
+            scan_points=161, refinement_steps=20, speed_scan_points=61,
+            interior_subdivisions=2, endpoint_buffer=.002, domain_backoff=.002,
+            refinement_attempts=0,
+        )
+        self.assertGreater(chart.validation["construction_stencil_count"], 0)
+        self.assertGreater(chart.validation["validation_stencil_count"], 0)
+        self.assertLess(chart.limits(chart.domain_speed(0.), 0.)[1], 0.)
+        # Independent stencil: includes full domain edges, u interiors and both
+        # curvature-cell interiors; it is deliberately denser than construction.
+        for coordinate in np.linspace(0., 1., 37):
+            for curvature in np.linspace(-.01, .01, 19):
+                speed = chart.speed_floor + coordinate*(chart.domain_speed(curvature)-chart.speed_floor)
+                low, high = chart.limits(speed, curvature)
+                self.assertTrue(evaluate_equilibrium(self.vehicle, speed, curvature, low).is_feasible)
+                self.assertTrue(evaluate_equilibrium(self.vehicle, speed, curvature, high).is_feasible)
 
     def test_physical_normalized_query_and_no_extrapolation(self):
         chart = _chart()

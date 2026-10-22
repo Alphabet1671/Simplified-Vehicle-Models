@@ -8,6 +8,7 @@ import unittest
 import numpy as np
 
 from simplified_vehicle_models.formulations.point_mass_capability import CapabilitySurface
+from simplified_vehicle_models.formulations.signed_capability import SignedTransientCapability
 from simplified_vehicle_models.solvers.qss_line_ocp import track_sample
 from simplified_vehicle_models.tracks.corridor import Corridor, corridor_from_track
 from simplified_vehicle_models.tracks.offset_spline import OffsetSpline
@@ -41,6 +42,15 @@ def _surface() -> CapabilitySurface:
     return CapabilitySurface(
         speed, curvature, np.full((81, 61), 3.0), np.full((81, 61), -8.0),
         np.full(61, 25.0), "synthetic",
+    )
+
+
+def _signed_surface() -> SignedTransientCapability:
+    """Safe, nonconstant-domain fixture used to exercise the numeric seed path."""
+    u = np.array([0., .5, 1.]); curvature = np.array([-.1, 0., .1])
+    return SignedTransientCapability(
+        u, curvature, np.full((3, 3), 2.), np.full((3, 3), -6.),
+        np.array([12., 18., 12.]), .5, "signed-fixture",
     )
 
 
@@ -101,6 +111,19 @@ class SplineTranscriptionTest(unittest.TestCase):
         defaults = {"radius": 40.0, "nodes": 72, "half_width": 3.0}
         defaults.update(kwargs)
         return load_track(_write_circle_track(self.directory, **defaults))
+
+    def test_signed_surface_solves_nonconstant_curvature_seed(self) -> None:
+        from simplified_vehicle_models.solvers.qss_line_ocp import QssSettings, build_mesh
+        from simplified_vehicle_models.solvers.qss_spline_ocp import solve_spline_line
+        track = self._track(radius=40.0)
+        view = replace(track, is_closed=False)
+        solution = solve_spline_line(
+            view, _zero_corridor(view, is_closed=False), _signed_surface(),
+            build_mesh(view, 10.0), OffsetSpline(view, control_spacing=10.0),
+            QssSettings(maximum_iterations=400, start_speed=.5),
+        )
+        self.assertIn(solution.status, ("Solve_Succeeded", "Solved_To_Acceptable_Level"))
+        self.assertLessEqual(solution.maximum_violation, 1.e-5)
 
     def test_zero_corridor_open_circle_matches_capability_envelope(self) -> None:
         from simplified_vehicle_models.solvers.qss_line_ocp import (

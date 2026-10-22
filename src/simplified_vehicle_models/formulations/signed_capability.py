@@ -168,22 +168,27 @@ def _speed_domain(vehicle, curvature: float, floor: float, upper: float, acceler
 
 
 def build_signed_transient_capability(vehicle, *, curvature: np.ndarray, u: np.ndarray | None = None,
-                                      speed_floor: float = 0.5, maximum_speed: float | None = None,
-                                      acceleration_range: tuple[float, float] = (-30.0, 10.0),
-                                      scan_points: int = 401, refinement_steps: int = 32,
-                                      speed_scan_points: int = 81, interior_subdivisions: int = 2,
-                                      endpoint_buffer: float = 1.0e-4, domain_backoff: float = 1.0e-3) -> SignedTransientCapability:
-    """Build and sampled-certify an opt-in signed chart from original NumPy physics.
+                                       speed_floor: float = 0.5, maximum_speed: float | None = None,
+                                       acceleration_range: tuple[float, float] = (-30.0, 10.0),
+                                       scan_points: int = 401, refinement_steps: int = 32,
+                                       speed_scan_points: int = 81, interior_subdivisions: int = 2,
+                                       endpoint_buffer: float = 1.0e-4, domain_backoff: float = 1.0e-3,
+                                       refinement_attempts: int = 3) -> SignedTransientCapability:
+    """Build a conservatively reconstructed signed chart from original physics.
 
-    The finite stencil is recorded as numerical evidence only.  Any failed
-    interpolation endpoint causes explicit refusal rather than a fabricated cell.
+    Every cell's full edge/interior stencil contributes a common inner interval.
+    That requirement is propagated to its four shared vertices, so reconstructed
+    bilinear bounds cannot be wider than the live interval at a sampled probe.
+    Failed cells refine the true axes/domain then explicitly refuse if unresolved.
     """
-    curvature = _readonly(curvature, name="curvature"); u = np.linspace(0., 1., 9) if u is None else _readonly(u, name="u")
+    curvature = _readonly(curvature, name="curvature")
+    u = np.linspace(0., 1., 9) if u is None else _readonly(u, name="u")
     if curvature.size < 2 or u.size < 2 or np.any(np.diff(curvature) <= 0) or np.any(np.diff(u) <= 0) or not np.isclose(u[0], 0) or not np.isclose(u[-1], 1):
         raise ValueError("curvature and u must be increasing axes with u=[0,1]")
     if (not math.isfinite(speed_floor) or speed_floor <= 0 or speed_scan_points < 3
             or interior_subdivisions < 1 or not math.isfinite(endpoint_buffer)
-            or endpoint_buffer < 0 or not math.isfinite(domain_backoff) or domain_backoff < 0):
+            or endpoint_buffer < 0 or not math.isfinite(domain_backoff) or domain_backoff < 0
+            or not isinstance(refinement_attempts, int) or refinement_attempts < 0):
         raise ValueError("invalid signed capability build domain")
     hardware_top = min(float(maximum_vehicle_speed(vehicle)), 60.0)
     top = hardware_top if maximum_speed is None else float(maximum_speed)
@@ -191,39 +196,91 @@ def build_signed_transient_capability(vehicle, *, curvature: np.ndarray, u: np.n
         raise ValueError("maximum_speed must exceed speed_floor")
     if top > hardware_top + 1.0e-12:
         raise ValueError("maximum_speed exceeds declared vehicle mechanical limit")
-    domains = np.array([_speed_domain(vehicle, float(k), speed_floor, top, acceleration_range, scan_points, refinement_steps, speed_scan_points) for k in curvature])
-    domains = np.maximum(speed_floor + np.finfo(float).eps, domains - domain_backoff)
-    amin = np.empty((u.size, curvature.size)); amax = np.empty_like(amin)
-    for j, k in enumerate(curvature):
-        for i, coordinate in enumerate(u):
-            speed = speed_floor + coordinate*(domains[j]-speed_floor)
-            interval = signed_feasible_interval(lambda a: evaluate_equilibrium(vehicle, speed, float(k), a), acceleration_min=acceleration_range[0], acceleration_max=acceleration_range[1], scan_points=scan_points, refinement_steps=refinement_steps)
-            if interval is None:
-                raise ValueError(f"no signed feasible acceleration interval at u={coordinate:.8g}, curvature={k:.8g}")
-            lower, upper = interval
-            if upper-lower <= 2.0*endpoint_buffer:
-                raise ValueError(f"signed feasible interval too narrow after buffer at u={coordinate:.8g}, curvature={k:.8g}")
-            amin[i,j], amax[i,j] = lower + endpoint_buffer, upper - endpoint_buffer
-    settings = {"acceleration_range": list(acceleration_range), "scan_points": scan_points, "refinement_steps": refinement_steps, "speed_scan_points": speed_scan_points, "interior_subdivisions": interior_subdivisions, "maximum_speed": top, "endpoint_buffer": endpoint_buffer, "domain_backoff": domain_backoff}
-    chart = SignedTransientCapability(u, curvature, amax, amin, domains, speed_floor, capability_hash(vehicle), settings)
-    failures = []; probes = 0
-    # Probe every cell interior and all reconstructed cell edges. Linear Vdom(k)
-    # may overestimate existence between curvature nodes, including at u < 1.
-    for i in range(u.size-1):
-        for j in range(curvature.size-1):
-            sample_u = np.linspace(u[i], u[i+1], interior_subdivisions+2)
-            sample_k = np.linspace(curvature[j], curvature[j+1], interior_subdivisions+2)
-            for uu in sample_u:
-                for kk in sample_k:
-                    domain = chart.domain_speed(float(kk)); speed = speed_floor + uu*(domain-speed_floor)
-                    low, high = chart.limits(speed, float(kk)); probes += 1
-                    if not evaluate_equilibrium(vehicle, speed, float(kk), low).is_feasible or not evaluate_equilibrium(vehicle, speed, float(kk), high).is_feasible:
-                        failures.append({"u": float(uu), "curvature": float(kk), "speed": float(speed), "limits": [low, high]})
-    if failures:
-        first = failures[0]
-        raise ValueError("signed chart interpolation is not physically certified at " + json.dumps(first, sort_keys=True))
-    return SignedTransientCapability(u, curvature, amax, amin, domains, speed_floor, chart.provenance_hash, settings, {"sampled": True, "probe_count": probes, "failures": [], "claim": "sampled certification, not continuum proof"})
 
+    axes_u, axes_k, total_samples, last_failure = u, curvature, 0, None
+    for attempt in range(refinement_attempts + 1):
+        # Shared cell edges are deliberately queried more than once.  Cache the
+        # original-physics result by exact float inputs; it changes cost only,
+        # never the sampled evidence.
+        interval_cache = {}
+        def interval(speed, k):
+            key = (float(speed), float(k))
+            if key not in interval_cache:
+                interval_cache[key] = signed_feasible_interval(
+                    lambda a: evaluate_equilibrium(vehicle, key[0], key[1], a),
+                    acceleration_min=acceleration_range[0], acceleration_max=acceleration_range[1],
+                    scan_points=scan_points, refinement_steps=refinement_steps)
+            return interval_cache[key]
+        raw_domains = np.array([_speed_domain(vehicle, float(k), speed_floor, top, acceleration_range,
+                                               scan_points, refinement_steps, speed_scan_points) for k in axes_k])
+        backoff = domain_backoff * (attempt + 1)
+        domains = raw_domains - backoff
+        if np.any(domains <= speed_floor):
+            raise ValueError("signed speed domain vanished under requested conservative backoff")
+        lows = np.empty((axes_u.size, axes_k.size)); highs = np.empty_like(lows)
+        bad = None
+        for j, k in enumerate(axes_k):
+            for i, coordinate in enumerate(axes_u):
+                live = interval(speed_floor + coordinate*(domains[j]-speed_floor), k)
+                if live is None or live[1]-live[0] <= 2*endpoint_buffer:
+                    bad = {"kind":"vertex", "u":float(coordinate), "curvature":float(k)}; break
+                lows[i,j], highs[i,j] = live[0]+endpoint_buffer, live[1]-endpoint_buffer
+            if bad: break
+        if bad is None:
+            req_low, req_high = lows.copy(), highs.copy()
+            probes = 0
+            for i in range(axes_u.size-1):
+                for j in range(axes_k.size-1):
+                    cell_low, cell_high = [], []
+                    for uu in np.linspace(axes_u[i], axes_u[i+1], interior_subdivisions+2):
+                        for kk in np.linspace(axes_k[j], axes_k[j+1], interior_subdivisions+2):
+                            domain = float(np.interp(kk, axes_k, domains))
+                            speed = speed_floor + uu*(domain-speed_floor)
+                            live = interval(speed, kk); probes += 1
+                            if live is None:
+                                bad = {"kind":"domain", "u":float(uu), "curvature":float(kk), "speed":float(speed)}; break
+                            cell_low.append(live[0]+endpoint_buffer); cell_high.append(live[1]-endpoint_buffer)
+                        if bad: break
+                    if bad: break
+                    common_low, common_high = max(cell_low), min(cell_high)
+                    if common_low > common_high:
+                        bad = {"kind":"empty_common_interval", "cell":[i,j], "lower":common_low, "upper":common_high}; break
+                    req_low[i:i+2,j:j+2] = np.maximum(req_low[i:i+2,j:j+2], common_low)
+                    req_high[i:i+2,j:j+2] = np.minimum(req_high[i:i+2,j:j+2], common_high)
+                if bad: break
+            total_samples += probes
+            if bad is None and np.all(req_low <= req_high):
+                settings = {"acceleration_range":list(acceleration_range), "scan_points":scan_points,
+                    "refinement_steps":refinement_steps, "speed_scan_points":speed_scan_points,
+                    "interior_subdivisions":interior_subdivisions, "maximum_speed":top,
+                    "endpoint_buffer":endpoint_buffer, "domain_backoff":domain_backoff,
+                    "refinement_attempt":attempt, "refinement_attempts":refinement_attempts,
+                    "actual_u":axes_u.tolist(), "actual_curvature":axes_k.tolist(),
+                    "actual_domain_backoff":backoff}
+                chart = SignedTransientCapability(axes_u, axes_k, req_high, req_low, domains, speed_floor, capability_hash(vehicle), settings)
+                checks, failures = 0, []
+                for i in range(axes_u.size-1):
+                    for j in range(axes_k.size-1):
+                        for uu in np.linspace(axes_u[i], axes_u[i+1], interior_subdivisions+2):
+                            for kk in np.linspace(axes_k[j], axes_k[j+1], interior_subdivisions+2):
+                                speed = speed_floor + uu*(chart.domain_speed(float(kk))-speed_floor)
+                                low, high = chart.limits(speed, float(kk)); checks += 1
+                                if not evaluate_equilibrium(vehicle, speed, float(kk), low).is_feasible or not evaluate_equilibrium(vehicle, speed, float(kk), high).is_feasible:
+                                    failures.append({"u":float(uu), "curvature":float(kk), "speed":float(speed), "limits":[low,high]})
+                if not failures:
+                    loss = float(np.mean((highs-lows)-(req_high-req_low)))
+                    return SignedTransientCapability(axes_u, axes_k, req_high, req_low, domains, speed_floor, chart.provenance_hash, settings,
+                        {"sampled":True, "construction_stencil_count":total_samples, "validation_stencil_count":checks,
+                         "live_interval_evaluations":len(interval_cache), "failures":[], "mean_interval_conservative_loss":loss,
+                         "claim":"sampled certification, not continuum proof"})
+                bad = {"kind":"revalidation", **failures[0]}
+            elif bad is None:
+                bad = {"kind":"propagated_empty_vertex"}
+        last_failure = bad
+        if attempt < refinement_attempts:
+            axes_u = np.sort(np.unique(np.r_[axes_u, .5*(axes_u[:-1]+axes_u[1:])]))
+            axes_k = np.sort(np.unique(np.r_[axes_k, .5*(axes_k[:-1]+axes_k[1:])]))
+    raise ValueError("signed chart refused after conservative refinement: " + json.dumps(last_failure, sort_keys=True))
 
 def save_signed_transient_capability(chart: SignedTransientCapability, path: str | Path) -> Path:
     """Serialize a distinct, versioned archive without touching legacy caches."""

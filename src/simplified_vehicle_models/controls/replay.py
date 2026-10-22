@@ -49,6 +49,11 @@ class PointMassReplay:
 
     ``controller`` is accepted for interface parity and ignored, because the
     point-mass lap solver already produces the driven speed profile.
+
+    A ``FLYING`` replay needs a periodic lap, so an open path with
+    ``LapMode.FLYING`` is rejected: ``solve_lap`` would apply its periodic
+    boundary and silently wrap the course.  ``LapMode.STANDING_START`` remains
+    valid for an open path.
     """
 
     def __init__(self, vehicle, lap_mode: LapMode, tolerance=1e-6, maximum_iterations=200):
@@ -59,6 +64,13 @@ class PointMassReplay:
 
     def __call__(self, path, controller=None):
         track = track_from_path(path)
+        if not track.is_closed and self.lap_mode is LapMode.FLYING:
+            raise ValueError(
+                'PointMassReplay cannot replay an open path with '
+                'LapMode.FLYING: solve_lap applies the FLYING periodic '
+                'boundary, so the open course would be silently wrapped; use '
+                'LapMode.STANDING_START for an open path'
+            )
         lap = solve_lap(self.vehicle, track, self.lap_mode,
                         tolerance=self.tolerance, maximum_iterations=self.maximum_iterations)
         return ReplaySample(track.distance, lap.speed, bool(lap.converged),

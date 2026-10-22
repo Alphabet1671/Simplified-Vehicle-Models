@@ -46,8 +46,19 @@ class FixedPathEnergyNlpTest(unittest.TestCase):
                                            chart(upper=4., lower=-2., caps=(30., 3.)),
                                            boundary="rolling", start_speed=8., step=1.)
         self.assertTrue(result.converged, result.diagnostics)
-        self.assertLess(result.speed[1], result.speed[0])
         self.assertLessEqual(result.speed[-1], 3.+1.e-8)
+        # The best profile may initially accelerate; it must nevertheless begin
+        # braking before the final capped corner segment because that last metre
+        # alone cannot dissipate the required energy within the signed lower bound.
+        energy_drop = np.diff(result.speed**2)
+        self.assertTrue(np.any(energy_drop[:-1] < -1.e-7))
+        for index, (left, right) in enumerate(zip(result.speed[:-1], result.speed[1:])):
+            acceleration = (right**2-left**2)/2.
+            midpoint_speed = math.sqrt(.5*(left**2+right**2))
+            midpoint_curvature = 0. if index < 15 else .5
+            lower, upper = chart(upper=4., lower=-2., caps=(30., 3.)).limits(midpoint_speed, midpoint_curvature)
+            self.assertGreaterEqual(acceleration, lower-1.e-7)
+            self.assertLessEqual(acceleration, upper+1.e-7)
 
     def test_closed_flying_requires_physical_endpoint_and_validates_periodic(self):
         closed = PathCoordinates(np.array([0., 5., 10.]), np.array([0., 1., 0.]),

@@ -6,7 +6,7 @@ import numpy as np
 
 from simplified_vehicle_models.controls.planning import PathDemand, controller_hash
 from simplified_vehicle_models.formulations.capability_backend import (
-    CapabilityGrid, SampledCapability,
+    CapabilityGrid, SampledCapability, _regrid,
 )
 from simplified_vehicle_models.formulations.point_mass_capability import (
     CapabilitySurface, build_capability_surface,
@@ -22,14 +22,34 @@ class AllocationCapabilityBackend:
     mode: str = 'allocation'
 
     def __post_init__(self):
+        for name, minimum in (('scan_points', 3), ('bisection_steps', 1)):
+            value = getattr(self, name)
+            if (isinstance(value, bool)
+                    or not isinstance(value, (int, np.integer))
+                    or value < minimum):
+                raise ValueError(f'{name} must be an integer >= {minimum}')
+        if self.mode != 'allocation':
+            raise ValueError("mode must be 'allocation'; stateful controllers "
+                             "must use closed_loop mode")
         if bool(getattr(self.policy, 'is_stateful', False)):
             raise ValueError('a stateful controller must use closed_loop mode, '
                              'not static allocation sampling')
 
     def _ideal(self, grid, curvature_limit):
-        return build_capability_surface(
+        raw = build_capability_surface(
             self.vehicle, curvature_limit=curvature_limit,
             speed_points=grid.speed.size, curvature_points=grid.curvature.size)
+        # The builder samples its own axes; regrid so the limits are labelled
+        # with the caller's exact (speed, curvature) coordinates.
+        return _regrid(raw, grid)
+
+    @staticmethod
+    def _aligned(surface, grid):
+        """Return ``surface`` on the caller's axes, regridding if misaligned."""
+        if (np.array_equal(surface.speed, grid.speed)
+                and np.array_equal(surface.curvature, grid.curvature)):
+            return surface
+        return _regrid(surface, grid)
 
     def _demand(self, speed, curvature, ax):
         # Coerce to Python floats so policy comparisons return bool, not
@@ -49,11 +69,14 @@ class AllocationCapabilityBackend:
         if flags.all():
             return float(ideal_lo), float(ideal_hi), False
         # Monotone feasibility is assumed for the boundary refinement; verify
-        # the sampled set and fall back to an isolated feasible sample if not.
+        # the sampled set and fall back to the widest feasible scan run if not.
         indices = np.flatnonzero(flags)
-        contiguous = np.all(np.diff(indices) == 1)
-        if not contiguous:
-            return float(grid[indices[-1]]), float(grid[indices[-1]]), True
+        gaps = np.flatnonzero(np.diff(indices) != 1)
+        if gaps.size:
+            runs = np.split(indices, gaps + 1)
+            widths = np.array([grid[run[-1]] - grid[run[0]] for run in runs])
+            best = runs[int(np.argmax(widths))]
+            return float(grid[best[0]]), float(grid[best[-1]]), True
 
         def refine(feasible, infeasible):
             lo, hi = float(infeasible), float(feasible)
@@ -76,12 +99,18 @@ class AllocationCapabilityBackend:
     def sample(self, grid, *, curvature_limit, ideal_surface=None, **_):
         if ideal_surface is None:
             ideal_surface = self._ideal(grid, curvature_limit)
+        else:
+            ideal_surface = self._aligned(ideal_surface, grid)
         amax = np.empty_like(ideal_surface.acceleration_max)
         amin = np.empty_like(ideal_surface.acceleration_min)
         feasible_mask = np.ones(amax.shape, dtype=bool)
         ceiling = np.empty_like(ideal_surface.speed_ceiling)
         flags = {'non_monotone': False, 'infeasible_cells': 0,
-                 'saturation_tags': set()}
+                 'saturation_tags': set(),
+                 'curvature_limit': float(curvature_limit),
+                 'scan_points': int(self.scan_points),
+                 'policy_name': getattr(self.policy, 'name',
+                                        type(self.policy).__qualname__)}
         for j, curvature in enumerate(grid.curvature):
             for i, speed in enumerate(grid.speed):
                 interval = self.feasible_interval(
@@ -98,6 +127,10 @@ class AllocationCapabilityBackend:
                     response = self.policy.evaluate(self._demand(
                         float(speed), float(curvature), float(amax[i, j])))
                     flags['saturation_tags'].update(response.saturation)
+                    if amin[i, j] != amax[i, j]:
+                        response = self.policy.evaluate(self._demand(
+                            float(speed), float(curvature), float(amin[i, j])))
+                        flags['saturation_tags'].update(response.saturation)
             ceiling[j] = 0.0
             for i in range(grid.speed.size - 1, -1, -1):
                 if feasible_mask[i, j]:

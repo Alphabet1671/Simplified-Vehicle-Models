@@ -90,6 +90,18 @@ def _ideal_surface(grid):
         np.full(grid.curvature.size, 20.0), 'vehicle-hash')
 
 
+def _plane_surface():
+    speed = np.array([0.5, 5.5, 10.5])
+    curvature = np.array([-0.2, 0.0, 0.2])
+    amax = 4.0 + 0.1 * speed[:, None] + 0.2 * curvature[None, :]
+    return CapabilitySurface(speed, curvature, amax, -amax,
+                             np.full(curvature.size, 20.0), 'vehicle-hash')
+
+
+def _plane_expected(grid):
+    return 4.0 + 0.1 * grid.speed[:, None] + 0.2 * grid.curvature[None, :]
+
+
 class _CapPolicy:
     name = 'cap-at-two'
     provenance_hash = 'cap-at-two-v1'
@@ -98,6 +110,25 @@ class _CapPolicy:
     def evaluate(self, demand):
         feasible = demand.longitudinal_acceleration <= 2.0
         return ControlResponse(feasible, min(demand.longitudinal_acceleration, 2.0), 0.0)
+
+
+class _AlwaysFeasible:
+    name = 'always-feasible'
+    provenance_hash = 'always-feasible-v1'
+    is_stateful = False
+
+    def evaluate(self, demand):
+        return ControlResponse(True, demand.longitudinal_acceleration, 0.0)
+
+
+class _BrakeOnlySaturation:
+    name = 'brake-only-saturation'
+    provenance_hash = 'brake-only-saturation-v1'
+    is_stateful = False
+
+    def evaluate(self, demand):
+        tags = ('braking',) if demand.longitudinal_acceleration < 0.0 else ()
+        return ControlResponse(True, demand.longitudinal_acceleration, 0.0, tags)
 
 
 class AllocationBackendTest(unittest.TestCase):
@@ -114,6 +145,9 @@ class AllocationBackendTest(unittest.TestCase):
         self.assertTrue(np.any(np.isclose(sampled.surface.acceleration_max, 2.0,
                                           atol=1e-2)))
         self.assertTrue(np.all(sampled.feasible_mask))
+        self.assertEqual(sampled.metadata['curvature_limit'], 0.1)
+        self.assertEqual(sampled.metadata['scan_points'], 17)
+        self.assertEqual(sampled.metadata['policy_name'], 'cap-at-two')
 
     def test_stateful_policy_is_rejected_in_allocation_mode(self):
         class StatefulPolicy(_CapPolicy):
@@ -168,3 +202,88 @@ class AllocationBackendTest(unittest.TestCase):
             grid, curvature_limit=0.1, ideal_surface=_ideal_surface(grid))
         self.assertEqual(sampled.metadata['saturation_tags'], ['acceleration'])
         self.assertFalse(sampled.metadata['non_monotone'])
+
+    def test_default_ideal_is_regridded_onto_the_grid(self):
+        grid = CapabilityGrid(np.array([1.0, 5.0, 10.0]),
+                              np.array([-0.1, 0.0, 0.1]))
+        with patch('simplified_vehicle_models.formulations.controller_capability.'
+                   'build_capability_surface', return_value=_plane_surface()) as build:
+            sampled = AllocationCapabilityBackend(
+                object(), _AlwaysFeasible()).sample(grid, curvature_limit=0.2)
+        build.assert_called_once_with(
+            ANY, curvature_limit=0.2, speed_points=3, curvature_points=3)
+        expected = _plane_expected(grid)
+        np.testing.assert_array_equal(sampled.surface.speed, grid.speed)
+        np.testing.assert_array_equal(sampled.surface.curvature, grid.curvature)
+        np.testing.assert_allclose(sampled.surface.acceleration_max, expected)
+        np.testing.assert_allclose(sampled.surface.acceleration_min, -expected)
+        self.assertTrue(np.all(sampled.feasible_mask))
+        self.assertTrue(np.all(sampled.surface.acceleration_max
+                               <= expected + 1e-9))
+        self.assertTrue(np.all(sampled.surface.acceleration_min
+                               >= -expected - 1e-9))
+
+    def test_explicit_ideal_surface_is_regridded_onto_the_grid(self):
+        grid = CapabilityGrid(np.array([1.0, 5.0, 10.0]),
+                              np.array([-0.1, 0.0, 0.1]))
+        with patch('simplified_vehicle_models.formulations.controller_capability.'
+                   'build_capability_surface') as build:
+            sampled = AllocationCapabilityBackend(
+                object(), _AlwaysFeasible()).sample(
+                    grid, curvature_limit=0.2, ideal_surface=_plane_surface())
+        build.assert_not_called()
+        expected = _plane_expected(grid)
+        np.testing.assert_array_equal(sampled.surface.speed, grid.speed)
+        np.testing.assert_array_equal(sampled.surface.curvature, grid.curvature)
+        np.testing.assert_allclose(sampled.surface.acceleration_max, expected)
+        np.testing.assert_allclose(sampled.surface.acceleration_min, -expected)
+        self.assertTrue(np.all(sampled.surface.acceleration_max
+                               <= expected + 1e-9))
+
+    def test_braking_side_saturation_is_recorded(self):
+        grid = CapabilityGrid(np.array([1.0, 5.0, 10.0]),
+                              np.array([-0.1, 0.0, 0.1]))
+        sampled = AllocationCapabilityBackend(
+            object(), _BrakeOnlySaturation()).sample(
+                grid, curvature_limit=0.1, ideal_surface=_ideal_surface(grid))
+        self.assertEqual(sampled.metadata['saturation_tags'], ['braking'])
+
+    def test_non_monotone_uses_widest_feasible_run(self):
+        class TwoIslandPolicy:
+            name = 'two-island'
+            provenance_hash = 'two-island-v1'
+            is_stateful = False
+
+            def evaluate(self, demand):
+                ax = demand.longitudinal_acceleration
+                feasible = ax <= -6.0 or (-4.0 <= ax <= -3.0)
+                return ControlResponse(feasible, ax, 0.0)
+
+        grid = CapabilityGrid(np.array([1.0, 5.0, 10.0]),
+                              np.array([-0.1, 0.0, 0.1]))
+        sampled = AllocationCapabilityBackend(
+            object(), TwoIslandPolicy()).sample(
+                grid, curvature_limit=0.1, ideal_surface=_ideal_surface(grid))
+        self.assertTrue(sampled.metadata['non_monotone'])
+        scan = np.linspace(-8.0, 5.0, 17)
+        self.assertTrue(np.all(sampled.surface.acceleration_max
+                               > sampled.surface.acceleration_min))
+        np.testing.assert_allclose(sampled.surface.acceleration_min, scan[0])
+        np.testing.assert_allclose(sampled.surface.acceleration_max, scan[2])
+
+    def test_invalid_sampling_parameters_are_rejected(self):
+        cases = (
+            {'scan_points': 2},
+            {'bisection_steps': 0},
+            {'scan_points': 4.5},
+        )
+        for kwargs in cases:
+            with self.subTest(kwargs=kwargs):
+                with self.assertRaisesRegex(ValueError, next(iter(kwargs))):
+                    AllocationCapabilityBackend(object(), _CapPolicy(), **kwargs)
+
+    def test_mode_must_stay_allocation(self):
+        with self.assertRaisesRegex(ValueError, 'mode'):
+            AllocationCapabilityBackend(object(), _CapPolicy(), mode='closed_loop')
+        self.assertEqual(
+            AllocationCapabilityBackend(object(), _CapPolicy()).mode, 'allocation')

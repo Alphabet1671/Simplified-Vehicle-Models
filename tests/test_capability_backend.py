@@ -2,8 +2,12 @@ import unittest
 from unittest.mock import ANY, patch
 import numpy as np
 
+from simplified_vehicle_models.controls.planning import ControlResponse
 from simplified_vehicle_models.formulations.capability_backend import (
     CapabilityGrid, IdealCapabilityBackend,
+)
+from simplified_vehicle_models.formulations.controller_capability import (
+    AllocationCapabilityBackend,
 )
 from simplified_vehicle_models.formulations.point_mass_capability import CapabilitySurface
 
@@ -77,3 +81,90 @@ class IdealBackendTest(unittest.TestCase):
                             f'{name} grid .* outside the builder domain'):
                         IdealCapabilityBackend(object()).sample(
                             grid, curvature_limit=1.0)
+
+
+def _ideal_surface(grid):
+    shape = (grid.speed.size, grid.curvature.size)
+    return CapabilitySurface(
+        grid.speed, grid.curvature, np.full(shape, 5.0), np.full(shape, -8.0),
+        np.full(grid.curvature.size, 20.0), 'vehicle-hash')
+
+
+class _CapPolicy:
+    name = 'cap-at-two'
+    provenance_hash = 'cap-at-two-v1'
+    is_stateful = False
+
+    def evaluate(self, demand):
+        feasible = demand.longitudinal_acceleration <= 2.0
+        return ControlResponse(feasible, min(demand.longitudinal_acceleration, 2.0), 0.0)
+
+
+class AllocationBackendTest(unittest.TestCase):
+    def test_known_cap_appears_in_the_sampled_surface(self):
+        vehicle = object()
+        backend = AllocationCapabilityBackend(vehicle, _CapPolicy())
+        grid = CapabilityGrid(np.array([1.0, 5.0, 10.0]), np.array([-0.1, 0.0, 0.1]))
+        with patch.object(AllocationCapabilityBackend, '_ideal',
+                          return_value=_ideal_surface(grid)):
+            sampled = backend.sample(grid, curvature_limit=0.1)
+        self.assertEqual(sampled.mode, 'allocation')
+        self.assertNotEqual(sampled.controller_hash, '')
+        self.assertTrue(np.all(sampled.surface.acceleration_max <= 2.0 + 1e-9))
+        self.assertTrue(np.any(np.isclose(sampled.surface.acceleration_max, 2.0,
+                                          atol=1e-2)))
+        self.assertTrue(np.all(sampled.feasible_mask))
+
+    def test_stateful_policy_is_rejected_in_allocation_mode(self):
+        class StatefulPolicy(_CapPolicy):
+            is_stateful = True
+        with self.assertRaisesRegex(ValueError, 'stateful'):
+            AllocationCapabilityBackend(object(), StatefulPolicy())
+
+    def test_non_monotone_policy_is_flagged(self):
+        class BumpPolicy:
+            name = 'bump'
+            provenance_hash = 'bump-v1'
+            is_stateful = False
+            def evaluate(self, demand):
+                ok = demand.longitudinal_acceleration <= 1.0 or demand.longitudinal_acceleration >= 3.0
+                return ControlResponse(ok, demand.longitudinal_acceleration, 0.0)
+        backend = AllocationCapabilityBackend(object(), BumpPolicy())
+        grid = CapabilityGrid(np.array([1.0, 5.0, 10.0]), np.array([-0.1, 0.0, 0.1]))
+        sampled = backend.sample(grid, curvature_limit=0.1,
+                                 ideal_surface=_ideal_surface(grid))
+        self.assertTrue(sampled.metadata['non_monotone'])
+
+    def test_infeasible_cells_are_masked_and_zeroed(self):
+        class NeverPolicy:
+            name = 'never'
+            provenance_hash = 'never-v1'
+            is_stateful = False
+
+            def evaluate(self, demand):
+                return ControlResponse(False, 0.0, 0.0)
+
+        grid = CapabilityGrid(np.array([1.0, 5.0, 10.0]), np.array([-0.1, 0.0, 0.1]))
+        sampled = AllocationCapabilityBackend(object(), NeverPolicy()).sample(
+            grid, curvature_limit=0.1, ideal_surface=_ideal_surface(grid))
+        self.assertFalse(np.any(sampled.feasible_mask))
+        self.assertEqual(sampled.metadata['infeasible_cells'], 9)
+        np.testing.assert_array_equal(sampled.surface.acceleration_max, 0.0)
+        np.testing.assert_array_equal(sampled.surface.acceleration_min, 0.0)
+        np.testing.assert_array_equal(sampled.surface.speed_ceiling, 0.0)
+
+    def test_saturation_tags_are_recorded(self):
+        class SaturatedPolicy(_CapPolicy):
+            name = 'saturated-at-two'
+            provenance_hash = 'saturated-at-two-v1'
+
+            def evaluate(self, demand):
+                feasible = demand.longitudinal_acceleration <= 2.0
+                return ControlResponse(feasible, min(demand.longitudinal_acceleration, 2.0),
+                                       0.0, ('acceleration',))
+
+        grid = CapabilityGrid(np.array([1.0, 5.0, 10.0]), np.array([-0.1, 0.0, 0.1]))
+        sampled = AllocationCapabilityBackend(object(), SaturatedPolicy()).sample(
+            grid, curvature_limit=0.1, ideal_surface=_ideal_surface(grid))
+        self.assertEqual(sampled.metadata['saturation_tags'], ['acceleration'])
+        self.assertFalse(sampled.metadata['non_monotone'])

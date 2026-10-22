@@ -203,6 +203,90 @@ class SplineTranscriptionTest(unittest.TestCase):
             solution.lap_time, float(track.lap_length) / 15.0, delta=5.0e-3,
         )
 
+    def test_closed_corridor_offset_shortens_the_path(self) -> None:
+        from simplified_vehicle_models.solvers.qss_line_ocp import QssSettings, build_mesh
+        from simplified_vehicle_models.solvers.qss_spline_ocp import solve_spline_line
+
+        for direction in (1.0, -1.0):
+            with self.subTest(direction=direction):
+                track = self._track(direction=direction)
+                corridor = corridor_from_track(track)
+                mesh = build_mesh(track, 3.0)
+                solution = solve_spline_line(
+                    track, corridor, _surface(), mesh,
+                    OffsetSpline(track, control_spacing=10.0),
+                    QssSettings(maximum_iterations=2000),
+                )
+                self.assertEqual(solution.status, "Solve_Succeeded")
+                # The inside edge is 3 m from the centreline, so the line runs
+                # on a 37 m radius at the 25 m/s ceiling: 232.478 m / 25 m/s.
+                self.assertAlmostEqual(solution.lap_time, 9.299, delta=5.0e-3)
+                inside = 3.0 * direction
+                np.testing.assert_allclose(
+                    solution.offset,
+                    np.full(solution.offset.size, inside), atol=1.0e-2,
+                )
+                np.testing.assert_allclose(
+                    solution.curvature,
+                    np.full(solution.curvature.size, direction / 37.0), atol=1.0e-3,
+                )
+                np.testing.assert_allclose(
+                    solution.heading_error,
+                    np.zeros(solution.heading_error.size), atol=1.0e-3,
+                )
+                self.assertLess(
+                    solution.lap_time, float(track.lap_length) / 25.0,
+                )
+
+    def test_excessive_heading_and_curvature_rate_are_bounded(self) -> None:
+        from simplified_vehicle_models.solvers.qss_line_ocp import QssSettings, build_mesh
+        from simplified_vehicle_models.solvers.qss_spline_ocp import (
+            _geometry, solve_spline_line,
+        )
+
+        track = self._track()
+        base = corridor_from_track(track)
+        minimum = np.array(base.minimum, copy=True)
+        maximum = np.array(base.maximum, copy=True)
+        # A zero-width pinch forces the spline away from the constant inside
+        # edge; the free solution then needs a visible lateral slew.
+        minimum[15:25] = 0.0
+        maximum[15:25] = 0.0
+        corridor = Corridor(base.distance, minimum, maximum, base.provenance, True)
+        mesh = build_mesh(track, 3.0)
+        spline = OffsetSpline(track, control_spacing=10.0)
+        surface = _surface()
+
+        free = solve_spline_line(
+            track, corridor, surface, mesh, spline,
+            QssSettings(maximum_iterations=2000),
+        )
+        self.assertEqual(free.status, "Solve_Succeeded")
+        _, free_heading, free_rate, _, _ = _geometry(
+            track, spline, free.coefficients, mesh,
+        )
+        self.assertGreater(float(np.max(np.abs(free_heading))), 1.0e-2)
+        self.assertGreater(float(np.max(np.abs(free_rate))), 1.0e-3)
+
+        bound = 1.0e-6
+        tight = QssSettings(
+            maximum_iterations=3000,
+            maximum_heading=bound,
+            maximum_curvature_rate=bound,
+        )
+        bounded = solve_spline_line(track, corridor, surface, mesh, spline, tight)
+        self.assertEqual(bounded.status, "Solve_Succeeded")
+        _, heading, rate, _, _ = _geometry(track, spline, bounded.coefficients, mesh)
+        self.assertLessEqual(
+            float(np.max(np.abs(heading))), bound + tight.tolerance,
+        )
+        self.assertLessEqual(
+            float(np.max(np.abs(rate))), bound + tight.tolerance,
+        )
+        # The heading limit leaves no room to leave the centreline, so the
+        # bounded solve collapses to the zero-offset line instead of diverging.
+        self.assertLess(float(np.max(np.abs(bounded.offset))), 1.0e-2)
+
     def test_decision_layout_and_scaling_match_the_declared_contract(self) -> None:
         from simplified_vehicle_models.solvers.qss_line_ocp import QssSettings, build_mesh
         from simplified_vehicle_models.solvers.qss_spline_ocp import (

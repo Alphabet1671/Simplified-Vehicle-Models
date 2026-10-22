@@ -252,7 +252,11 @@ def build_spline_ocp(track, corridor, surface, mesh, spline, settings: QssSettin
     curvature_upper = float(surface.curvature[-1])
     fold_guard = float(settings.fold_guard)
 
-    def limits(offset, kappa, car_speed, car_acceleration, centreline_curvature):
+    def limits(offset, psi, q, kappa, car_speed, car_acceleration,
+               centreline_curvature):
+        add(psi, -float(settings.maximum_heading), float(settings.maximum_heading))
+        add(q, -float(settings.maximum_curvature_rate),
+            float(settings.maximum_curvature_rate))
         add(kappa, curvature_lower, curvature_upper)
         add(car_acceleration - amin(ca.vertcat(car_speed, kappa)), 0.0, math.inf)
         add(amax(ca.vertcat(car_speed, kappa)) - car_acceleration, 0.0, math.inf)
@@ -304,12 +308,13 @@ def build_spline_ocp(track, corridor, surface, mesh, spline, settings: QssSettin
                 float(quarter_upper[2 * index + 1]))
             add(n_nodes[index + 1], float(corridor_lower[index + 1]),
                 float(corridor_upper[index + 1]))
-        limits(n_nodes[index], node0[3], speed[index], acceleration[index],
-               float(k0_nodes[index]))
-        limits(n_mids[index], middle[3], midpoint_speed,
+        limits(n_nodes[index], node0[1], node0[2], node0[3], speed[index],
+               acceleration[index], float(k0_nodes[index]))
+        limits(n_mids[index], middle[1], middle[2], middle[3], midpoint_speed,
                mid_acceleration[index], float(k0_mids[index]))
-        limits(n_nodes[index + 1], node1[3], speed[index + 1],
-               acceleration[index + 1], float(k0_nodes[index + 1]))
+        limits(n_nodes[index + 1], node1[1], node1[2], node1[3],
+               speed[index + 1], acceleration[index + 1],
+               float(k0_nodes[index + 1]))
         if cap_values is not None:
             add(speed[index] - float(cap_values[index]), -math.inf, 0.0)
             add(speed[index + 1] - float(cap_values[index + 1]), -math.inf, 0.0)

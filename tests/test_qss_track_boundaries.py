@@ -148,6 +148,22 @@ class MatchedTranscriptionTest(unittest.TestCase):
                     self.assertLessEqual(result['constraint_violation'], 1e-6)
                     self.assertLessEqual(result['bound_violation'], 1e-6)
 
+    def test_diagnostic_result_exposes_the_documented_schema(self):
+        from tests.test_track_width import _write_circle_track
+        from simplified_vehicle_models.solvers.qss_line_ocp import QssSettings
+        from simplified_vehicle_models.tracks.corridor import corridor_from_track
+        from tools.diagnostics.compare_qss_track_boundaries import solve_diagnostic
+        with tempfile.TemporaryDirectory() as directory:
+            track = load_track(_write_circle_track(Path(directory), radius=40., nodes=72, half_width=3.))
+            result = solve_diagnostic(track, corridor_from_track(track), self.surface(),
+                         QssSettings(start_speed=10., open_regularisation=0., maximum_iterations=100), 5.)
+        required = {'status', 'accepted', 'iterations', 'wall_seconds', 'objective_s',
+                    'nodes', 'variables', 'constraints', 'is_closed', 'length_m',
+                    'seed_sha256', 'constraint_violation', 'bound_violation',
+                    'equality_violation', 'hs_defect_violation', 'worst_constraint'}
+        self.assertLessEqual(required, set(result))
+        self.assertIsInstance(result['worst_constraint'], str)
+
     def test_synthetic_control_is_explicitly_nonphysical(self):
         from tools.diagnostics.compare_qss_track_boundaries import synthetic_capability_control
         control = synthetic_capability_control()

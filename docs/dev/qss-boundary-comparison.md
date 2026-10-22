@@ -34,24 +34,30 @@ Tests verify identical full-pair interior objectives, constraints, variable/cons
 
 All six cases hit `Maximum_Iterations_Exceeded` at both 200 and 1,000 iterations. Values below are **failed-iterate constraint violations**, not feasible lap times.
 
-| Track/view | Length (m) | Mesh nodes | Status at 1,000 | Max constraint violation | Max HS defect |
-|---|---:|---:|---|---:|---:|
-| MIS closed full | 1016.701 | 205 | cap | 2.3844 | 2.478e-2 |
-| MIS cut-open full | 1016.701 | 205 | cap | 2.1609 | 1.766e-3 |
-| MIS open prefix | 199.539 | 41 | cap | 1.8028 | 2.323e-4 |
-| FSC closed full | 768.296 | 155 | cap | 5.056e-1 | 2.765e-3 |
-| FSC cut-open full | 768.296 | 155 | cap | 7.992e-1 | 2.422e-3 |
-| FSC open prefix | 198.270 | 41 | cap | 8.311e-4 | 8.311e-4 |
+| Track/view | Length (m) | Mesh nodes | Status at 1,000 | Max constraint violation | Max HS defect | Worst row |
+|---|---:|---:|---|---:|---:|---|
+| MIS closed full | 1016.701 | 205 | cap | 2.3844 | 2.478e-2 | midpoint acceleration_max |
+| MIS cut-open full | 1016.701 | 205 | cap | 2.1609 | 1.766e-3 | midpoint speed_ceiling |
+| MIS open prefix | 199.539 | 41 | cap | 1.8028 | 2.323e-4 | midpoint acceleration_max |
+| FSC closed full | 768.296 | 155 | cap | 5.056e-1 | 2.765e-3 | midpoint acceleration_max |
+| FSC cut-open full | 768.296 | 155 | cap | 7.992e-1 | 2.422e-3 | midpoint acceleration_max |
+| FSC open prefix | 198.270 | 41 | cap | 8.311e-4 | 8.311e-4 | HS offset defect |
 
-Opening the full track is not a cure. Smaller cases have lower cost and sometimes lower residuals, but a short prefix also changes curvature content and endpoints; this does not establish length alone as causal. No returned objective from these failed runs is presented as performance.
+Five of six worst rows are midpoint capability limits; the FSC prefix is a dynamics defect. Opening the full track is not a cure. Smaller cases have lower cost and sometimes lower residuals, but a short prefix also changes curvature content and endpoints; this does not establish length alone as causal. No returned objective from these failed runs is presented as performance.
 
 ### Low-speed production control
 
 A second six-case matrix retains the full production capability constraints but adds a diagnostic node-speed cap of 10 m/s (matching the seed and rolling start). Five cases still hit the cap. The **FSC open prefix succeeds in 82 iterations**, maximum constraint violation `7.65e-9`. MIS cut-open full becomes much closer to primal feasibility (`7.38e-5`) but does not satisfy strict status/tolerance acceptance. Thus speed/active capability constraints matter, but low speed is not a universal fix.
 
+### Scope of the production comparison
+
+All production-mode paired results use the **per-node** offset layout. `solve_diagnostic` explicitly rejects `offset_control_spacing`, so the reduced-basis mode is not covered by this matrix. The “one solver” recommendation below therefore applies to the shared per-node transcription; it does not claim that the current reduced-basis mode has been tested on the real full tracks.
+
 ## Nonphysical smooth-capability controls
 
 For these controls only, replace the capability with constant maximum acceleration 3 m/s², minimum acceleration -8 m/s², speed ceiling 10 m/s and curvature domain [-1, 1] 1/m. This is **not a vehicle calibration** and the results must not be used as event times or acceptance.
+
+The ceiling equals the 10 m/s seed and start speed, and the constant acceleration gives more slack than the production surface at the relevant operating points. Success here can therefore reflect a seed-feasible, speed-capped regime rather than smoothness alone. It does not isolate interpolation regularity as the cause.
 
 | Geometry/view | Accepted NLP? | Iterations |
 |---|---|---:|
@@ -86,7 +92,7 @@ Retain exactly the current state/control equations for both topologies. Investig
 
 Use one distance-domain multiple-shooting or collocation core with a kinetic-energy state to reduce low-speed conditioning; use periodic or initial/terminal constraints as boundary data. Validate integrator sensitivities and capability interpolation, because merely changing optimizer (the previous SQP attempt) did not establish a solution.
 
-**Recommendation:** keep one solver. First prototype alternative 1 behind an opt-in setting and use the paired diagnostic matrix as its acceptance guard; investigate capability regularity separately, not by topology-specific code forks. Do not relax existing tolerances or declare event acceptance from these diagnostics.
+**Recommendation:** keep one solver for the shared per-node transcription. First prototype alternative 1 behind an opt-in setting and use the paired diagnostic matrix as its acceptance guard; investigate capability regularity separately, not by topology-specific code forks. Do not relax existing tolerances or declare event acceptance from these diagnostics. Extend the diagnostic to support a reduced-basis mode before drawing conclusions about that mode.
 
 ## Commands and raw evidence
 
@@ -103,10 +109,11 @@ PYTHONPATH=src:/tmp/casadi-runtime-2026-10-20 python3 -m tools.diagnostics.compa
 Use a **new output path** each run. Add `--synthetic-capability-control` for the explicitly nonphysical control, or `--speed-cap 10` for the production low-speed diagnostic. Inputs are not rewritten. CLI exit zero means the matrix ran, not that all NLPs converged; inspect `accepted` per case.
 
 Raw local evidence (ignored run artifacts):
-- [200-iteration matrix](../../runs/minimum_time_line/boundary_comparison_20261021.json)
-- [1,000-iteration matrix](../../runs/minimum_time_line/boundary_comparison_1000_20261021.json)
+- [200-iteration production matrix, committed runner](../../runs/minimum_time_line/boundary_comparison_200_tool_20261021.json)
+- [1,000-iteration production matrix, committed runner](../../runs/minimum_time_line/boundary_comparison_1000_tool_20261021.json)
 - [Production capability with 10 m/s cap](../../runs/minimum_time_line/boundary_production_speed10_20261021.json)
-- [Constant-capability matrix](../../runs/minimum_time_line/boundary_constant_capability_20261021.json)
 - [Long-circle and constant-capability controls](../../runs/minimum_time_line/boundary_synthetic_controls_20261021.json)
+
+The two production matrices were regenerated with the committed runner; each result includes `worst_constraint`, `capability_mode` and `diagnostic_speed_cap_mps`. The earlier 200/1,000 matrices lacked those fields and are not cited. `boundary_constant_capability_20261021.json` duplicates the MIS/FSC rows of `boundary_synthetic_controls_20261021.json`; it is redundant and not cited as a separate control.
 
 These files contain statuses, residuals, dimensions, seed hashes and provenance. Failed objective values are diagnostics only. The matrix does not perform mesh/replay/event acceptance.

@@ -47,6 +47,50 @@ class NoTvMinimumLapHarnessTest(unittest.TestCase):
                 wall_cap_s=3.0, seed_name="centerline", formulation=Path("form.xml"),
                 surface=Path("surface.npz"))
 
+    def test_default_dense_settings_preserve_legacy_sites_and_json_restores_tuple(self):
+        request = harness.build_attempt(harness.default_cases()["acceleration"],
+            mesh_spacing_m=5.0, basis_spacing_m=35.0, maximum_iterations=7,
+            wall_cap_s=3.0, seed_name="centerline", formulation=Path("form.xml"),
+            surface=Path("surface.npz"))
+        self.assertEqual(request["settings"]["off_collocation_fractions"], harness.DEFAULT_OFF_COLLOCATION_FRACTIONS)
+        serialized = harness._json_safe(request)
+        self.assertIsInstance(serialized["settings"]["off_collocation_fractions"], list)
+        self.assertEqual(tuple(serialized["settings"]["off_collocation_fractions"]),
+                         harness.DEFAULT_OFF_COLLOCATION_FRACTIONS)
+        self.assertEqual(request["settings"]["tolerance"], 1e-6)
+        self.assertEqual(request["dense_maximum_refinements"], 4)
+
+    def test_explicit_dense_sites_and_invalid_controls_are_rejected(self):
+        case = harness.default_cases()["acceleration"]
+        request = harness.build_attempt(case, mesh_spacing_m=5.0, basis_spacing_m=35.0,
+            maximum_iterations=7, wall_cap_s=3.0, seed_name="centerline",
+            formulation=Path("form.xml"), surface=Path("surface.npz"),
+            off_collocation_divisions=32, nlp_tolerance=1e-8, dense_maximum_refinements=6)
+        self.assertEqual(request["settings"]["off_collocation_fractions"],
+                         tuple(i / 32 for i in range(1, 32) if i != 16))
+        for tolerance in (0.0, float("nan")):
+            with self.assertRaisesRegex(ValueError, "nlp_tolerance"):
+                harness.build_attempt(case, mesh_spacing_m=5.0, basis_spacing_m=35.0,
+                    maximum_iterations=7, wall_cap_s=3.0, seed_name="centerline",
+                    formulation=Path("form.xml"), surface=Path("surface.npz"), nlp_tolerance=tolerance)
+        for refinements in (1, float("nan")):
+            with self.assertRaises((ValueError, OverflowError)):
+                harness.build_attempt(case, mesh_spacing_m=5.0, basis_spacing_m=35.0,
+                    maximum_iterations=7, wall_cap_s=3.0, seed_name="centerline",
+                    formulation=Path("form.xml"), surface=Path("surface.npz"), dense_maximum_refinements=refinements)
+
+    def test_diagnostic_rungs_are_explicitly_labelled(self):
+        case = harness.default_cases()["acceleration"]
+        with self.assertRaisesRegex(ValueError, "diagnostic"):
+            harness.build_attempt(case, mesh_spacing_m=0.625, basis_spacing_m=12.0,
+                maximum_iterations=7, wall_cap_s=3.0, seed_name="centerline",
+                formulation=Path("form.xml"), surface=Path("surface.npz"))
+        request = harness.build_attempt(case, mesh_spacing_m=0.625, basis_spacing_m=12.0,
+            maximum_iterations=7, wall_cap_s=3.0, seed_name="centerline",
+            formulation=Path("form.xml"), surface=Path("surface.npz"), diagnostic_rungs=True)
+        self.assertEqual(request["mesh_rung_status"], "diagnostic_not_preregistered")
+        self.assertEqual(request["basis_rung_status"], "diagnostic_not_preregistered")
+
     def test_json_serialization_converts_nonfinite_diagnostics_to_null(self):
         with tempfile.TemporaryDirectory() as directory:
             destination = Path(directory) / "result.json"
@@ -175,6 +219,8 @@ class NoTvMinimumLapHarnessTest(unittest.TestCase):
                 rows.append({"request": {"case": {"name": "acceleration"}, "seed": "centerline",
                              "settings": {"tolerance": 1e-6}, "source_hashes": {"input": "same"},
                              "mesh_spacing_m": mesh, "basis_spacing_m": basis},
+                              "actual_basis": {"control_count": 4 if basis == 35.0 else 6,
+                                               "control_station_m": [0., 1.] if basis == 35.0 else [0., .5, 1.]},
                              "source_hashes_after": {"input": "same"},
                              "surface_representation": "signed_transient_normalized_v1",
                              "artifact": f"{attempt}/solution.npz", "objective_s": 5.0,
@@ -189,6 +235,27 @@ class NoTvMinimumLapHarnessTest(unittest.TestCase):
         self.assertEqual(len(final_source_changed["candidate_diagnostics"]), 3)
         self.assertEqual(final_source_changed["mesh_refinement"], [])
         self.assertEqual(final_source_changed["basis_refinement"], [])
+
+    def test_aggregate_rejects_nominal_basis_change_with_identical_actual_grid(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); case = root / "acceleration"; case.mkdir()
+            rows = []
+            for attempt, basis in (("b35", 35.0), ("b175", 17.5)):
+                target = case / attempt; target.mkdir()
+                np.savez(target / "solution.npz", distance=np.array([0., 1.]),
+                         offset=np.array([0., 0.]), speed=np.array([10., 11.]), curvature=np.array([0., 0.]))
+                rows.append({"request": {"case": {"name": "acceleration"}, "seed": "centerline",
+                             "settings": {"tolerance": 1e-6}, "source_hashes": {"input": "same"},
+                             "mesh_spacing_m": 1.25, "basis_spacing_m": basis},
+                             "actual_basis": {"control_count": 4, "control_station_m": [0., 25.1, 50.2, 75.3]},
+                             "source_hashes_after": {"input": "same"},
+                             "surface_representation": "signed_transient_normalized_v1",
+                             "artifact": f"{attempt}/solution.npz", "objective_s": 5.0,
+                             "solver_succeeded": True, "dense_original_model": {"checks": {
+                             "geometry_consistency": True, "dense_feasibility": True}, "model_feasible": True}})
+            report = harness.aggregate(rows, root)
+        self.assertEqual(len(report["candidate_diagnostics"]), 1)
+        self.assertEqual(report["basis_refinement"], [])
 
     def test_aggregate_rejects_in_attempt_source_mutation_but_keeps_candidates(self):
         with tempfile.TemporaryDirectory() as directory:

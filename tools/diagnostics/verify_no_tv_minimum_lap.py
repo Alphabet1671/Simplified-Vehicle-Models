@@ -42,7 +42,14 @@ from simplified_vehicle_models.tracks.offset_spline import OffsetSpline
 from simplified_vehicle_models.tracks.profile import load_track
 
 DEFAULT_MESH_SPACINGS = (5.0, 2.5, 1.25)
+DIAGNOSTIC_MESH_SPACING = 0.625
 DEFAULT_BASIS_SPACINGS = (35.0, 17.5)
+DEFAULT_NLP_TOLERANCE = 1.0e-6
+DEFAULT_DENSE_MAXIMUM_REFINEMENTS = 4
+# This is deliberately the existing solver default, not the evenly-spaced eight
+# division grid.  Leaving --off-collocation-divisions unspecified must preserve
+# historical solve behavior exactly.
+DEFAULT_OFF_COLLOCATION_FRACTIONS = (0.125, 0.25, 0.75, 0.875)
 DEFAULT_FORMULATION = Path("models/formulations/iem24_murphy_real_planar_7dof.xml")
 DEFAULT_SURFACE = Path("runs/no_tv_reliability/signed_lp_fullrange_product_20261022.npz")
 SUCCESS_STATUSES = {"Solve_Succeeded", "success", "succeeded"}
@@ -159,13 +166,43 @@ def make_track_view(case: MatrixCase):
     raise ValueError(f"unknown topology {case.topology!r}")
 
 
+def _off_collocation_fractions(divisions: int | None) -> tuple[float, ...]:
+    """Return explicit dense sites without changing the legacy implicit default."""
+    if divisions is None:
+        return DEFAULT_OFF_COLLOCATION_FRACTIONS
+    if (isinstance(divisions, bool) or not isinstance(divisions, (int, float, np.integer, np.floating))
+            or not math.isfinite(divisions) or int(divisions) != divisions or int(divisions) < 3):
+        raise ValueError("off_collocation_divisions must be an integer >= 3")
+    count = int(divisions)
+    return tuple(index / count for index in range(1, count) if 2 * index != count)
+
+def _validate_finite_positive(name: str, value: float) -> float:
+    value = float(value)
+    if not math.isfinite(value) or value <= 0.0:
+        raise ValueError(f"{name} must be finite and positive")
+    return value
+
+
+def _validate_dense_maximum_refinements(value: int) -> int:
+    if (isinstance(value, bool) or not isinstance(value, (int, float, np.integer, np.floating))
+            or not math.isfinite(value) or int(value) != value or int(value) < 2):
+        raise ValueError("dense_maximum_refinements must be an integer >= 2")
+    return int(value)
+
+
 def build_attempt(case: MatrixCase, *, mesh_spacing_m: float, basis_spacing_m: float,
                   maximum_iterations: int, wall_cap_s: float, seed_name: str,
-                  formulation: Path, surface: Path) -> dict:
+                  formulation: Path, surface: Path, nlp_tolerance: float = DEFAULT_NLP_TOLERANCE,
+                  off_collocation_divisions: int | None = None,
+                  dense_maximum_refinements: int = DEFAULT_DENSE_MAXIMUM_REFINEMENTS,
+                  diagnostic_rungs: bool = False) -> dict:
     """Build a fully serializable solve request; this has no solver side effects."""
-    if mesh_spacing_m not in DEFAULT_MESH_SPACINGS or basis_spacing_m not in DEFAULT_BASIS_SPACINGS:
-        # Bounded subsets may choose only preregistered rungs, never tuned values.
-        raise ValueError("mesh and basis values must be preregistered Task 5 rungs")
+    allowed_meshes = DEFAULT_MESH_SPACINGS + ((DIAGNOSTIC_MESH_SPACING,) if diagnostic_rungs else ())
+    allowed_basis = diagnostic_rungs or basis_spacing_m in DEFAULT_BASIS_SPACINGS
+    if mesh_spacing_m not in allowed_meshes or not allowed_basis:
+        raise ValueError("mesh and basis values must be preregistered Task 5 rungs; diagnostic values require --diagnostic-rungs")
+    if not math.isfinite(float(basis_spacing_m)) or float(basis_spacing_m) <= 0.0:
+        raise ValueError("basis spacing must be finite and positive")
     if (isinstance(maximum_iterations, bool) or int(maximum_iterations) != maximum_iterations
             or int(maximum_iterations) <= 0):
         raise ValueError("maximum_iterations must be a positive integer")
@@ -173,12 +210,17 @@ def build_attempt(case: MatrixCase, *, mesh_spacing_m: float, basis_spacing_m: f
         raise ValueError("wall cap must be finite and positive")
     if seed_name not in {"centerline", "low_amplitude_offset"}: 
         raise ValueError("seed must be centerline or low_amplitude_offset")
-    settings = QssSettings(tolerance=1e-6, maximum_iterations=int(maximum_iterations),
-                           start_speed=float(case.start_speed_mps), open_regularisation=1e-6)
+    settings = QssSettings(tolerance=_validate_finite_positive("nlp_tolerance", nlp_tolerance),
+                           maximum_iterations=int(maximum_iterations),
+                           start_speed=float(case.start_speed_mps), open_regularisation=1e-6,
+                           off_collocation_fractions=_off_collocation_fractions(off_collocation_divisions))
     return {
         "case": asdict(case), "mesh_spacing_m": float(mesh_spacing_m),
         "basis_spacing_m": float(basis_spacing_m), "seed": seed_name,
         "wall_cap_s": float(wall_cap_s), "settings": asdict(settings),
+        "dense_maximum_refinements": _validate_dense_maximum_refinements(dense_maximum_refinements),
+        "mesh_rung_status": "preregistered" if mesh_spacing_m in DEFAULT_MESH_SPACINGS else "diagnostic_not_preregistered",
+        "basis_rung_status": "preregistered" if basis_spacing_m in DEFAULT_BASIS_SPACINGS else "diagnostic_not_preregistered",
         "formulation": str(Path(formulation).resolve()), "surface": str(Path(surface).resolve()),
         "no_torque_vectoring": True, "mode_switches": False, "controller_globals": False,
     }
@@ -230,6 +272,8 @@ def _attempt_worker(request_path: str, result_path: str, artifact_path: str) -> 
         settings = QssSettings(**settings_values)
         mesh = build_mesh(track, request["mesh_spacing_m"])
         spline = OffsetSpline(track, control_spacing=request["basis_spacing_m"])
+        result["actual_basis"] = {"control_count": int(spline.control_count),
+                                  "control_station_m": np.asarray(spline.control_distance, dtype=float).tolist()}
         # Project the declared offset coefficients into the production decision
         # layout while retaining the production envelope speed/control initializer.
         seed = initial_guess(track, corridor, surface, mesh, spline, settings)
@@ -258,6 +302,10 @@ def _attempt_worker(request_path: str, result_path: str, artifact_path: str) -> 
                        "checks": checks, "strict": strict,
                        "validation_status": strict["validation_status"],
                        "surface_representation": representation,
+                       "state_representation": solution.state_representation,
+                       "time_quadrature": solution.time_quadrature,
+                       "time_metadata": solution.time_quadrature_metadata,
+                       "trajectory_metadata_artifact": str(trajectory_metadata.name),
                        "artifact": str(Path(artifact_path).name),
                        "start_treatment": case.start_treatment,
                        "candidate_only_reason": case.candidate_only_reason,
@@ -378,6 +426,10 @@ def aggregate(results: list[dict], output: Path, *, source_data_unchanged: bool 
                     if evidence is not None:
                         mesh_refinement.append(evidence)
                 elif mesh_equal and not basis_equal:
+                    left_grid = left.get("actual_basis", {}).get("control_station_m")
+                    right_grid = right.get("actual_basis", {}).get("control_station_m")
+                    if left_grid == right_grid:
+                        continue
                     evidence = _comparison(name, left, right, output, kind="basis_refinement")
                     if evidence is not None:
                         basis_refinement.append(evidence)
@@ -409,7 +461,11 @@ def run_matrix(args) -> dict:
                 for seed in args.seeds:
                     request = build_attempt(case, mesh_spacing_m=mesh, basis_spacing_m=basis,
                         maximum_iterations=args.maximum_iterations, wall_cap_s=args.wall_cap_s,
-                        seed_name=seed, formulation=form, surface=surface)
+                        seed_name=seed, formulation=form, surface=surface,
+                        nlp_tolerance=getattr(args, "nlp_tolerance", DEFAULT_NLP_TOLERANCE),
+                        off_collocation_divisions=getattr(args, "off_collocation_divisions", None),
+                        dense_maximum_refinements=getattr(args, "dense_maximum_refinements", DEFAULT_DENSE_MAXIMUM_REFINEMENTS),
+                        diagnostic_rungs=getattr(args, "diagnostic_rungs", False))
                     # Each spawned solve owns a fresh input snapshot. Do not reuse
                     # the matrix-start hashes: sources can change between attempts.
                     request["source_hashes"] = source_hashes(case.track, form, surface)
@@ -446,9 +502,18 @@ def main(argv=None):
     parser.add_argument("--basis-spacings", type=lambda x: [float(v) for v in x.split(",")], default=DEFAULT_BASIS_SPACINGS)
     parser.add_argument("--seeds", type=lambda x: x.split(","), default=["centerline", "low_amplitude_offset"])
     parser.add_argument("--maximum-iterations", type=int, default=200)
+    parser.add_argument("--nlp-tolerance", type=float, default=DEFAULT_NLP_TOLERANCE)
+    parser.add_argument("--off-collocation-divisions", type=int, default=None,
+                        help="explicit interior i/N sites excluding midpoint; omitted preserves legacy sites")
+    parser.add_argument("--dense-maximum-refinements", type=int, default=DEFAULT_DENSE_MAXIMUM_REFINEMENTS)
+    parser.add_argument("--diagnostic-rungs", action="store_true",
+                        help="allow and label non-preregistered mesh or basis diagnostic rungs")
     parser.add_argument("--wall-cap-s", type=float, default=300.0)
     parser.add_argument("--base-commit", default="6286c5fbb02217fc21148fdc0be276728f13b99c")
     args = parser.parse_args(argv)
+    _validate_finite_positive("nlp_tolerance", args.nlp_tolerance)
+    _off_collocation_fractions(args.off_collocation_divisions)
+    _validate_dense_maximum_refinements(args.dense_maximum_refinements)
     run_matrix(args)
     return 0
 

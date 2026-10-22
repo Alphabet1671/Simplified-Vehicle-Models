@@ -78,6 +78,11 @@ class NoTvMinimumLapHarnessTest(unittest.TestCase):
                 harness.build_attempt(case, mesh_spacing_m=5.0, basis_spacing_m=35.0,
                     maximum_iterations=7, wall_cap_s=3.0, seed_name="centerline",
                     formulation=Path("form.xml"), surface=Path("surface.npz"), dense_maximum_refinements=refinements)
+        for iterations in (True, float("nan"), "7"):
+            with self.assertRaisesRegex(ValueError, "maximum_iterations"):
+                harness.build_attempt(case, mesh_spacing_m=5.0, basis_spacing_m=35.0,
+                    maximum_iterations=iterations, wall_cap_s=3.0, seed_name="centerline",
+                    formulation=Path("form.xml"), surface=Path("surface.npz"))
 
     def test_diagnostic_rungs_are_explicitly_labelled(self):
         case = harness.default_cases()["acceleration"]
@@ -90,6 +95,57 @@ class NoTvMinimumLapHarnessTest(unittest.TestCase):
             formulation=Path("form.xml"), surface=Path("surface.npz"), diagnostic_rungs=True)
         self.assertEqual(request["mesh_rung_status"], "diagnostic_not_preregistered")
         self.assertEqual(request["basis_rung_status"], "diagnostic_not_preregistered")
+
+    def test_worker_persists_dense_and_trajectory_metadata(self):
+        class FakeSpline:
+            control_count = 2
+            control_distance = np.array([0.0, 1.0])
+        class FakeSolution:
+            distance = np.array([0.0, 1.0]); offset = np.array([0.0, 0.0])
+            heading_error = np.array([0.0, 0.0]); curvature = np.array([0.0, 0.0])
+            speed = np.array([10.0, 10.0]); acceleration = np.array([0.0, 0.0])
+            midpoint_acceleration = np.array([0.0]); coefficients = np.array([0.0, 0.0])
+            state_representation = "energy_hs_v1"; time_quadrature = "fixture_quadrature"
+            time_quadrature_metadata = {"rule": "fixture"}; status = "Solve_Succeeded"
+            lap_time = 1.0; objective_value = 1.0; iterations = 2; maximum_violation = 0.0
+        request = harness.build_attempt(harness.default_cases()["acceleration"], mesh_spacing_m=5.0,
+            basis_spacing_m=35.0, maximum_iterations=7, wall_cap_s=3.0, seed_name="centerline",
+            formulation=Path("form.xml"), surface=Path("surface.npz"), dense_maximum_refinements=6)
+        captured = {}
+        def fake_validate(solution, corridor, surface, settings, **kwargs):
+            captured["fractions"] = settings.off_collocation_fractions
+            captured["refinements"] = kwargs["maximum_refinements"]
+            return {"checks": {"geometry_consistency": True, "dense_feasibility": True},
+                    "model_feasible": True}
+        def fake_trajectory_metadata(path, solution):
+            np.savez(path, metadata=np.array("fixture"))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); request_path = root / "request.json"; result_path = root / "result.json"
+            request_path.write_text(json.dumps(harness._json_safe(request)), encoding="utf-8")
+            with patch.object(harness, "make_track_view", return_value=object()), \
+                 patch.object(harness, "corridor_from_track", return_value=object()), \
+                 patch.object(harness, "compile_formulation", return_value=SimpleNamespace(model=object())), \
+                 patch.object(harness, "point_mass_view_of_planar", return_value=object()), \
+                 patch.object(harness, "load_surface_dispatch", return_value=(SimpleNamespace(provenance_hash="ok"), "fixture")), \
+                 patch.object(harness, "capability_hash", return_value="ok"), \
+                 patch.object(harness, "build_mesh", return_value=np.array([0.0, 1.0])), \
+                 patch.object(harness, "OffsetSpline", return_value=FakeSpline()), \
+                 patch.object(harness, "initial_guess", return_value=np.zeros(12)), \
+                 patch.object(harness, "_seed_domain_report", return_value={}), \
+                 patch.object(harness, "solve_spline_line", return_value=FakeSolution()), \
+                 patch.object(harness, "validate_line", side_effect=fake_validate), \
+                 patch("tools.run.solve_minimum_time_line._write_trajectory_metadata", side_effect=fake_trajectory_metadata):
+                harness._attempt_worker(str(request_path), str(result_path), str(root / "solution.npz"))
+            result = json.loads(result_path.read_text())
+            self.assertEqual(result["status"], "Solve_Succeeded")
+            self.assertEqual(result["validation_status"], "incomplete")
+            self.assertEqual(captured["fractions"], harness.DEFAULT_OFF_COLLOCATION_FRACTIONS)
+            self.assertEqual(captured["refinements"], 6)
+            with np.load(root / "solution.npz", allow_pickle=False) as artifact:
+                self.assertEqual(str(artifact["state_representation"]), "energy_hs_v1")
+                self.assertEqual(str(artifact["time_quadrature"]), "fixture_quadrature")
+                np.testing.assert_array_equal(artifact["control_station_m"], [0.0, 1.0])
+            self.assertTrue((root / result["trajectory_metadata_artifact"]).is_file())
 
     def test_json_serialization_converts_nonfinite_diagnostics_to_null(self):
         with tempfile.TemporaryDirectory() as directory:

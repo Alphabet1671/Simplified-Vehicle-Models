@@ -203,7 +203,9 @@ def build_attempt(case: MatrixCase, *, mesh_spacing_m: float, basis_spacing_m: f
         raise ValueError("mesh and basis values must be preregistered Task 5 rungs; diagnostic values require --diagnostic-rungs")
     if not math.isfinite(float(basis_spacing_m)) or float(basis_spacing_m) <= 0.0:
         raise ValueError("basis spacing must be finite and positive")
-    if (isinstance(maximum_iterations, bool) or int(maximum_iterations) != maximum_iterations
+    if (isinstance(maximum_iterations, bool)
+            or not isinstance(maximum_iterations, (int, float, np.integer, np.floating))
+            or not math.isfinite(maximum_iterations) or int(maximum_iterations) != maximum_iterations
             or int(maximum_iterations) <= 0):
         raise ValueError("maximum_iterations must be a positive integer")
     if not math.isfinite(float(wall_cap_s)) or float(wall_cap_s) <= 0:
@@ -282,11 +284,21 @@ def _attempt_worker(request_path: str, result_path: str, artifact_path: str) -> 
         result["initial_seed"] = _seed_domain_report(track, corridor, spline, coefficients)
         solution = solve_spline_line(track, corridor, surface, mesh, spline, settings, seed=seed)
         np.savez_compressed(artifact_path, distance=solution.distance, offset=solution.offset,
-                            heading_error=solution.heading_error, curvature=solution.curvature,
-                            speed=solution.speed, acceleration=solution.acceleration,
-                            midpoint_acceleration=solution.midpoint_acceleration,
-                            coefficients=solution.coefficients)
-        dense = validate_line(solution, corridor, surface, settings, vehicle=vehicle)
+                             heading_error=solution.heading_error, curvature=solution.curvature,
+                             speed=solution.speed, acceleration=solution.acceleration,
+                             midpoint_acceleration=solution.midpoint_acceleration,
+                             coefficients=solution.coefficients,
+                             control_station_m=np.asarray(spline.control_distance, dtype=float),
+                             state_representation=np.array(solution.state_representation),
+                             time_quadrature=np.array(solution.time_quadrature),
+                             time_metadata=np.array(json.dumps(solution.time_quadrature_metadata, sort_keys=True)))
+        # Persist exact reference/map metadata separately with the established
+        # runner contract, without changing runner behavior or overwriting files.
+        from tools.run.solve_minimum_time_line import _write_trajectory_metadata
+        trajectory_metadata = Path(artifact_path).with_name("trajectory_metadata.npz")
+        _write_trajectory_metadata(trajectory_metadata, solution)
+        dense = validate_line(solution, corridor, surface, settings, vehicle=vehicle,
+                              maximum_refinements=request["dense_maximum_refinements"])
         checks = dict(dense["checks"])
         # These are intentionally unavailable until matrix aggregation can prove
         # their paired evidence.  They must never be inferred from one rung.

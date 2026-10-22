@@ -346,7 +346,13 @@ class OffsetTrajectory:
                             ("chord_length_tolerance", chord_length_tolerance)):
             if not np.isfinite(value) or value <= 0.0:
                 raise ValueError(f"{name} must be finite and positive")
-        values = list(map(float, s)); index = 0
+        # Preserve all original reference samples and offset control knots in
+        # addition to caller stations, so adaptive chord checks cannot skip a
+        # spline feature hidden within a long requested interval.
+        knots = np.r_[s, self.reference.source_station,
+                      np.asarray(self.spline.control_distance, dtype=float)]
+        knots = knots[(knots >= self.reference.start) & (knots <= self.reference.end)]
+        values = list(map(float, np.unique(knots))); index = 0
         while index < len(values) - 1:
             if len(values) > maximum_nodes:
                 raise ValueError("adaptive trajectory export exceeded node limit")

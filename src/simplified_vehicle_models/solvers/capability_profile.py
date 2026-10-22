@@ -196,22 +196,22 @@ def _signed_transition(surface, *, vi: float, bound: float, curvature: float, ds
     amin_now, amax_now = surface.limits(vi, curvature)
     if forward:
         if endpoint > vi + tolerance:
-            if amax_now < -tolerance:
+            if amax_now <= tolerance:
                 raise RuntimeError("signed affine transition lacks a connected current-state branch")
             direction_cells = upper
         elif endpoint < vi - tolerance:
-            if amin_now > tolerance:
+            if amin_now >= -tolerance:
                 raise RuntimeError("signed affine transition lacks a connected current-state branch")
             direction_cells = lower
         else:
             return endpoint
     else:
         if endpoint > vi + tolerance:
-            if amin_now > tolerance:
+            if amin_now >= -tolerance:
                 raise RuntimeError("signed affine transition lacks a connected current-state branch")
             direction_cells = lower
         elif endpoint < vi - tolerance:
-            if amax_now < -tolerance:
+            if amax_now <= tolerance:
                 raise RuntimeError("signed affine transition lacks a connected current-state branch")
             direction_cells = upper
         else:

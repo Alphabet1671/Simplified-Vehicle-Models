@@ -7,7 +7,7 @@ import numpy as np
 
 from simplified_vehicle_models.formulations.point_mass_capability import CapabilitySurface
 from simplified_vehicle_models.formulations.signed_capability import SignedTransientCapability, load_signed_transient_capability
-from simplified_vehicle_models.solvers.capability_profile import capability_profile, matched_profile_replay
+from simplified_vehicle_models.solvers.capability_profile import _signed_transition, capability_profile, matched_profile_replay
 from simplified_vehicle_models.tracks.types import PathCoordinates
 
 
@@ -196,6 +196,23 @@ class CapabilityProfileTest(unittest.TestCase):
                                     boundary="rolling", start_speed=1., step=1.)
         self.assertTrue(result.converged)
         self.assertGreater(result.speed[-1], 1.)
+
+    def test_signed_forward_zero_upper_anchor_refuses_remote_acceleration(self):
+        chart = SignedTransientCapability(np.array([0., .2, 1.]), np.array([0., 1.]),
+            np.array([[-1., -1.], [0., 0.], [6., 6.]]), np.full((3, 2), -5.),
+            np.full(2, 3.), .5, "synthetic")
+        result = capability_profile(Path(np.array([0., 1.]), np.zeros(2)), chart,
+                                    boundary="rolling", start_speed=1., step=1.)
+        self.assertFalse(result.converged)
+        self.assertIn("connected current-state", result.diagnostics["detail"])
+
+    def test_signed_backward_zero_lower_anchor_refuses_remote_braking(self):
+        chart = SignedTransientCapability(np.array([0., .2, .5, 1.]), np.array([0., 1.]),
+            np.full((4, 2), 8.), np.array([[-1., -1.], [0., 0.], [-6., -6.], [1., 1.]]),
+            np.full(2, 3.), .5, "synthetic")
+        with self.assertRaisesRegex(RuntimeError, "connected current-state"):
+            _signed_transition(chart, vi=1., bound=3., curvature=0., ds=1.,
+                               forward=False, tolerance=1.e-7)
 
     def test_signed_transition_refuses_disconnected_current_state_prefix(self):
         # The high-speed branch is feasible but cannot be reached continuously

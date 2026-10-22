@@ -310,6 +310,7 @@ def _write_trajectory_metadata(path: Path, solution) -> None:
         raise ValueError("trajectory midpoint accelerations must match mesh intervals")
     metadata = json.dumps({
         "schema_version": 1,
+        "state_representation": str(getattr(solution, "state_representation", "legacy_speed_hs_v1")),
         "reference_interpolant": "scipy.make_interp_spline",
         "reference_degree": 5 if reference_station.size >= 6 else 3,
         "is_closed": bool(trajectory.reference.is_closed),

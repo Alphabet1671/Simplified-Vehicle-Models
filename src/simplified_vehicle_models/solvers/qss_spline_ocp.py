@@ -1,10 +1,11 @@
-"""Consistent cubic-spline minimum-time line OCP in the distance domain.
+"""Energy-consistent cubic-spline minimum-time line OCP in distance.
 
 The lateral offset is one cubic spline of the track distance, so the offset,
 heading error, curvature rate, and path curvature all come from the same
 representation at the nodes, the collocation midpoints, and the interior
-containment samples.  Speed is the only differential state; acceleration is a
-control at the mesh nodes and at the midpoint of every element.
+containment samples.  Physical node speeds remain decision variables, while
+Hermite--Simpson reconstructs kinetic energy ``W = v²`` with ``W_s = 2 a G``.
+Acceleration is a quadratic control at the mesh nodes and midpoint.
 
 The decision vector is grouped as
 ``[spline coefficients | speed nodes | acceleration nodes | midpoint
@@ -51,6 +52,7 @@ class SplineSolution:
     midpoint_acceleration: FloatArray | None = None
     objective_value: float | None = None
     state_evaluator: object | None = None
+    state_representation: str = "energy_hs_v1"
 
 
 def _reference_curve(track):
@@ -128,30 +130,48 @@ def _validate_capability_margin(surface, settings: QssSettings) -> float:
 
 
 class _SplineStateEvaluator:
-    """Immutable Hermite--Simpson dense state/control evaluator."""
+    """Immutable dense evaluator for the ``energy_hs_v1`` representation."""
+    state_representation = "energy_hs_v1"
+
     def __init__(self, trajectory, mesh, speed, acceleration, midpoint_acceleration):
         self.trajectory = trajectory
         self.mesh = np.array(mesh, dtype=float, copy=True); self.mesh.setflags(write=False)
         self.speed = np.array(speed, dtype=float, copy=True); self.speed.setflags(write=False)
         self.acceleration = np.array(acceleration, dtype=float, copy=True); self.acceleration.setflags(write=False)
         self.midpoint_acceleration = np.array(midpoint_acceleration, dtype=float, copy=True); self.midpoint_acceleration.setflags(write=False)
+
     def evaluate(self, station):
-        s=np.asarray(station,dtype=float); scalar=s.ndim==0; flat=np.atleast_1d(s)
-        if np.any(flat < self.mesh[0]) or np.any(flat > self.mesh[-1]): raise ValueError("state station outside mesh")
-        i=np.minimum(np.searchsorted(self.mesh,flat,side='right')-1,self.mesh.size-2)
-        x=(flat-self.mesh[i])/(self.mesh[i+1]-self.mesh[i]); width=self.mesh[i+1]-self.mesh[i]
-        g=self.trajectory.evaluate(flat).metric
-        f0=self.acceleration[i]*np.asarray(self.trajectory.evaluate(self.mesh[i]).metric)/(self.speed[i])
-        f1=self.acceleration[i+1]*np.asarray(self.trajectory.evaluate(self.mesh[i+1]).metric)/(self.speed[i+1])
-        v0=self.speed[i]; v1=self.speed[i+1]
-        v=(2*x**3-3*x**2+1)*v0+(x**3-2*x**2+x)*width*f0+(-2*x**3+3*x**2)*v1+(x**3-x**2)*width*f1
-        dv=((6*x**2-6*x)*v0 + (3*x**2-4*x+1)*width*f0
-            + (-6*x**2+6*x)*v1 + (3*x**2-2*x)*width*f1) / width
-        # quadratic Lagrange acceleration through node, midpoint, node.
-        a=(2*(x-.5)*(x-1)*self.acceleration[i] + 4*x*(1-x)*self.midpoint_acceleration[i] + 2*x*(x-.5)*self.acceleration[i+1])
-        rhs = a*g/v
+        s = np.asarray(station, dtype=float); scalar = s.ndim == 0; flat = np.atleast_1d(s)
+        if np.any(flat < self.mesh[0]) or np.any(flat > self.mesh[-1]):
+            raise ValueError("state station outside mesh")
+        i = np.minimum(np.searchsorted(self.mesh, flat, side="right") - 1,
+                       self.mesh.size - 2)
+        x = (flat - self.mesh[i]) / (self.mesh[i + 1] - self.mesh[i])
+        width = self.mesh[i + 1] - self.mesh[i]
+        geometry = self.trajectory.evaluate(flat)
+        g = np.asarray(geometry.metric)
+        metric_nodes = np.asarray(self.trajectory.evaluate(self.mesh).metric)
+        f0 = 2.0 * self.acceleration[i] * metric_nodes[i]
+        f1 = 2.0 * self.acceleration[i + 1] * metric_nodes[i + 1]
+        w0, w1 = self.speed[i] ** 2, self.speed[i + 1] ** 2
+        w = ((2*x**3 - 3*x**2 + 1)*w0
+             + (x**3 - 2*x**2 + x)*width*f0
+             + (-2*x**3 + 3*x**2)*w1
+             + (x**3 - x**2)*width*f1)
+        w_s = ((6*x**2 - 6*x)*w0 + (3*x**2 - 4*x + 1)*width*f0
+               + (-6*x**2 + 6*x)*w1 + (3*x**2 - 2*x)*width*f1) / width
+        # Accepted states must satisfy the explicit Bernstein W floor. Never
+        # clamp a failed reconstructed energy into a plausible speed trace.
+        if not np.all(np.isfinite(w)) or np.any(w <= 0.0):
+            raise ValueError("energy_hs_v1 reconstructed nonpositive kinetic energy")
+        v = np.sqrt(w)
+        dv = w_s / (2.0 * v)
+        a = (2*(x-.5)*(x-1)*self.acceleration[i]
+             + 4*x*(1-x)*self.midpoint_acceleration[i]
+             + 2*x*(x-.5)*self.acceleration[i+1])
+        rhs = a * g / v
         result = {"speed": v, "acceleration": a, "speed_rate": dv,
-                  "rhs_speed_rate": rhs}
+                  "rhs_speed_rate": rhs, "energy": w, "energy_rate": w_s}
         return {key: float(np.asarray(value)[0]) if scalar else value
                 for key, value in result.items()}
 
@@ -368,17 +388,21 @@ def build_spline_ocp(track, corridor, surface, mesh, spline, settings: QssSettin
         add(1.0 - centreline_curvature * offset, fold_guard, math.inf)
         return acceleration_lower_index, acceleration_upper_index
 
-    def hermite_speed(index, coordinate):
-        """Actual cubic HS speed at an interior element coordinate."""
+    def hermite_energy(index, coordinate):
+        """Cubic kinetic energy ``W=v²`` at an interior element coordinate."""
         h = float(widths[index])
         x = float(coordinate)
         metric0, metric1 = node_geometry[index][4], node_geometry[index + 1][4]
-        f0 = acceleration[index] * metric0 / speed[index]
-        f1 = acceleration[index + 1] * metric1 / speed[index + 1]
-        return ((2*x**3 - 3*x**2 + 1) * speed[index]
+        f0 = 2.0 * acceleration[index] * metric0
+        f1 = 2.0 * acceleration[index + 1] * metric1
+        return ((2*x**3 - 3*x**2 + 1) * speed[index] ** 2
                 + (x**3 - 2*x**2 + x) * h * f0
-                + (-2*x**3 + 3*x**2) * speed[index + 1]
+                + (-2*x**3 + 3*x**2) * speed[index + 1] ** 2
                 + (x**3 - x**2) * h * f1)
+
+    def energy_speed(energy):
+        """Safe optimizer expression; a separate W floor rejects invalid W."""
+        return ca.sqrt(ca.fmax(energy, np.finfo(float).tiny))
 
     def quadratic_acceleration(index, coordinate):
         """Existing node/midpoint/node Lagrange control at an interior site."""
@@ -394,14 +418,19 @@ def build_spline_ocp(track, corridor, surface, mesh, spline, settings: QssSettin
         node1 = node_geometry[index + 1]
         middle = mid_geometry[index]
         metric0, metric1, metric_mid = node0[4], node1[4], middle[4]
-        f0 = acceleration[index] * metric0 / speed[index]
-        f1 = acceleration[index + 1] * metric1 / speed[index + 1]
-        midpoint_speed = 0.5 * (speed[index] + speed[index + 1]) + h / 8.0 * (f0 - f1)
-        f_mid = (
-            mid_acceleration[index] * metric_mid / midpoint_speed
-        )
-        add(speed[index + 1] - speed[index]
-            - h / 6.0 * (f0 + 4.0 * f_mid + f1), 0.0, 0.0)
+        f0 = 2.0 * acceleration[index] * metric0
+        f1 = 2.0 * acceleration[index + 1] * metric1
+        midpoint_energy = (0.5 * (speed[index] ** 2 + speed[index + 1] ** 2)
+                           + h / 8.0 * (f0 - f1))
+        midpoint_speed = energy_speed(midpoint_energy)
+        f_mid = 2.0 * mid_acceleration[index] * metric_mid
+        # Simpson is exact for a straight-line quadratic acceleration control:
+        # W_s = 2 a G is quadratic and W itself is cubic.
+        # Normalize this m²/s² row by a fixed 10 m/s reference speed for NLP
+        # conditioning. This does not redefine the independently reported
+        # physical energy residual or provide a speed-uniform error bound.
+        add((speed[index + 1] ** 2 - speed[index] ** 2
+             - h / 6.0 * (f0 + 4.0 * f_mid + f1)) / 10.0, 0.0, 0.0)
         # The quadratic control is globally boxed through its Bernstein
         # coefficients.  Node and midpoint values alone permit an interior
         # excursion; b1 is the middle Bernstein coefficient.
@@ -412,9 +441,16 @@ def build_spline_ocp(track, corridor, surface, mesh, spline, settings: QssSettin
             bernstein_middle, float(np.min(surface.acceleration_min)),
             float(np.max(surface.acceleration_max)),
         ))
-        # The Hermite midpoint speed is a denominator in the dynamics and the
-        # objective; keep it positive even when the node speeds are at the floor.
-        add(midpoint_speed - float(settings.minimum_speed), 0.0, math.inf)
+        # Bernstein coefficients of the cubic W enforce a sufficient global
+        # physical speed floor over this element, not merely at the midpoint.
+        minimum_energy = float(settings.minimum_speed) ** 2
+        for energy_coefficient in (
+            speed[index] ** 2,
+            speed[index] ** 2 + h * f0 / 3.0,
+            speed[index + 1] ** 2 - h * f1 / 3.0,
+            speed[index + 1] ** 2,
+        ):
+            add(energy_coefficient - minimum_energy, 0.0, math.inf)
         # Time per unit track distance is den / (v cos(psi)); den enters because
         # the offset path is longer than the centreline arc it is measured on.
         objective += h / 6.0 * (
@@ -462,7 +498,7 @@ def build_spline_ocp(track, corridor, surface, mesh, spline, settings: QssSettin
         node_acceleration_upper_indices.append(acceleration_indices[1])
         for local in range(fractions.size):
             site = index * fractions.size + local
-            off_speed = hermite_speed(index, fractions[local])
+            off_speed = energy_speed(hermite_energy(index, fractions[local]))
             off_acceleration = quadratic_acceleration(index, fractions[local])
             # These are feasibility rows only: retain the single HS speed
             # defect above rather than enforcing additional polynomial dynamics.

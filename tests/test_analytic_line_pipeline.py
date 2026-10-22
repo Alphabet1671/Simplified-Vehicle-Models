@@ -39,11 +39,11 @@ def _metric_straight() -> TrackProfile:
     )
 
 
-def _surface(cap: float = 10.0) -> CapabilitySurface:
+def _surface(cap: float = 10.0, acceleration_max: float = 3.0) -> CapabilitySurface:
     speed = np.linspace(0.5, cap, 20)
     curvature = np.linspace(-0.1, 0.1, 5)
     return CapabilitySurface(
-        speed, curvature, np.full((speed.size, curvature.size), 3.0),
+        speed, curvature, np.full((speed.size, curvature.size), acceleration_max),
         np.full((speed.size, curvature.size), -8.0),
         np.full(curvature.size, cap), "synthetic",
     )
@@ -116,7 +116,9 @@ class AnalyticLinePipelineTest(unittest.TestCase):
         settings = QssSettings(maximum_iterations=2000, start_speed=10.0)
         mesh = build_mesh(track, 1.0)
         solution = solve_spline_line(
-            track, corridor, _surface(10.0), mesh,
+            # A small positive acceleration allowance lets the OCP retain a
+            # constant speed despite its required interior capability margin.
+            track, corridor, _surface(10.0, acceleration_max=0.1), mesh,
             OffsetSpline(track, control_spacing=2.5), settings,
             speed_cap=np.full(mesh.size, 10.0),
         )
@@ -159,6 +161,7 @@ class AnalyticLinePipelineTest(unittest.TestCase):
                 speed=np.linspace(8.0, 10.0, 11),
                 acceleration=np.linspace(-1.0, 1.0, 11),
                 midpoint_acceleration=np.linspace(-0.8, 0.8, 10),
+                state_representation="energy_hs_v1",
             )
             from tools.run.solve_minimum_time_line import _write_trajectory_metadata
             artifact = Path(name) / "trajectory.npz"
@@ -171,6 +174,7 @@ class AnalyticLinePipelineTest(unittest.TestCase):
                 })
                 metadata = __import__("json").loads(str(data["metadata"]))
                 self.assertEqual(metadata["schema_version"], 1)
+                self.assertEqual(metadata["state_representation"], "energy_hs_v1")
                 self.assertTrue(metadata["is_closed"])
                 self.assertEqual(metadata["reference_interpolant"], "scipy.make_interp_spline")
                 np.testing.assert_allclose(data["source_reference_station"], trajectory.reference.source_station)

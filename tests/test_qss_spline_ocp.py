@@ -596,12 +596,12 @@ class SplineTranscriptionTest(unittest.TestCase):
             is_closed=False, lap_length=20.0,
         )
         mesh = np.array([0.0, 10.0, 20.0])
-        # The actual Hermite basis gives v(.25)=10.45028409 while
-        # v(.5)=10.5340909.  The narrow table notch leaves all node and
-        # midpoint capability rows legal but makes only the quarter candidate
-        # fail (the global Bernstein a=3 box remains legal).
+        # Energy-HS gives v(.25)=10.4358 while v(.5)=10.5119. The narrow
+        # table notch leaves all node and midpoint capability rows legal but
+        # makes only the quarter candidate fail (the global Bernstein a=3 box
+        # remains legal).
         surface = CapabilitySurface(
-            np.array([.5, 10., 10.43, 10.445, 10.455, 10.47, 11., 12., 30.]),
+            np.array([.5, 10., 10.42, 10.43, 10.45, 10.46, 11., 12., 30.]),
             np.array([-.3, .3]),
             np.array([[3., 3.], [3., 3.], [3., 3.], [2., 2.], [2., 2.],
                       [3., 3.], [3., 3.], [3., 3.], [3., 3.]]),
@@ -638,8 +638,8 @@ class SplineTranscriptionTest(unittest.TestCase):
         constraints = np.asarray(evaluate_quarter(values), dtype=float).ravel()
         # All acceleration-capability rows at nodes, midpoints, and the paired
         # non-quarter sites pass. (The deliberately hand-built candidate need
-        # not satisfy the separate HS defect equality.) At x=.25, H gives
-        # v=10.45028409, a=3, and the table gives amax=2, so the stored physical
+        # not satisfy the separate HS defect equality.) At x=.25, energy-HS
+        # gives v=10.43582..., a=3, and the table gives amax=2, so the stored physical
         # upper-capability row for element 0 / fraction .25 is the only
         # demonstrated acceleration-capability failure.
         self.assertTrue(np.all(
@@ -710,6 +710,101 @@ class SplineTranscriptionTest(unittest.TestCase):
         self.assertLess(
             float(np.min(g[lower_only])), -1.0,
         )
+
+    def test_energy_hs_is_exact_for_straight_quadratic_acceleration(self) -> None:
+        """W=v² is cubic exactly when a(s) is quadratic on a straight."""
+        from types import SimpleNamespace
+        from simplified_vehicle_models.solvers.qss_spline_ocp import _SplineStateEvaluator
+        from simplified_vehicle_models.tracks.types import PathCoordinates
+
+        distance = np.linspace(0.0, 2.0, 5)
+        track = SimpleNamespace(
+            distance=distance, curvature=np.zeros(5), lap_length=2.0,
+            path_coordinates=PathCoordinates(distance, distance, np.zeros(5),
+                                             np.zeros(5), np.zeros(5), False),
+            is_closed=False,
+        )
+        spline = OffsetSpline(track, control_spacing=2.0)
+        from simplified_vehicle_models.tracks.line_trajectory import OffsetTrajectory, ReferenceCurve
+        trajectory = OffsetTrajectory(ReferenceCurve(track), spline, np.zeros(spline.control_count))
+        # a(s)=1 + 2s - .5s², hence W(s)=100+2s+2s²-s³/3.
+        stations = np.linspace(0.0, 2.0, 29)
+        acceleration = np.array([1.0, 3.0])
+        midpoint_acceleration = np.array([2.5])
+        energy = lambda s: 100.0 + 2.0*s + 2.0*s**2 - s**3 / 3.0
+        mesh = np.array([0.0, 2.0])
+        evaluator = _SplineStateEvaluator(
+            trajectory, mesh, np.sqrt(energy(mesh)), acceleration,
+            midpoint_acceleration,
+        )
+        dense = evaluator.evaluate(stations)
+        expected_a = 1.0 + 2.0*stations - .5*stations**2
+        np.testing.assert_allclose(dense["energy"], energy(stations), atol=2.e-12)
+        np.testing.assert_allclose(dense["acceleration"], expected_a, atol=2.e-12)
+        np.testing.assert_allclose(
+            dense["speed_rate"], expected_a / np.sqrt(energy(stations)), atol=3.e-12,
+        )
+        # ∫ ds/v has the analytic constant-acceleration special case below;
+        # here independently verify high-order physical quadrature convergence.
+        coarse = np.trapezoid(1.0 / np.sqrt(energy(np.linspace(0., 2., 1001))),
+                              np.linspace(0., 2., 1001))
+        fine = np.trapezoid(1.0 / np.sqrt(energy(np.linspace(0., 2., 2001))),
+                            np.linspace(0., 2., 2001))
+        self.assertLess(abs(fine - coarse), 1.e-7)
+
+    def test_energy_hs_variable_metric_residual_converges(self) -> None:
+        """Nonlinear metric remains an HS approximation whose dense residual falls."""
+        from types import SimpleNamespace
+        from simplified_vehicle_models.solvers.qss_spline_ocp import _SplineStateEvaluator
+
+        class VariableMetricTrajectory:
+            def evaluate(self, station):
+                s = np.asarray(station, dtype=float)
+                return SimpleNamespace(metric=1.0 + .05 * s**3)
+
+        trajectory = VariableMetricTrajectory()
+        # a=1 and G=1+.05s³ give W=100+2s+.025s⁴, deliberately not cubic.
+        energy = lambda s: 100.0 + 2.0*s + .025*s**4
+        residuals = []
+        for intervals in (4, 8, 16):
+            mesh = np.linspace(0.0, 2.0, intervals + 1)
+            evaluator = _SplineStateEvaluator(
+                trajectory, mesh, np.sqrt(energy(mesh)), np.ones(mesh.size),
+                np.ones(intervals),
+            )
+            stations = np.linspace(0.0, 2.0, 16 * intervals + 1)[1:-1]
+            state = evaluator.evaluate(stations)
+            residuals.append(float(np.max(np.abs(
+                state["speed_rate"] - state["rhs_speed_rate"],
+            ))))
+        self.assertLess(residuals[1], residuals[0] / 2.0)
+        self.assertLess(residuals[2], residuals[1] / 2.0)
+
+    def test_energy_bernstein_floor_rejects_interior_braking_dip(self) -> None:
+        """The energy cubic's Bernstein coefficients protect all x in [0, 1]."""
+        import casadi as ca
+        from simplified_vehicle_models.solvers.qss_line_ocp import QssSettings
+        from simplified_vehicle_models.solvers.qss_spline_ocp import build_spline_ocp
+
+        track = replace(self._track(), is_closed=False)
+        mesh = np.array([0.0, track.lap_length])
+        settings = QssSettings(start_speed=2.0, minimum_speed=0.5)
+        built = build_spline_ocp(
+            track, _zero_corridor(track, is_closed=False), _surface(), mesh,
+            OffsetSpline(track, control_spacing=20.0), settings,
+        )
+        controls, nodes = built["control_count"], mesh.size
+        values = np.zeros(controls + 3 * nodes - 1)
+        values[controls:controls + nodes] = [2.0, 2.0]
+        # Endpoint W=4, but W's first Bernstein interior coefficient is deeply
+        # negative under a long braking slope; the explicit floor must reject it.
+        values[controls + nodes:controls + 2 * nodes] = [-8.0, 3.0]
+        values[controls + 2 * nodes:] = 0.0
+        constraints = np.asarray(ca.Function(
+            "energy_floor_constraints", [built["nlp"]["x"]], [built["nlp"]["g"]],
+        )(values), dtype=float).ravel()
+        lower_only = (built["g_lower"] == 0.0) & (built["g_upper"] == np.inf)
+        self.assertLess(float(np.min(constraints[lower_only])), -1.0)
 
     def test_open_straight_acceleration_is_dense_bounded_and_time_is_analytic(self) -> None:
         """Task-5 20 m launch regression: no terminal control overshoot."""

@@ -300,7 +300,7 @@ class AllocationBackendTest(unittest.TestCase):
                                <= ideal.acceleration_max[mask] + 1e-9))
         self.assertTrue(np.all(sampled.surface.acceleration_min[mask]
                                >= ideal.acceleration_min[mask] - 1e-9))
-        # The policy caps acceleration at 2 m/s2 below the ideal 5 m/s2, so at
-        # least one feasible cell must be strictly narrower than the ideal.
+        # The policy caps acceleration at 2 m/s2, below the ideal 5 m/s2, so
+        # at least one feasible cell must be strictly narrower than the ideal.
         self.assertTrue(np.any(sampled.surface.acceleration_max[mask]
                                < ideal.acceleration_max[mask] - 1e-6))

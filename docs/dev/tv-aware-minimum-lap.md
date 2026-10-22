@@ -38,7 +38,7 @@ The cubic-spline offset transcription is opt-in (`--solver spline`). The default
 
 `tests/test_qss_spline_ocp.py` covers the transcription, including the new dense containment gate:
 
-- `test_spline_solution_respects_dense_corridor` solves a closed 40 m circle with 3 m edges, then evaluates the spline at 25 samples per mesh element and checks every offset against corridor bounds sampled with `track_sample`. A 1e-6 m numerical allowance is used, and the test asserts the solve succeeded and the violation is within the 1e-6 solver tolerance. This checks the represented line between nodes, not only at nodes.
+- `test_spline_solution_respects_dense_corridor` solves a closed 40 m circle with 3 m edges, then evaluates the spline at 25 samples per mesh element and checks every offset against corridor bounds sampled with `track_sample`. A 1e-6 m numerical allowance is used. This checks the represented line between nodes, not only at nodes.
 - Existing tests cover periodic and clamped bases, zero-corridor parity with the node solver, heading and curvature-rate bounds, decision layout and scaling, and invalid speed-cap/spline rejection.
 
 The lap-time objective integrates the per-track-distance time `den / (v cos ψ)`, where `den = 1 - κ₀ n` is the offset-frame metric factor, not `1 / (v cos ψ)`. The `den` factor enters because a lateral offset changes the vehicle-path length relative to track distance. The implementation and its comment are in [qss_spline_ocp.py](../../src/simplified_vehicle_models/solvers/qss_spline_ocp.py).
@@ -55,7 +55,7 @@ The lap-time objective integrates the per-track-distance time `den / (v cos ψ)`
 Runner-level constraints (from `tests/test_tv_runner.py` and the Task 8 artifacts):
 
 - `closed_loop` on an open course is rejected before any output is created, because the OCP time excludes a launch while the adapter replay includes its own standing start.
-- `closed_loop` mesh convergence is recorded as `None` with a `check_unavailable` reason. The written line is the correction loop's finest re-solve, not the pre-correction ladder's fine stage. The comparison treats an explicit `None` as unavailable, not as a pass.
+- `closed_loop` mesh convergence is recorded as `None` with a `check_unavailable` reason. The written line is normally the correction loop's finest re-solve, which is not the pre-correction ladder's fine stage. If the first correction solve fails, the pre-correction finest line is retained with `accepted=False`; the gate still stays unavailable because the normal path writes a different line. The comparison treats an explicit `None` as unavailable, not as a pass.
 - `closed_loop` rejects `--path-smoothing > 0` because the unsmoothed path is what the adapter replayed.
 
 ## 3. Controller and replay provenance
@@ -72,10 +72,10 @@ The only registered replay adapter is `point-mass` (`PointMassReplay`). It rebui
 
 | Track | `ideal` (legacy point-mass) | `allocation` | `closed_loop` (TV) |
 |---|---|---|---|
-| MIS | Existing stage 1 results only, in [minimum-time-line.md](minimum-time-line.md); not repeated here | **NOT RUN** | **NOT RUN** |
-| Skidpad | Existing conditional stage 1 result; not repeated here | **NOT RUN** | **NOT RUN** |
-| Acceleration | Existing conditional stage 1 result; not repeated here | **NOT RUN** | **NOT RUN** |
-| FSC | Existing conditional stage 1 result; not repeated here | **NOT RUN** | **NOT RUN** |
+| MIS | Zero-corridor centreline diagnostics only; strict free-line convergence is unresolved, so there is no accepted free-line result | **NOT RUN** | **NOT RUN** |
+| Skidpad | Conditional stage 1 free-line result with the reduced offset basis (5/4.75 m); not repeated here and not a TV result | **NOT RUN** | **NOT RUN** |
+| Acceleration | Conditional stage 1 free-line result (all five checks); not repeated here and not a TV result | **NOT RUN** | **NOT RUN** |
+| FSC | Zero-corridor centreline only; strict free-line convergence is unresolved, so there is no accepted free-line result | **NOT RUN** | **NOT RUN** |
 
 Consequences for the fields the brief requests:
 
@@ -83,17 +83,13 @@ Consequences for the fields the brief requests:
 - **Whether controller-aware replay improved, matched, or worsened lap time:** NOT MEASURED. No TV replay exists.
 - **Controller name/hash and algebraic/stateful:** no production controller; test doubles are algebraic and are not production provenance.
 - **Assumed widths and surfaces:** any real-track run would inherit the stage 1 corridor conventions, which are `assumed` unless the track declares surveyed width, and the only available capability surface matches the IEM24 Murphy planar 7-DOF formulation, not an FSAE calibration. No width or surface was measured or changed for this record.
-- **Unresolved convergence failures:** the strict free-line stage 1 ladders for FSC and MIS remain unresolved; skidpad needs the reduced offset basis; `closed_loop` mesh convergence is unavailable by construction. See [minimum-time-line.md](minimum-time-line.md) for the measured legacy diagnostics.
+- **Unresolved convergence failures:** the strict free-line stage 1 ladders for FSC and MIS remain unresolved, so those tracks have only zero-corridor centreline results; skidpad needs the reduced offset basis; `closed_loop` mesh convergence is unavailable by construction. See [minimum-time-line.md](minimum-time-line.md) for the measured legacy diagnostics.
 
-## 5. Synthetic smoke checks (not acceptance, not TV)
+## 5. Synthetic smoke checks (not acceptance, not TV, not reproducible evidence)
 
-Earlier Task 8 work ran manual real-solver smoke checks on a synthetic 20 m circle with a stubbed vehicle and a fake replay, using the synthetic capability surface. They exercised `solve_spline_line`, the offset spline, the rebuilt track, the allocation cache, and `correct_to_replay`:
+Earlier Task 8 work ran manual real-solver smoke checks on a synthetic circle with a stubbed vehicle and a fake replay, using a synthetic capability surface. They exercised `solve_spline_line`, the offset spline, the rebuilt track, the allocation cache, and `correct_to_replay`. The numeric outputs were recorded only in a session artifact; no committed test reproduces them. They are therefore not repeated here as evidence.
 
-- spline `ideal`: zero-corridor 5.026552 s, free line 4.297702 s, containment and mesh convergence true;
-- spline `allocation` with a 2.5 m/s² policy cap: cached `a_max` maximum 2.4999847412109375, OCP 4.297701 s;
-- spline `closed_loop` with a fake feasible replay reporting 1.0 s: `rounds=1`, `accepted=True`, saturation `['smoke']`.
-
-These are integration smoke checks on synthetic inputs. They are not real-track results, not acceptance results, and not evidence of a TV lap-time gain. They only show that the seams wire together.
+These checks are not real-track results, not acceptance results, and not evidence of a TV lap-time gain. They only showed that the seams wire together.
 
 ## 6. Decision
 

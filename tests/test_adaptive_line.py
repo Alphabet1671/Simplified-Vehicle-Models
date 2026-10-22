@@ -43,8 +43,10 @@ class AdaptiveLineTest(unittest.TestCase):
                    return_value=(np.array([4.]), {"projection_only": True})):
             solution, report = solve_adaptive_line(*self.common, maximum_rounds=2)
         self.assertIs(solution, second)
-        self.assertTrue(report["accepted"])
-        self.assertEqual(report["status"], "validated")
+        self.assertFalse(report["accepted"])
+        self.assertTrue(report["validated_solution_available"])
+        self.assertEqual(report["validation_status"], "incomplete")
+        self.assertEqual(report["status"], "locally_validated")
         self.assertEqual(len(report["rounds"]), 2)
         self.assertGreater(seen_meshes[1].size, self.mesh.size)
         np.testing.assert_array_equal(seen_seeds[1], [4.])
@@ -84,6 +86,25 @@ class AdaptiveLineTest(unittest.TestCase):
         self.assertIsNone(solution)
         self.assertEqual(report["stop"], "unresolved_no_refinement_station")
         self.assertEqual(solve.call_count, 1)
+
+    def test_uncertainty_upper_bound_only_failure_does_not_refine_mesh(self):
+        uncertain = {"checks": {"dense_feasibility": False}, "model_feasible": True,
+                     "diagnostics": [{"name": "implied_acceleration_upper_bound", "passed": False,
+                                      "worst_station": 1.0, "maximum_violation": 1.,
+                                      "unit": "m/s^2", "tolerance": 1.e-6}]}
+        with patch("simplified_vehicle_models.solvers.adaptive_line.solve_spline_line",
+                   return_value=self.solution) as solve, \
+             patch("simplified_vehicle_models.solvers.adaptive_line.validate_line", return_value=uncertain):
+            solution, report = solve_adaptive_line(*self.common, maximum_rounds=3)
+        self.assertIsNone(solution)
+        self.assertEqual(report["stop"], "unresolved_no_refinement_station")
+        self.assertEqual(solve.call_count, 1)
+
+    def test_noninteger_budgets_are_rejected_without_truncation(self):
+        for keyword in ("maximum_rounds", "maximum_nodes", "dense_maximum_refinements"):
+            with self.subTest(keyword=keyword):
+                with self.assertRaisesRegex(ValueError, "integer"):
+                    solve_adaptive_line(*self.common, **{keyword: 1.9})
 
     def test_solver_failure_is_never_accepted(self):
         with patch("simplified_vehicle_models.solvers.adaptive_line.solve_spline_line",

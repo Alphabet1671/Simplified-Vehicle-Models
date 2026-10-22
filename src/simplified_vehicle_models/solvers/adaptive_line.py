@@ -6,6 +6,7 @@ uses independent dense evidence to select local mesh additions and transfers an
 """
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import Any, Callable
 
 import numpy as np
@@ -14,7 +15,7 @@ from simplified_vehicle_models.solvers.line_refinement import (
     merge_refinement_mesh,
     project_energy_seed,
 )
-from simplified_vehicle_models.solvers.line_validation import validate_line
+from simplified_vehicle_models.solvers.line_validation import strict_validation, validate_line
 from simplified_vehicle_models.solvers.qss_spline_ocp import solve_spline_line
 
 
@@ -33,7 +34,12 @@ def _finite_mesh(mesh: object, minimum_spacing: float) -> np.ndarray:
 def _diagnostic_stations(validation: dict[str, Any]) -> np.ndarray:
     """Return every actual station reported by a failed physical diagnostic."""
     stations: list[float] = []
-    nonphysical = {"derivative_uncertainty", "implied_acceleration_derivative_uncertainty"}
+    nonphysical = {
+        "derivative_uncertainty", "implied_acceleration_derivative_uncertainty",
+        # These empirical upper bounds contain FD uncertainty.  Their matching
+        # raw residual diagnostic remains eligible whenever it really fails.
+        "dynamics_defect_upper_bound", "implied_acceleration_upper_bound",
+    }
     for diagnostic in validation.get("diagnostics", ()):
         if diagnostic.get("passed") is False and diagnostic.get("name") not in nonphysical:
             station = diagnostic.get("worst_station")
@@ -84,92 +90,128 @@ def _round_record(round_index: int, mesh: np.ndarray, solution: object | None,
     }
 
 
+def _bounded_integer(value: object, *, name: str, minimum: int) -> int:
+    if isinstance(value, (bool, np.bool_)) or not isinstance(value, (int, np.integer)):
+        raise ValueError(f"{name} must be an integer at least {minimum}")
+    value = int(value)
+    if value < minimum:
+        raise ValueError(f"{name} must be an integer at least {minimum}")
+    return value
+
+
 def solve_adaptive_line(track, corridor, surface, mesh, spline, settings, *, vehicle=None,
                         seed=None, maximum_rounds=3, maximum_nodes=2000,
                         minimum_spacing=1.e-4, dense_maximum_refinements=6,
                         on_round: Callable[[dict[str, Any]], None] | None = None):
     """Solve, independently validate, and locally refine within explicit budgets.
 
-    Returns ``(solution, report)``.  A solution is returned only when both dense
-    evidence and live-model evidence are exactly ``True``.  On every other stop
-    the first tuple item is ``None`` and ``accepted`` is false.
+    Returns ``(solution, report)`` only for a locally dense-and-live validated
+    candidate.  This is deliberately not strict six-gate numerical acceptance:
+    missing mesh/basis/matched/replay evidence remains incomplete and accepted
+    is always false here.
     """
-    if isinstance(maximum_rounds, bool) or int(maximum_rounds) < 1:
-        raise ValueError("maximum_rounds must be at least one")
-    if isinstance(maximum_nodes, bool) or int(maximum_nodes) < 2:
-        raise ValueError("maximum_nodes must be at least two")
-    if (not np.isfinite(minimum_spacing) or minimum_spacing <= 0.0
-            or isinstance(dense_maximum_refinements, bool) or int(dense_maximum_refinements) < 1):
-        raise ValueError("minimum_spacing must be positive and dense_maximum_refinements at least one")
-    current_mesh = _finite_mesh(mesh, float(minimum_spacing))
-    if current_mesh.size > int(maximum_nodes):
+    maximum_rounds = _bounded_integer(maximum_rounds, name="maximum_rounds", minimum=1)
+    maximum_nodes = _bounded_integer(maximum_nodes, name="maximum_nodes", minimum=2)
+    dense_maximum_refinements = _bounded_integer(
+        dense_maximum_refinements, name="dense_maximum_refinements", minimum=1)
+    if isinstance(minimum_spacing, (bool, np.bool_)):
+        raise ValueError("minimum_spacing must be finite and positive")
+    try:
+        minimum_spacing = float(minimum_spacing)
+    except (TypeError, ValueError) as error:
+        raise ValueError("minimum_spacing must be finite and positive") from error
+    if not np.isfinite(minimum_spacing) or minimum_spacing <= 0.0:
+        raise ValueError("minimum_spacing must be finite and positive")
+    current_mesh = _finite_mesh(mesh, minimum_spacing)
+    if current_mesh.size > maximum_nodes:
         raise ValueError("initial mesh exceeds maximum_nodes")
     rounds: list[dict[str, Any]] = []
     current_seed = seed
     final_stop = "maximum_rounds"
-    for round_index in range(1, int(maximum_rounds) + 1):
+
+    def notify(record: dict[str, Any]) -> None:
+        # An observer gets the final round state, never a mutable future update.
+        if on_round is not None:
+            on_round(deepcopy(record))
+
+    for round_index in range(1, maximum_rounds + 1):
         try:
             solution = solve_spline_line(track, corridor, surface, current_mesh, spline,
                                          settings, seed=current_seed)
-        except Exception as error:
+            if _solution_status(solution) != "Solve_Succeeded":
+                raise RuntimeError(f"strict solver returned {_solution_status(solution)}")
+        except (RuntimeError, ValueError, TypeError, FloatingPointError) as error:
             record = _round_record(round_index, current_mesh, None, None,
                                    stop="solver_failed", error=error)
-            rounds.append(record)
-            if on_round is not None:
-                on_round(record)
+            rounds.append(record); notify(record)
             final_stop = "solver_failed"
             break
-        validation = validate_line(solution, corridor, surface, settings, vehicle=vehicle,
-                                   maximum_refinements=int(dense_maximum_refinements))
+        try:
+            validation = validate_line(solution, corridor, surface, settings, vehicle=vehicle,
+                                       maximum_refinements=dense_maximum_refinements)
+        except (RuntimeError, ValueError, TypeError, FloatingPointError) as error:
+            record = _round_record(round_index, current_mesh, solution, None,
+                                   stop="validation_failed", error=error)
+            rounds.append(record); notify(record)
+            final_stop = "validation_failed"
+            break
         dense = validation.get("checks", {}).get("dense_feasibility") is True
         model = validation.get("model_feasible") is True
         record = _round_record(round_index, current_mesh, solution, validation)
         rounds.append(record)
-        if on_round is not None:
-            on_round(record)
         if dense and model:
-            record["stop"] = "validated"
-            return solution, {
-                "accepted": True, "status": "validated", "stop": "validated",
+            record["stop"] = "locally_validated"
+            strict = strict_validation(True, validation.get("checks"))
+            report = {
+                "accepted": False, "validation_status": strict["validation_status"],
+                "strict_validation": strict, "validated_solution_available": True,
+                "status": "locally_validated", "stop": "locally_validated",
                 "rounds": rounds, "final_mesh": current_mesh.tolist(),
                 "final_node_count": int(current_mesh.size),
             }
-        # Unresolved FD evidence has no physical station to refine.  Do not turn
-        # validation uncertainty into an unbounded mesh-growth policy.
+            notify(record)
+            return solution, report
         failed_stations = _diagnostic_stations(validation)
         if not failed_stations.size:
             record["stop"] = "unresolved_no_refinement_station"
-            final_stop = record["stop"]
+            final_stop = record["stop"]; notify(record)
             break
-        if round_index == int(maximum_rounds):
+        if round_index == maximum_rounds:
             record["stop"] = "maximum_rounds"
-            final_stop = record["stop"]
+            final_stop = record["stop"]; notify(record)
             break
-        additions = _refinement_stations(current_mesh, spline, solution, validation)
-        proposed = merge_refinement_mesh(current_mesh, additions,
-                                         minimum_spacing=float(minimum_spacing))
+        try:
+            additions = _refinement_stations(current_mesh, spline, solution, validation)
+            proposed = merge_refinement_mesh(current_mesh, additions,
+                                             minimum_spacing=minimum_spacing)
+        except (RuntimeError, ValueError, TypeError, FloatingPointError) as error:
+            record["stop"] = "refinement_failed"; record["error"] = str(error)
+            final_stop = record["stop"]; notify(record)
+            break
         if proposed.size == current_mesh.size:
             record["stop"] = "unresolved_no_refinement_station"
-            final_stop = record["stop"]
+            final_stop = record["stop"]; notify(record)
             break
-        if proposed.size > int(maximum_nodes):
+        if proposed.size > maximum_nodes:
             record["stop"] = "maximum_nodes"
-            final_stop = record["stop"]
+            final_stop = record["stop"]; notify(record)
             break
         try:
             current_seed, seed_diagnostics = project_energy_seed(
-                solution, proposed, spline, minimum_spacing=float(minimum_spacing),
+                solution, proposed, spline, minimum_spacing=minimum_spacing,
             )
-        except (TypeError, ValueError) as error:
-            record["stop"] = "seed_projection_failed"
-            record["error"] = str(error)
-            final_stop = record["stop"]
+        except (RuntimeError, ValueError, TypeError, FloatingPointError) as error:
+            record["stop"] = "seed_projection_failed"; record["error"] = str(error)
+            final_stop = record["stop"]; notify(record)
             break
         record["next_mesh"] = proposed.tolist()
         record["seed_diagnostics"] = seed_diagnostics
+        notify(record)
         current_mesh = proposed
     return None, {
-        "accepted": False, "status": "failed", "stop": final_stop,
+        "accepted": False, "validated_solution_available": False,
+        "validation_status": "solver_failed" if final_stop == "solver_failed" else "incomplete",
+        "status": "failed", "stop": final_stop,
         "rounds": rounds, "final_mesh": current_mesh.tolist(),
         "final_node_count": int(current_mesh.size),
     }

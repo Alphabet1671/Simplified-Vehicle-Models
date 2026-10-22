@@ -96,8 +96,12 @@ class ControlResponse:
 class DriveControlPolicy(Protocol):
     name: str
     provenance_hash: str
+    is_stateful: bool
     def evaluate(self, demand: PathDemand) -> ControlResponse: ...
 ```
+
+`is_stateful=True` policies are rejected by the allocation sampler; they may
+only be used through a replay adapter.
 
 `steering_angle` is optional because the quasi-steady line solver does not carry
 a steering state. A controller that needs steering must derive it from the
@@ -108,21 +112,23 @@ steering silently.
 
 ```python
 class CapabilityBackend(Protocol):
-    def sample(self, grid: CapabilityGrid) -> SampledCapability: ...
+    def sample(self, grid: CapabilityGrid, *, curvature_limit: float) -> SampledCapability: ...
 ```
 
-`SampledCapability` holds the arrays used by `build_ocp` plus provenance:
-vehicle/model hash, controller policy name/hash, mode, curvature limit, and
-sampling resolution.
+`SampledCapability` holds the arrays used by the OCP plus provenance:
+vehicle/model hash, controller policy name/hash, mode, curvature limit,
+sampling resolution, a boolean `feasible_mask`, and any saturation events.
+An infeasible `(v, κ)` cell is marked false; it is never represented as a
+legal zero-acceleration hold-speed cell.
 
 - `IdealCapabilityBackend` wraps the current `build_capability_surface`.
 - `AllocationCapabilityBackend` calls `DriveControlPolicy.evaluate` at each
-  grid point and finds the feasible acceleration interval. It assumes a
-  deterministic, monotone-in-`a` allocation; the assumption is tested and
-  recorded.
-- `ClosedLoopCorrector` does not create a surface directly. It replays the
-  current line with the stateful controller and adds local speed caps for the
-  next OCP solve.
+  grid point and finds the feasible acceleration interval. It rejects a policy
+  that declares itself stateful, assumes a deterministic, monotone-in-`a`
+  allocation, and records the assumption, saturation tags, and infeasible cells.
+- `correct_to_replay` does not create a surface directly. It replays the current
+  line with the stateful controller and adds local speed caps for the next OCP
+  solve.
 
 ### 4.3 Replay contract
 
@@ -176,8 +182,11 @@ Every summary records:
 
 Acceptance gates:
 
-- **Ideal parity:** ideal backend reproduces the existing solver on a synthetic
-  circle/straight to `1e-6` before TV modes are trusted.
+- **Ideal backend parity:** ideal backend reproduces the existing capability
+  arrays exactly on the same grid before TV modes are trusted.
+- **Spline transcription parity:** on a synthetic zero-corridor circle, the
+  spline solver agrees with `solve_line` within `2e-3 s` and respects the same
+  speed bounds before the spline path becomes the default.
 - **Allocation consistency:** `allocation` limits never exceed `ideal` at any
   cell; a mock policy with a known cap produces that cap.
 - **Closed-loop replay:** final replay is feasible and within 1% of the OCP

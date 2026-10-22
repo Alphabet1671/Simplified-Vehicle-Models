@@ -54,8 +54,10 @@
 - Produces:
   - `PathDemand(speed, curvature, longitudinal_acceleration, lateral_acceleration, yaw_rate, steering_angle=0.0)`
   - `ControlResponse(feasible, longitudinal_acceleration, yaw_moment, saturation=())`
-  - `DriveControlPolicy` protocol with `name: str`, `provenance_hash: str`, `evaluate(demand) -> ControlResponse`
-  - `controller_hash(policy) -> str`, deterministic over declared parameters.
+  - `DriveControlPolicy` protocol with `name: str`, `provenance_hash: str`,
+    `is_stateful: bool`, `evaluate(demand) -> ControlResponse`.
+  - `controller_hash(policy) -> str`, deterministic over canonical parameters.
+  - `CONTROL_POLICIES`, `register_policy(name, factory)`, `build_policy(name, **kwargs)`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -71,6 +73,7 @@ from simplified_vehicle_models.controls.planning import (
 class _ExamplePolicy:
     name = 'example'
     provenance_hash = 'example-v1'
+    is_stateful = False
 
     def __init__(self, cap):
         self.cap = cap
@@ -78,6 +81,20 @@ class _ExamplePolicy:
     def evaluate(self, demand):
         feasible = demand.longitudinal_acceleration <= self.cap
         return ControlResponse(feasible, min(demand.longitudinal_acceleration, self.cap), 0.0)
+
+
+class _SlotsPolicy:
+    __slots__ = ('cap', 'name', 'provenance_hash', 'is_stateful')
+
+    def __init__(self, cap):
+        self.cap = cap
+        self.name = 'slots'
+        self.provenance_hash = 'slots-v1'
+        self.is_stateful = False
+
+    def evaluate(self, demand):
+        return ControlResponse(demand.longitudinal_acceleration <= self.cap,
+                               min(demand.longitudinal_acceleration, self.cap), 0.0)
 
 
 class PlanningContractTest(unittest.TestCase):
@@ -100,6 +117,14 @@ class PlanningContractTest(unittest.TestCase):
         self.assertEqual(response.longitudinal_acceleration, 2.0)
         self.assertEqual(controller_hash(_ExamplePolicy(2.0)),
                          controller_hash(_ExamplePolicy(2.0)))
+
+    def test_slots_policy_and_array_parameters_are_hashable(self):
+        import numpy as np
+        first = _SlotsPolicy(np.array([1.0, 2.0]))
+        second = _SlotsPolicy(np.array([1.0, 2.0]))
+        third = _SlotsPolicy(np.array([1.0, 3.0]))
+        self.assertEqual(controller_hash(first), controller_hash(second))
+        self.assertNotEqual(controller_hash(first), controller_hash(third))
 ```
 
 - [ ] **Step 2: Run the test to verify it fails**
@@ -116,8 +141,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
+import json
 import math
 from typing import Protocol
+
+import numpy as np
 
 
 @dataclass(frozen=True, slots=True)
@@ -157,28 +185,62 @@ class ControlResponse:
 class DriveControlPolicy(Protocol):
     name: str
     provenance_hash: str
+    is_stateful: bool
 
     def evaluate(self, demand: PathDemand) -> ControlResponse: ...
 
 
+def _canonical(value):
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    if isinstance(value, (list, tuple)):
+        return [_canonical(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _canonical(item) for key, item in sorted(value.items())}
+    return repr(value)
+
+
+def _public_parameters(policy):
+    names = set(getattr(policy, '__dict__', {}))
+    for cls in type(policy).__mro__:
+        declared = getattr(cls, '__slots__', ())
+        names.update((declared,) if isinstance(declared, str) else declared)
+    names -= {'name', 'provenance_hash', 'is_stateful'}
+    return {name: _canonical(getattr(policy, name)) for name in sorted(names)
+            if not name.startswith('_') and hasattr(policy, name)}
+
+
 def controller_hash(policy) -> str:
-    """Hash the declared controller identity and its public parameters."""
-    payload = {
-        'name': policy.name,
-        'provenance': policy.provenance_hash,
-        'parameters': sorted(
-            (name, repr(value)) for name, value in vars(policy).items()
-            if not name.startswith('_') and name not in ('name', 'provenance_hash')
-        ),
-    }
-    return hashlib.sha256(repr(payload).encode()).hexdigest()
+    """Hash the declared controller identity and canonical public parameters."""
+    payload = {'name': policy.name, 'provenance': policy.provenance_hash,
+               'parameters': _public_parameters(policy)}
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+
+
+CONTROL_POLICIES = {}
+
+
+def register_policy(name, factory):
+    if not isinstance(name, str) or not name:
+        raise ValueError('policy name must be a non-empty string')
+    CONTROL_POLICIES[name] = factory
+
+
+def build_policy(name, **kwargs):
+    if name not in CONTROL_POLICIES:
+        raise KeyError(f'unknown control policy {name!r}')
+    return CONTROL_POLICIES[name](**kwargs)
 ```
 
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `PYTHONPATH=src python3 -m unittest tests.test_control_planning -v`
 
-Expected: 3 tests pass.
+Expected: 4 tests pass.
 
 - [ ] **Step 5: Commit**
 
@@ -219,8 +281,8 @@ class IdealBackendTest(unittest.TestCase):
     def test_backend_wraps_existing_builder_and_hash(self):
         vehicle = object()
         surface = CapabilitySurface(
-            np.array([1.0, 2.0]), np.array([-1.0, 1.0]),
-            np.ones((2, 2)), -np.ones((2, 2)), np.array([5.0, 5.0]), 'vehicle-hash')
+            np.array([1.0, 2.0, 3.0]), np.array([-1.0, 0.0, 1.0]),
+            np.ones((3, 3)), -np.ones((3, 3)), np.full(3, 5.0), 'vehicle-hash')
         with patch('simplified_vehicle_models.formulations.capability_backend.'
                    'build_capability_surface', return_value=surface) as build:
             sampled = IdealCapabilityBackend(vehicle).sample(
@@ -229,7 +291,8 @@ class IdealBackendTest(unittest.TestCase):
         self.assertEqual(sampled.mode, 'ideal')
         self.assertEqual(sampled.vehicle_hash, 'vehicle-hash')
         self.assertEqual(sampled.controller_hash, '')
-        self.assertIs(sampled.surface, surface)
+        np.testing.assert_array_equal(sampled.surface.speed, surface.speed)
+        np.testing.assert_array_equal(sampled.surface.curvature, surface.curvature)
 
     def test_grid_requires_increasing_finite_axes(self):
         with self.assertRaises(ValueError):
@@ -280,6 +343,28 @@ class SampledCapability:
     mode: str
     version: str = '1'
     metadata: dict = field(default_factory=dict)
+    feasible_mask: np.ndarray | None = None
+
+    def __post_init__(self):
+        if self.feasible_mask is not None:
+            mask = np.asarray(self.feasible_mask, dtype=bool)
+            if mask.shape != self.surface.acceleration_max.shape:
+                raise ValueError('feasible_mask must match the capability grid')
+            mask.setflags(write=False)
+            object.__setattr__(self, 'feasible_mask', mask)
+
+
+def _regrid(surface, grid):
+    """Interpolate a builder surface onto the caller's exact axes."""
+    from scipy.interpolate import RegularGridInterpolator
+    points = (surface.speed, surface.curvature)
+    amax = RegularGridInterpolator(points, surface.acceleration_max)(
+        (grid.speed[:, None], grid.curvature[None, :]))
+    amin = RegularGridInterpolator(points, surface.acceleration_min)(
+        (grid.speed[:, None], grid.curvature[None, :]))
+    ceiling = np.interp(grid.curvature, surface.curvature, surface.speed_ceiling)
+    return CapabilitySurface(grid.speed, grid.curvature, amax, amin, ceiling,
+                             surface.provenance_hash)
 
 
 class IdealCapabilityBackend:
@@ -289,10 +374,13 @@ class IdealCapabilityBackend:
         self.vehicle = vehicle
 
     def sample(self, grid: CapabilityGrid, *, curvature_limit: float) -> SampledCapability:
-        surface = build_capability_surface(
+        raw = build_capability_surface(
             self.vehicle, curvature_limit=curvature_limit,
             speed_points=grid.speed.size, curvature_points=grid.curvature.size)
-        return SampledCapability(surface, surface.provenance_hash, '', self.mode)
+        surface = _regrid(raw, grid)
+        mask = np.ones(surface.acceleration_max.shape, dtype=bool)
+        return SampledCapability(surface, surface.provenance_hash, '', self.mode,
+                                 feasible_mask=mask)
 ```
 
 - [ ] **Step 4: Run the test to verify it passes**
@@ -320,12 +408,17 @@ git commit -m "Add ideal capability backend"
 - Consumes: `DriveControlPolicy`, `PathDemand`, `SampledCapability`, `CapabilityGrid`.
 - Produces:
   - `AllocationCapabilityBackend(vehicle, policy, scan_points=17, bisection_steps=12).sample(grid, curvature_limit) -> SampledCapability`
-  - `feasible_interval(policy, speed, curvature) -> tuple[float, float] | None`
-  - A monotonicity flag in `SampledCapability` metadata; if detected false, the backend falls back to the best feasible scan sample and records `non_monotone`.
+  - `AllocationCapabilityBackend.feasible_interval(speed, curvature, ideal_lo, ideal_hi) -> tuple[float, float, bool] | None`, where the third value flags non-monotone sampling.
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
+from simplified_vehicle_models.controls.planning import ControlResponse
+from simplified_vehicle_models.formulations.controller_capability import (
+    AllocationCapabilityBackend,
+)
+
+
 def _ideal_surface(grid):
     shape = (grid.speed.size, grid.curvature.size)
     return CapabilitySurface(
@@ -336,6 +429,7 @@ def _ideal_surface(grid):
 class _CapPolicy:
     name = 'cap-at-two'
     provenance_hash = 'cap-at-two-v1'
+    is_stateful = False
 
     def evaluate(self, demand):
         feasible = demand.longitudinal_acceleration <= 2.0
@@ -353,17 +447,26 @@ class AllocationBackendTest(unittest.TestCase):
         self.assertEqual(sampled.mode, 'allocation')
         self.assertNotEqual(sampled.controller_hash, '')
         self.assertTrue(np.all(sampled.surface.acceleration_max <= 2.0 + 1e-9))
-        self.assertTrue(np.any(np.isclose(sampled.surface.acceleration_max, 2.0)))
+        self.assertTrue(np.any(np.isclose(sampled.surface.acceleration_max, 2.0,
+                                          atol=1e-2)))
+        self.assertTrue(np.all(sampled.feasible_mask))
+
+    def test_stateful_policy_is_rejected_in_allocation_mode(self):
+        class StatefulPolicy(_CapPolicy):
+            is_stateful = True
+        with self.assertRaisesRegex(ValueError, 'stateful'):
+            AllocationCapabilityBackend(object(), StatefulPolicy())
 
     def test_non_monotone_policy_is_flagged(self):
         class BumpPolicy:
             name = 'bump'
             provenance_hash = 'bump-v1'
+            is_stateful = False
             def evaluate(self, demand):
                 ok = demand.longitudinal_acceleration <= 1.0 or demand.longitudinal_acceleration >= 3.0
                 return ControlResponse(ok, demand.longitudinal_acceleration, 0.0)
         backend = AllocationCapabilityBackend(object(), BumpPolicy())
-        grid = CapabilityGrid(np.array([1.0, 5.0]), np.array([-0.1, 0.1]))
+        grid = CapabilityGrid(np.array([1.0, 5.0, 10.0]), np.array([-0.1, 0.0, 0.1]))
         sampled = backend.sample(grid, curvature_limit=0.1,
                                  ideal_surface=_ideal_surface(grid))
         self.assertTrue(sampled.metadata['non_monotone'])
@@ -400,6 +503,11 @@ class AllocationCapabilityBackend:
     scan_points: int = 17
     bisection_steps: int = 12
     mode: str = 'allocation'
+
+    def __post_init__(self):
+        if bool(getattr(self.policy, 'is_stateful', False)):
+            raise ValueError('a stateful controller must use closed_loop mode, '
+                             'not static allocation sampling')
 
     def _ideal(self, grid, curvature_limit):
         return build_capability_surface(
@@ -447,8 +555,10 @@ class AllocationCapabilityBackend:
             ideal_surface = self._ideal(grid, curvature_limit)
         amax = np.empty_like(ideal_surface.acceleration_max)
         amin = np.empty_like(ideal_surface.acceleration_min)
+        feasible_mask = np.ones(amax.shape, dtype=bool)
         ceiling = np.empty_like(ideal_surface.speed_ceiling)
-        flags = {'non_monotone': False}
+        flags = {'non_monotone': False, 'infeasible_cells': 0,
+                 'saturation_tags': set()}
         for j, curvature in enumerate(grid.curvature):
             for i, speed in enumerate(grid.speed):
                 interval = self.feasible_interval(
@@ -456,30 +566,34 @@ class AllocationCapabilityBackend:
                     float(ideal_surface.acceleration_min[i, j]),
                     float(ideal_surface.acceleration_max[i, j]))
                 if interval is None:
+                    feasible_mask[i, j] = False
+                    flags['infeasible_cells'] += 1
                     amin[i, j] = 0.0; amax[i, j] = 0.0
                 else:
                     amin[i, j], amax[i, j] = interval[0], interval[1]
                     flags['non_monotone'] = flags['non_monotone'] or interval[2]
+                    response = self.policy.evaluate(self._demand(
+                        float(speed), float(curvature), float(amax[i, j])))
+                    flags['saturation_tags'].update(response.saturation)
             ceiling[j] = 0.0
             for i in range(grid.speed.size - 1, -1, -1):
-                if amax[i, j] > amin[i, j]:
+                if feasible_mask[i, j]:
                     ceiling[j] = grid.speed[i]
                     break
             ceiling[j] = min(float(ideal_surface.speed_ceiling[j]), float(ceiling[j]))
         surface = CapabilitySurface(grid.speed, grid.curvature, amax, amin, ceiling,
                                     ideal_surface.provenance_hash)
+        flags['saturation_tags'] = sorted(flags['saturation_tags'])
         return SampledCapability(surface, ideal_surface.provenance_hash,
                                  controller_hash(self.policy), self.mode,
-                                 metadata=flags)
+                                 metadata=flags, feasible_mask=feasible_mask)
 ```
-
-Add `metadata` to `SampledCapability`; update Task 2 dataclass to `metadata: dict = field(default_factory=dict)`.
 
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `PYTHONPATH=src python3 -m unittest tests.test_capability_backend -v`
 
-Expected: 4 tests pass.
+Expected: 5 tests pass.
 
 - [ ] **Step 5: Commit**
 
@@ -688,6 +802,23 @@ class SplineOcpTest(unittest.TestCase):
             expected = capability_envelope_time(view, _surface(), settings)
             self.assertAlmostEqual(solution.lap_time, expected, delta=2e-3)
 
+    def test_closed_zero_corridor_matches_per_node_solver(self):
+        from simplified_vehicle_models.solvers.qss_line_ocp import solve_line
+        with tempfile.TemporaryDirectory() as directory:
+            track = load_track(_write_circle_track(Path(directory), radius=40.0, nodes=72,
+                                                   half_width=3.0))
+            base = corridor_from_track(track)
+            corridor = Corridor(base.distance, np.zeros_like(base.minimum),
+                                np.zeros_like(base.maximum), base.provenance, True)
+            mesh = build_mesh(track, 2.0)
+            settings = QssSettings(maximum_iterations=2000)
+            reference = solve_line(track, corridor, _surface(), mesh, settings)
+            solution = solve_spline_line(track, corridor, _surface(), mesh,
+                                         OffsetSpline(track, control_spacing=10.0), settings)
+            self.assertEqual(reference.status, 'Solve_Succeeded')
+            self.assertEqual(solution.status, 'Solve_Succeeded')
+            self.assertAlmostEqual(solution.lap_time, reference.lap_time, delta=2e-3)
+
     def test_open_and_closed_use_the_same_state_layout(self):
         with tempfile.TemporaryDirectory() as directory:
             track = load_track(_write_circle_track(Path(directory), radius=40.0, nodes=72,
@@ -748,7 +879,7 @@ def _geometry(track, spline, coefficients, positions):
 
 Run: `PYTHONPATH=src:/tmp/casadi-runtime-2026-10-20 python3 -m unittest tests.test_qss_spline_ocp -v`
 
-Expected: 2 tests pass; zero-corridor circle time within `2e-3 s`.
+Expected: 3 tests pass; zero-corridor parity within `2e-3 s`.
 
 - [ ] **Step 5: Commit**
 
@@ -771,7 +902,7 @@ git commit -m "Add consistent spline minimum-time OCP"
   - `ReplaySample(distance, speed, feasible, lap_time, saturation=())`
   - `ReplayProtocol(path, controller) -> ReplaySample`
   - `correct_to_replay(track, corridor, surface, mesh, spline, settings, controller, replay, *, tolerance=0.01, maximum_rounds=5)`.
-  - Result records `rounds`, `replay_time`, `speed_caps`, `cap_margin`, and `accepted`.
+  - `CorrectionResult(rounds, replay_time, speed_caps, cap_margin, accepted)`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -813,7 +944,8 @@ class ClosedLoopCorrectionTest(unittest.TestCase):
             self.assertEqual(result.rounds, 2)
             self.assertFalse(result.accepted)
             self.assertGreaterEqual(len(calls), 2)
-            self.assertLess(result.speed_caps[-1], result.speed_caps[0])
+            self.assertTrue(np.all(result.speed_caps[-1] <= result.speed_caps[0]))
+            self.assertTrue(np.any(result.speed_caps[-1] < result.speed_caps[0]))
 ```
 
 - [ ] **Step 2: Run the test to verify it fails**
@@ -834,6 +966,15 @@ class ReplaySample:
     saturation: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True, slots=True)
+class CorrectionResult:
+    rounds: int
+    replay_time: float
+    speed_caps: tuple[np.ndarray, ...]
+    cap_margin: float
+    accepted: bool
+
+
 def _cap_from_replay(mesh, replay, ocp_speed, margin):
     replay_speed = np.interp(mesh, replay.distance, replay.speed)
     return np.minimum(ocp_speed, replay_speed) - margin
@@ -850,7 +991,8 @@ Algorithm:
 6. Stop at `maximum_rounds`; accepted only if the final replay is feasible and
    within tolerance. Record every round.
 
-Use `solve_spline_line(..., speed_cap=cap)` and use `replay.lap_time` directly;
+Use `solve_spline_line(track, corridor, surface, mesh, spline, settings, speed_cap=cap)`
+and use `replay.lap_time` directly;
 the replay adapter owns its integration method and open/closed start treatment.
 The correction loop must not infer a replay time from a possibly infeasible
 speed trace.
@@ -870,7 +1012,160 @@ git commit -m "Add closed-loop line correction"
 
 ---
 
-### Task 7: Runner modes, provenance, and comparison report
+### Task 7: Replay adapter seam and point-mass baseline
+
+**Files:**
+- Create: `src/simplified_vehicle_models/controls/replay.py`
+- Create: `tests/test_replay_adapter.py`
+
+**Interfaces:**
+- Consumes: `PathCoordinates`, `TrackProfile`, `solve_lap`, `ReplaySample`.
+- Produces:
+  - `track_from_path(path) -> TrackProfile` for replay only; width stays unset.
+  - `ReplayAdapter` protocol: `__call__(path, controller) -> ReplaySample`.
+  - `PointMassReplay(vehicle, lap_mode, tolerance=1e-6, maximum_iterations=200)`.
+  - `REPLAY_ADAPTERS` registry: `register_replay(name, factory)`, `build_replay(name, **kwargs)`.
+  - A production TV adapter must register here and implement the controller-aware drive path; the point-mass adapter is a baseline, not TV.
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+import unittest
+import numpy as np
+from pathlib import Path
+import tempfile
+
+from simplified_vehicle_models.controls.replay import track_from_path
+from simplified_vehicle_models.tracks.profile import load_track
+from tests.test_track_width import _write_circle_track
+
+
+class ReplayAdapterTest(unittest.TestCase):
+    def test_track_from_path_preserves_distance_curvature_and_topology(self):
+        with tempfile.TemporaryDirectory() as directory:
+            track = load_track(_write_circle_track(Path(directory), radius=40.0, nodes=72,
+                                                   half_width=3.0))
+            rebuilt = track_from_path(track.path_coordinates)
+            np.testing.assert_array_equal(rebuilt.distance, track.distance)
+            np.testing.assert_array_equal(rebuilt.curvature, track.curvature)
+            self.assertTrue(rebuilt.is_closed)
+            self.assertIs(rebuilt.path_coordinates, track.path_coordinates)
+            self.assertIsNone(rebuilt.half_width_left)
+
+    def test_replay_registry_rejects_unknown_names(self):
+        from simplified_vehicle_models.controls.replay import build_replay
+        with self.assertRaises(KeyError):
+            build_replay('not-registered')
+
+    def test_point_mass_replay_wires_the_lap_result(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from simplified_vehicle_models.controls.replay import PointMassReplay
+        from simplified_vehicle_models.results.traces import LapMode
+        with tempfile.TemporaryDirectory() as directory:
+            track = load_track(_write_circle_track(Path(directory), radius=40.0, nodes=72,
+                                                   half_width=3.0))
+        lap = SimpleNamespace(speed=np.full(track.distance.size, 12.0), lap_time=9.5,
+                              converged=True, active_longitudinal_constraint=('rear-limit',))
+        with patch('simplified_vehicle_models.controls.replay.solve_lap', return_value=lap):
+            sample = PointMassReplay(object(), LapMode.FLYING)(track.path_coordinates)
+        self.assertEqual(sample.lap_time, 9.5)
+        self.assertTrue(sample.feasible)
+        np.testing.assert_array_equal(sample.speed, lap.speed)
+```
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+Run: `PYTHONPATH=src python3 -m unittest tests.test_replay_adapter -v`
+
+Expected: import error.
+
+- [ ] **Step 3: Implement the adapter seam**
+
+```python
+"""Replay adapters for controller-in-loop correction; no TV physics here."""
+from __future__ import annotations
+
+from typing import Protocol
+import numpy as np
+
+from simplified_vehicle_models.results.traces import LapMode
+from simplified_vehicle_models.solvers.forward_backward import solve_lap
+from simplified_vehicle_models.solvers.closed_loop_line import ReplaySample
+from simplified_vehicle_models.tracks.types import TrackProfile
+
+
+def track_from_path(path) -> TrackProfile:
+    distance = np.asarray(path.distance, dtype=float)
+    curvature = np.asarray(path.curvature, dtype=float)
+    radius = 1.0 / np.maximum(np.abs(curvature), 1.0e-9)
+    return TrackProfile(
+        distance=distance, segment_length=np.diff(distance), radius=radius,
+        curvature=curvature, is_closed=bool(path.is_closed),
+        title='line replay', path_coordinates=path,
+    )
+
+
+class ReplayAdapter(Protocol):
+    def __call__(self, path, controller) -> ReplaySample: ...
+
+
+class PointMassReplay:
+    """Baseline replay without TV; used to validate the seam and parity."""
+
+    def __init__(self, vehicle, lap_mode: LapMode, tolerance=1e-6, maximum_iterations=200):
+        self.vehicle = vehicle
+        self.lap_mode = lap_mode
+        self.tolerance = tolerance
+        self.maximum_iterations = maximum_iterations
+
+    def __call__(self, path, controller=None):
+        track = track_from_path(path)
+        lap = solve_lap(self.vehicle, track, self.lap_mode,
+                        tolerance=self.tolerance, maximum_iterations=self.maximum_iterations)
+        return ReplaySample(track.distance, lap.speed, bool(lap.converged),
+                            float(lap.lap_time), tuple(lap.active_longitudinal_constraint))
+
+
+REPLAY_ADAPTERS = {}
+
+
+def register_replay(name, factory):
+    if not isinstance(name, str) or not name:
+        raise ValueError('replay adapter name must be a non-empty string')
+    REPLAY_ADAPTERS[name] = factory
+
+
+def build_replay(name, **kwargs):
+    if name not in REPLAY_ADAPTERS:
+        raise KeyError(f'unknown replay adapter {name!r}')
+    return REPLAY_ADAPTERS[name](**kwargs)
+
+
+register_replay('point-mass', PointMassReplay)
+```
+
+A real TV adapter is a **required integration deliverable**; it must register a
+factory that binds the TV controller/plant and returns the same `ReplaySample`.
+Until it exists, `closed_loop` may only be run with an explicit test adapter, and
+the runner must say so.
+
+- [ ] **Step 4: Run the test to verify it passes**
+
+Run: `PYTHONPATH=src python3 -m unittest tests.test_replay_adapter -v`
+
+Expected: 3 tests pass.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/simplified_vehicle_models/controls/replay.py tests/test_replay_adapter.py
+git commit -m "Add replay adapter seam"
+```
+
+---
+
+### Task 8: Runner modes, provenance, and comparison report
 
 **Files:**
 - Modify: `tools/run/solve_minimum_time_line.py`
@@ -879,9 +1174,13 @@ git commit -m "Add closed-loop line correction"
 **Interfaces:**
 - Consumes: all previous tasks.
 - Produces:
-  - CLI `--control-mode ideal|allocation|closed_loop` and `--control-policy NAME`.
-  - `--offset-spline` mode (or make spline the default after Task 5 parity).
-  - Summary fields `control_mode`, `controller_hash`, `capability_mode`, `replay_time_s`, `rounds`, `accepted`.
+  - CLI `--control-mode ideal|allocation|closed_loop`, `--control-policy NAME`,
+    `--replay-adapter NAME`, and `--legacy-solver`.
+  - After Task 5 parity, `ideal`/`allocation`/`closed_loop` use
+    `solve_spline_line`; `--legacy-solver` keeps the old `solve_line` path for
+    one release.
+  - Summary fields `control_mode`, `controller_hash`, `capability_mode`,
+    `replay_time_s`, `rounds`, `accepted`.
   - A/B summary writer that runs the same track/corridor/mesh under all three modes and reports line offset RMS, lap time, replay time, and saturation.
 
 - [ ] **Step 1: Write the failing test**
@@ -898,17 +1197,22 @@ class RunnerModeTest(unittest.TestCase):
         with patch('sys.argv', ['runner', '--track', 'x', '--formulation', 'y',
                                 '--surface', 'z', '--output', 'out',
                                 '--control-mode', 'not-a-mode']):
-            with self.assertRaises(SystemExit):
+            with self.assertRaises((ValueError, SystemExit)):
                 runner.main()
 
     def test_ideal_and_allocation_are_distinct_summary_modes(self):
-        # Build a tiny fake summary through the internal helper rather than
-        # running a full track.
         from tools.run.solve_minimum_time_line import _control_summary
         ideal = _control_summary('ideal', '', 'ideal')
         allocation = _control_summary('allocation', 'hash', 'allocation')
         self.assertEqual(ideal['control_mode'], 'ideal')
         self.assertNotEqual(ideal['control_mode'], allocation['control_mode'])
+
+    def test_closed_loop_requires_a_replay_adapter(self):
+        from tools.run.solve_minimum_time_line import _validate_control_args
+        from types import SimpleNamespace
+        with self.assertRaisesRegex(ValueError, 'replay adapter'):
+            _validate_control_args(SimpleNamespace(
+                control_mode='closed_loop', replay_adapter=None, control_policy=None))
 ```
 
 - [ ] **Step 2: Run the test to verify it fails**
@@ -928,11 +1232,25 @@ def _control_summary(mode, controller_hash, capability_mode):
         'controller_hash': controller_hash,
         'capability_mode': capability_mode,
     }
+
+
+def _validate_control_args(args):
+    mode = args.control_mode
+    if mode not in ('ideal', 'allocation', 'closed_loop'):
+        raise ValueError(f'unknown control mode {mode!r}')
+    if mode == 'closed_loop' and not args.replay_adapter:
+        raise ValueError('closed_loop requires a registered replay adapter')
+    if mode == 'allocation' and not args.control_policy:
+        raise ValueError('allocation requires a registered controller policy')
+    return mode
 ```
 
-- Parse and validate `--control-mode` and `--control-policy` before creating output.
+- Parse and validate `--control-mode`, `--control-policy`, and `--replay-adapter`
+  before creating output. `--replay-adapter` is resolved through
+  `build_replay`; an unknown name is a configuration error, not a silent
+  fallback.
 - `ideal`: use `IdealCapabilityBackend`; preserve current surface cache behavior.
-- `allocation`: load the policy from the registry, sample with `AllocationCapabilityBackend`, write a cache whose filename includes the controller hash, and use that surface.
+- `allocation`: load the policy from the registry, sample with `AllocationCapabilityBackend`, write a cache whose filename includes the controller hash, and use that surface. If any required `(v, κ)` cell has `feasible_mask=False`, report the cells and fail or narrow the corridor explicitly; never treat the zero acceleration placeholder as a hold-speed capability.
 - `closed_loop`: build the ideal/allocation surface, solve, then call `correct_to_replay` with the configured replay adapter. If no replay adapter is configured, exit with a clear configuration error; never silently accept an OCP-only result.
 - Summary must include the controller hash and mode; a mismatch between requested and recorded mode is an error.
 - Add `--compare-control-modes` that runs ideal/allocation/closed_loop on the same track and writes a comparison JSON. It must not overwrite an existing output.
@@ -941,7 +1259,7 @@ def _control_summary(mode, controller_hash, capability_mode):
 
 Run: `PYTHONPATH=src python3 -m unittest tests.test_tv_runner -v`
 
-Expected: 2 tests pass.
+Expected: 3 tests pass.
 
 - [ ] **Step 5: Commit**
 
@@ -952,7 +1270,7 @@ git commit -m "Add controller modes to the lap-time runner"
 
 ---
 
-### Task 8: Acceptance matrix and documentation
+### Task 9: Acceptance matrix and documentation
 
 **Files:**
 - Create: `docs/dev/tv-aware-minimum-lap.md`
@@ -967,14 +1285,31 @@ git commit -m "Add controller modes to the lap-time runner"
 
 Add tests that assert:
 
+Add these methods to `tests/test_capability_backend.py`,
+`tests/test_closed_loop_line.py`, and `tests/test_qss_spline_ocp.py`. The latter
+module also needs:
+
+```python
+from simplified_vehicle_models.solvers.qss_line_ocp import track_sample
+from simplified_vehicle_models.tracks.corridor import Corridor
+```
+
+The closed-loop module already imports `ReplaySample` and
+`correct_to_replay` from Task 6; the capability module already imports
+`AllocationCapabilityBackend`, `CapabilityGrid`, `_CapPolicy`, and
+`_ideal_surface` from Task 3.
+
 ```python
 def test_allocation_never_exceeds_ideal(self):
     grid = CapabilityGrid(np.linspace(1.0, 30.0, 5), np.linspace(-0.2, 0.2, 5))
     ideal = _ideal_surface(grid)
     sampled = AllocationCapabilityBackend(object(), _CapPolicy()).sample(
         grid, curvature_limit=0.2, ideal_surface=ideal)
-    self.assertTrue(np.all(sampled.surface.acceleration_max <= ideal.acceleration_max + 1e-9))
-    self.assertTrue(np.all(sampled.surface.acceleration_min >= ideal.acceleration_min - 1e-9))
+    mask = sampled.feasible_mask
+    self.assertTrue(np.all(sampled.surface.acceleration_max[mask]
+                           <= ideal.acceleration_max[mask] + 1e-9))
+    self.assertTrue(np.all(sampled.surface.acceleration_min[mask]
+                           >= ideal.acceleration_min[mask] - 1e-9))
 
 
 def test_closed_loop_rejects_a_replay_that_never_becomes_feasible(self):
@@ -997,6 +1332,16 @@ def test_closed_loop_rejects_a_replay_that_never_becomes_feasible(self):
 
 
 def test_spline_solution_respects_dense_corridor(self):
+    with tempfile.TemporaryDirectory() as directory:
+        track = load_track(_write_circle_track(Path(directory), radius=40.0, nodes=72,
+                                               half_width=3.0))
+        base = corridor_from_track(track)
+        corridor = Corridor(base.distance, base.minimum, base.maximum, base.provenance, True)
+        mesh = build_mesh(track, 3.0)
+        spline = OffsetSpline(track, control_spacing=10.0)
+        solution = solve_spline_line(track, corridor, _surface(), mesh, spline,
+                                     QssSettings(maximum_iterations=2000))
+    self.assertEqual(solution.status, 'Solve_Succeeded')
     positions = np.linspace(0.0, track.lap_length, 25 * (mesh.size - 1) + 1)
     offset = spline.evaluate(solution.coefficients, positions)[0]
     lower = track_sample(corridor.minimum, corridor.distance, positions,
@@ -1009,7 +1354,7 @@ def test_spline_solution_respects_dense_corridor(self):
 
 - [ ] **Step 2: Run the full focused suite**
 
-Run: `PYTHONPATH=src:/tmp/casadi-runtime-2026-10-20 python3 -m unittest tests.test_control_planning tests.test_capability_backend tests.test_offset_spline tests.test_qss_spline_ocp tests.test_closed_loop_line tests.test_tv_runner tests.test_track_width tests.test_corridor tests.test_minimum_time_line_gate -v`
+Run: `PYTHONPATH=src:/tmp/casadi-runtime-2026-10-20 python3 -m unittest tests.test_control_planning tests.test_capability_backend tests.test_offset_spline tests.test_qss_spline_ocp tests.test_closed_loop_line tests.test_replay_adapter tests.test_tv_runner tests.test_track_width tests.test_corridor tests.test_minimum_time_line_gate -v`
 
 Expected: all tests pass.
 
@@ -1018,7 +1363,9 @@ Expected: all tests pass.
 For each of MIS, skidpad, acceleration, and FSC, run `ideal`, `allocation`, and
 `closed_loop` with the same corridor and mesh. Use the existing capability cache
 only for `ideal`; allocation cache must include the controller hash. Save outputs
-to new paths (the runner refuses overwrite).
+to new paths (the runner refuses overwrite). If no production TV replay adapter
+exists, do not fake `closed_loop`: report it as not run and restrict the
+comparison to `ideal` and `allocation` (and the mock adapter only in tests).
 
 Required report fields per mode: OCP time, replay time, maximum violation, mesh
 convergence, line RMS against ideal, and saturation events. A mode that fails
@@ -1052,8 +1399,12 @@ git commit -m "Document TV-aware solver acceptance"
 - [ ] `ideal` parity is established before any controller mode is trusted.
 - [ ] The spline path is the only offset representation used by the OCP; no
       node-offset/HS mismatch remains in the new path.
-- [ ] Algebraic TV is sampled, stateful TV is replayed; the two are never
-      conflated.
+- [ ] Algebraic TV is sampled, stateful TV is replayed; stateful policies are
+      rejected by the allocation backend.
+- [ ] Infeasible capability cells are marked, not converted to legal hold-speed
+      cells.
+- [ ] `closed_loop` has a registered replay adapter; no mock-only path can
+      produce an accepted real-track result.
 - [ ] Every result records controller mode/hash and replay status.
 - [ ] The 2D corridor is enforced at nodes, midpoints, and dense samples.
 - [ ] No track source data, tolerance, or acceptance standard is changed.

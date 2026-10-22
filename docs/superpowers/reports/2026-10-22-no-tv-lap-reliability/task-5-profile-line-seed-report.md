@@ -10,7 +10,7 @@ The profile is projected in physical path arclength using `trajectory.station_ma
 
 `am = [6(W1-W0)/h - 2G0a0 - 2G1a1] / (8Gm)`.
 
-It neither clips speed/acceleration/domain queries nor claims OCP feasibility. The factory builds the target spline OCP solely to reject nonfinite/layout-invalid or variable-bound-violating projected seeds. A returned candidate is explicitly labelled `projection_only` and `ocp_feasible: false`; full constraint-row feasibility remains the OCP's responsibility.
+It neither clips speed/acceleration/domain queries nor claims OCP feasibility. The factory performs only a cheap global variable-bound check to reject nonfinite/layout-invalid or variable-bound-violating projected seeds; it does not construct a duplicate OCP. A returned candidate is explicitly labelled `projection_only` and `ocp_feasible: false`; full constraint-row feasibility remains the OCP's responsibility.
 
 ## Harness option and failure behavior
 

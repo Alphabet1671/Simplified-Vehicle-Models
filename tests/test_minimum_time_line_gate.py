@@ -10,6 +10,7 @@ import numpy as np
 from tools.run.solve_minimum_time_line import _validate_output_paths, _write_rebuilt_track
 from simplified_vehicle_models.tracks.profile import load_track
 from simplified_vehicle_models.tracks.types import PathCoordinates
+from tests.test_track_width import _write_circle_track
 
 from tools.gates.check_minimum_time_line import (
     check_corridor_containment,
@@ -74,6 +75,24 @@ class GateCheckTest(unittest.TestCase):
             hashes = _source_hashes(source)
         self.assertEqual(set(hashes), {"track_xml", "track_csv", "width_csv"})
         self.assertTrue(all(len(value) == 64 for value in hashes.values()))
+
+    def test_rebuilt_track_refuses_existing_own_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = _write_circle_track(root, radius=40.0, nodes=72, half_width=3.0)
+            track = load_track(source)
+            path = track.path_coordinates
+            output = root / "out"
+            output.mkdir()
+            for name in ("racing_line_track.csv", "racing_line_track.xml"):
+                artifact = output / name
+                payload = f"existing {name}\\n".encode()
+                artifact.write_bytes(payload)
+                with self.subTest(artifact=name):
+                    with self.assertRaisesRegex(FileExistsError, "already exists"):
+                        _write_rebuilt_track(source, output, path)
+                    self.assertEqual(artifact.read_bytes(), payload)
+                artifact.unlink()
 
     def test_rebuilt_track_rejects_duplicate_width_roles(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -401,6 +420,31 @@ class RunnerOrchestrationTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "overwrite source track asset"):
                 _validate_output_paths(source_named_as_output, root)
             self.assertEqual(source_named_as_output.read_bytes(), source_xml_bytes)
+
+    def test_output_preflight_refuses_existing_static_and_dynamic_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.xml"
+            source.write_text(
+                '<model schema-version="1.0" type="track-model" subtype="closed-xy-profile">'
+                '<metadata><title>fixture</title></metadata><data ref="geometry.csv" />'
+                '<data role="width" ref="survey.csv" /></model>', encoding="utf-8",
+            )
+            output = root / "output"
+            output.mkdir()
+            names = (*(
+                "line.csv", "racing_line.csv", "racing_line_track.csv",
+                "racing_line_track.xml", "rebuilt_width.csv", "trajectory.npz", "summary.json",
+            ), "survey_rebuilt.csv")
+            for name in names:
+                artifact = output / name
+                payload = f"existing {name}\\n".encode()
+                artifact.write_bytes(payload)
+                with self.subTest(artifact=name):
+                    with self.assertRaisesRegex(FileExistsError, "already exists"):
+                        _validate_output_paths(source, output, reject_existing=True)
+                    self.assertEqual(artifact.read_bytes(), payload)
+                artifact.unlink()
 
     def test_run_rejects_open_track_without_width_before_solver_or_output_creation(self) -> None:
         from tools.run import solve_minimum_time_line as runner

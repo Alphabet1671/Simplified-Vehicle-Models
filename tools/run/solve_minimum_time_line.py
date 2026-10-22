@@ -75,13 +75,12 @@ def _validate_track_for_line_pipeline(track, half_width: float | None = None) ->
         raise ValueError("minimum-time line pipeline requires a lateral corridor or half_width")
 
 
-def _validate_output_paths(source: Path, output: Path) -> None:
-    """Reject generated artifacts that would overwrite source track assets."""
+def _validate_output_paths(source: Path, output: Path, *, reject_existing: bool = False) -> None:
+    """Reject output artifacts that collide with sources or prior results."""
     root = ET.parse(source).getroot()
-    generated = {
-        (output / name).resolve()
-        for name in GENERATED_LINE_ARTIFACTS
-    }
+    # Keep lexical paths as well as resolved paths.  A dangling symlink does not
+    # exist(), but a later writer would follow it and write outside ``output``.
+    generated = {output / name for name in GENERATED_LINE_ARTIFACTS}
     protected = {source.resolve()}
     for element in root.findall("./data"):
         reference = element.get("ref")
@@ -90,16 +89,21 @@ def _validate_output_paths(source: Path, output: Path) -> None:
         source_asset = (source.parent / reference).resolve()
         protected.add(source_asset)
         if element.get("role") == "width":
-            generated.add((output / f"{source_asset.stem}_rebuilt.csv").resolve())
+            generated.add(output / f"{source_asset.stem}_rebuilt.csv")
     for candidate in generated:
+        resolved = candidate.resolve()
         for source_asset in protected:
-            same_file = candidate == source_asset
+            same_file = resolved == source_asset
             if not same_file and candidate.exists() and source_asset.exists():
                 same_file = candidate.samefile(source_asset)
             if same_file:
                 raise ValueError(
                     f"output artifact would overwrite source track asset: {source_asset}"
                 )
+        if reject_existing and (candidate.exists() or candidate.is_symlink()):
+            raise FileExistsError(
+                f"output artifact already exists; refusing to overwrite: {candidate}"
+            )
 
 
 def _source_hashes(source: Path) -> dict[str, str]:
@@ -134,7 +138,7 @@ def _source_hashes(source: Path) -> dict[str, str]:
 
 def _write_rebuilt_track(source: Path, output: Path, path) -> tuple[Path, Path]:
     """Write rebuilt geometry with widths sampled by explicit reference station."""
-    _validate_output_paths(source, output)
+    _validate_output_paths(source, output, reject_existing=False)
     root = ET.parse(source).getroot()
     width_elements = root.findall("./data[@role='width']")
     if len(width_elements) > 1:
@@ -144,6 +148,13 @@ def _write_rebuilt_track(source: Path, output: Path, path) -> tuple[Path, Path]:
         raise ValueError("source track has no unroled geometry data reference")
     csv_path = output / "racing_line_track.csv"
     xml_path = output / "racing_line_track.xml"
+    # ``run`` has already reserved the complete artifact set, but this writer
+    # remains safe when called directly: never replace its own output targets.
+    for target in (csv_path, xml_path):
+        if target.exists() or target.is_symlink():
+            raise FileExistsError(
+                f"rebuilt track artifact already exists; refusing to overwrite: {target}"
+            )
     source_track = load_track(source)
     if source_track.path_coordinates is None:
         raise ValueError("rebuilt geometry requires source signed coordinates")
@@ -211,6 +222,10 @@ def _write_rebuilt_track(source: Path, output: Path, path) -> tuple[Path, Path]:
         if np.any(rebuilt_left <= 0.0) or np.any(rebuilt_right <= 0.0):
             raise ValueError("racing line leaves nonpositive clearance to a source track edge")
         width_csv = output / width_name
+        if width_csv.exists() or width_csv.is_symlink():
+            raise FileExistsError(
+                f"rebuilt track artifact already exists; refusing to overwrite: {width_csv}"
+            )
         # All input geometry and width arrays have been preflighted before this
         # first output write.
         output.mkdir(parents=True, exist_ok=True)
@@ -701,22 +716,9 @@ def _solve_correction(track, corridor, surface, mesh, spline, settings,
 
 def run(args) -> dict:
     output = args.output.resolve()
-    _validate_output_paths(Path(args.track).resolve(), output)
-    track = load_track(args.track)
-    half_width = getattr(args, "half_width", None)
-    _validate_track_for_line_pipeline(track, half_width)
-    spacings = _parse_spacings(getattr(args, "spacings", (5.0, 2.0, 1.0)))
-    corridor = corridor_from_track(track, margin=args.margin, half_width=half_width)
-
-    # Controller configuration is validated before any artifact or solver work.
+    # Controller/output configuration is validated before loading a track,
+    # solver work, cache writes, or output-directory creation.
     mode = _validate_control_args(args)
-    if mode == "closed_loop" and not track.is_closed:
-        raise ValueError(
-            "closed_loop is not supported on an open course: the correction "
-            "loop compares a launch-free OCP time with a launch-inclusive "
-            "replay; use the ideal/allocation mode, or an adapter that "
-            "supports launch-inclusive comparison"
-        )
     solver = _resolve_solver(args)
     path_smoothing = float(getattr(args, "path_smoothing", 0.0))
     if mode == "closed_loop" and path_smoothing > 0.0:
@@ -724,6 +726,21 @@ def run(args) -> dict:
             "closed_loop replays the unsmoothed rebuilt path; --path-smoothing "
             "must be 0 for a controller-accepted result"
         )
+    if solver == "spline" and path_smoothing != 0.0:
+        raise ValueError("smoothing is not permitted for a spline trajectory export")
+    _validate_output_paths(Path(args.track).resolve(), output, reject_existing=True)
+    track = load_track(args.track)
+    if mode == "closed_loop" and not track.is_closed:
+        raise ValueError(
+            "closed_loop is not supported on an open course: the correction "
+            "loop compares a launch-free OCP time with a launch-inclusive "
+            "replay; use the ideal/allocation mode, or an adapter that "
+            "supports launch-inclusive comparison"
+        )
+    half_width = getattr(args, "half_width", None)
+    _validate_track_for_line_pipeline(track, half_width)
+    spacings = _parse_spacings(getattr(args, "spacings", (5.0, 2.0, 1.0)))
+    corridor = corridor_from_track(track, margin=args.margin, half_width=half_width)
     policy = _load_policy(args)
 
     compiled = compile_formulation(str(args.formulation))
@@ -835,8 +852,6 @@ def run(args) -> dict:
     _write_line(output / "line.csv", finest, line_rate)
     if solver == "spline":
         _write_trajectory_metadata(output / "trajectory.npz", finest)
-    if solver == "spline" and path_smoothing != 0.0:
-        raise ValueError("smoothing is not permitted for a spline trajectory export")
     rebuilt = path_from_solution(track, finest, smoothing=path_smoothing)
     _write_line(output / "racing_line.csv", finest, line_rate)
     xml_path, csv_path = _write_rebuilt_track(Path(args.track).resolve(), output, rebuilt)

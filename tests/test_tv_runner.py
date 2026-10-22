@@ -803,6 +803,38 @@ class PipelineModeTest(unittest.TestCase):
                     )
                     self.assertEqual(summary["accepted"], expected)
 
+    def test_spline_rejects_path_smoothing_before_output_or_solver(self):
+        with tempfile.TemporaryDirectory() as directory:
+            args = _args(directory, solver="spline", path_smoothing=1.0)
+            zero = _solution(57.9, spline=True)
+            stages = [_solution(57.95, spline=True), _solution(57.9, spline=True)]
+            fixture = _RunnerFixture(self, spline=True, stages=stages, zero=zero).enter(args)
+            with self.assertRaisesRegex(ValueError, "smoothing is not permitted"):
+                runner.run(args)
+            fixture.mocks["compile_formulation"].assert_not_called()
+            fixture.mocks["solve_spline_line"].assert_not_called()
+            self.assertFalse((Path(directory) / "output").exists())
+
+    def test_existing_run_artifact_rejects_before_solver_or_overwrite(self):
+        with tempfile.TemporaryDirectory() as directory:
+            args = _args(directory, solver="spline")
+            output = Path(args.output)
+            output.mkdir()
+            expected = {}
+            for name in ("line.csv", "trajectory.npz", "summary.json"):
+                payload = f"prior {name}\n".encode()
+                (output / name).write_bytes(payload)
+                expected[name] = payload
+            zero = _solution(57.9, spline=True)
+            stages = [_solution(57.95, spline=True), _solution(57.9, spline=True)]
+            fixture = _RunnerFixture(self, spline=True, stages=stages, zero=zero).enter(args)
+            with self.assertRaisesRegex(FileExistsError, "already exists"):
+                runner.run(args)
+            fixture.mocks["compile_formulation"].assert_not_called()
+            fixture.mocks["solve_spline_line"].assert_not_called()
+            for name, payload in expected.items():
+                self.assertEqual((output / name).read_bytes(), payload)
+
     def test_closed_loop_rejects_path_smoothing(self):
         with tempfile.TemporaryDirectory() as directory:
             args = _args(

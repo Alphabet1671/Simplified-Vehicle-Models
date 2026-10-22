@@ -40,6 +40,10 @@ OK
 
 They cover attached-trajectory authority and no-smoothing, reference-station (not path-arclength) interpolation of nonconstant widths on a denser export grid, a nonunit `XY=(2s,0)` metric yielding path length 20 m and elapsed time 2 s at cap 10, inward-circle slowdown localization (`ell=90` to `s=100`), and rejection of incomplete analytic replay mapping before an otherwise matching time can be accepted. Spline runner output also persists an exclusive-create `trajectory.npz` reproducibility artifact with source-reference XY samples, explicit source-to-path station map, interpolation/closure metadata, control grid and coefficients, node station/speed/acceleration, and midpoint accelerations. `PointMassReplay` now carries an existing `PathCoordinates.reference_distance` directly.
 
+## Review follow-up — output safety
+
+Runner output preflight now rejects every pre-existing generated artifact, including dynamic rebuilt-width names and dangling symlinks, before track loading, solver work, cache/output creation, or writes. This prevents a late `trajectory.npz` collision from allowing collateral overwrite of earlier artifacts. Spline smoothing is also rejected during this early configuration validation. `_write_rebuilt_track` retains source-collision protection while directly refusing pre-existing geometry, XML, or width output targets so standalone callers cannot overwrite them. Regression tests preserve existing `line.csv`, `trajectory.npz`, `summary.json`, dynamic width outputs, and rebuilt-track targets byte-for-byte on rejection; successful runner mocks remain covered.
+
 ## Discrepancies and concerns
 
 The coarse circle fixture’s shared XY fit has finite curvature discrepancy (maximum observed about `7.3e-7 1/m`), so its assertion now tests interpolation-accuracy scale rather than exact equality to its stored curvature column. Solver constraints remain on the authoritative fitted geometry.

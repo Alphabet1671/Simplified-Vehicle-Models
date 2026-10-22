@@ -115,12 +115,12 @@ class ClosedLoopCorrectionTest(unittest.TestCase):
                 if len(calls) == 1:
                     return ReplaySample(
                         path.distance,
-                        np.interp(path.distance, baseline.distance, slow_speed),
+                        np.interp(path.reference_distance, baseline.distance, slow_speed),
                         True, baseline.lap_time / 0.9,
                     )
                 return ReplaySample(
                     path.distance,
-                    np.interp(path.distance, capped.distance, capped.speed),
+                    np.interp(path.reference_distance, capped.distance, capped.speed),
                     True, capped.lap_time,
                 )
 

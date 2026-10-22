@@ -32,6 +32,9 @@ class PathCoordinates:
     heading: FloatArray
     curvature: FloatArray
     is_closed: bool = True
+    # Optional explicit source/reference station corresponding to ``distance``.
+    # It prevents consumers from treating path arclength as centerline station.
+    reference_distance: FloatArray | None = None
 
     @property
     def lap_length(self) -> float:

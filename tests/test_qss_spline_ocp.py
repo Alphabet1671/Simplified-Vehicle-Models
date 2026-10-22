@@ -129,7 +129,10 @@ class SplineTranscriptionTest(unittest.TestCase):
             solution.heading_error, np.zeros(solution.heading_error.size), atol=1.0e-9,
         )
         np.testing.assert_allclose(
-            solution.curvature, np.full(solution.curvature.size, 1.0 / 40.0), atol=1.0e-9,
+            # OCP uses the shared interpolated XY reference; this coarse source
+            # circle has finite reference-fit curvature error, not an exact
+            # stored-curvature identity.
+            solution.curvature, np.full(solution.curvature.size, 1.0 / 40.0), atol=1.0e-6,
         )
 
     def test_closed_zero_corridor_matches_per_node_solver(self) -> None:

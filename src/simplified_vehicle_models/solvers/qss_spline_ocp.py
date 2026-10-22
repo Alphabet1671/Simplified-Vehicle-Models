@@ -20,6 +20,8 @@ import math
 import numpy as np
 
 from simplified_vehicle_models.core.types import FloatArray
+from simplified_vehicle_models.tracks.line_trajectory import OffsetTrajectory, ReferenceCurve
+from simplified_vehicle_models.tracks.types import PathCoordinates
 from simplified_vehicle_models.solvers.qss_line_ocp import (
     QssSettings,
     _bilinear,
@@ -45,51 +47,95 @@ class SplineSolution:
     iterations: int
     maximum_violation: float
     coefficients: FloatArray
+    trajectory: OffsetTrajectory | None = None
+    midpoint_acceleration: FloatArray | None = None
+    objective_value: float | None = None
+    state_evaluator: object | None = None
+
+
+def _reference_curve(track):
+    """Create a reference whose nested topology agrees with ``track``."""
+    coordinates = track.path_coordinates
+    if coordinates is None:
+        raise ValueError("spline OCP requires signed path coordinates")
+    if bool(coordinates.is_closed) == bool(track.is_closed):
+        return ReferenceCurve(track)
+    # ``replace(track, is_closed=False)`` is a historical test/caller pattern.
+    # Never silently retain the nested closed topology in that cut-open view.
+    normalized = PathCoordinates(
+        coordinates.distance, coordinates.x_north, coordinates.y_east,
+        coordinates.heading, coordinates.curvature, bool(track.is_closed),
+    )
+    from types import SimpleNamespace
+    return ReferenceCurve(SimpleNamespace(path_coordinates=normalized,
+                                          is_closed=bool(track.is_closed)))
 
 
 def _curvature_pair(track, positions):
-    """Return track curvature and its distance derivative at ``positions``."""
-    k0 = track_sample(
-        track.curvature, track.distance, positions,
-        closed=bool(track.is_closed), period=track.lap_length,
-    )
+    """Legacy diagnostic curvature sampler (the OCP uses ``ReferenceCurve``)."""
+    k0 = track_sample(track.curvature, track.distance, positions,
+                      closed=bool(track.is_closed), period=track.lap_length)
     dk = np.gradient(track.curvature, track.distance)
-    dk0 = track_sample(
-        dk, track.distance, positions,
-        closed=bool(track.is_closed), period=track.lap_length,
+    return k0, track_sample(dk, track.distance, positions,
+                            closed=bool(track.is_closed), period=track.lap_length)
+
+
+def _geometry(track, spline, coefficients, positions, reference=None):
+    """Evaluate the authoritative analytic offset trajectory."""
+    trajectory = OffsetTrajectory(
+        _reference_curve(track) if reference is None else reference, spline, coefficients,
     )
-    return k0, dk0
+    value = trajectory.evaluate(positions)
+    return (np.asarray(value.offset), np.asarray(value.heading_error),
+            np.asarray(value.heading_error_s), np.asarray(value.curvature),
+            np.asarray(value.fold_factor))
 
 
-def _geometry(track, spline, coefficients, positions):
-    """Return spline offset, heading error, curvature rate, and curvature.
-
-    ``track`` supplies the centreline curvature and its distance derivative.
-    The path curvature follows from differentiating ``atan(n' / den)`` with
-    respect to track distance and adding it to the centreline curvature.
-    """
-    n, np_, npp = spline.evaluate(coefficients, positions)
-    k0, dk0 = _curvature_pair(track, positions)
-    den = 1.0 - k0 * n
-    u = np_ / den
-    psi = np.arctan(u)
-    den_p = -dk0 * n - k0 * np_
-    q = ((npp * den - np_ * den_p) / (den * den)) / (1.0 + u * u)
-    kappa = (k0 + q) * np.cos(psi) / den
-    return n, psi, q, kappa, den
-
-
-def _spline_geometry(n, first, second, k0, dk0):
-    """Symbolic twin of :func:`_geometry` over CasADi expressions."""
+def _spline_geometry(n, first, second, h, h_s, k, k_s):
+    """Symbolic twin of :class:`OffsetTrajectory` analytic equations."""
     import casadi as ca
+    fold = 1.0 - k * n
+    a, b = h * fold, first
+    a_s = h_s * fold - h * (k_s * n + k * first)
+    metric = ca.sqrt(a * a + b * b)
+    psi = ca.atan2(b, a)
+    q = (a * second - b * a_s) / (a * a + b * b)
+    kappa = (h * k + q) / metric
+    return fold, psi, q, kappa, metric
 
-    den = 1.0 - k0 * n
-    u = first / den
-    psi = ca.atan(u)
-    den_p = -dk0 * n - k0 * first
-    q = ((second * den - first * den_p) / (den * den)) / (1.0 + u * u)
-    kappa = (k0 + q) * ca.cos(psi) / den
-    return den, psi, q, kappa
+
+def _is_zero_corridor(*bounds) -> bool:
+    """Return true only when every source corridor datum is exactly zero."""
+    return all(np.all(np.asarray(values) == 0.0) for values in bounds)
+
+
+class _SplineStateEvaluator:
+    """Immutable Hermite--Simpson dense state/control evaluator."""
+    def __init__(self, trajectory, mesh, speed, acceleration, midpoint_acceleration):
+        self.trajectory = trajectory
+        self.mesh = np.array(mesh, dtype=float, copy=True); self.mesh.setflags(write=False)
+        self.speed = np.array(speed, dtype=float, copy=True); self.speed.setflags(write=False)
+        self.acceleration = np.array(acceleration, dtype=float, copy=True); self.acceleration.setflags(write=False)
+        self.midpoint_acceleration = np.array(midpoint_acceleration, dtype=float, copy=True); self.midpoint_acceleration.setflags(write=False)
+    def evaluate(self, station):
+        s=np.asarray(station,dtype=float); scalar=s.ndim==0; flat=np.atleast_1d(s)
+        if np.any(flat < self.mesh[0]) or np.any(flat > self.mesh[-1]): raise ValueError("state station outside mesh")
+        i=np.minimum(np.searchsorted(self.mesh,flat,side='right')-1,self.mesh.size-2)
+        x=(flat-self.mesh[i])/(self.mesh[i+1]-self.mesh[i]); width=self.mesh[i+1]-self.mesh[i]
+        g=self.trajectory.evaluate(flat).metric
+        f0=self.acceleration[i]*np.asarray(self.trajectory.evaluate(self.mesh[i]).metric)/(self.speed[i])
+        f1=self.acceleration[i+1]*np.asarray(self.trajectory.evaluate(self.mesh[i+1]).metric)/(self.speed[i+1])
+        v0=self.speed[i]; v1=self.speed[i+1]
+        v=(2*x**3-3*x**2+1)*v0+(x**3-2*x**2+x)*width*f0+(-2*x**3+3*x**2)*v1+(x**3-x**2)*width*f1
+        dv=((6*x**2-6*x)*v0 + (3*x**2-4*x+1)*width*f0
+            + (-6*x**2+6*x)*v1 + (3*x**2-2*x)*width*f1) / width
+        # quadratic Lagrange acceleration through node, midpoint, node.
+        a=(2*(x-.5)*(x-1)*self.acceleration[i] + 4*x*(1-x)*self.midpoint_acceleration[i] + 2*x*(x-.5)*self.acceleration[i+1])
+        rhs = a*g/v
+        result = {"speed": v, "acceleration": a, "speed_rate": dv,
+                  "rhs_speed_rate": rhs}
+        return {key: float(np.asarray(value)[0]) if scalar else value
+                for key, value in result.items()}
 
 
 def _validate_spline(track, spline) -> int:
@@ -139,10 +185,6 @@ def _sample_corridor(values, corridor, positions, track):
     )
 
 
-def _is_zero_corridor(*bounds) -> bool:
-    """Return true only when every sampled corridor bound is exactly zero."""
-    return all(np.all(np.asarray(values) == 0.0) for values in bounds)
-
 
 def build_spline_ocp(track, corridor, surface, mesh, spline, settings: QssSettings,
                      speed_cap=None):
@@ -169,18 +211,20 @@ def build_spline_ocp(track, corridor, surface, mesh, spline, settings: QssSettin
     mid_values, mid_first, mid_second = spline.basis(midpoints)
     quarter_values = spline.basis(quarters)[0]
 
-    k0_nodes, dk0_nodes = _curvature_pair(track, mesh)
-    k0_mids, dk0_mids = _curvature_pair(track, midpoints)
+    reference = _reference_curve(track)
+    node_reference = reference.evaluate(mesh)
+    mid_reference = reference.evaluate(midpoints)
+    k0_nodes, dk0_nodes = np.asarray(node_reference.curvature), np.asarray(node_reference.curvature_s)
+    k0_mids, dk0_mids = np.asarray(mid_reference.curvature), np.asarray(mid_reference.curvature_s)
+    h_nodes, hs_nodes = np.asarray(node_reference.metric), np.asarray(node_reference.metric_s)
+    h_mids, hs_mids = np.asarray(mid_reference.metric), np.asarray(mid_reference.metric_s)
     corridor_lower = _sample_corridor(corridor.minimum, corridor, mesh, track)
     corridor_upper = _sample_corridor(corridor.maximum, corridor, mesh, track)
     mid_lower = _sample_corridor(corridor.minimum, corridor, midpoints, track)
     mid_upper = _sample_corridor(corridor.maximum, corridor, midpoints, track)
     quarter_lower = _sample_corridor(corridor.minimum, corridor, quarters, track)
     quarter_upper = _sample_corridor(corridor.maximum, corridor, quarters, track)
-    zero_corridor = _is_zero_corridor(
-        corridor_lower, corridor_upper, mid_lower, mid_upper,
-        quarter_lower, quarter_upper,
-    )
+    zero_corridor = _is_zero_corridor(corridor.minimum, corridor.maximum)
     cap_values = _speed_cap_values(speed_cap, nodes)
     cap_mid = (
         None if cap_values is None
@@ -209,23 +253,23 @@ def build_spline_ocp(track, corridor, surface, mesh, spline, settings: QssSettin
         # layout but out of the expressions avoids dense trig terms in every
         # Jacobian evaluation while preserving the declared layout.
         node_geometry = [
-            (1.0, 0.0, 0.0, float(k0_nodes[i]), 1.0) for i in range(nodes)
+            (1.0, 0.0, 0.0, float(k0_nodes[i]), float(h_nodes[i])) for i in range(nodes)
         ]
         mid_geometry = [
-            (1.0, 0.0, 0.0, float(k0_mids[i]), 1.0) for i in range(count)
+            (1.0, 0.0, 0.0, float(k0_mids[i]), float(h_mids[i])) for i in range(count)
         ]
     else:
         node_geometry = [
             _spline_geometry(
                 n_nodes[i], n_first_nodes[i], n_second_nodes[i],
-                float(k0_nodes[i]), float(dk0_nodes[i]),
+                float(h_nodes[i]), float(hs_nodes[i]), float(k0_nodes[i]), float(dk0_nodes[i]),
             )
             for i in range(nodes)
         ]
         mid_geometry = [
             _spline_geometry(
                 n_mids[i], n_first_mids[i], n_second_mids[i],
-                float(k0_mids[i]), float(dk0_mids[i]),
+                float(h_mids[i]), float(hs_mids[i]), float(k0_mids[i]), float(dk0_mids[i]),
             )
             for i in range(count)
         ]
@@ -275,15 +319,12 @@ def build_spline_ocp(track, corridor, surface, mesh, spline, settings: QssSettin
         node0 = node_geometry[index]
         node1 = node_geometry[index + 1]
         middle = mid_geometry[index]
-        den0, psi0 = node0[0], node0[1]
-        den1, psi1 = node1[0], node1[1]
-        den_mid, psi_mid = middle[0], middle[1]
-        f0 = acceleration[index] * den0 / (speed[index] * ca.cos(psi0))
-        f1 = acceleration[index + 1] * den1 / (speed[index + 1] * ca.cos(psi1))
+        metric0, metric1, metric_mid = node0[4], node1[4], middle[4]
+        f0 = acceleration[index] * metric0 / speed[index]
+        f1 = acceleration[index + 1] * metric1 / speed[index + 1]
         midpoint_speed = 0.5 * (speed[index] + speed[index + 1]) + h / 8.0 * (f0 - f1)
         f_mid = (
-            mid_acceleration[index] * den_mid
-            / (midpoint_speed * ca.cos(psi_mid))
+            mid_acceleration[index] * metric_mid / midpoint_speed
         )
         add(speed[index + 1] - speed[index]
             - h / 6.0 * (f0 + 4.0 * f_mid + f1), 0.0, 0.0)
@@ -293,9 +334,9 @@ def build_spline_ocp(track, corridor, surface, mesh, spline, settings: QssSettin
         # Time per unit track distance is den / (v cos(psi)); den enters because
         # the offset path is longer than the centreline arc it is measured on.
         objective += h / 6.0 * (
-            den0 / (speed[index] * ca.cos(psi0))
-            + 4.0 * den_mid / (midpoint_speed * ca.cos(psi_mid))
-            + den1 / (speed[index + 1] * ca.cos(psi1))
+            metric0 / speed[index]
+            + 4.0 * metric_mid / midpoint_speed
+            + metric1 / speed[index + 1]
         )
         if (not track.is_closed and not zero_corridor
                 and settings.open_regularisation > 0.0):
@@ -373,6 +414,7 @@ def build_spline_ocp(track, corridor, surface, mesh, spline, settings: QssSettin
         "count": count,
         "control_count": control_count,
         "spline": spline,
+        "reference": reference,
     }
 
 
@@ -645,19 +687,36 @@ def solve_spline_line(track, corridor, surface, mesh, spline,
         np.maximum(built["x_lower"] - values, 0.0), values - built["x_upper"],
     ))))
     blocks = unpack(values, count, control_count)
-    offset, heading_error, _, curvature, _ = _geometry(
-        track, spline, blocks["coefficients"], built["mesh"],
+    trajectory = OffsetTrajectory(built["reference"], spline, blocks["coefficients"])
+    evaluated = trajectory.evaluate(built["mesh"])
+    # ``result['f']`` includes optional open regularisation; report physical time separately.
+    metric = np.asarray(evaluated.metric, dtype=float)
+    evaluator = _SplineStateEvaluator(
+        trajectory, built["mesh"], blocks["speed"], blocks["acceleration"],
+        blocks["mid_acceleration"],
     )
+    midpoint = 0.5 * (built["mesh"][:-1] + built["mesh"][1:])
+    midpoint_speed = np.asarray(evaluator.evaluate(midpoint)["speed"], dtype=float)
+    midpoint_metric = np.asarray(trajectory.evaluate(midpoint).metric, dtype=float)
+    physical_time = float(np.sum(np.diff(built["mesh"]) / 6.0 * (
+        metric[:-1] / blocks["speed"][:-1]
+        + 4.0 * midpoint_metric / midpoint_speed
+        + metric[1:] / blocks["speed"][1:]
+    )))
     return SplineSolution(
         distance=np.asarray(built["mesh"], dtype=float),
-        offset=offset,
-        heading_error=heading_error,
-        curvature=curvature,
+        offset=np.asarray(evaluated.offset),
+        heading_error=np.asarray(evaluated.heading_error),
+        curvature=np.asarray(evaluated.curvature),
         speed=blocks["speed"],
         acceleration=blocks["acceleration"],
-        lap_time=objective,
+        lap_time=physical_time,
         status=str(stats["return_status"]),
         iterations=total_iterations,
         maximum_violation=violation,
         coefficients=blocks["coefficients"],
+        trajectory=trajectory,
+        midpoint_acceleration=np.array(blocks["mid_acceleration"], copy=True),
+        objective_value=objective,
+        state_evaluator=evaluator,
     )

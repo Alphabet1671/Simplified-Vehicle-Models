@@ -133,7 +133,7 @@ def _source_hashes(source: Path) -> dict[str, str]:
 
 
 def _write_rebuilt_track(source: Path, output: Path, path) -> tuple[Path, Path]:
-    """Write rebuilt geometry with source widths projected onto new normals."""
+    """Write rebuilt geometry with widths sampled by explicit reference station."""
     _validate_output_paths(source, output)
     root = ET.parse(source).getroot()
     width_elements = root.findall("./data[@role='width']")
@@ -144,23 +144,34 @@ def _write_rebuilt_track(source: Path, output: Path, path) -> tuple[Path, Path]:
         raise ValueError("source track has no unroled geometry data reference")
     csv_path = output / "racing_line_track.csv"
     xml_path = output / "racing_line_track.xml"
-    output.mkdir(parents=True, exist_ok=True)
-    with csv_path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.writer(handle)
-        writer.writerow(("distance", "x_north", "y_east", "heading_rad", "curvature"))
-        for row in zip(path.distance, path.x_north, path.y_east, path.heading, path.curvature):
-            writer.writerow((f"{float(v):.12g}" for v in row))
-    geometry_data.set("ref", csv_path.name)
     source_track = load_track(source)
-    if source_track.path_coordinates is None or path.distance.size != source_track.path_coordinates.distance.size:
-        raise ValueError("rebuilt geometry must retain the source cross-section nodes")
+    if source_track.path_coordinates is None:
+        raise ValueError("rebuilt geometry requires source signed coordinates")
     original = source_track.path_coordinates
-    heading_delta = np.asarray(path.heading) - np.asarray(original.heading)
+    reference_station = getattr(path, "reference_distance", None)
+    if reference_station is None:
+        if path.distance.size != original.distance.size:
+            raise ValueError("adaptive rebuilt geometry requires explicit reference station")
+        reference_station = np.asarray(original.distance, dtype=float)
+    reference_station = np.asarray(reference_station, dtype=float)
+    if reference_station.shape != path.distance.shape or np.any(np.diff(reference_station) <= 0.0):
+        raise ValueError("rebuilt path reference station must be strictly increasing and aligned")
+    if (reference_station[0] != original.distance[0]
+            or reference_station[-1] != original.distance[-1]):
+        raise ValueError("rebuilt path reference station must cover source endpoints")
+    # Preserve source cross-sections by sampling them at reference station,
+    # never at rebuilt path arclength. Unwrap first so heading interpolation is
+    # meaningful across a closed seam.
+    original_heading = np.interp(reference_station, original.distance,
+                                 np.unwrap(np.asarray(original.heading)))
+    original_north = np.interp(reference_station, original.distance,
+                               np.asarray(original.x_north))
+    original_east = np.interp(reference_station, original.distance,
+                              np.asarray(original.y_east))
+    heading_delta = np.asarray(path.heading) - original_heading
     heading_delta = (heading_delta + np.pi) % (2.0 * np.pi) - np.pi
     if not np.all(np.isfinite(heading_delta)) or np.max(np.abs(heading_delta)) > 0.25:
         raise ValueError("rebuilt path heading differs by more than 0.25 rad; width projection is unreliable")
-    dn = np.asarray(path.x_north) - np.asarray(original.x_north)
-    de = np.asarray(path.y_east) - np.asarray(original.y_east)
 
     parameters = root.find("./parameters")
     constant_element = None if parameters is None else parameters.find("./parameter[@name='half_width']")
@@ -178,9 +189,9 @@ def _write_rebuilt_track(source: Path, output: Path, path) -> tuple[Path, Path]:
         source_width = (source.parent / element.get("ref", "")).resolve()
         if not source_width.is_file():
             raise ValueError(f"source width CSV does not exist: {source_width}")
-        _, left, right = _read_width_csv(source_width)
-        if left.size != path.distance.size:
-            raise ValueError("source widths and rebuilt geometry must have matching node counts")
+        width_station, left, right = _read_width_csv(source_width)
+        left = np.interp(reference_station, width_station, left)
+        right = np.interp(reference_station, width_station, right)
         width_name = f"{source_width.stem}_rebuilt.csv"
         width_data = element
         break
@@ -189,10 +200,10 @@ def _write_rebuilt_track(source: Path, output: Path, path) -> tuple[Path, Path]:
         # normals. This preserves nodewise normal clearance as a small-angle
         # approximation, not the exact 2D boundary point. The heading guard above
         # limits the tangential component omitted by this representation.
-        left_x = np.asarray(original.x_north) + left * np.sin(original.heading)
-        left_y = np.asarray(original.y_east) - left * np.cos(original.heading)
-        right_x = np.asarray(original.x_north) - right * np.sin(original.heading)
-        right_y = np.asarray(original.y_east) + right * np.cos(original.heading)
+        left_x = original_north + left * np.sin(original_heading)
+        left_y = original_east - left * np.cos(original_heading)
+        right_x = original_north - right * np.sin(original_heading)
+        right_y = original_east + right * np.cos(original_heading)
         new_left_normal = np.column_stack((np.sin(path.heading), -np.cos(path.heading)))
         new_right_normal = np.column_stack((-np.sin(path.heading), np.cos(path.heading)))
         rebuilt_left = (left_x - path.x_north) * new_left_normal[:, 0] + (left_y - path.y_east) * new_left_normal[:, 1]
@@ -200,6 +211,9 @@ def _write_rebuilt_track(source: Path, output: Path, path) -> tuple[Path, Path]:
         if np.any(rebuilt_left <= 0.0) or np.any(rebuilt_right <= 0.0):
             raise ValueError("racing line leaves nonpositive clearance to a source track edge")
         width_csv = output / width_name
+        # All input geometry and width arrays have been preflighted before this
+        # first output write.
+        output.mkdir(parents=True, exist_ok=True)
         with width_csv.open("w", newline="", encoding="utf-8") as handle:
             writer = csv.writer(handle)
             writer.writerow(("distance", "half_width_left", "half_width_right"))
@@ -211,6 +225,14 @@ def _write_rebuilt_track(source: Path, output: Path, path) -> tuple[Path, Path]:
             parameters.remove(constant_element)
             width_data = ET.SubElement(root, "data", {"role": "width"})
         width_data.set("ref", width_csv.name)
+    # All geometry and clearance checks above precede every output write.
+    output.mkdir(parents=True, exist_ok=True)
+    with csv_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(("distance", "x_north", "y_east", "heading_rad", "curvature"))
+        for row in zip(path.distance, path.x_north, path.y_east, path.heading, path.curvature):
+            writer.writerow((f"{float(v):.12g}" for v in row))
+    geometry_data.set("ref", csv_path.name)
     title = root.find("./metadata/title")
     if title is not None:
         title.text = f"{title.text or 'Track'} — rebuilt racing line"
@@ -584,9 +606,10 @@ def _solve_spline_ladder(track, corridor, surface, settings, spacings, spline,
 
 def _spline_curvature_rate(track, spline, solution):
     """Return the curvature rate of a spline solution at its mesh nodes."""
-    _, _, rate, _, _ = _geometry(
-        track, spline, solution.coefficients, solution.distance,
-    )
+    trajectory = getattr(solution, "trajectory", None)
+    if trajectory is not None:
+        return np.asarray(trajectory.evaluate(solution.distance).heading_error_s)
+    _, _, rate, _, _ = _geometry(track, spline, solution.coefficients, solution.distance)
     return rate
 
 
@@ -761,9 +784,9 @@ def run(args) -> dict:
         else None
     )
     _write_line(output / "line.csv", finest, line_rate)
-    rebuilt = path_from_solution(
-        track, finest, smoothing=path_smoothing,
-    )
+    if solver == "spline" and path_smoothing != 0.0:
+        raise ValueError("smoothing is not permitted for a spline trajectory export")
+    rebuilt = path_from_solution(track, finest, smoothing=path_smoothing)
     _write_line(output / "racing_line.csv", finest, line_rate)
     xml_path, csv_path = _write_rebuilt_track(Path(args.track).resolve(), output, rebuilt)
     if mode != "closed_loop":
@@ -949,6 +972,14 @@ def run(args) -> dict:
         summary["check_unavailable"] = check_unavailable
     if solver == "spline":
         summary["spline_control_spacing_m"] = float(spline.control_spacing)
+        objective = getattr(finest, "objective_value", None)
+        trajectory = getattr(finest, "trajectory", None)
+        summary["objective_value"] = float(finest.lap_time if objective is None else objective)
+        summary["physical_lap_time_s"] = float(finest.lap_time)
+        if trajectory is not None:
+            summary["reference_fit_discrepancy"] = trajectory.reference.fit_discrepancy
+            summary["station_map_error"] = trajectory.station_map_error
+            summary["path_length_m"] = float(trajectory.station_map.path_end)
     if selection.cache_path is not None:
         summary["capability_cache"] = str(selection.cache_path)
     if selection.metadata:

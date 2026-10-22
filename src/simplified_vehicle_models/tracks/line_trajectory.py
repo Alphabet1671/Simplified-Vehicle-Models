@@ -342,4 +342,5 @@ class OffsetTrajectory:
         # this explicitly ordered exported table.
         heading = np.unwrap(np.asarray(values.heading, dtype=float))
         arrays = [_immutable(v) for v in (distance, values.north, values.east, heading, values.curvature)]
-        return PathCoordinates(*arrays, is_closed=self.reference.is_closed)
+        return PathCoordinates(*arrays, is_closed=self.reference.is_closed,
+                               reference_distance=_immutable(s))

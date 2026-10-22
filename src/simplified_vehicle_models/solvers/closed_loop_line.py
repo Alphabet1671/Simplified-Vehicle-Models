@@ -52,6 +52,7 @@ class ReplaySample:
     feasible: bool
     lap_time: float
     saturation: tuple[str, ...] = ()
+    reference_distance: np.ndarray | None = None
 
 
 class ReplayProtocol(Protocol):
@@ -110,10 +111,9 @@ def _validate_controls(tolerance, maximum_rounds) -> tuple[float, int]:
 def _validate_replay(sample) -> None:
     """Validate one replay sample before it is used for a cap.
 
-    The replay grid may differ from the OCP mesh; it is interpolated onto the
-    mesh later.  The rebuilt path's polyline length can differ slightly from
-    the track lap length, so a replay distance grid that is marginally shorter
-    than the OCP mesh is allowed and ``np.interp`` clamps its end values.
+    The replay grid carries an explicit source/reference station map whenever
+    its path station differs from the OCP reference mesh.  Endpoint clamping is
+    forbidden: an incomplete replay cannot provide a cap for an uncovered node.
     """
     if not isinstance(sample, ReplaySample):
         raise TypeError("replay must return ReplaySample")
@@ -129,6 +129,12 @@ def _validate_replay(sample) -> None:
         raise ValueError("replay distance must be strictly increasing")
     if np.any(speed < 0.0):
         raise ValueError("replay speed must be nonnegative")
+    if sample.reference_distance is not None:
+        reference = np.asarray(sample.reference_distance, dtype=float)
+        if reference.shape != distance.shape or not np.all(np.isfinite(reference)):
+            raise ValueError("replay reference_distance must match finite replay samples")
+        if np.any(np.diff(reference) <= 0.0):
+            raise ValueError("replay reference_distance must be strictly increasing")
     lap_time = float(sample.lap_time)
     if not math.isfinite(lap_time) or lap_time < 0.0:
         # A zero time is tolerated for an aborted replay; acceptance still
@@ -144,7 +150,15 @@ def _cap_from_replay(mesh, replay, ocp_speed, margin):
     OCP speed, so those nodes keep the OCP speed and rely on the two-sided
     acceptance check instead of a needless cap reduction.
     """
-    replay_speed = np.interp(mesh, replay.distance, replay.speed)
+    station = replay.reference_distance
+    if station is None:
+        # Equal physical/reference coordinates are unambiguous only when the
+        # replay path explicitly has the same station extent as the mesh.
+        station = replay.distance
+    station = np.asarray(station, dtype=float)
+    if mesh[0] < station[0] or mesh[-1] > station[-1]:
+        raise ValueError("replay station mapping does not cover the OCP mesh")
+    replay_speed = np.interp(mesh, station, replay.speed)
     return np.where(
         replay_speed < ocp_speed, replay_speed - margin, ocp_speed,
     )
@@ -227,6 +241,22 @@ def correct_to_replay(track, corridor, surface, mesh, spline, settings, controll
         path = path_from_solution(track, solution)
         sample = replay(path, controller)
         _validate_replay(sample)
+        # Recover an exact map only when the adapter returns the rebuilt path's
+        # own grid verbatim. Any resampled/subset third-party trace must carry
+        # an explicit mapping; it is otherwise ambiguous.
+        if getattr(solution, "trajectory", None) is not None and sample.reference_distance is None:
+            if (getattr(path, "reference_distance", None) is not None
+                    and sample.distance.shape == path.distance.shape
+                    and np.allclose(sample.distance, path.distance, rtol=0.0, atol=1e-9)):
+                # This is not inferred identity: the replay returned the exact
+                # exported path grid, whose explicit map is authoritative.
+                sample = ReplaySample(sample.distance, sample.speed, sample.feasible,
+                                      sample.lap_time, sample.saturation,
+                                      np.asarray(path.reference_distance, dtype=float))
+            else:
+                raise ValueError(
+                    "analytic trajectory replay requires explicit reference_distance mapping"
+                )
         last_replay_time = float(sample.lap_time)
         last_feasible = bool(sample.feasible)
 

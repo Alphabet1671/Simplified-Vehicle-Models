@@ -26,7 +26,8 @@
 1. `tracks/line_trajectory.py`, `tests/test_line_trajectory.py`: analytic reference/offset geometry and station maps.
 2. `solvers/qss_spline_ocp.py`, `tracks/racing_line.py`, `solvers/closed_loop_line.py`, runner and associated tests: wire exact trajectory through OCP/export/replay; retain midpoint controls and evaluator metadata.
 3. `solvers/line_validation.py`, runner and validation tests: independent dense trajectory/control validation, strict statuses and full-gate aggregation.
-4. `tools/diagnostics/verify_no_tv_minimum_lap.py`, diagnostic tests, developer report: bounded four-track/cut-open refinement/multiseed matrix, targeted solver improvements after evidence.
+4. `formulations/signed_capability.py`, capability tests and spline lookup adapter: opt-in signed feasible acceleration envelope and physical interpolation audit, preserving legacy caches.
+5. `tools/diagnostics/verify_no_tv_minimum_lap.py`, diagnostic tests, developer report: bounded four-track/cut-open refinement/multiseed matrix, targeted solver improvements after evidence.
 
 ### Task 1: Shared reference geometry and offset trajectory
 
@@ -85,7 +86,20 @@ east = y + n*x_s/h
 - [ ] Report signed path length, reference fit discrepancy, station-map accuracy, controller-off mode, all missing evidence. Legacy results lacking new evidence stay usable as candidates but cannot be promoted silently.
 - [ ] Run affected validator/runner/solver tests; commit and review.
 
-### Task 4: Measured no-TV robustness and targeted numerical work
+### Task 4: Physically faithful signed capability domain
+
+**Files:** Create `formulations/signed_capability.py`, `tests/test_signed_capability.py`; opt-in adapter in `solvers/qss_spline_ocp.py` and numeric validator as needed. No legacy cache overwrite or TV work.
+**Consumes:** original NumPy `evaluate_equilibrium`, model hash and explicit speed/curvature domain; Task2 physical state/trajectory.
+**Produces:** a versioned signed transient-domain capability representation and identical numeric/symbolic lookup interfaces. A representation is not validated merely because its vertices are feasible.
+
+- [ ] Add live-model regressions: at k=0/v33.339080 the maximum feasible acceleration is negative (~-.052829); at k=0/v35.067453 it is ~-4.051241; at k=-.060638156/v17.495664 the old zero-acceleration cell is infeasible. Confirm these with original equilibrium, not the old positive-only root helper.
+- [ ] Implement signed feasible-interval search over a declared acceleration range with scan/bracket refinement; do not bridge disconnected intervals or invent zero holds. Record scan resolution and fail when insufficient domain evidence exists.
+- [ ] Prefer a normalized speed chart `rho=v/Vdom(k)` where Vdom means existence of SOME signed feasible acceleration, not steady ax=0 feasibility. Keep legacy surface path untouched. Reject unsupported disconnected/nonmonotone regions explicitly; alternatively retain exact live constraints if a stable differentiable adapter can be validated.
+- [ ] Validate the exact reconstructed acceleration bounds and interpolated domain against the original NumPy model at cell-interior probes. Refine or conservatively shrink intervals; if no nonempty common interval exists, refine/reject rather than pad with legal zeros. Record conservatism and do not claim formal continuum certification from a stencil.
+- [ ] Persist representation/version, actual axes, source physics hash, build settings/buffers, domain and interpolation validation diagnostics. Old caches remain diagnostics only; no automatic semantics upgrade.
+- [ ] Cover numerical/symbolic lookup parity and no extrapolation into invalid cells. Run signed capability and existing point-mass/spline tests. Commit and review before production refinement matrix.
+
+### Task 5: Measured no-TV robustness and targeted numerical work
 
 **Files:** Create `tools/diagnostics/verify_no_tv_minimum_lap.py`, `tests/test_no_tv_minimum_lap.py`, `docs/dev/no-tv-minimum-lap-reliability.md`; modify spline solver only when measurements identify a tested improvement.
 **Consumes:** Tasks 1–3 and immutable `track_view` from boundary diagnostics.

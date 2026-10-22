@@ -136,11 +136,12 @@ class SplineTranscriptionTest(unittest.TestCase):
         corridor = _zero_corridor(view, is_closed=False)
         settings = QssSettings(maximum_iterations=2000, start_speed=0.5)
         surface = _surface()
-        # The 2 m mesh in the brief leaves a 0.019 s launch-transient
-        # discretization error. A 0.5 m mesh resolves the standing start and
-        # exercises the same transcription at the requested 2e-3 s parity.
+        # Global continuous-control and off-site physical protections alter the
+        # coarse optimum slightly.  A 0.25 m mesh resolves the launch transient
+        # and retains the declared 2e-3 s analytic-envelope parity without
+        # changing an objective or acceptance tolerance.
         solution = solve_spline_line(
-            view, corridor, surface, build_mesh(view, 0.5),
+            view, corridor, surface, build_mesh(view, 0.25),
             OffsetSpline(view, control_spacing=10.0), settings,
         )
         self.assertEqual(solution.status, "Solve_Succeeded")
@@ -442,6 +443,106 @@ class SplineTranscriptionTest(unittest.TestCase):
         self.assertTrue(np.any(built["x_lower"][:controls] < 0.0))
         self.assertTrue(np.any(built["x_upper"][:controls] > 0.0))
 
+    def test_bernstein_middle_coefficient_boxes_quadratic_control_globally(self) -> None:
+        """The old node/midpoint-only [3, 3, -.6]/am=3 peak is rejected."""
+        import casadi as ca
+
+        from simplified_vehicle_models.solvers.qss_line_ocp import QssSettings
+        from simplified_vehicle_models.solvers.qss_spline_ocp import build_spline_ocp
+
+        track = replace(self._track(), is_closed=False)
+        mesh = np.array([0.0, 0.5 * track.lap_length, track.lap_length])
+        built = build_spline_ocp(
+            track, _zero_corridor(track, is_closed=False), _surface(), mesh,
+            OffsetSpline(track, control_spacing=20.0), QssSettings(start_speed=10.0),
+        )
+        controls, nodes = built["control_count"], mesh.size
+        values = np.zeros(controls + 3 * nodes - 1)
+        values[controls:controls + nodes] = 10.0
+        values[controls + nodes:controls + 2 * nodes] = [3.0, 3.0, -0.6]
+        values[controls + 2 * nodes:] = [3.0, 3.0]
+        constraints = np.asarray(ca.Function(
+            "bernstein_constraints", [built["nlp"]["x"]], [built["nlp"]["g"]],
+        )(values), dtype=float).ravel()
+        # Last-element b1=2*3-.5*(3-.6)=4.8.  It used to have no row;
+        # now a global amax=3 bound applies independent of surface variation.
+        matching = np.isclose(constraints, 4.8)
+        self.assertTrue(np.any(matching))
+        self.assertTrue(np.any(built["g_upper"][matching] == 3.0))
+
+    def test_off_collocation_sites_add_physical_rows_without_extra_defects(self) -> None:
+        """Eighth/quarter rows constrain capability, not more HS equalities."""
+        from simplified_vehicle_models.solvers.qss_line_ocp import QssSettings
+        from simplified_vehicle_models.solvers.qss_spline_ocp import build_spline_ocp
+
+        track = replace(self._track(), is_closed=False)
+        mesh = np.array([0.0, 0.5 * track.lap_length, track.lap_length])
+        base = build_spline_ocp(
+            track, _zero_corridor(track, is_closed=False), _surface(), mesh,
+            OffsetSpline(track, control_spacing=20.0),
+            QssSettings(start_speed=10.0, off_collocation_fractions=(0.25,)),
+        )
+        protected = build_spline_ocp(
+            track, _zero_corridor(track, is_closed=False), _surface(), mesh,
+            OffsetSpline(track, control_spacing=20.0), QssSettings(start_speed=10.0),
+        )
+        # Four default interior sites replace the old two quarters: their
+        # additional rows are inequalities only, so the sole HS defect per
+        # element remains the only new equality family.
+        self.assertGreater(protected["g_lower"].size, base["g_lower"].size)
+        self.assertEqual(
+            int(np.count_nonzero(protected["g_lower"] == protected["g_upper"])),
+            int(np.count_nonzero(base["g_lower"] == base["g_upper"])),
+        )
+
+    def test_quarter_capability_row_rejects_varying_surface_violation(self) -> None:
+        """A physical amax notch missed by nodes/midpoint is constrained at 1/4."""
+        import casadi as ca
+
+        from simplified_vehicle_models.solvers.qss_line_ocp import QssSettings
+        from simplified_vehicle_models.solvers.qss_spline_ocp import build_spline_ocp
+
+        from types import SimpleNamespace
+        from simplified_vehicle_models.tracks.types import PathCoordinates
+
+        distance = np.linspace(0.0, 20.0, 81)
+        track = SimpleNamespace(
+            distance=distance, curvature=np.zeros_like(distance),
+            path_coordinates=PathCoordinates(distance, distance, np.zeros_like(distance),
+                                             np.zeros_like(distance), np.zeros_like(distance), False),
+            is_closed=False, lap_length=20.0,
+        )
+        mesh = np.array([0.0, 10.0, 20.0])
+        # Linear-table amax is 3 at all nodes and the first HS midpoint, but a
+        # narrow speed notch at the actual quarter-site speed is only 2.
+        surface = CapabilitySurface(
+            np.array([.5, 10., 10.5, 10.6, 11., 12., 30.]),
+            np.array([-.3, .3]),
+            np.array([[3., 3.], [3., 3.], [2., 2.], [3., 3.],
+                      [3., 3.], [3., 3.], [3., 3.]]),
+            np.full((7, 2), -8.), np.full(2, 30.), "varying-quarter",
+        )
+        corridor = Corridor(distance, np.zeros_like(distance), np.zeros_like(distance),
+                            "straight", False)
+        built = build_spline_ocp(
+            track, corridor, surface, mesh,
+            OffsetSpline(track, control_spacing=20.0),
+            QssSettings(start_speed=10.0, off_collocation_fractions=(0.25,)),
+        )
+        controls, nodes = built["control_count"], mesh.size
+        values = np.zeros(controls + 3 * nodes - 1)
+        values[controls:controls + nodes] = [10.0, 11.0, 12.0]
+        values[controls + nodes:controls + 2 * nodes] = 3.0
+        values[controls + 2 * nodes:] = 3.0
+        constraints = np.asarray(ca.Function(
+            "quarter_capability_constraints", [built["nlp"]["x"]], [built["nlp"]["g"]],
+        )(values), dtype=float).ravel()
+        # At x=.25, actual HS v≈10.578 and actual quadratic a=3, so the
+        # interpolated amax is about 2.04.  This negative upper-capability row
+        # comes from the new quarter site; global Bernstein bounds still pass.
+        failed = (built["g_lower"] == 0.0) & (built["g_upper"] == np.inf)
+        self.assertTrue(np.any(constraints[failed] < -0.9))
+
     def test_midpoint_speed_has_a_minimum_speed_lower_bound(self) -> None:
         import casadi as ca
 
@@ -475,6 +576,42 @@ class SplineTranscriptionTest(unittest.TestCase):
         self.assertLess(
             float(np.min(g[lower_only])), -1.0,
         )
+
+    def test_open_straight_acceleration_is_dense_bounded_and_time_is_analytic(self) -> None:
+        """Task-5 20 m launch regression: no terminal control overshoot."""
+        from types import SimpleNamespace
+        from simplified_vehicle_models.solvers.line_validation import validate_line
+        from simplified_vehicle_models.solvers.qss_line_ocp import QssSettings
+        from simplified_vehicle_models.solvers.qss_spline_ocp import solve_spline_line
+        from simplified_vehicle_models.tracks.types import PathCoordinates
+
+        distance = np.linspace(0.0, 20.0, 81)
+        track = SimpleNamespace(
+            distance=distance, curvature=np.zeros_like(distance),
+            path_coordinates=PathCoordinates(distance, distance, np.zeros_like(distance),
+                                             np.zeros_like(distance), np.zeros_like(distance), False),
+            is_closed=False, lap_length=20.0,
+        )
+        corridor = Corridor(distance, np.zeros_like(distance), np.zeros_like(distance),
+                            "straight", False)
+        surface = CapabilitySurface(
+            np.array([.5, 15., 30.]), np.array([-.1, 0., .1]),
+            np.full((3, 3), 3.), np.full((3, 3), -8.), np.full(3, 30.), "straight",
+        )
+        mesh = np.linspace(0., 20., 17)
+        settings = QssSettings(start_speed=10., maximum_iterations=2000)
+        solution = solve_spline_line(track, corridor, surface, mesh,
+                                     OffsetSpline(track, control_spacing=5.), settings)
+        self.assertEqual(solution.status, "Solve_Succeeded")
+        stations = np.linspace(0., 20., 257)
+        dense = solution.state_evaluator.evaluate(stations)
+        self.assertLessEqual(float(np.max(dense["acceleration"])), 3.0 + 2.e-6)
+        self.assertGreaterEqual(float(np.min(dense["acceleration"])), -8.0 - 2.e-6)
+        analytic = (np.sqrt(10.0**2 + 2.0 * 3.0 * 20.0) - 10.0) / 3.0
+        self.assertAlmostEqual(solution.lap_time, analytic, delta=2.0e-3)
+        report = validate_line(solution, corridor, surface, samples_per_element=8)
+        peak = next(item for item in report["diagnostics"] if item["name"] == "acceleration_max")
+        self.assertTrue(peak["passed"])
 
     def test_spline_solution_respects_dense_corridor(self) -> None:
         from simplified_vehicle_models.solvers.qss_line_ocp import QssSettings, build_mesh

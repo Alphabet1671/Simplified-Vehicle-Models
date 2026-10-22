@@ -203,13 +203,14 @@ def build_spline_ocp(track, corridor, surface, mesh, spline, settings: QssSettin
     nodes = mesh.size
     midpoints = 0.5 * (mesh[:-1] + mesh[1:])
     widths = np.diff(mesh)
-    quarters = np.empty(2 * count, dtype=float)
-    quarters[0::2] = mesh[:-1] + 0.25 * widths
-    quarters[1::2] = mesh[:-1] + 0.75 * widths
+    fractions = np.asarray(settings.off_collocation_fractions, dtype=float)
+    off_sites = (mesh[:-1, None] + widths[:, None] * fractions).ravel()
+    off_element = np.repeat(np.arange(count), fractions.size)
+    off_coordinate = np.tile(fractions, count)
 
     node_values, node_first, node_second = spline.basis(mesh)
     mid_values, mid_first, mid_second = spline.basis(midpoints)
-    quarter_values = spline.basis(quarters)[0]
+    off_values, off_first, off_second = spline.basis(off_sites)
 
     reference = _reference_curve(track)
     node_reference = reference.evaluate(mesh)
@@ -222,13 +223,17 @@ def build_spline_ocp(track, corridor, surface, mesh, spline, settings: QssSettin
     corridor_upper = _sample_corridor(corridor.maximum, corridor, mesh, track)
     mid_lower = _sample_corridor(corridor.minimum, corridor, midpoints, track)
     mid_upper = _sample_corridor(corridor.maximum, corridor, midpoints, track)
-    quarter_lower = _sample_corridor(corridor.minimum, corridor, quarters, track)
-    quarter_upper = _sample_corridor(corridor.maximum, corridor, quarters, track)
+    off_lower = _sample_corridor(corridor.minimum, corridor, off_sites, track)
+    off_upper = _sample_corridor(corridor.maximum, corridor, off_sites, track)
     zero_corridor = _is_zero_corridor(corridor.minimum, corridor.maximum)
     cap_values = _speed_cap_values(speed_cap, nodes)
     cap_mid = (
         None if cap_values is None
         else np.interp(midpoints, mesh, cap_values)
+    )
+    cap_off = (
+        None if cap_values is None
+        else np.interp(off_sites, mesh, cap_values)
     )
 
     coefficients = ca.MX.sym("c", control_count)
@@ -246,7 +251,15 @@ def build_spline_ocp(track, corridor, surface, mesh, spline, settings: QssSettin
     n_mids = spline_field(mid_values)
     n_first_mids = spline_field(mid_first)
     n_second_mids = spline_field(mid_second)
-    n_quarters = spline_field(quarter_values)
+    n_off = spline_field(off_values)
+    n_first_off = spline_field(off_first)
+    n_second_off = spline_field(off_second)
+
+    off_reference = reference.evaluate(off_sites)
+    k0_off = np.asarray(off_reference.curvature)
+    dk0_off = np.asarray(off_reference.curvature_s)
+    h_off = np.asarray(off_reference.metric)
+    hs_off = np.asarray(off_reference.metric_s)
 
     if zero_corridor:
         # The corridor admits only n = 0. Keeping the controls in the decision
@@ -257,6 +270,9 @@ def build_spline_ocp(track, corridor, surface, mesh, spline, settings: QssSettin
         ]
         mid_geometry = [
             (1.0, 0.0, 0.0, float(k0_mids[i]), float(h_mids[i])) for i in range(count)
+        ]
+        off_geometry = [
+            (1.0, 0.0, 0.0, float(k0_off[i]), float(h_off[i])) for i in range(off_sites.size)
         ]
     else:
         node_geometry = [
@@ -272,6 +288,13 @@ def build_spline_ocp(track, corridor, surface, mesh, spline, settings: QssSettin
                 float(h_mids[i]), float(hs_mids[i]), float(k0_mids[i]), float(dk0_mids[i]),
             )
             for i in range(count)
+        ]
+        off_geometry = [
+            _spline_geometry(
+                n_off[i], n_first_off[i], n_second_off[i],
+                float(h_off[i]), float(hs_off[i]), float(k0_off[i]), float(dk0_off[i]),
+            )
+            for i in range(off_sites.size)
         ]
 
     signed = getattr(surface, "representation", None) == "signed_transient_normalized_v1"
@@ -313,6 +336,25 @@ def build_spline_ocp(track, corridor, surface, mesh, spline, settings: QssSettin
         add(domain_speed - car_speed, 0.0, math.inf)
         add(1.0 - centreline_curvature * offset, fold_guard, math.inf)
 
+    def hermite_speed(index, coordinate):
+        """Actual cubic HS speed at an interior element coordinate."""
+        h = float(widths[index])
+        x = float(coordinate)
+        metric0, metric1 = node_geometry[index][4], node_geometry[index + 1][4]
+        f0 = acceleration[index] * metric0 / speed[index]
+        f1 = acceleration[index + 1] * metric1 / speed[index + 1]
+        return ((2*x**3 - 3*x**2 + 1) * speed[index]
+                + (x**3 - 2*x**2 + x) * h * f0
+                + (-2*x**3 + 3*x**2) * speed[index + 1]
+                + (x**3 - x**2) * h * f1)
+
+    def quadratic_acceleration(index, coordinate):
+        """Existing node/midpoint/node Lagrange control at an interior site."""
+        x = float(coordinate)
+        return (2*x*(x - 0.5) * acceleration[index + 1]
+                + 4*x*(1 - x) * mid_acceleration[index]
+                + 2*(x - 0.5)*(x - 1) * acceleration[index])
+
     objective = 0
     for index in range(count):
         h = float(widths[index])
@@ -328,6 +370,14 @@ def build_spline_ocp(track, corridor, surface, mesh, spline, settings: QssSettin
         )
         add(speed[index + 1] - speed[index]
             - h / 6.0 * (f0 + 4.0 * f_mid + f1), 0.0, 0.0)
+        # The quadratic control is globally boxed through its Bernstein
+        # coefficients.  Node and midpoint values alone permit an interior
+        # excursion; b1 is the middle Bernstein coefficient.
+        bernstein_middle = 2.0 * mid_acceleration[index] - 0.5 * (
+            acceleration[index] + acceleration[index + 1]
+        )
+        add(bernstein_middle, float(np.min(surface.acceleration_min)),
+            float(np.max(surface.acceleration_max)))
         # The Hermite midpoint speed is a denominator in the dynamics and the
         # objective; keep it positive even when the node speeds are at the floor.
         add(midpoint_speed - float(settings.minimum_speed), 0.0, math.inf)
@@ -352,10 +402,9 @@ def build_spline_ocp(track, corridor, surface, mesh, spline, settings: QssSettin
             add(n_nodes[index], float(corridor_lower[index]),
                 float(corridor_upper[index]))
             add(n_mids[index], float(mid_lower[index]), float(mid_upper[index]))
-            add(n_quarters[2 * index], float(quarter_lower[2 * index]),
-                float(quarter_upper[2 * index]))
-            add(n_quarters[2 * index + 1], float(quarter_lower[2 * index + 1]),
-                float(quarter_upper[2 * index + 1]))
+            for local in range(fractions.size):
+                site = index * fractions.size + local
+                add(n_off[site], float(off_lower[site]), float(off_upper[site]))
             add(n_nodes[index + 1], float(corridor_lower[index + 1]),
                 float(corridor_upper[index + 1]))
         limits(n_nodes[index], node0[1], node0[2], node0[3], speed[index],
@@ -365,6 +414,18 @@ def build_spline_ocp(track, corridor, surface, mesh, spline, settings: QssSettin
         limits(n_nodes[index + 1], node1[1], node1[2], node1[3],
                speed[index + 1], acceleration[index + 1],
                float(k0_nodes[index + 1]))
+        for local in range(fractions.size):
+            site = index * fractions.size + local
+            off_speed = hermite_speed(index, fractions[local])
+            off_acceleration = quadratic_acceleration(index, fractions[local])
+            # These are feasibility rows only: retain the single HS speed
+            # defect above rather than enforcing additional polynomial dynamics.
+            add(off_speed - float(settings.minimum_speed), 0.0, math.inf)
+            limits(n_off[site], off_geometry[site][1], off_geometry[site][2],
+                   off_geometry[site][3], off_speed, off_acceleration,
+                   float(k0_off[site]))
+            if cap_off is not None:
+                add(off_speed - float(cap_off[site]), -math.inf, 0.0)
         if cap_values is not None:
             add(speed[index] - float(cap_values[index]), -math.inf, 0.0)
             add(speed[index + 1] - float(cap_values[index + 1]), -math.inf, 0.0)

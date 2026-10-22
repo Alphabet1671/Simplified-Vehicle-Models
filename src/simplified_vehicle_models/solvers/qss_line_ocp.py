@@ -27,6 +27,9 @@ class QssSettings:
     start_speed: float = 0.0
     open_regularisation: float = 1.0e-6
     offset_control_spacing: float | None = None
+    # Interior sites for spline-OCP physical constraints.  They supplement the
+    # Hermite--Simpson midpoint; they are not extra dynamics defects.
+    off_collocation_fractions: tuple[float, ...] = (0.125, 0.25, 0.75, 0.875)
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,6 +72,13 @@ def _validate_inputs(track, corridor, surface, mesh, settings):
         if (not math.isfinite(settings.offset_control_spacing)
                 or settings.offset_control_spacing <= 0.0):
             raise ValueError("offset_control_spacing must be finite and positive")
+    fractions = settings.off_collocation_fractions
+    if (not isinstance(fractions, tuple) or not fractions
+            or any(not math.isfinite(value) or not 0.0 < value < 1.0
+                   or math.isclose(value, 0.5, rel_tol=0.0, abs_tol=1.0e-12)
+                   for value in fractions)
+            or len(set(fractions)) != len(fractions)):
+        raise ValueError("off_collocation_fractions must be distinct finite interior fractions excluding midpoint")
     if isinstance(settings.maximum_iterations, bool) or settings.maximum_iterations < 1:
         raise ValueError("maximum_iterations must be a positive integer")
     if int(settings.maximum_iterations) != settings.maximum_iterations:

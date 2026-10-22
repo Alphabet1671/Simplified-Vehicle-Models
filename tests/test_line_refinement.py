@@ -146,6 +146,16 @@ class LineRefinementTest(unittest.TestCase):
         self.assertLess(report["maximum_hs_energy_defect"], 1.e-13)
         self.assertGreaterEqual(report["maximum_offset_projection_error"], 0.0)
 
+    def test_projection_rejects_tiny_source_or_target_elements(self):
+        solution = self._solution()
+        with self.assertRaisesRegex(ValueError, "solution distance has stations closer"):
+            project_energy_seed(
+                SimpleNamespace(**{**solution.__dict__, "distance": np.array([0.0, 1.e-14, 2.0])}),
+                [0.0, 1.0, 2.0],
+            )
+        with self.assertRaisesRegex(ValueError, "new_mesh has stations closer"):
+            project_energy_seed(solution, [0.0, 1.e-14, 2.0])
+
     def test_projection_rejects_wrong_topology_domain_and_no_implicit_fallback(self):
         solution = self._solution()
         with self.assertRaisesRegex(ValueError, "domain"):

@@ -120,21 +120,31 @@ def _project_coefficients(solution: object, new_spline: object, domain: tuple[fl
     return np.linalg.lstsq(basis, source_offset, rcond=None)[0]
 
 
-def project_energy_seed(solution: object, new_mesh: object, new_spline: object | None = None) -> tuple[np.ndarray, dict[str, Any]]:
+def project_energy_seed(
+    solution: object, new_mesh: object, new_spline: object | None = None,
+    *, minimum_spacing: float = 1.0e-7,
+) -> tuple[np.ndarray, dict[str, Any]]:
     """Project an ``energy_hs_v1`` solution into its standard decision layout.
 
     Returns ``[coefficients | v_nodes | a_nodes | a_midpoints]`` and diagnostic
     facts.  The diagnostics explicitly describe a projection only: they do not
     assert OCP, bounds, corridor, or capability feasibility.
     """
+    if not np.isfinite(minimum_spacing) or minimum_spacing <= 0.0:
+        raise ValueError("minimum_spacing must be finite and positive")
     evaluator = getattr(solution, "state_evaluator", None)
     representation = getattr(solution, "state_representation", None)
     if representation != _ENERGY_REPRESENTATION and getattr(evaluator, "state_representation", None) != _ENERGY_REPRESENTATION:
         raise ValueError("project_energy_seed requires energy_hs_v1 representation")
     if evaluator is None or not callable(getattr(evaluator, "evaluate", None)):
         raise ValueError("project_energy_seed requires an energy state evaluator")
-    source_mesh = _finite_increasing_mesh(getattr(solution, "distance", None), name="solution distance", minimum_spacing=0.0)
-    mesh = _finite_increasing_mesh(new_mesh, name="new_mesh", minimum_spacing=0.0)
+    source_mesh = _finite_increasing_mesh(
+        getattr(solution, "distance", None), name="solution distance",
+        minimum_spacing=float(minimum_spacing),
+    )
+    mesh = _finite_increasing_mesh(
+        new_mesh, name="new_mesh", minimum_spacing=float(minimum_spacing),
+    )
     domain = (float(source_mesh[0]), float(source_mesh[-1]))
     tolerance = 1.0e-9 * max(1.0, domain[1] - domain[0])
     if not (np.isclose(mesh[0], domain[0], rtol=0.0, atol=tolerance) and np.isclose(mesh[-1], domain[1], rtol=0.0, atol=tolerance)):

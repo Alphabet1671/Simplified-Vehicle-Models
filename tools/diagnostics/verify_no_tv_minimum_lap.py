@@ -35,6 +35,8 @@ from simplified_vehicle_models.formulations.point_mass_capability import (
 from simplified_vehicle_models.solvers.line_validation import (
     REQUIRED_NUMERICAL_CHECKS, strict_validation, validate_line,
 )
+from simplified_vehicle_models.solvers.capability_profile import capability_profile, matched_profile_replay
+from simplified_vehicle_models.tracks.line_trajectory import OffsetTrajectory
 from simplified_vehicle_models.solvers.qss_line_ocp import QssSettings, build_mesh, track_sample
 from simplified_vehicle_models.solvers.qss_spline_ocp import initial_guess, solve_spline_line
 from simplified_vehicle_models.tracks.corridor import corridor_from_track
@@ -53,6 +55,12 @@ DEFAULT_OFF_COLLOCATION_FRACTIONS = (0.125, 0.25, 0.75, 0.875)
 DEFAULT_FORMULATION = Path("models/formulations/iem24_murphy_real_planar_7dof.xml")
 DEFAULT_SURFACE = Path("runs/no_tv_reliability/signed_lp_fullrange_product_20261022.npz")
 SUCCESS_STATUSES = {"Solve_Succeeded", "success", "succeeded"}
+REFERENCE_PROFILE_STEPS = (1.0, 0.5, 0.25)
+REFERENCE_TIME_CONVERGENCE_RELATIVE = 0.005
+REPLAY_TIME_AGREEMENT_RELATIVE = 0.01
+# This is the existing strict physical-time diagnostic tolerance, not a new
+# baseline-performance allowance.
+PHYSICAL_TIME_RELATIVE_TOLERANCE = 1.0e-5
 
 
 @dataclass(frozen=True)
@@ -196,7 +204,8 @@ def build_attempt(case: MatrixCase, *, mesh_spacing_m: float, basis_spacing_m: f
                   off_collocation_divisions: int | None = None,
                   dense_maximum_refinements: int = DEFAULT_DENSE_MAXIMUM_REFINEMENTS,
                   diagnostic_rungs: bool = False,
-                  hessian_approximation: str = "exact") -> dict:
+                  hessian_approximation: str = "exact",
+                   matched_reference: bool = False) -> dict:
     """Build a fully serializable solve request; this has no solver side effects."""
     allowed_meshes = DEFAULT_MESH_SPACINGS + ((DIAGNOSTIC_MESH_SPACING,) if diagnostic_rungs else ())
     allowed_basis = diagnostic_rungs or basis_spacing_m in DEFAULT_BASIS_SPACINGS
@@ -229,6 +238,7 @@ def build_attempt(case: MatrixCase, *, mesh_spacing_m: float, basis_spacing_m: f
         "mesh_rung_status": "preregistered" if mesh_spacing_m in DEFAULT_MESH_SPACINGS else "diagnostic_not_preregistered",
         "basis_rung_status": "preregistered" if basis_spacing_m in DEFAULT_BASIS_SPACINGS else "diagnostic_not_preregistered",
         "formulation": str(Path(formulation).resolve()), "surface": str(Path(surface).resolve()),
+        "matched_reference": bool(matched_reference),
         "no_torque_vectoring": True, "mode_switches": False, "controller_globals": False,
     }
 
@@ -255,6 +265,111 @@ def _seed_domain_report(track, corridor, spline: OffsetSpline, coefficients: np.
             "maximum_abs_coefficient_m": float(np.max(np.abs(coefficients))),
             "control_site_corridor_feasible": bool(np.all(offsets >= lower) and np.all(offsets <= upper)),
             "note": "control-site check only; not a full state/control feasibility claim"}
+
+
+def _profile_record(profile) -> dict:
+    """Serialize a fixed-path profile without presenting it as plant evidence."""
+    return {"step_m": None, "converged": bool(profile.converged), "status": profile.status,
+            "iterations": int(profile.iterations), "lap_time_s": float(profile.lap_time)
+            if math.isfinite(profile.lap_time) else None,
+            "max_change": float(profile.max_change) if math.isfinite(profile.max_change) else None}
+
+
+def _relative_difference(left: float, right: float) -> float | None:
+    if not (math.isfinite(left) and math.isfinite(right)):
+        return None
+    return abs(left - right) / max(1.0, abs(right))
+
+
+def _profile_boundary(case: MatrixCase) -> tuple[str, float | None]:
+    """Map the declared rolling/flying solve treatment to the reference API."""
+    if case.start_treatment == "closed_flying":
+        return "flying", None
+    if case.start_treatment == "open_rolling_10":
+        return "rolling", float(case.start_speed_mps)
+    raise ValueError(f"unsupported reference start treatment {case.start_treatment!r}")
+
+
+def _fixed_path_profile_evidence(solution, case: MatrixCase, surface) -> dict:
+    """Run independent table references on analytic candidate and centerline paths.
+
+    The reference is a prescribed-path capability-table calculation.  It neither
+    reuses the OCP's speed state nor claims original-model/empirical validation.
+    """
+    unavailable = {"available": False, "candidate": {"profiles": []},
+                   "baseline": {"profiles": []}, "replay": {"available": False},
+                   "matched_baseline": False, "replay_agreement": False,
+                   "reason": None, "empirical": False}
+    try:
+        trajectory = solution.trajectory
+        evaluator = solution.state_evaluator
+        if trajectory is None or evaluator is None:
+            raise ValueError("solution lacks analytic trajectory or dense state evaluator")
+        boundary, start_speed = _profile_boundary(case)
+        # `to_path` samples the exact analytic geometry while `trajectory=` makes
+        # capability_profile query curvature through its authoritative station map.
+        stations = np.asarray(trajectory.reference.source_station, dtype=float)
+        candidate_path = trajectory.to_path(stations)
+        baseline_trajectory = OffsetTrajectory(trajectory.reference, trajectory.spline,
+                                               np.zeros_like(trajectory.coefficients))
+        baseline_path = baseline_trajectory.to_path(stations)
+        candidate_profiles, baseline_profiles = [], []
+        for step in REFERENCE_PROFILE_STEPS:
+            candidate = capability_profile(candidate_path, surface, boundary=boundary,
+                                           start_speed=start_speed, step=step,
+                                           trajectory=trajectory)
+            baseline = capability_profile(baseline_path, surface, boundary=boundary,
+                                          start_speed=start_speed, step=step,
+                                          trajectory=baseline_trajectory)
+            candidate_record, baseline_record = _profile_record(candidate), _profile_record(baseline)
+            candidate_record["step_m"] = step; baseline_record["step_m"] = step
+            candidate_profiles.append((candidate, candidate_record))
+            baseline_profiles.append((baseline, baseline_record))
+        # The .5/.25 pair is the declared sampled-time convergence evidence; 1 m
+        # remains persisted as a coarse diagnostic, not a substitute endpoint.
+        candidate_fine, candidate_half = candidate_profiles[-1][0], candidate_profiles[-2][0]
+        baseline_fine, baseline_half = baseline_profiles[-1][0], baseline_profiles[-2][0]
+        candidate_convergence = _relative_difference(candidate_half.lap_time, candidate_fine.lap_time)
+        baseline_convergence = _relative_difference(baseline_half.lap_time, baseline_fine.lap_time)
+        candidate_ok = (candidate_half.converged and candidate_fine.converged
+                        and candidate_convergence is not None
+                        and candidate_convergence <= REFERENCE_TIME_CONVERGENCE_RELATIVE)
+        baseline_ok = (baseline_half.converged and baseline_fine.converged
+                       and baseline_convergence is not None
+                       and baseline_convergence <= REFERENCE_TIME_CONVERGENCE_RELATIVE)
+        replay = matched_profile_replay(trajectory, candidate_fine)
+        reference_station = np.asarray(replay.reference_distance, dtype=float)
+        state = evaluator.evaluate(reference_station)
+        rms_speed = float(np.sqrt(np.mean((np.asarray(state["speed"], dtype=float)
+                                           - candidate_fine.speed) ** 2)))
+        # Compare the sampled fixed-path coordinates with the analytic trajectory
+        # at the profile's mapped source stations; do not fabricate a zero from
+        # an identity comparison.
+        xy = trajectory.evaluate(reference_station)
+        sampled_north = np.interp(candidate_fine.distance, candidate_path.distance,
+                                  candidate_path.x_north)
+        sampled_east = np.interp(candidate_fine.distance, candidate_path.distance,
+                                 candidate_path.y_east)
+        rms_path = float(np.sqrt(np.mean((np.asarray(xy.north) - sampled_north) ** 2
+                                         + (np.asarray(xy.east) - sampled_east) ** 2)))
+        replay_time = _relative_difference(float(solution.lap_time), candidate_fine.lap_time)
+        replay_ok = candidate_ok and replay_time is not None and replay_time <= REPLAY_TIME_AGREEMENT_RELATIVE
+        baseline_margin = PHYSICAL_TIME_RELATIVE_TOLERANCE * max(1.0, abs(baseline_fine.lap_time))
+        baseline_ok = baseline_ok and candidate_fine.lap_time <= baseline_fine.lap_time + baseline_margin
+        return {"available": True, "candidate": {"profiles": [record for _, record in candidate_profiles],
+                "time_convergence_relative": candidate_convergence, "converged": candidate_ok},
+                "baseline": {"profiles": [record for _, record in baseline_profiles],
+                "time_convergence_relative": baseline_convergence,
+                "converged": baseline_half.converged and baseline_fine.converged},
+                "replay": {"available": True, "lap_time_relative_difference": replay_time,
+                "rms_speed_mps": rms_speed, "rms_path_m": rms_path,
+                "boundary": boundary, "start_speed_mps": start_speed,
+                "reference_kind": "fixed_path_capability_profile_not_empirical"},
+                "matched_baseline": bool(baseline_ok), "replay_agreement": bool(replay_ok),
+                "reason": None, "empirical": False}
+    except Exception as error:
+        unavailable["reason"] = f"{type(error).__name__}: {error}"
+        return unavailable
 
 
 def _attempt_worker(request_path: str, result_path: str, artifact_path: str) -> None:
@@ -305,10 +420,18 @@ def _attempt_worker(request_path: str, result_path: str, artifact_path: str) -> 
         dense = validate_line(solution, corridor, surface, settings, vehicle=vehicle,
                               maximum_refinements=request["dense_maximum_refinements"])
         checks = dict(dense["checks"])
-        # These are intentionally unavailable until matrix aggregation can prove
-        # their paired evidence.  They must never be inferred from one rung.
+        # Refinement evidence is aggregation-only.  Reference evidence is
+        # optional and fails closed; missing flags remain None for compatibility.
         checks.update({"mesh_convergence": None, "basis_convergence": None,
                        "matched_baseline": None, "replay_agreement": None})
+        reference = {"available": False, "reason": "--matched-reference not requested",
+                     "matched_baseline": None, "replay_agreement": None,
+                     "replay": {"available": False, "reason": "--matched-reference not requested"},
+                     "empirical": False}
+        if request.get("matched_reference", False):
+            reference = _fixed_path_profile_evidence(solution, case, surface)
+            checks["matched_baseline"] = reference["matched_baseline"]
+            checks["replay_agreement"] = reference["replay_agreement"]
         strict = strict_validation(solution.status in SUCCESS_STATUSES, checks, REQUIRED_NUMERICAL_CHECKS)
         result.update({"status": str(solution.status), "solver_succeeded": True,
                        "accepted": False, "objective_s": solution.lap_time,
@@ -326,7 +449,7 @@ def _attempt_worker(request_path: str, result_path: str, artifact_path: str) -> 
                        "artifact": str(Path(artifact_path).name),
                        "start_treatment": case.start_treatment,
                        "candidate_only_reason": case.candidate_only_reason,
-                       "replay": {"available": False, "reason": "matched exact-trajectory point-mass replay is not supplied by this harness"}})
+                       "reference": reference, "replay": reference["replay"]})
     except Exception as error:
         result.update({"error_type": type(error).__name__, "error": str(error),
                        "traceback": traceback.format_exc(), "solver_succeeded": False,
@@ -406,10 +529,52 @@ def _comparison(case: str, left: dict, right: dict, output: Path, *, kind: str) 
     except (FileNotFoundError, ValueError):
         return None
     return {"case": case, "kind": kind,
-            "left": {"mesh_m": left["request"]["mesh_spacing_m"], "basis_m": left["request"]["basis_spacing_m"], "time_s": left.get("objective_s")},
-            "right": {"mesh_m": right["request"]["mesh_spacing_m"], "basis_m": right["request"]["basis_spacing_m"], "time_s": right.get("objective_s")},
+            "left": {"attempt_id": left.get("attempt_id"), "mesh_m": left["request"]["mesh_spacing_m"], "basis_m": left["request"]["basis_spacing_m"], "time_s": left.get("objective_s")},
+            "right": {"attempt_id": right.get("attempt_id"), "mesh_m": right["request"]["mesh_spacing_m"], "basis_m": right["request"]["basis_spacing_m"], "time_s": right.get("objective_s")},
             "time_difference_s": (left.get("objective_s") - right.get("objective_s")) if left.get("objective_s") is not None and right.get("objective_s") is not None else None,
+            "time_relative_difference": _relative_difference(float(left["objective_s"]), float(right["objective_s"]))
+            if left.get("objective_s") is not None and right.get("objective_s") is not None else None,
             **metrics}
+
+
+def _reference_qualified(row: dict) -> bool:
+    """Require actual optional-reference outputs, never a nominal surrogate flag."""
+    reference = row.get("reference", {})
+    return (reference.get("available") is True
+            and row.get("checks", {}).get("matched_baseline") is True
+            and row.get("checks", {}).get("replay_agreement") is True
+            and reference.get("empirical") is False)
+
+
+def _comparison_endpoint_rows(rows: list[dict], comparisons: list[dict]) -> list[dict]:
+    """Recover only the rows named by qualified comparison endpoints."""
+    selected = []
+    for comparison in comparisons:
+        for endpoint in (comparison["left"], comparison["right"]):
+            for row in rows:
+                request = row.get("request", {})
+                matches_id = endpoint.get("attempt_id") is not None and row.get("attempt_id") == endpoint["attempt_id"]
+                matches_legacy = (endpoint.get("attempt_id") is None
+                                  and request.get("mesh_spacing_m") == endpoint["mesh_m"]
+                                  and request.get("basis_spacing_m") == endpoint["basis_m"]
+                                  and row.get("objective_s") == endpoint["time_s"])
+                if matches_id or matches_legacy:
+                    selected.append(row)
+    return selected
+
+
+def _qualified_evidence_pair(items: list[dict], *, maximum_relative_time: float) -> dict | None:
+    """Return the best qualifying pair only when both endpoints carry evidence."""
+    eligible = [item for item in items if _dense_live_qualified(item) and _reference_qualified(item)]
+    for left_index, left in enumerate(eligible):
+        for right in eligible[left_index + 1:]:
+            relative = _relative_difference(float(left.get("objective_s", math.nan)),
+                                            float(right.get("objective_s", math.nan)))
+            if relative is not None and relative <= maximum_relative_time:
+                return {"left_attempt": left.get("attempt_id"), "right_attempt": right.get("attempt_id"),
+                        "time_relative_difference": relative,
+                        "maximum_relative_time": maximum_relative_time}
+    return None
 
 
 def aggregate(results: list[dict], output: Path, *, source_data_unchanged: bool = True) -> dict:
@@ -441,6 +606,8 @@ def aggregate(results: list[dict], output: Path, *, source_data_unchanged: bool 
                 if basis_equal and not mesh_equal:
                     evidence = _comparison(name, left, right, output, kind="mesh_refinement")
                     if evidence is not None:
+                        evidence["reference_qualified"] = (_reference_qualified(left)
+                                                           and _reference_qualified(right))
                         mesh_refinement.append(evidence)
                 elif mesh_equal and not basis_equal:
                     left_grid = left.get("actual_basis", {}).get("control_station_m")
@@ -449,11 +616,32 @@ def aggregate(results: list[dict], output: Path, *, source_data_unchanged: bool 
                         continue
                     evidence = _comparison(name, left, right, output, kind="basis_refinement")
                     if evidence is not None:
+                        evidence["reference_qualified"] = (_reference_qualified(left)
+                                                           and _reference_qualified(right))
                         basis_refinement.append(evidence)
+    case_status = {}
+    for name, rows in by_case.items():
+        qualified_mesh = [item for item in mesh_refinement if item["case"] == name and item.get("reference_qualified") is True]
+        qualified_basis = [item for item in basis_refinement if item["case"] == name and item.get("reference_qualified") is True]
+        mesh_pair = _qualified_evidence_pair(
+            _comparison_endpoint_rows(rows, qualified_mesh),
+            maximum_relative_time=REFERENCE_TIME_CONVERGENCE_RELATIVE)
+        basis_pair = _qualified_evidence_pair(
+            _comparison_endpoint_rows(rows, qualified_basis),
+            maximum_relative_time=REFERENCE_TIME_CONVERGENCE_RELATIVE)
+        accepted = bool(source_data_unchanged and mesh_pair and basis_pair)
+        case_status[name] = {"mesh_evidence": mesh_pair, "basis_evidence": basis_pair,
+                             "accepted": accepted,
+                             "status": "numerically_validated" if accepted else "incomplete",
+                             "empirical": False}
+    all_cases_accepted = bool(case_status) and all(value["accepted"] for value in case_status.values())
     return {"attempts": len(results), "candidate_diagnostics": candidate_diagnostics,
             "mesh_refinement": mesh_refinement, "basis_refinement": basis_refinement,
-            "strict_aggregate": {"accepted": False, "status": "incomplete",
-              "reason": "requires qualified independent mesh and basis refinement plus matched baseline and replay; none is supplied automatically"}}
+            "case_status": case_status,
+            "strict_aggregate": {"accepted": all_cases_accepted,
+              "status": "numerically_validated" if all_cases_accepted else "incomplete",
+              "empirical": False,
+              "reason": None if all_cases_accepted else "every case requires same-condition qualified mesh and distinct actual-basis pairs plus converged matched baseline and replay evidence"}}
 
 
 def run_matrix(args) -> dict:
@@ -483,7 +671,8 @@ def run_matrix(args) -> dict:
                         off_collocation_divisions=getattr(args, "off_collocation_divisions", None),
                         dense_maximum_refinements=getattr(args, "dense_maximum_refinements", DEFAULT_DENSE_MAXIMUM_REFINEMENTS),
                         diagnostic_rungs=getattr(args, "diagnostic_rungs", False),
-                        hessian_approximation=getattr(args, "hessian_approximation", "exact"))
+                        hessian_approximation=getattr(args, "hessian_approximation", "exact"),
+                        matched_reference=getattr(args, "matched_reference", False))
                     # Each spawned solve owns a fresh input snapshot. Do not reuse
                     # the matrix-start hashes: sources can change between attempts.
                     request["source_hashes"] = source_hashes(case.track, form, surface)
@@ -528,6 +717,8 @@ def main(argv=None):
     parser.add_argument("--dense-maximum-refinements", type=int, default=DEFAULT_DENSE_MAXIMUM_REFINEMENTS)
     parser.add_argument("--diagnostic-rungs", action="store_true",
                         help="allow and label non-preregistered mesh or basis diagnostic rungs")
+    parser.add_argument("--matched-reference", action="store_true",
+                        help="compute optional analytic-path fixed capability references (.5/.25 convergence)")
     parser.add_argument("--wall-cap-s", type=float, default=300.0)
     parser.add_argument("--base-commit", default="6286c5fbb02217fc21148fdc0be276728f13b99c")
     args = parser.parse_args(argv)

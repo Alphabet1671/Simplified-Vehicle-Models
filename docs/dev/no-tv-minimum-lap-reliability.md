@@ -53,6 +53,40 @@ fail-closed. Qualified mesh/basis comparisons additionally require solver
 success, dense geometry/feasibility, live original-model feasibility, identical
 seed/settings/source hashes/representation, and exactly one changed axis.
 
+## Optional matched fixed-path reference
+
+`--matched-reference` is opt-in; its default is false, preserving the previous
+attempt behavior and `null` (`None`) matched-baseline/replay checks.  After the
+candidate artifact and exact trajectory metadata have been persisted, the
+worker computes a `capability_profile` on the candidate's exact analytic
+trajectory/path station map and a separate zero-offset analytic centerline
+trajectory.  The boundary is the declared `closed_flying` or `open_rolling_10`
+treatment; no standing-start phase, forward clipping, or synthetic event start
+is introduced.
+
+The declared capability-profile steps are `1.0`, `.5`, and `.25 m`.  The
+persisted output records each actual profile's status, iterations, time, and
+max-change.  Passing reference evidence requires both `.5` and `.25 m` profiles
+to converge, their sampled-time change to be at most the existing `0.5%`
+comparison limit, and the candidate `.25 m` profile time to agree with the
+reported solution time to the existing `1%` replay limit.  The same convergence
+requirement applies to the independent zero-offset baseline; the free candidate
+must not be slower than it beyond the existing physical time tolerance.
+
+This is a sampled **capability-table fixed-path surrogate**, not an empirical
+or original-plant validation.  It records analytic station-map replay RMS speed
+and path sampling RMS, but cannot make `physically_validated` true.  A profile
+exception/failure is retained explicitly with false reference checks rather
+than crashing the worker or erasing the candidate artifact.
+
+At aggregation, strict `numerically_validated` status is possible only per
+case when actual same-condition source/settings/seed-qualified pairs establish
+both a mesh axis and a distinct realized-grid basis axis, and both endpoints
+carry passing matched baseline and replay evidence.  Nominal `35/17.5` labels
+with the same realized control grid remain ineligible.  Every requested case
+must meet those conditions before the matrix aggregate can pass; unresolved or
+candidate-only cases keep it incomplete.
+
 Nominal basis spacing alone is not treated as an actual basis refinement.
 Every result records its realized `control_count` and `control_station_m`; two
 nominal spacings producing an identical realized grid remain candidate-only.

@@ -60,6 +60,7 @@ class NoTvMinimumLapHarnessTest(unittest.TestCase):
         self.assertEqual(request["settings"]["tolerance"], 1e-6)
         self.assertEqual(request["settings"]["hessian_approximation"], "exact")
         self.assertEqual(request["dense_maximum_refinements"], 4)
+        self.assertFalse(request["matched_reference"])
 
     def test_attempt_persists_explicit_hessian_approximation(self):
         request = harness.build_attempt(harness.default_cases()["acceleration"],
@@ -112,6 +113,13 @@ class NoTvMinimumLapHarnessTest(unittest.TestCase):
         self.assertEqual(request["mesh_rung_status"], "diagnostic_not_preregistered")
         self.assertEqual(request["basis_rung_status"], "diagnostic_not_preregistered")
 
+    def test_matched_reference_request_is_opt_in(self):
+        request = harness.build_attempt(harness.default_cases()["acceleration"],
+            mesh_spacing_m=5.0, basis_spacing_m=35.0, maximum_iterations=7,
+            wall_cap_s=3.0, seed_name="centerline", formulation=Path("form.xml"),
+            surface=Path("surface.npz"), matched_reference=True)
+        self.assertTrue(request["matched_reference"])
+
     def test_worker_persists_dense_and_trajectory_metadata(self):
         class FakeSpline:
             control_count = 2
@@ -162,6 +170,48 @@ class NoTvMinimumLapHarnessTest(unittest.TestCase):
                 self.assertEqual(str(artifact["time_quadrature"]), "fixture_quadrature")
                 np.testing.assert_array_equal(artifact["control_station_m"], [0.0, 1.0])
             self.assertTrue((root / result["trajectory_metadata_artifact"]).is_file())
+            self.assertIsNone(result["checks"]["matched_baseline"])
+            self.assertIsNone(result["checks"]["replay_agreement"])
+            self.assertFalse(result["reference"]["available"])
+
+    def test_reference_failure_records_false_checks_without_losing_artifact(self):
+        class FakeSpline:
+            control_count = 2
+            control_distance = np.array([0.0, 1.0])
+        class FakeSolution:
+            distance = np.array([0.0, 1.0]); offset = np.array([0.0, 0.0])
+            heading_error = np.array([0.0, 0.0]); curvature = np.array([0.0, 0.0])
+            speed = np.array([10.0, 10.0]); acceleration = np.array([0.0, 0.0])
+            midpoint_acceleration = np.array([0.0]); coefficients = np.array([0.0, 0.0])
+            state_representation = "energy_hs_v1"; time_quadrature = "fixture_quadrature"
+            time_quadrature_metadata = {"rule": "fixture"}; status = "Solve_Succeeded"
+            lap_time = 1.0; objective_value = 1.0; iterations = 2; maximum_violation = 0.0
+        request = harness.build_attempt(harness.default_cases()["acceleration"], mesh_spacing_m=5.0,
+            basis_spacing_m=35.0, maximum_iterations=7, wall_cap_s=3.0, seed_name="centerline",
+            formulation=Path("form.xml"), surface=Path("surface.npz"), matched_reference=True)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); request_path = root / "request.json"; result_path = root / "result.json"
+            request_path.write_text(json.dumps(harness._json_safe(request)), encoding="utf-8")
+            with patch.object(harness, "make_track_view", return_value=object()), \
+                 patch.object(harness, "corridor_from_track", return_value=object()), \
+                 patch.object(harness, "compile_formulation", return_value=SimpleNamespace(model=object())), \
+                 patch.object(harness, "point_mass_view_of_planar", return_value=object()), \
+                 patch.object(harness, "load_surface_dispatch", return_value=(SimpleNamespace(provenance_hash="ok"), "fixture")), \
+                 patch.object(harness, "capability_hash", return_value="ok"), \
+                 patch.object(harness, "build_mesh", return_value=np.array([0.0, 1.0])), \
+                 patch.object(harness, "OffsetSpline", return_value=FakeSpline()), \
+                 patch.object(harness, "initial_guess", return_value=np.zeros(12)), \
+                 patch.object(harness, "_seed_domain_report", return_value={}), \
+                 patch.object(harness, "solve_spline_line", return_value=FakeSolution()), \
+                 patch.object(harness, "validate_line", return_value={"checks": {"geometry_consistency": True, "dense_feasibility": True}, "model_feasible": True}), \
+                 patch.object(harness, "_fixed_path_profile_evidence", return_value={"available": False, "reason": "fixture failure", "matched_baseline": False, "replay_agreement": False, "replay": {"available": False}, "empirical": False}), \
+                 patch("tools.run.solve_minimum_time_line._write_trajectory_metadata", side_effect=lambda path, solution: np.savez(path, metadata=np.array("fixture"))):
+                harness._attempt_worker(str(request_path), str(result_path), str(root / "solution.npz"))
+            result = json.loads(result_path.read_text())
+            self.assertTrue((root / "solution.npz").is_file())
+            self.assertFalse(result["checks"]["matched_baseline"])
+            self.assertFalse(result["checks"]["replay_agreement"])
+            self.assertEqual(result["validation_status"], "failed")
 
     def test_json_serialization_converts_nonfinite_diagnostics_to_null(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -307,6 +357,37 @@ class NoTvMinimumLapHarnessTest(unittest.TestCase):
         self.assertEqual(len(final_source_changed["candidate_diagnostics"]), 3)
         self.assertEqual(final_source_changed["mesh_refinement"], [])
         self.assertEqual(final_source_changed["basis_refinement"], [])
+
+    def test_aggregate_requires_actual_reference_evidence_for_every_axis(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); case = root / "acceleration"; case.mkdir()
+            rows = []
+            for attempt, mesh, basis, grid in (("m5b35", 5.0, 35.0, [0., 1.]),
+                                               ("m25b35", 2.5, 35.0, [0., 1.]),
+                                               ("m5b12", 5.0, 12.0, [0., .5, 1.])):
+                target = case / attempt; target.mkdir()
+                np.savez(target / "solution.npz", distance=np.array([0., 1.]),
+                         offset=np.zeros(2), speed=np.array([10., 10.]), curvature=np.zeros(2))
+                rows.append({"attempt_id": f"acceleration/{attempt}", "request": {"case": {"name": "acceleration"},
+                             "seed": "centerline", "settings": {"tolerance": 1e-6}, "source_hashes": {"input": "same"},
+                             "mesh_spacing_m": mesh, "basis_spacing_m": basis}, "source_hashes_after": {"input": "same"},
+                             "surface_representation": "signed_transient_normalized_v1", "artifact": f"{attempt}/solution.npz",
+                             "objective_s": 5.0, "solver_succeeded": True, "actual_basis": {"control_station_m": grid},
+                             "dense_original_model": {"checks": {"geometry_consistency": True, "dense_feasibility": True}, "model_feasible": True},
+                             "checks": {"matched_baseline": True, "replay_agreement": True},
+                             "reference": {"available": True, "empirical": False}})
+            report = harness.aggregate(rows, root)
+            rows[-1]["checks"]["replay_agreement"] = False
+            incomplete = harness.aggregate(rows, root)
+        self.assertTrue(report["strict_aggregate"]["accepted"])
+        self.assertEqual(report["case_status"]["acceleration"]["status"], "numerically_validated")
+        self.assertFalse(incomplete["strict_aggregate"]["accepted"])
+        self.assertEqual(incomplete["case_status"]["acceleration"]["status"], "incomplete")
+        # A passing mesh pair cannot borrow unrelated passing rows for a basis pair.
+        rows[-1]["checks"]["replay_agreement"] = True
+        rows[0]["checks"]["matched_baseline"] = False
+        no_mesh = harness.aggregate(rows, root)
+        self.assertFalse(no_mesh["strict_aggregate"]["accepted"])
 
     def test_aggregate_rejects_nominal_basis_change_with_identical_actual_grid(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -59,6 +59,11 @@ GENERATED_LINE_ARTIFACTS = (
     "line.csv", "racing_line.csv", "racing_line_track.csv",
     "racing_line_track.xml", "rebuilt_width.csv", "summary.json",
 )
+#: Acceptance checks that every controller-mode comparison must report.
+GATE_NAMES = (
+    "zero_corridor_matches_envelope", "free_line_not_slower",
+    "corridor_containment", "mesh_convergence", "replay_agreement",
+)
 
 
 def _validate_track_for_line_pipeline(track, half_width: float | None = None) -> None:
@@ -267,10 +272,11 @@ def _validate_control_args(args):
 def _resolve_solver(args):
     """Resolve the offset transcription, keeping legacy as the default.
 
-    A bare run (the default ``ideal`` mode) keeps the established
-    ``solve_line``/``solve_ladder`` path so existing results do not move. A
-    controller-aware mode selects the spline transcription unless the caller
-    explicitly chose one. ``--legacy-solver`` is the one-release alias for
+    A bare run and both the ``ideal`` and ``allocation`` modes keep the
+    established ``solve_line``/``solve_ladder`` path; the spline transcription
+    is opt-in through ``--solver spline``. ``closed_loop`` uses the Task 6
+    correction loop, which requires the spline solver, so it must be requested
+    explicitly. ``--legacy-solver`` is the one-release alias for
     ``--solver legacy``.
     """
     mode = getattr(args, "control_mode", None) or "ideal"
@@ -280,11 +286,14 @@ def _resolve_solver(args):
             raise ValueError("--legacy-solver conflicts with --solver spline")
         solver = "legacy"
     if solver is None:
-        solver = "legacy" if mode == "ideal" else "spline"
+        solver = "legacy"
     if solver not in SOLVERS:
         raise ValueError(f"unknown solver {solver!r}")
     if mode == "closed_loop" and solver != "spline":
-        raise ValueError("closed_loop requires the spline solver; pass --solver spline")
+        raise ValueError(
+            "closed_loop requires an explicit --solver spline; the correction "
+            "loop does not have a legacy path"
+        )
     return solver
 
 
@@ -526,6 +535,13 @@ def run(args) -> dict:
 
     # Controller configuration is validated before any artifact or solver work.
     mode = _validate_control_args(args)
+    if mode == "closed_loop" and not track.is_closed:
+        raise ValueError(
+            "closed_loop is not supported on an open course: the correction "
+            "loop compares a launch-free OCP time with a launch-inclusive "
+            "replay; use the ideal/allocation mode, or an adapter that "
+            "supports launch-inclusive comparison"
+        )
     solver = _resolve_solver(args)
     path_smoothing = float(getattr(args, "path_smoothing", 0.0))
     if mode == "closed_loop" and path_smoothing > 0.0:
@@ -604,6 +620,10 @@ def run(args) -> dict:
             stage_callback=record_stage,
         )
     finest = stages[-1]
+    # The mode that the executed branch records, not the value used to build
+    # the summary. They must agree; the check below is deliberately not a
+    # comparison of a value with itself.
+    recorded_mode = selection.capability_mode
 
     rounds = 0
     accepted = True
@@ -623,6 +643,7 @@ def run(args) -> dict:
         for sample in samples:
             saturation.extend(sample.saturation)
         saturation = sorted(set(saturation))
+        recorded_mode = "closed_loop"
 
     line_rate = (
         _spline_curvature_rate(track, spline, finest) if solver == "spline"
@@ -640,6 +661,17 @@ def run(args) -> dict:
 
     coarse, fine = stages[-2], stages[-1]
     mesh_ok = check_mesh_convergence(coarse=coarse.lap_time, fine=fine.lap_time, tolerance=0.005)
+    mesh_unavailable_reason = None
+    if mode == "closed_loop":
+        # The ladder above is the pre-correction free line; closed_loop writes
+        # the corrected line solved at the finest mesh only, so reusing the
+        # ladder result would claim convergence for a different line.
+        mesh_ok = None
+        mesh_unavailable_reason = (
+            "closed_loop corrects the finest line after the pre-correction "
+            "mesh ladder; that ladder does not establish the corrected line's "
+            "mesh convergence"
+        )
     if track.is_closed:
         sample_count = finest.distance.size - 1
         unique_mesh = finest.distance[:sample_count]
@@ -696,12 +728,13 @@ def run(args) -> dict:
         "stages": [{"spacing_m": spacing, "iterations": stage.iterations, "wall_seconds": wall_seconds, "lap_time_s": stage.lap_time} for spacing, stage, wall_seconds in zip(spacings, stages, stage_wall_seconds)],
         "maximum_violation": finest.maximum_violation, "checks": checks,
     }
-    control = _control_summary(mode, selection.controller_hash, selection.capability_mode)
-    if control["control_mode"] != mode:
+    if recorded_mode != mode:
         raise ValueError(
-            f"requested control mode {mode!r} but recorded {control['control_mode']!r}"
+            f"requested control mode {mode!r} but recorded {recorded_mode!r}"
         )
-    summary.update(control)
+    summary.update(_control_summary(
+        recorded_mode, selection.controller_hash, selection.capability_mode,
+    ))
     summary.update({
         "requested_control_mode": mode,
         "solver": solver,
@@ -711,6 +744,10 @@ def run(args) -> dict:
         "accepted": bool(accepted),
         "saturation": sorted(set(saturation)),
     })
+    if mesh_unavailable_reason is not None:
+        summary["check_unavailable"] = {
+            "mesh_convergence": mesh_unavailable_reason,
+        }
     if solver == "spline":
         summary["spline_control_spacing_m"] = float(spline.control_spacing)
     if selection.cache_path is not None:
@@ -765,8 +802,9 @@ def _line_offset_rms(reference: Path, candidate: Path) -> float:
 def compare_control_modes(args, comparison_path: Path | None = None) -> dict:
     """Run ideal/allocation/closed_loop on identical inputs and write a report.
 
-    The comparison always uses the spline transcription for all three modes so
-    the offset representation and mesh are identical. It refuses to overwrite an
+    The comparison requires an explicit ``--solver spline`` because it runs the
+    closed-loop mode, and uses that transcription for all three modes so the
+    offset representation and mesh are identical. It refuses to overwrite an
     existing comparison file or a non-empty per-mode output directory.
     """
     # Validate the requested mode's own requirements before doing any work; the
@@ -784,17 +822,23 @@ def compare_control_modes(args, comparison_path: Path | None = None) -> dict:
     if getattr(args, "legacy_solver", False):
         solver = "legacy"
     if solver is None:
-        solver = "spline"
+        raise ValueError(
+            "--compare-control-modes requires an explicit --solver spline; it "
+            "runs the closed_loop mode, which has no legacy path"
+        )
     if solver != "spline":
         raise ValueError(
-            "--compare-control-modes requires the spline solver; omit --solver "
-            "or pass --solver spline"
+            "--compare-control-modes requires the spline solver; pass "
+            "--solver spline"
         )
 
-    comparison_path = (
-        Path(comparison_path) if comparison_path is not None
-        else Path(args.output) / "control_mode_comparison.json"
-    ).resolve()
+    if comparison_path is None:
+        requested_path = getattr(args, "compare_control_modes", None)
+        comparison_path = (
+            Path(requested_path) if requested_path
+            else Path(args.output) / "control_mode_comparison.json"
+        )
+    comparison_path = Path(comparison_path).resolve()
     if comparison_path.exists():
         raise FileExistsError(
             f"comparison output already exists; refusing to overwrite: {comparison_path}"
@@ -831,9 +875,24 @@ def compare_control_modes(args, comparison_path: Path | None = None) -> dict:
         summary = summaries[mode]
         line = Path(args.output) / mode / "line.csv"
         rms = 0.0 if mode == "ideal" else _line_offset_rms(reference, line)
-        checks = summary.get("checks", {})
+        raw_checks = summary.get("checks", {})
+        checks = {}
+        failed_gates = []
+        unavailable_gates = []
+        for name in GATE_NAMES:
+            # A missing gate is a failure; an explicit None means the gate is
+            # recorded as unavailable (currently only the closed-loop mesh
+            # convergence check).
+            value = raw_checks[name] if name in raw_checks else False
+            checks[name] = value
+            if value is True:
+                continue
+            if name == "mesh_convergence" and value is None:
+                unavailable_gates.append(name)
+            else:
+                failed_gates.append(name)
         accepted = bool(summary.get("accepted", False))
-        mesh_ok = bool(checks.get("mesh_convergence", False))
+        status_ok = accepted and not failed_gates
         modes[mode] = {
             "control_mode": summary.get("control_mode", mode),
             "controller_hash": summary.get("controller_hash", ""),
@@ -843,11 +902,14 @@ def compare_control_modes(args, comparison_path: Path | None = None) -> dict:
             "replay_time_s": float(summary.get("replay_time_s", float("nan"))),
             "line_offset_rms_m": rms,
             "maximum_violation": float(summary.get("maximum_violation", float("nan"))),
-            "mesh_converged": mesh_ok,
+            "checks": checks,
+            "failed_gates": failed_gates,
+            "unavailable_gates": unavailable_gates,
+            "mesh_converged": checks["mesh_convergence"],
             "rounds": int(summary.get("rounds", 0)),
             "accepted": accepted,
             "saturation": list(summary.get("saturation", [])),
-            "status": "ok" if accepted and mesh_ok else "failed",
+            "status": "ok" if status_ok else "failed",
         }
     comparison = {
         "track": str(Path(args.track)),
@@ -864,6 +926,8 @@ def compare_control_modes(args, comparison_path: Path | None = None) -> dict:
         "saturation": {mode: modes[mode]["saturation"] for mode in CONTROL_MODES},
         "accepted": {mode: modes[mode]["accepted"] for mode in CONTROL_MODES},
         "mesh_converged": {mode: modes[mode]["mesh_converged"] for mode in CONTROL_MODES},
+        "failed_gates": {mode: modes[mode]["failed_gates"] for mode in CONTROL_MODES},
+        "unavailable_gates": {mode: modes[mode]["unavailable_gates"] for mode in CONTROL_MODES},
     }
     comparison["all_accepted"] = all(
         entry["status"] == "ok" for entry in modes.values()
@@ -877,6 +941,11 @@ def compare_control_modes(args, comparison_path: Path | None = None) -> dict:
         json.dumps(comparison, indent=2, sort_keys=True) + "\n", encoding="utf-8",
     )
     return comparison
+
+
+def _checks_pass(checks) -> bool:
+    """Return true when every gate is true or explicitly recorded unavailable."""
+    return all(value is None or bool(value) for value in checks.values())
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -917,8 +986,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--solver", choices=SOLVERS, default=None,
-        help="offset transcription; default is legacy for ideal mode and "
-             "spline for allocation/closed_loop",
+        help="offset transcription; default is legacy for ideal and allocation; "
+             "closed_loop requires the explicit --solver spline",
     )
     parser.add_argument(
         "--legacy-solver", action="store_true",
@@ -928,18 +997,23 @@ def main(argv: list[str] | None = None) -> int:
         "--compare-control-modes", nargs="?", const="", default=None,
         metavar="PATH",
         help="run ideal/allocation/closed_loop on the same inputs and write a "
-             "comparison JSON (default PATH: <output>/control_mode_comparison.json)",
+             "comparison JSON (default PATH: <output>/control_mode_comparison.json); "
+             "requires --solver spline",
     )
     args = parser.parse_args(argv)
     try:
         if args.compare_control_modes is not None:
-            comparison = compare_control_modes(args)
+            comparison_path = (
+                Path(args.compare_control_modes)
+                if args.compare_control_modes else None
+            )
+            comparison = compare_control_modes(args, comparison_path)
             return 0 if comparison["all_accepted"] else 1
         summary = run(args)
     except Exception as exc:
         print(f"minimum-time-line pipeline failed: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 2
-    return 0 if all(summary["checks"].values()) and summary.get("accepted", True) else 1
+    return 0 if _checks_pass(summary["checks"]) and summary.get("accepted", True) else 1
 
 
 if __name__ == "__main__":

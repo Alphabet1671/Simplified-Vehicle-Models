@@ -114,6 +114,19 @@ def _capability_interior_margin(settings: QssSettings) -> float:
     return 8.0 * float(settings.tolerance)
 
 
+def _validate_capability_margin(surface, settings: QssSettings) -> float:
+    """Reject a chart whose vertex bands cannot contain the interior budget."""
+    margin = _capability_interior_margin(settings)
+    width = (np.asarray(surface.acceleration_max, dtype=float)
+             - np.asarray(surface.acceleration_min, dtype=float))
+    minimum_width = float(np.min(width))
+    if not np.isfinite(minimum_width) or minimum_width <= 2.0 * margin:
+        raise ValueError(
+            "capability acceleration range must exceed twice the interior margin"
+        )
+    return margin
+
+
 class _SplineStateEvaluator:
     """Immutable Hermite--Simpson dense state/control evaluator."""
     def __init__(self, trajectory, mesh, speed, acceleration, midpoint_acceleration):
@@ -204,6 +217,7 @@ def build_spline_ocp(track, corridor, surface, mesh, spline, settings: QssSettin
 
     mesh = _validate_inputs(track, corridor, surface, mesh, settings)
     control_count = _validate_spline(track, spline)
+    capability_margin = _validate_capability_margin(surface, settings)
     count = mesh.size - 1
     nodes = mesh.size
     midpoints = 0.5 * (mesh[:-1] + mesh[1:])
@@ -317,9 +331,12 @@ def build_spline_ocp(track, corridor, surface, mesh, spline, settings: QssSettin
     constraints: list = []
     lower: list = []
     upper: list = []
+    node_acceleration_lower_indices: list[int] = []
     node_acceleration_upper_indices: list[int] = []
+    midpoint_acceleration_lower_indices: list[int] = []
     midpoint_acceleration_upper_indices: list[int] = []
     bernstein_middle_indices: list[int] = []
+    off_site_acceleration_lower_indices: list[int] = []
     off_site_acceleration_upper_indices: list[int] = []
 
     def add(expression, low, high):
@@ -343,12 +360,13 @@ def build_spline_ocp(track, corridor, surface, mesh, spline, settings: QssSettin
         # Reserve a multiple of the requested NLP residual for the quadratic
         # control's interpolation against piecewise-linear chart faces.  This
         # changes neither the objective nor independent dense tolerances.
-        add(car_acceleration - lower_acceleration, capability_margin, math.inf)
+        acceleration_lower_index = add(car_acceleration - lower_acceleration,
+                                       capability_margin, math.inf)
         acceleration_upper_index = add(upper_acceleration - car_acceleration,
                                        capability_margin, math.inf)
         add(domain_speed - car_speed, 0.0, math.inf)
         add(1.0 - centreline_curvature * offset, fold_guard, math.inf)
-        return acceleration_upper_index
+        return acceleration_lower_index, acceleration_upper_index
 
     def hermite_speed(index, coordinate):
         """Actual cubic HS speed at an interior element coordinate."""
@@ -423,19 +441,25 @@ def build_spline_ocp(track, corridor, surface, mesh, spline, settings: QssSettin
                 add(n_off[site], float(off_lower[site]), float(off_upper[site]))
             add(n_nodes[index + 1], float(corridor_lower[index + 1]),
                 float(corridor_upper[index + 1]))
-        node_acceleration_upper_indices.append(limits(
+        acceleration_indices = limits(
             n_nodes[index], node0[1], node0[2], node0[3], speed[index],
             acceleration[index], float(k0_nodes[index]),
-        ))
-        midpoint_acceleration_upper_indices.append(limits(
+        )
+        node_acceleration_lower_indices.append(acceleration_indices[0])
+        node_acceleration_upper_indices.append(acceleration_indices[1])
+        acceleration_indices = limits(
             n_mids[index], middle[1], middle[2], middle[3], midpoint_speed,
             mid_acceleration[index], float(k0_mids[index]),
-        ))
-        node_acceleration_upper_indices.append(limits(
+        )
+        midpoint_acceleration_lower_indices.append(acceleration_indices[0])
+        midpoint_acceleration_upper_indices.append(acceleration_indices[1])
+        acceleration_indices = limits(
             n_nodes[index + 1], node1[1], node1[2], node1[3],
             speed[index + 1], acceleration[index + 1],
             float(k0_nodes[index + 1]),
-        ))
+        )
+        node_acceleration_lower_indices.append(acceleration_indices[0])
+        node_acceleration_upper_indices.append(acceleration_indices[1])
         for local in range(fractions.size):
             site = index * fractions.size + local
             off_speed = hermite_speed(index, fractions[local])
@@ -443,11 +467,13 @@ def build_spline_ocp(track, corridor, surface, mesh, spline, settings: QssSettin
             # These are feasibility rows only: retain the single HS speed
             # defect above rather than enforcing additional polynomial dynamics.
             add(off_speed - float(settings.minimum_speed), 0.0, math.inf)
-            off_site_acceleration_upper_indices.append(limits(
+            acceleration_indices = limits(
                 n_off[site], off_geometry[site][1], off_geometry[site][2],
                 off_geometry[site][3], off_speed, off_acceleration,
                 float(k0_off[site]),
-            ))
+            )
+            off_site_acceleration_lower_indices.append(acceleration_indices[0])
+            off_site_acceleration_upper_indices.append(acceleration_indices[1])
             if cap_off is not None:
                 add(off_speed - float(cap_off[site]), -math.inf, 0.0)
         if cap_values is not None:
@@ -505,13 +531,22 @@ def build_spline_ocp(track, corridor, surface, mesh, spline, settings: QssSettin
         # Diagnostic-only mapping in element-major/fraction-major order. It
         # preserves the NLP layout while allowing regressions to identify a
         # particular physical off-site capability row.
+        "node_acceleration_lower_indices": np.asarray(
+            node_acceleration_lower_indices, dtype=int,
+        ),
         "node_acceleration_upper_indices": np.asarray(
             node_acceleration_upper_indices, dtype=int,
+        ),
+        "midpoint_acceleration_lower_indices": np.asarray(
+            midpoint_acceleration_lower_indices, dtype=int,
         ),
         "midpoint_acceleration_upper_indices": np.asarray(
             midpoint_acceleration_upper_indices, dtype=int,
         ),
         "bernstein_middle_indices": np.asarray(bernstein_middle_indices, dtype=int),
+        "off_site_acceleration_lower_indices": np.asarray(
+            off_site_acceleration_lower_indices, dtype=int,
+        ),
         "off_site_acceleration_upper_indices": np.asarray(
             off_site_acceleration_upper_indices, dtype=int,
         ),

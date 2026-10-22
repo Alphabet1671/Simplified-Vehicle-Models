@@ -507,13 +507,45 @@ class SplineTranscriptionTest(unittest.TestCase):
         values[controls + 2 * nodes:] = 3.0
         g = np.asarray(ca.Function("capability_margin", [built["nlp"]["x"]],
                                    [built["nlp"]["g"]])(values), dtype=float).ravel()
-        indices = np.r_[built["node_acceleration_upper_indices"],
-                        built["midpoint_acceleration_upper_indices"],
-                        built["off_site_acceleration_upper_indices"]]
-        np.testing.assert_allclose(g[indices], 0.0, atol=1.0e-12)
+        upper_indices = np.r_[built["node_acceleration_upper_indices"],
+                              built["midpoint_acceleration_upper_indices"],
+                              built["off_site_acceleration_upper_indices"]]
+        np.testing.assert_allclose(g[upper_indices], 0.0, atol=1.0e-12)
         np.testing.assert_allclose(
-            built["g_lower"][indices], np.full(indices.size, 8.0 * settings.tolerance),
+            built["g_lower"][upper_indices],
+            np.full(upper_indices.size, 8.0 * settings.tolerance),
         )
+        # Repeat at the real lower chart face to cover all stored lower rows.
+        values[controls + nodes:controls + 2 * nodes] = -8.0
+        values[controls + 2 * nodes:] = -8.0
+        g = np.asarray(ca.Function("capability_lower_margin", [built["nlp"]["x"]],
+                                   [built["nlp"]["g"]])(values), dtype=float).ravel()
+        lower_indices = np.r_[built["node_acceleration_lower_indices"],
+                              built["midpoint_acceleration_lower_indices"],
+                              built["off_site_acceleration_lower_indices"]]
+        np.testing.assert_allclose(g[lower_indices], 0.0, atol=1.0e-12)
+        np.testing.assert_allclose(
+            built["g_lower"][lower_indices],
+            np.full(lower_indices.size, 8.0 * settings.tolerance),
+        )
+
+    def test_capability_margin_rejects_narrow_chart_range(self) -> None:
+        """Never silently make a chart whose band cannot fit both margins."""
+        from simplified_vehicle_models.solvers.qss_line_ocp import QssSettings, build_mesh
+        from simplified_vehicle_models.solvers.qss_spline_ocp import build_spline_ocp
+
+        track = replace(self._track(), is_closed=False)
+        surface = CapabilitySurface(
+            np.array([.5, 30.]), np.array([-.3, .3]),
+            np.full((2, 2), 1.0), np.full((2, 2), 1.0 - 15.0e-6),
+            np.full(2, 30.0), "narrow-band",
+        )
+        with self.assertRaisesRegex(ValueError, "acceleration range"):
+            build_spline_ocp(
+                track, _zero_corridor(track, is_closed=False), surface,
+                build_mesh(track, 10.0), OffsetSpline(track, control_spacing=20.0),
+                QssSettings(start_speed=10.0),
+            )
 
     def test_off_collocation_sites_add_physical_rows_without_extra_defects(self) -> None:
         """Eighth/quarter rows constrain capability, not more HS equalities."""

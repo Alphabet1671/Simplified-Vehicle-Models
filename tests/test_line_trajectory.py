@@ -1,6 +1,7 @@
 """Independent geometry checks for the shared line trajectory."""
 from __future__ import annotations
 
+import importlib.util
 import unittest
 
 import numpy as np
@@ -35,6 +36,7 @@ def _open_curve():
     return _track(s, s + 0.14 * np.sin(0.7 * s), 0.3 * s ** 2 / 18.0 + 0.4 * np.sin(0.41 * s))
 
 
+@unittest.skipUnless(importlib.util.find_spec("scipy") is not None, "SciPy optional dependency unavailable")
 class LineTrajectoryTest(unittest.TestCase):
     def test_reference_circle_metric_and_sign(self):
         track = _circle()
@@ -106,28 +108,57 @@ class LineTrajectoryTest(unittest.TestCase):
         trajectory = OffsetTrajectory(reference, spline, np.sin(np.linspace(0, 2*np.pi, spline.control_count, endpoint=False)))
         for field in ("north_s", "east_s", "north_ss", "east_ss", "curvature"):
             self.assertAlmostEqual(getattr(reference.evaluate(0.0), field), getattr(reference.evaluate(track.lap_length), field), places=8)
-        self.assertAlmostEqual(trajectory.evaluate(0.0).heading_error, trajectory.evaluate(track.lap_length).heading_error, places=8)
-        # Independently integrate a station interior to verify map interpolation,
-        # rather than only testing inverse round trip through the same PCHIP.
+        start, end = trajectory.evaluate(0.0), trajectory.evaluate(track.lap_length)
+        for field in ("north", "east", "metric", "heading_error", "heading_error_s", "curvature"):
+            self.assertAlmostEqual(getattr(start, field), getattr(end, field), places=8)
+        # Independently integrate several non-node stations; round trip through
+        # PCHIP alone cannot establish map accuracy.
         from scipy.integrate import quad
-        q = 0.371 * track.lap_length
-        independent, _ = quad(lambda v: float(trajectory.evaluate(v).metric), 0.0, q, epsabs=1e-10)
-        self.assertAlmostEqual(float(trajectory.station_map.to_path(q)), independent, delta=3e-5)
+        tolerance = trajectory.station_accuracy
+        probes = np.array([.071, .371, .629, .913]) * track.lap_length
+        knots = trajectory._knots()
+        def integral_to(q):
+            split = knots[(knots > 0.0) & (knots < q)]
+            value, error = quad(lambda v: float(trajectory.evaluate(v).metric), 0.0, q,
+                                points=split, epsabs=tolerance / 20.0,
+                                epsrel=tolerance / 20.0, limit=500)
+            self.assertLessEqual(error, tolerance / 10.0)
+            return value
+        independent = np.array([integral_to(q) for q in probes])
+        mapped = np.asarray(trajectory.station_map.to_path(probes))
+        self.assertLessEqual(np.max(np.abs(mapped - independent)), tolerance)
+        self.assertLessEqual(np.max(np.abs(trajectory.station_map.to_reference(independent) - probes)), tolerance)
+        self.assertLessEqual(trajectory.station_map_error["path_station"], tolerance)
+        self.assertLessEqual(trajectory.station_map_error["reference_station"], tolerance)
 
     def test_open_rejects_outside_and_to_path_uses_exact_geometry(self):
         track = _open_curve()
         reference = ReferenceCurve(track)
         spline = OffsetSpline(track, 4.0)
         trajectory = OffsetTrajectory(reference, spline, np.zeros(spline.control_count))
-        with self.assertRaises(ValueError):
-            reference.evaluate(-1e-6)
-        with self.assertRaises(ValueError):
-            trajectory.station_map.to_path(track.lap_length + 1e-6)
+        for delta in (-1e-6, -1e-13, 1e-13, 1e-6):
+            with self.assertRaises(ValueError):
+                reference.evaluate(track.lap_length + delta if delta > 0 else delta)
+            with self.assertRaises(ValueError):
+                trajectory.evaluate(track.lap_length + delta if delta > 0 else delta)
+            with self.assertRaises(ValueError):
+                trajectory.station_map.to_path(track.lap_length + delta if delta > 0 else delta)
+            with self.assertRaises(ValueError):
+                trajectory.station_map.to_reference(
+                    trajectory.station_map.path_end + delta if delta > 0 else delta
+                )
         path = trajectory.to_path(np.linspace(0.0, track.lap_length, 21))
         sample = trajectory.evaluate(np.linspace(0.0, track.lap_length, 21))
         self.assertTrue(np.allclose(path.x_north, sample.north))
         self.assertTrue(np.allclose(path.y_east, sample.east))
         self.assertTrue(np.all(np.abs(np.diff(path.heading)) < np.pi))
+        with self.assertRaises(ValueError):
+            trajectory.to_path(np.array([0.0, 2.0, 1.0]))
+
+    def test_reference_requires_four_samples(self):
+        track = _track([0.0, 1.0, 2.0], [0.0, 1.0, 2.0], [0.0, 0.1, 0.2])
+        with self.assertRaisesRegex(ValueError, "same-length"):
+            ReferenceCurve(track)
 
     def test_exported_closed_heading_is_unwrapped(self):
         track = _circle()

@@ -37,7 +37,7 @@ def _check_station(values: object, start: float, end: float, closed: bool) -> tu
         checked = np.mod(raw - start, period) + start
         checked = np.where(np.isclose(raw, end, rtol=0.0, atol=1e-12), end, checked)
     else:
-        if np.any(raw < start - 1e-12) or np.any(raw > end + 1e-12):
+        if np.any(raw < start) or np.any(raw > end):
             raise ValueError(f"station is outside the open interval [{start}, {end}]")
         checked = raw
     return np.atleast_1d(checked), scalar
@@ -95,7 +95,7 @@ class ReferenceCurve:
         s = np.asarray(coordinates.distance, dtype=float)
         x = np.asarray(coordinates.x_north, dtype=float)
         y = np.asarray(coordinates.y_east, dtype=float)
-        if s.ndim != 1 or s.size < 3 or x.shape != s.shape or y.shape != s.shape:
+        if s.ndim != 1 or s.size < 4 or x.shape != s.shape or y.shape != s.shape:
             raise ValueError("path coordinates must be same-length one-dimensional arrays")
         if not all(np.all(np.isfinite(v)) for v in (s, x, y)) or np.any(np.diff(s) <= 0.0):
             raise ValueError("path coordinates must be finite with increasing station")
@@ -130,16 +130,23 @@ class ReferenceCurve:
         fitted_xy_error = np.hypot(np.asarray(self._x(s)) - x, np.asarray(self._y(s)) - y)
         fitted_heading = np.arctan2(dy, dx)
         fitted_k = (dx * self._y(s, 2) - dy * self._x(s, 2)) / np.hypot(dx, dy) ** 3
-        stored_k = np.asarray(coordinates.curvature, dtype=float)
-        curvature_error = fitted_k - stored_k
+        stored_k = np.asarray(getattr(coordinates, "curvature", ()), dtype=float)
+        source_curvature_valid = stored_k.shape == s.shape and np.all(np.isfinite(stored_k))
         self.fit_discrepancy = {
             "xy_max": float(np.max(fitted_xy_error)),
             "metric_min": float(np.min(np.hypot(dx, dy))),
             "metric_max": float(np.max(np.hypot(dx, dy))),
-            "curvature_rms_vs_source": float(np.sqrt(np.mean(curvature_error ** 2))),
-            "curvature_max_vs_source": float(np.max(np.abs(curvature_error))),
+            "curvature_rms_vs_source": None,
+            "curvature_max_vs_source": None,
+            "source_curvature_valid": bool(source_curvature_valid),
             "heading_source_available": bool(hasattr(coordinates, "heading")),
         }
+        if source_curvature_valid:
+            curvature_error = fitted_k - stored_k
+            self.fit_discrepancy.update({
+                "curvature_rms_vs_source": float(np.sqrt(np.mean(curvature_error ** 2))),
+                "curvature_max_vs_source": float(np.max(np.abs(curvature_error))),
+            })
 
     def evaluate(self, station: object) -> ReferenceEvaluation:
         s, scalar = _check_station(station, self.start, self.end, self.is_closed)
@@ -200,7 +207,7 @@ class StationMap:
             checked = np.mod(raw - self.path_start, length) + self.path_start
             checked = np.where(np.isclose(raw, self.path_end, rtol=0.0, atol=1e-12), self.path_end, checked)
         else:
-            if np.any(raw < self.path_start - 1e-12) or np.any(raw > self.path_end + 1e-12):
+            if np.any(raw < self.path_start) or np.any(raw > self.path_end):
                 raise ValueError("path station is outside map coverage")
             checked = raw
         result = np.asarray(self._inverse(np.atleast_1d(checked)), dtype=float)
@@ -272,16 +279,24 @@ class OffsetTrajectory:
                 candidate = StationMap(boundaries, path, self.reference.is_closed)
                 # Total-length convergence is insufficient: PCHIP's local map
                 # can err between samples while the integrated total is exact.
-                # Probe every panel midpoint using independent 16-point Gauss
-                # integration on that half-panel, then also check the inverse.
-                probe = (lower + upper) / 2.0
+                # Total length does not qualify PCHIP between samples.  Probe
+                # three off-grid locations in every panel with independent
+                # 16-point Gauss integration, then check the inverse too.
+                fractions = np.array([0.211324865405187, 0.5, 0.788675134594813])
+                probe = lower[:, None] + (upper - lower)[:, None] * fractions
+                probe_lower = np.broadcast_to(lower[:, None], probe.shape)
                 fine_nodes, fine_weights = np.polynomial.legendre.leggauss(16)
-                local_q = ((lower + probe)[:, None] + (probe - lower)[:, None] * fine_nodes) / 2.0
+                local_q = ((probe_lower[..., None] + probe[..., None])
+                           + (probe[..., None] - probe_lower[..., None]) * fine_nodes) / 2.0
                 local_metric = np.asarray(self.evaluate(local_q.ravel()).metric).reshape(local_q.shape)
-                exact_probe_path = path[:-1] + (probe - lower) * (local_metric @ fine_weights) / 2.0
-                forward_error = float(np.max(np.abs(np.asarray(candidate.to_path(probe)) - exact_probe_path)))
-                inverse_error = float(np.max(np.abs(np.asarray(candidate.to_reference(exact_probe_path)) - probe)))
-                if forward_error <= self.station_accuracy and inverse_error <= self.station_accuracy:
+                exact_probe_path = (path[:-1, None] + (probe - probe_lower)
+                                    * (local_metric @ fine_weights) / 2.0)
+                probe_flat, exact_flat = probe.ravel(), exact_probe_path.ravel()
+                forward_error = float(np.max(np.abs(np.asarray(candidate.to_path(probe_flat)) - exact_flat)))
+                inverse_error = float(np.max(np.abs(np.asarray(candidate.to_reference(exact_flat)) - probe_flat)))
+                # Reserve a factor four for off-panel queries; the recorded
+                # error remains the measured probe maximum, not this margin.
+                if forward_error <= self.station_accuracy / 4.0 and inverse_error <= self.station_accuracy / 4.0:
                     self.station_map_error = {"path_station": forward_error, "reference_station": inverse_error}
                     return candidate
             self._last_station_total = total
@@ -318,6 +333,8 @@ class OffsetTrajectory:
 
     def to_path(self, station: object) -> PathCoordinates:
         s, _ = _check_station(station, self.reference.start, self.reference.end, self.reference.is_closed)
+        if s.size < 2 or np.any(np.diff(s) <= 0.0):
+            raise ValueError("to_path station must be a strictly increasing sequence")
         values = self.evaluate(s)
         distance = np.asarray(self.station_map.to_path(s), dtype=float)
         # PathCoordinates defines heading as unwrapped.  Evaluator headings are

@@ -314,6 +314,7 @@ def build_spline_ocp(track, corridor, surface, mesh, spline, settings: QssSettin
     upper: list = []
     node_acceleration_upper_indices: list[int] = []
     midpoint_acceleration_upper_indices: list[int] = []
+    bernstein_middle_indices: list[int] = []
     off_site_acceleration_upper_indices: list[int] = []
 
     def add(expression, low, high):
@@ -379,8 +380,10 @@ def build_spline_ocp(track, corridor, surface, mesh, spline, settings: QssSettin
         bernstein_middle = 2.0 * mid_acceleration[index] - 0.5 * (
             acceleration[index] + acceleration[index + 1]
         )
-        add(bernstein_middle, float(np.min(surface.acceleration_min)),
-            float(np.max(surface.acceleration_max)))
+        bernstein_middle_indices.append(add(
+            bernstein_middle, float(np.min(surface.acceleration_min)),
+            float(np.max(surface.acceleration_max)),
+        ))
         # The Hermite midpoint speed is a denominator in the dynamics and the
         # objective; keep it positive even when the node speeds are at the floor.
         add(midpoint_speed - float(settings.minimum_speed), 0.0, math.inf)
@@ -498,6 +501,7 @@ def build_spline_ocp(track, corridor, surface, mesh, spline, settings: QssSettin
         "midpoint_acceleration_upper_indices": np.asarray(
             midpoint_acceleration_upper_indices, dtype=int,
         ),
+        "bernstein_middle_indices": np.asarray(bernstein_middle_indices, dtype=int),
         "off_site_acceleration_upper_indices": np.asarray(
             off_site_acceleration_upper_indices, dtype=int,
         ),

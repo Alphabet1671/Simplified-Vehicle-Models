@@ -596,6 +596,15 @@ class SplineTranscriptionTest(unittest.TestCase):
         self.assertTrue(np.all(
             constraints[built["midpoint_acceleration_upper_indices"]] >= -1.e-9,
         ))
+        bernstein_indices = built["bernstein_middle_indices"]
+        self.assertEqual(bernstein_indices.size, mesh.size - 1)
+        np.testing.assert_allclose(constraints[bernstein_indices], 3.0, atol=1.e-12)
+        self.assertTrue(np.all(
+            constraints[bernstein_indices] >= built["g_lower"][bernstein_indices],
+        ))
+        self.assertTrue(np.all(
+            constraints[bernstein_indices] <= built["g_upper"][bernstein_indices],
+        ))
         quarter_indices = built["off_site_acceleration_upper_indices"]
         self.assertEqual(quarter_indices.size, mesh.size - 1)
         self.assertLess(constraints[quarter_indices[0]], -0.9)

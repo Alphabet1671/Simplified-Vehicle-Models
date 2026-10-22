@@ -420,17 +420,16 @@ def _attempt_worker(request_path: str, result_path: str, artifact_path: str) -> 
         spline = OffsetSpline(track, control_spacing=request["basis_spacing_m"])
         result["actual_basis"] = {"control_count": int(spline.control_count),
                                   "control_station_m": np.asarray(spline.control_distance, dtype=float).tolist()}
-        # Project the declared offset coefficients into the production decision
-        # layout while retaining the production envelope speed/control initializer.
-        seed = initial_guess(track, corridor, surface, mesh, spline, settings)
-        coefficients = _seed_for(spline, request["seed"])
-        seed[:spline.control_count] = coefficients
-        result["initial_seed"] = _seed_domain_report(track, corridor, spline, coefficients)
+        # A profile is an independent centreline initializer. Attempt it before
+        # constructing the established envelope seed, so a legacy initializer
+        # failure cannot preempt its explicitly requested recovery path.
         result["profile_seed"] = {"requested": request.get("seed_profile", "none"),
                                   "used": False, "fallback": None}
+        use_old_seed = True
+        seed = None
         if request.get("seed_profile", "none") == "energy-nlp":
-            # A profile seed is centreline-only.  Preserve the declared offset
-            # perturbation by retaining the established seed whenever requested.
+            # Preserve a declared lateral perturbation; a centreline profile must
+            # never overwrite it without recomputing its analytic trajectory.
             if request["seed"] != "centerline":
                 result["profile_seed"].update({"fallback": "declared-offset-perturbation",
                                                 "diagnostics": {"available": False, "reason": "profile-centreline-only"}})
@@ -441,11 +440,19 @@ def _attempt_worker(request_path: str, result_path: str, artifact_path: str) -> 
                 result["profile_seed"]["diagnostics"] = diagnostics
                 if profile_seed is not None:
                     seed = profile_seed
+                    use_old_seed = False
                     result["profile_seed"]["used"] = True
                 else:
                     result["profile_seed"]["fallback"] = "explicit-old-seed"
                     if request.get("strict_profile_seed", False):
                         raise RuntimeError(f"strict profile seed failed: {diagnostics.get('reason')}")
+        if use_old_seed:
+            seed = initial_guess(track, corridor, surface, mesh, spline, settings)
+            coefficients = _seed_for(spline, request["seed"])
+            seed[:spline.control_count] = coefficients
+            result["initial_seed"] = _seed_domain_report(track, corridor, spline, coefficients)
+        else:
+            result["initial_seed"] = {"used": "energy-nlp-profile", "note": "projection seed; not OCP feasible"}
         solution = solve_spline_line(track, corridor, surface, mesh, spline, settings, seed=seed)
         np.savez_compressed(artifact_path, distance=solution.distance, offset=solution.offset,
                              heading_error=solution.heading_error, curvature=solution.curvature,

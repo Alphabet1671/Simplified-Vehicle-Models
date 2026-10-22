@@ -169,6 +169,45 @@ class NoTvMinimumLapHarnessTest(unittest.TestCase):
         self.assertEqual(result["profile_seed"]["fallback"], "explicit-old-seed")
         self.assertEqual(result["profile_seed"]["diagnostics"]["reason"], "fixture")
 
+    def test_profile_seed_precedes_old_initializer_and_strict_failure_skips_it(self):
+        class FakeSpline:
+            control_count = 2
+            control_distance = np.array([0.0, 1.0])
+        class FakeSolution:
+            distance = np.array([0., 1.]); offset = heading_error = curvature = np.zeros(2)
+            speed = np.full(2, 10.); acceleration = np.zeros(2); midpoint_acceleration = np.zeros(1)
+            coefficients = np.zeros(2); state_representation = "energy_hs_v1"; time_quadrature = "fixture"
+            time_quadrature_metadata = {}; status = "Solve_Succeeded"; lap_time = objective_value = 1.
+            iterations = 1; maximum_violation = 0.
+        request = harness.build_attempt(harness.default_cases()["acceleration"], mesh_spacing_m=5., basis_spacing_m=35.,
+            maximum_iterations=7, wall_cap_s=3., seed_name="centerline", formulation=Path("form.xml"),
+            surface=Path("surface.npz"), seed_profile="energy-nlp")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); request_path = root / "request.json"; result_path = root / "result.json"
+            request_path.write_text(json.dumps(harness._json_safe(request)), encoding="utf-8")
+            profile_seed = np.zeros(7); captured = {}
+            def capture_solution(*args, **kwargs):
+                captured["seed"] = kwargs["seed"]
+                return FakeSolution()
+            with patch.object(harness, "make_track_view", return_value=object()), \
+                 patch.object(harness, "corridor_from_track", return_value=object()), \
+                 patch.object(harness, "compile_formulation", return_value=SimpleNamespace(model=object())), \
+                 patch.object(harness, "point_mass_view_of_planar", return_value=object()), \
+                 patch.object(harness, "load_surface_dispatch", return_value=(SimpleNamespace(provenance_hash="ok"), "fixture")), \
+                 patch.object(harness, "capability_hash", return_value="ok"), \
+                 patch.object(harness, "build_mesh", return_value=np.array([0., 1.])), \
+                 patch.object(harness, "OffsetSpline", return_value=FakeSpline()), \
+                 patch.object(harness, "initial_guess", side_effect=AssertionError("old seed must not run")), \
+                 patch.object(harness, "build_profile_line_seed", return_value=(profile_seed, {"available": True})), \
+                 patch.object(harness, "solve_spline_line", side_effect=capture_solution), \
+                 patch.object(harness, "validate_line", return_value={"checks": {"geometry_consistency": True, "dense_feasibility": True}, "model_feasible": True}), \
+                 patch("tools.run.solve_minimum_time_line._write_trajectory_metadata", side_effect=lambda path, solution: np.savez(path, metadata=np.array("fixture"))):
+                harness._attempt_worker(str(request_path), str(result_path), str(root / "solution.npz"))
+            result = json.loads(result_path.read_text())
+        self.assertEqual(result["status"], "Solve_Succeeded")
+        np.testing.assert_array_equal(captured["seed"], profile_seed)
+        self.assertTrue(result["profile_seed"]["used"])
+
     def test_worker_persists_dense_and_trajectory_metadata(self):
         class FakeSpline:
             control_count = 2

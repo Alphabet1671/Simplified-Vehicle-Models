@@ -26,6 +26,17 @@ class ProfileLineSeedTest(unittest.TestCase):
                      2 * metric[1:] * acceleration[1:]))
         np.testing.assert_allclose(residual, 0., atol=1e-14)
 
+    def test_tiny_variable_bound_excess_is_rejected_without_tolerance_slack(self):
+        surface = SimpleNamespace(representation="signed_transient_normalized_v1",
+                                  domain_speed_values=np.array([4.]),
+                                  acceleration_min=np.array([[-2.]]), acceleration_max=np.array([[3.]]))
+        spline = SimpleNamespace(control_count=2)
+        settings = SimpleNamespace(minimum_speed=.5)
+        seed = np.array([0., 0., 1., 1., 0., 3.000000000001, 0.])
+        accepted, reason = seeds._within_bounds(seed, surface, spline, np.array([0., 1.]), settings)
+        self.assertFalse(accepted)
+        self.assertIn("variable-bound-violation", reason)
+
     def test_failed_profile_returns_explicit_unavailable_reason(self):
         track = SimpleNamespace(is_closed=False)
         spline = SimpleNamespace(control_count=2)
@@ -36,6 +47,16 @@ class ProfileLineSeedTest(unittest.TestCase):
         self.assertIsNone(seed)
         self.assertFalse(diagnostics["available"])
         self.assertEqual(diagnostics["reason"], "unsupported-or-invalid")
+
+    def test_unexpected_backend_error_is_normalized_to_diagnostics(self):
+        track = SimpleNamespace(is_closed=False)
+        spline = SimpleNamespace(control_count=2)
+        settings = SimpleNamespace(start_speed=0., minimum_speed=.5, tolerance=1e-6)
+        with patch.object(seeds, "_reference_curve", side_effect=RuntimeError("backend fixture failure")):
+            seed, diagnostics = seeds.build_profile_line_seed(track, object(), object(), np.array([0., 1.]), spline, settings)
+        self.assertIsNone(seed)
+        self.assertEqual(diagnostics["reason"], "unsupported-or-invalid")
+        self.assertIn("RuntimeError", diagnostics["error"])
 
     def test_legacy_surface_is_reported_without_fallback_seed(self):
         track = SimpleNamespace(is_closed=True)

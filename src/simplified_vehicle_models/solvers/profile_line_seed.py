@@ -53,7 +53,7 @@ def _hs_midpoint_acceleration(energy: np.ndarray, acceleration: np.ndarray,
             - 2.0 * metric[1:] * acceleration[1:]) / (8.0 * metric_mid)
 
 
-def _within_bounds(seed: np.ndarray, surface, spline, mesh: np.ndarray, settings, slack: float) -> tuple[bool, str | None]:
+def _within_bounds(seed: np.ndarray, surface, spline, mesh: np.ndarray, settings) -> tuple[bool, str | None]:
     """Check only cheap global variable bounds, without constructing a second NLP."""
     nodes, count, controls = mesh.size, mesh.size - 1, int(spline.control_count)
     if seed.shape != (controls + 3 * nodes - 1,) or not np.all(np.isfinite(seed)):
@@ -67,7 +67,7 @@ def _within_bounds(seed: np.ndarray, surface, spline, mesh: np.ndarray, settings
     upper = float(np.max(surface.acceleration_max))
     violation = max(float(settings.minimum_speed - np.min(speed)), float(np.max(speed) - maximum_speed),
                     float(lower - np.min(acceleration)), float(np.max(acceleration) - upper), 0.0)
-    if violation > slack:
+    if violation > 0.0:
         return False, f"variable-bound-violation:{violation:g}"
     return True, None
 
@@ -110,8 +110,7 @@ def build_profile_line_seed(track, corridor, surface, mesh, spline, settings, *,
         mid_acceleration = _hs_midpoint_acceleration(energy, acceleration, metric, midpoint_metric,
                                                       np.asarray(mesh, dtype=float))
         seed = np.concatenate([coefficients, np.sqrt(energy), acceleration, mid_acceleration])
-        valid, reason = _within_bounds(seed, surface, spline, np.asarray(mesh, dtype=float), settings,
-                                       slack=8.0 * float(settings.tolerance))
+        valid, reason = _within_bounds(seed, surface, spline, np.asarray(mesh, dtype=float), settings)
         if not valid:
             return None, _diagnostics(reason, boundary=boundary,
                 profile_status=profile.status, elapsed_seconds=time.monotonic() - started)
@@ -122,7 +121,7 @@ def build_profile_line_seed(track, corridor, surface, mesh, spline, settings, *,
                       "node_path_station_m": node_ell.tolist(),
                       "coefficient_sha256": __import__("hashlib").sha256(coefficients.tobytes()).hexdigest(),
                       "ocp_feasible": False}
-    except (TypeError, ValueError, ImportError) as error:
+    except Exception as error:
         return None, _diagnostics("unsupported-or-invalid", error=f"{type(error).__name__}: {error}",
                                   elapsed_seconds=time.monotonic() - started)
 

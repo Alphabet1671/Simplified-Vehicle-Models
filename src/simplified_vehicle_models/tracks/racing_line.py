@@ -134,9 +134,12 @@ def _spline_path_from_solution(track, solution, smoothing: float) -> PathCoordin
     center_heading = np.interp(source, track.distance, coordinates.heading)
     north = center_north - offset * np.sin(center_heading)
     east = center_east + offset * np.cos(center_heading)
-    spline_north = CubicSpline(source, north)
-    spline_east = CubicSpline(source, east)
     positions = np.asarray(track.distance, dtype=float)
+    if (source[0] > positions[0] + 1.0e-9
+            or source[-1] < positions[-1] - 1.0e-9):
+        raise ValueError("solution mesh must span the track grid for cubic reconstruction")
+    spline_north = CubicSpline(source, north, extrapolate=False)
+    spline_east = CubicSpline(source, east, extrapolate=False)
     x_north = spline_north(positions)
     y_east = spline_east(positions)
     tangent_north = spline_north(positions, 1)

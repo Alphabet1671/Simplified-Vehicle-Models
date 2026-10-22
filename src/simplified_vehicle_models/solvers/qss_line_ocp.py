@@ -386,6 +386,12 @@ def build_ocp(track, corridor, surface, mesh, settings: QssSettings):
                 continue  # Hermite t=1/2 equals the HS collocation midpoint.
             add(dense_state[0],float(dense_low),float(dense_high))
         add(sm[0],float(interior_lower[1]),float(interior_upper[1]))
+        if basis is not None and not (np.allclose(nlo, 0.0) and np.allclose(nhi, 0.0)):
+            # A reduced basis replaces local offset bounds, so the node values
+            # need explicit corridor rows instead of relying on variable bounds.
+            # A fully collapsed corridor already fixes every control to zero.
+            add(n[i], float(nlo[i]), float(nhi[i]))
+            add(n[i+1], float(nlo[i+1]), float(nhi[i+1]))
         limits(n[i],psi[i],v[i],a[i],q[i],float(k0[i]))
         limits(sm[0],sm[1],sm[2],am[i],qm[i],kmid)
         limits(n[i+1],psi[i+1],v[i+1],a[i+1],q[i+1],float(k0[i+1]))
@@ -624,11 +630,13 @@ def solve_ladder(track, corridor, surface, settings: QssSettings,
                  stage_callback=None) -> list[QssSolution]:
     """Solve coarse to fine, warm starting each stage from the one before.
 
-    Each prior solution is projected directly onto the *next* stage mesh before
-    it is used as that stage's seed. The first supplied seed is interpreted as
-    a seed for the first spacing, consistent with ``solve_line``'s contract.
-    If supplied, ``stage_callback(spacing, solution, wall_seconds)`` runs after
-    each successful solve; the duration measures the ``solve_line`` call only.
+    For the per-node offset layout, each prior solution is projected onto the
+    next stage mesh and used as its seed. The first supplied seed is the seed for
+    the first spacing. With a reduced offset basis, the first supplied seed is
+    still used, but later stages cold-start because projected basis seeds are
+    unreliable. If supplied, ``stage_callback(spacing, solution, wall_seconds)``
+    runs after each successful solve; the duration measures the ``solve_line``
+    call only.
     """
     if not spacings:
         raise ValueError("at least one mesh spacing is required")
@@ -644,8 +652,13 @@ def solve_ladder(track, corridor, surface, settings: QssSettings,
                 open_regularisation=open_schedule[min(index, len(open_schedule) - 1)],
             )
         started = time.perf_counter()
-        stage_seed = None if settings.offset_control_spacing is not None else current
-        solution = solve_line(track, corridor, surface, mesh, stage_settings, seed=stage_seed)
+        stage_seed = current
+        try:
+            solution = solve_line(track, corridor, surface, mesh, stage_settings, seed=stage_seed)
+        except RuntimeError:
+            if stage_seed is None:
+                raise
+            solution = solve_line(track, corridor, surface, mesh, stage_settings, seed=None)
         wall_seconds = time.perf_counter() - started
         if solution.status != "Solve_Succeeded":
             raise RuntimeError(
@@ -656,9 +669,14 @@ def solve_ladder(track, corridor, surface, settings: QssSettings,
         if stage_callback is not None:
             stage_callback(float(spacing), solution, wall_seconds)
         if index + 1 < len(spacings):
-            next_mesh = build_mesh(track, spacings[index + 1])
-            current = project_seed(
-                solution, next_mesh, is_closed=bool(track.is_closed),
-                track=track, control_spacing=settings.offset_control_spacing,
-            )
+            if settings.offset_control_spacing is None:
+                next_mesh = build_mesh(track, spacings[index + 1])
+                current = project_seed(
+                    solution, next_mesh, is_closed=bool(track.is_closed),
+                    track=track, control_spacing=None,
+                )
+            else:
+                # A projected reduced-basis seed is not reliable enough to use;
+                # later stages cold-start from the default seed.
+                current = None
     return stages

@@ -70,6 +70,22 @@ class OffsetPathTest(unittest.TestCase):
         smooth = path_from_solution(track, solution, smoothing=0.5)
         np.testing.assert_allclose(smooth.x_north, path.x_north, atol=1e-9)
 
+    def test_path_from_solution_rejects_a_short_open_solution(self):
+        from tools.tracks.open_course import build_course, straight, write_course
+
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        xml_path, _ = write_course(
+            build_course([straight(20.0)]), Path(directory.name), "short", "short", "Short",
+        )
+        track = load_track(xml_path)
+        short = SimpleNamespace(
+            offset=np.zeros(track.distance.size - 10),
+            distance=np.asarray(track.distance[:-10]),
+        )
+        with self.assertRaisesRegex(ValueError, "must span the track grid"):
+            path_from_solution(track, short)
+
     def test_path_from_solution_samples_periodically_to_track_grid(self):
         track = self._circle()
         solution = SimpleNamespace(

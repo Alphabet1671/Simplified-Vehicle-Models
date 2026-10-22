@@ -369,6 +369,40 @@ class LadderTest(unittest.TestCase):
         solution = solve_line(track, corridor, _flat_surface(25.0), mesh, settings)
         self.assertEqual(solution.status, "Solve_Succeeded")
         self.assertEqual(solution.offset.size, mesh.size)
+        self.assertTrue(np.all(solution.offset >= np.interp(solution.distance, corridor.distance, corridor.minimum) - 1.0e-6))
+        self.assertTrue(np.all(solution.offset <= np.interp(solution.distance, corridor.distance, corridor.maximum) + 1.0e-6))
+
+    def test_reduced_basis_ladder_uses_supplied_first_seed_only(self):
+        from unittest.mock import patch
+        from simplified_vehicle_models.solvers import qss_line_ocp
+
+        track = load_track(_write_circle_track(self.directory, radius=40.0, nodes=72, half_width=3.0))
+        object.__setattr__(track, "is_closed", False)
+        corridor = corridor_from_track(track)
+        captured = []
+        supplied = np.zeros(7)
+
+        def fake_solve(track, corridor, surface, mesh, settings, *, seed=None):
+            captured.append(seed)
+            built = qss_line_ocp.build_ocp(track, corridor, surface, mesh, settings)
+            values = qss_line_ocp.initial_guess(track, corridor, surface, mesh, settings)
+            blocks = qss_line_ocp.unpack(
+                values, len(mesh) - 1, built["control_count"], built["offset_basis"],
+            )
+            return qss_line_ocp.QssSolution(
+                np.asarray(mesh), blocks["offset"], blocks["heading"], blocks["speed"],
+                blocks["acceleration"], blocks["curvature_rate"], 1.0,
+                "Solve_Succeeded", 1, 0.0,
+            )
+
+        settings = qss_line_ocp.QssSettings(offset_control_spacing=20.0)
+        with patch.object(qss_line_ocp, "solve_line", side_effect=fake_solve):
+            qss_line_ocp.solve_ladder(
+                track, corridor, _flat_surface(25.0), settings,
+                spacings=(8.0, 4.0), seed=supplied,
+            )
+        self.assertIs(captured[0], supplied)
+        self.assertIsNone(captured[1])
 
     def test_open_capability_envelope_matches_zero_corridor_ocp(self):
         from tools.tracks.open_course import arc_by_angle, build_course, straight, write_course

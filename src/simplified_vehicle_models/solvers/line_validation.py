@@ -266,9 +266,15 @@ def validate_line(solution, corridor, surface, settings=None, *, vehicle=None,
                                 "maximum_violation": None, "worst_station": None,
                                 "unit": "", "tolerance": None})
         try:
-            amax = _bilinear(surface, speed, curvature, "acceleration_max")
-            amin = _bilinear(surface, speed, curvature, "acceleration_min")
-            ceiling = _interpolate(curvature, surface.curvature, surface.speed_ceiling,
+            if getattr(surface, "representation", None) == "signed_transient_normalized_v1":
+                bounds = [surface.limits(float(v), float(k)) for v, k in zip(speed, curvature)]
+                amin = np.asarray([item[0] for item in bounds])
+                amax = np.asarray([item[1] for item in bounds])
+                ceiling = np.asarray([surface.domain_speed(float(k)) for k in curvature])
+            else:
+                amax = _bilinear(surface, speed, curvature, "acceleration_max")
+                amin = _bilinear(surface, speed, curvature, "acceleration_min")
+                ceiling = _interpolate(curvature, surface.curvature, surface.speed_ceiling,
                                    closed=False)
             diagnostics.append(_diagnostic("acceleration_max", acceleration-amax,
                                            stations, "m/s^2", tolerances["acceleration_mps2"]))

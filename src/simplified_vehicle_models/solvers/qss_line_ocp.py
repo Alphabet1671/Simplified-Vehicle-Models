@@ -88,9 +88,15 @@ def _validate_inputs(track, corridor, surface, mesh, settings):
         raise ValueError("corridor and track distance grids must match")
     if not np.isclose(corridor.distance[-1], length, rtol=1e-10, atol=1e-9):
         raise ValueError("corridor lap length must match track")
-    axes = (np.asarray(surface.speed, dtype=float), np.asarray(surface.curvature, dtype=float))
+    # SignedTransientCapability is opt-in and uses a normalized ``u`` axis;
+    # never relabel that axis as physical speed merely to satisfy legacy checks.
+    signed = getattr(surface, "representation", None) == "signed_transient_normalized_v1"
+    speed_axis = np.asarray(surface.u if signed else surface.speed, dtype=float)
+    axes = (speed_axis, np.asarray(surface.curvature, dtype=float))
     if any(axis.ndim != 1 or axis.size < 2 or not np.all(np.isfinite(axis)) or np.any(np.diff(axis) <= 0.0) for axis in axes):
         raise ValueError("capability surface axes must be finite strictly increasing vectors")
+    if signed and (not np.isclose(speed_axis[0], 0.0) or not np.isclose(speed_axis[-1], 1.0)):
+        raise ValueError("signed capability must use a normalized u=[0,1] axis")
     expected = (axes[0].size, axes[1].size)
     for name in ("acceleration_max", "acceleration_min"):
         values = np.asarray(getattr(surface, name), dtype=float)
@@ -98,11 +104,19 @@ def _validate_inputs(track, corridor, surface, mesh, settings):
             raise ValueError(f"{name} must be a finite array matching the surface axes")
     if np.any(surface.acceleration_min > surface.acceleration_max):
         raise ValueError("surface acceleration_min must not exceed acceleration_max")
-    ceiling_values = np.asarray(surface.speed_ceiling, dtype=float)
-    if ceiling_values.shape != axes[1].shape or not np.all(np.isfinite(ceiling_values)) or np.any(ceiling_values <= 0.0):
-        raise ValueError("speed_ceiling must be finite, positive, and match curvature axis")
-    if settings.minimum_speed < axes[0][0] or settings.minimum_speed >= axes[0][-1]:
-        raise ValueError("minimum_speed must lie within the capability speed axis")
+    if signed:
+        ceiling_values = np.asarray(surface.domain_speed_values, dtype=float)
+        if (ceiling_values.shape != axes[1].shape or not np.all(np.isfinite(ceiling_values))
+                or np.any(ceiling_values <= float(surface.speed_floor))):
+            raise ValueError("signed domain speeds must exceed the physical speed floor")
+        if settings.minimum_speed < float(surface.speed_floor) or settings.minimum_speed >= float(np.max(ceiling_values)):
+            raise ValueError("minimum_speed must lie within the signed physical speed domain")
+    else:
+        ceiling_values = np.asarray(surface.speed_ceiling, dtype=float)
+        if ceiling_values.shape != axes[1].shape or not np.all(np.isfinite(ceiling_values)) or np.any(ceiling_values <= 0.0):
+            raise ValueError("speed_ceiling must be finite, positive, and match curvature axis")
+        if settings.minimum_speed < axes[0][0] or settings.minimum_speed >= axes[0][-1]:
+            raise ValueError("minimum_speed must lie within the capability speed axis")
     if np.any(np.asarray(track.curvature, dtype=float) < axes[1][0] - 1e-12) or np.any(np.asarray(track.curvature, dtype=float) > axes[1][-1] + 1e-12):
         raise ValueError("track curvature lies outside capability surface")
     return mesh
@@ -286,6 +300,8 @@ def build_ocp(track, corridor, surface, mesh, settings: QssSettings):
     """Build CasADi NLP and its variable/constraint bounds."""
     import casadi as ca
 
+    if getattr(surface, "representation", None) == "signed_transient_normalized_v1":
+        raise ValueError("signed transient capability requires the explicit spline adapter")
     mesh = _validate_inputs(track, corridor, surface, mesh, settings)
     count, nodes = mesh.size - 1, mesh.size
     amax = ca.interpolant("qss_amax", "linear", [surface.speed.tolist(), surface.curvature.tolist()], surface.acceleration_max.ravel(order="F").tolist())

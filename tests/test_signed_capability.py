@@ -1,0 +1,100 @@
+from pathlib import Path
+import tempfile
+import unittest
+
+import numpy as np
+
+from simplified_vehicle_models.compiler.compile import compile_formulation
+from simplified_vehicle_models.formulations.point_mass import evaluate_equilibrium, point_mass_view_of_planar
+from simplified_vehicle_models.formulations.signed_capability import (
+    SignedTransientCapability, load_signed_transient_capability,
+    save_signed_transient_capability, signed_feasible_interval, symbolic_lookup,
+)
+
+ROOT = Path(__file__).resolve().parents[1]
+FORMULATION = ROOT / "models/formulations/iem24_murphy_real_planar_7dof.xml"
+
+
+def _chart():
+    return SignedTransientCapability(
+        np.array([0., .5, 1.]), np.array([-.1, 0., .1]),
+        np.array([[2., 2., 2.], [1., 1., 1.], [-2., -2., -2.]]),
+        np.array([[-8., -8., -8.], [-7., -7., -7.], [-6., -6., -6.]]),
+        np.array([15., 20., 15.]), .5, "fixture",
+        {"scan_points": 101}, {"sampled": True},
+    )
+
+
+class SignedCapabilityTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.vehicle = point_mass_view_of_planar(compile_formulation(str(FORMULATION)).model)
+
+    def test_live_signed_negative_upper_regressions(self):
+        cases = ((33.33908018475074, 0., -0.05282909), (35.067452826, 0., -4.0512410))
+        for speed, curvature, expected_upper in cases:
+            with self.subTest(speed=speed):
+                self.assertFalse(evaluate_equilibrium(self.vehicle, speed, curvature, 0.).is_feasible)
+                interval = signed_feasible_interval(
+                    lambda acceleration: evaluate_equilibrium(self.vehicle, speed, curvature, acceleration),
+                    acceleration_min=-30., acceleration_max=10., scan_points=401, refinement_steps=30,
+                )
+                self.assertIsNotNone(interval)
+                self.assertAlmostEqual(interval[1], expected_upper, delta=4.e-3)
+                self.assertLess(interval[1], 0.)
+
+    def test_live_curved_invalid_cell_is_excluded(self):
+        curvature = -.0606381561585
+        invalid = signed_feasible_interval(
+            lambda acceleration: evaluate_equilibrium(self.vehicle, 17.495664306, curvature, acceleration),
+            acceleration_min=-30., acceleration_max=10., scan_points=401, refinement_steps=24,
+        )
+        valid = signed_feasible_interval(
+            lambda acceleration: evaluate_equilibrium(self.vehicle, 16.5, curvature, acceleration),
+            acceleration_min=-30., acceleration_max=10., scan_points=401, refinement_steps=24,
+        )
+        self.assertIsNone(invalid)
+        self.assertIsNotNone(valid)
+        self.assertAlmostEqual(valid[0], -2.42649, delta=.01)
+        self.assertAlmostEqual(valid[1], .47861, delta=.01)
+
+    def test_physical_normalized_query_and_no_extrapolation(self):
+        chart = _chart()
+        self.assertEqual(chart.domain_speed(0.), 20.)
+        self.assertAlmostEqual(chart.normalized_speed(10.25, 0.), .5)
+        self.assertEqual(chart.limits(10.25, 0.), (-7., 1.))
+        with self.assertRaisesRegex(ValueError, "capability domain"):
+            chart.limits(20.001, 0.)
+        with self.assertRaisesRegex(ValueError, "capability domain"):
+            chart.limits(.4, 0.)
+
+    def test_exclusive_versioned_serialization_preserves_legacy_files(self):
+        chart = _chart()
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "signed.npz"
+            save_signed_transient_capability(chart, path)
+            loaded = load_signed_transient_capability(path)
+            self.assertEqual(loaded.representation, "signed_transient_normalized_v1")
+            np.testing.assert_allclose(loaded.domain_speed_values, chart.domain_speed_values)
+            with self.assertRaises(FileExistsError):
+                save_signed_transient_capability(chart, path)
+
+    def test_numeric_symbolic_lookup_parity(self):
+        try:
+            import casadi as ca
+        except ImportError:
+            self.skipTest("CasADi unavailable")
+        chart = _chart(); lookup = symbolic_lookup(chart, "parity")
+        v, k = ca.MX.sym("v"), ca.MX.sym("k")
+        lower, upper, domain = lookup(v, k)
+        function = ca.Function("lookup", [v, k], [lower, upper, domain])
+        numeric = chart.limits(10.25, .04)
+        actual = function(10.25, .04)
+        self.assertAlmostEqual(float(actual[0]), numeric[0], places=12)
+        self.assertAlmostEqual(float(actual[1]), numeric[1], places=12)
+        self.assertAlmostEqual(float(actual[2]), chart.domain_speed(.04), places=12)
+
+    def test_disconnected_acceleration_sets_are_refused(self):
+        with self.assertRaisesRegex(ValueError, "disconnected"):
+            signed_feasible_interval(lambda a: (-4 < a < -3) or a > 2,
+                                     acceleration_min=-5., acceleration_max=5., scan_points=101)

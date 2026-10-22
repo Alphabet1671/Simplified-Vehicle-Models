@@ -274,20 +274,19 @@ def build_spline_ocp(track, corridor, surface, mesh, spline, settings: QssSettin
             for i in range(count)
         ]
 
-    amax = ca.interpolant(
-        "spline_amax", "linear",
-        [surface.speed.tolist(), surface.curvature.tolist()],
-        surface.acceleration_max.ravel(order="F").tolist(),
-    )
-    amin = ca.interpolant(
-        "spline_amin", "linear",
-        [surface.speed.tolist(), surface.curvature.tolist()],
-        surface.acceleration_min.ravel(order="F").tolist(),
-    )
-    ceiling = ca.interpolant(
-        "spline_vceil", "linear",
-        [surface.curvature.tolist()], surface.speed_ceiling.tolist(),
-    )
+    signed = getattr(surface, "representation", None) == "signed_transient_normalized_v1"
+    if signed:
+        from simplified_vehicle_models.formulations.signed_capability import symbolic_lookup
+        signed_limits = symbolic_lookup(surface, "spline_signed")
+        def lookup(speed_value, curvature_value):
+            return signed_limits(speed_value, curvature_value)
+    else:
+        amax = ca.interpolant("spline_amax", "linear", [surface.speed.tolist(), surface.curvature.tolist()], surface.acceleration_max.ravel(order="F").tolist())
+        amin = ca.interpolant("spline_amin", "linear", [surface.speed.tolist(), surface.curvature.tolist()], surface.acceleration_min.ravel(order="F").tolist())
+        ceiling = ca.interpolant("spline_vceil", "linear", [surface.curvature.tolist()], surface.speed_ceiling.tolist())
+        def lookup(speed_value, curvature_value):
+            return (amin(ca.vertcat(speed_value, curvature_value)),
+                    amax(ca.vertcat(speed_value, curvature_value)), ceiling(curvature_value))
 
     constraints: list = []
     lower: list = []
@@ -308,9 +307,10 @@ def build_spline_ocp(track, corridor, surface, mesh, spline, settings: QssSettin
         add(q, -float(settings.maximum_curvature_rate),
             float(settings.maximum_curvature_rate))
         add(kappa, curvature_lower, curvature_upper)
-        add(car_acceleration - amin(ca.vertcat(car_speed, kappa)), 0.0, math.inf)
-        add(amax(ca.vertcat(car_speed, kappa)) - car_acceleration, 0.0, math.inf)
-        add(ceiling(kappa) - car_speed, 0.0, math.inf)
+        lower_acceleration, upper_acceleration, domain_speed = lookup(car_speed, kappa)
+        add(car_acceleration - lower_acceleration, 0.0, math.inf)
+        add(upper_acceleration - car_acceleration, 0.0, math.inf)
+        add(domain_speed - car_speed, 0.0, math.inf)
         add(1.0 - centreline_curvature * offset, fold_guard, math.inf)
 
     objective = 0
@@ -392,6 +392,8 @@ def build_spline_ocp(track, corridor, surface, mesh, spline, settings: QssSettin
 
     acceleration_lower = float(np.min(surface.acceleration_min))
     acceleration_upper = float(np.max(surface.acceleration_max))
+    maximum_domain_speed = (float(np.max(surface.domain_speed_values)) if signed
+                            else float(surface.speed[-1]))
     x_lower = np.concatenate([
         control_lower,
         np.full(nodes, float(settings.minimum_speed)),
@@ -400,7 +402,7 @@ def build_spline_ocp(track, corridor, surface, mesh, spline, settings: QssSettin
     ])
     x_upper = np.concatenate([
         control_upper,
-        np.full(nodes, float(surface.speed[-1])),
+        np.full(nodes, maximum_domain_speed),
         np.full(nodes, acceleration_upper),
         np.full(count, acceleration_upper),
     ])
@@ -484,10 +486,12 @@ def _envelope_guess(track, surface, mesh, settings: QssSettings, speed_cap=None)
         ),
         surface.curvature[0], surface.curvature[-1],
     )
-    ceiling = np.interp(curvature, surface.curvature, surface.speed_ceiling)
+    signed = getattr(surface, "representation", None) == "signed_transient_normalized_v1"
+    ceiling = (np.asarray([surface.domain_speed(float(k)) for k in curvature]) if signed
+               else np.interp(curvature, surface.curvature, surface.speed_ceiling))
     cap_values = _speed_cap_values(speed_cap, nodes)
     minimum = float(settings.minimum_speed)
-    top = float(surface.speed[-1])
+    top = float(np.max(surface.domain_speed_values)) if signed else float(surface.speed[-1])
     widths = np.diff(mesh)
 
     def amax(car_speed, car_curvature):

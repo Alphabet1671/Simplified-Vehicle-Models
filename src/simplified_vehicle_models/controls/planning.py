@@ -40,8 +40,16 @@ class ControlResponse:
             raise ValueError('control response values must be finite')
         if not isinstance(self.feasible, bool):
             raise ValueError('feasible must be boolean')
-        if not all(isinstance(tag, str) for tag in self.saturation):
+        saturation = self.saturation
+        if isinstance(saturation, str):
+            raise ValueError('saturation must be a sequence of tags, not a string')
+        try:
+            tags = tuple(saturation)
+        except TypeError as error:
+            raise ValueError('saturation must be a sequence of tags') from error
+        if not all(isinstance(tag, str) for tag in tags):
             raise ValueError('saturation tags must be strings')
+        object.__setattr__(self, 'saturation', tags)
 
 
 class DriveControlPolicy(Protocol):
@@ -63,7 +71,7 @@ def _canonical(value):
         return [_canonical(item) for item in value]
     if isinstance(value, dict):
         return {str(key): _canonical(item) for key, item in sorted(value.items())}
-    return repr(value)
+    raise TypeError(f'cannot canonically serialize controller parameter {type(value).__qualname__}')
 
 
 def _public_parameters(policy):
@@ -79,6 +87,7 @@ def _public_parameters(policy):
 def controller_hash(policy) -> str:
     """Hash the declared controller identity and canonical public parameters."""
     payload = {'name': policy.name, 'provenance': policy.provenance_hash,
+               'is_stateful': policy.is_stateful,
                'parameters': _public_parameters(policy)}
     return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
 

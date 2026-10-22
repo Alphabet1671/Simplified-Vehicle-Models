@@ -70,7 +70,9 @@ follow-up must be separately reviewed.
 
 ## Status
 
-The shared optimizer/exported/replayed physical-time contract and the original
-open-circle 2 ms regression are complete.  The actual signed rolling-10
-requirement remains open because the one strict attempt did not obtain
-`Solve_Succeeded`, and no dense/model acceptance was reached.
+The optimizer and reported spline-solution physical-time contract, plus the
+original open-circle 2 ms regression, are complete.  This does not prove
+agreement with the independent replay/reference-time discretization; that
+requires a measured replay comparison.  The actual signed rolling-10 requirement
+remains open because the one strict attempt did not obtain `Solve_Succeeded`, and
+no dense/model acceptance was reached.

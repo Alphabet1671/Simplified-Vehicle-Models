@@ -119,9 +119,9 @@ def _signed_transition(surface, *, vi: float, bound: float, curvature: float, ds
                        forward: bool, tolerance: float) -> float:
     """Greatest chart-supported energy endpoint from affine cell enumeration.
 
-    The returned endpoint is asserted only when the enumerated feasible set is
-    connected.  Disconnected branches are refused rather than selected by a
-    seed-dependent fixed point.
+    The returned endpoint is the greatest enumerated feasible endpoint whose
+    signed direction is continuable from the actual current state.  Ambiguous
+    remote branches are refused rather than selected by a seed-dependent point.
     """
     if min(vi, bound) < surface.speed_floor:
         raise RuntimeError("signed affine transition below chart floor is unsupported")
@@ -135,8 +135,9 @@ def _signed_transition(surface, *, vi: float, bound: float, curvature: float, ds
             if 0. <= w <= w_bound:
                 edges.add(math.sqrt(.5*(w+w_fixed)))
     m_min = math.sqrt(.5*w_fixed)
+    m_anchor = math.sqrt(w_fixed)  # identical endpoint energy: w_other == w_fixed
     m_max = math.sqrt(.5*(w_fixed+w_bound))
-    edges.update((m_min, m_max))
+    edges.update((m_min, m_anchor, m_max))
     # All chart boundaries are shared; use the exact lookup at every candidate
     # to retain the public signed-axis/domain semantics.
     for cells in (lower, upper):
@@ -184,8 +185,46 @@ def _signed_transition(surface, *, vi: float, bound: float, curvature: float, ds
     if len(merged) != 1:
         raise RuntimeError("signed affine transition has disconnected feasible branches")
     m = merged[0][1]
-    w = 2.*m*m-w_fixed
-    return math.sqrt(max(0., min(w_bound, w)))
+    endpoint = math.sqrt(max(0., min(w_bound, 2.*m*m-w_fixed)))
+    # A local ds->0 continuation starts with a in [amin(vi), amax(vi)].
+    # Consequently a branch cannot reverse its permitted local energy direction
+    # merely because a remote chart cell has a favorable root.  This is not an
+    # a==0 anchor test: a strictly negative amax permits braking and a strictly
+    # positive amin permits acceleration.  The exact chart-cell zero barriers
+    # additionally prohibit crossing a speed where the relevant signed limit
+    # eliminates that direction.
+    amin_now, amax_now = surface.limits(vi, curvature)
+    if forward:
+        if endpoint > vi + tolerance:
+            if amax_now < -tolerance:
+                raise RuntimeError("signed affine transition lacks a connected current-state branch")
+            direction_cells = upper
+        elif endpoint < vi - tolerance:
+            if amin_now > tolerance:
+                raise RuntimeError("signed affine transition lacks a connected current-state branch")
+            direction_cells = lower
+        else:
+            return endpoint
+    else:
+        if endpoint > vi + tolerance:
+            if amin_now > tolerance:
+                raise RuntimeError("signed affine transition lacks a connected current-state branch")
+            direction_cells = lower
+        elif endpoint < vi - tolerance:
+            if amax_now < -tolerance:
+                raise RuntimeError("signed affine transition lacks a connected current-state branch")
+            direction_cells = upper
+        else:
+            return endpoint
+    # Every sign change is affine within a chart cell; its analytic zero is a
+    # direction barrier, so no residual search or sampled continuation is used.
+    for lo, hi, slope, intercept in direction_cells:
+        if (min(vi, endpoint) < hi-tolerance and max(vi, endpoint) > lo+tolerance
+                and abs(slope) > 1.e-14):
+            root = -intercept/slope
+            if min(vi, endpoint)+tolerance < root < max(vi, endpoint)-tolerance:
+                raise RuntimeError("signed affine transition crosses a signed-direction barrier")
+    return endpoint
 
 
 def _path_samples(path, step: float, trajectory):

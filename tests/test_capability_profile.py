@@ -181,10 +181,42 @@ class CapabilityProfileTest(unittest.TestCase):
         _, amax = chart.limits(math.sqrt(.5*(1.+result.speed[-1]**2)), 0.)
         self.assertAlmostEqual(a, amax, places=6)
 
+    def test_signed_negative_acceleration_branch_continues_from_current_state(self):
+        chart = SignedTransientCapability(np.array([0., 1.]), np.array([0., 1.]),
+            np.full((2, 2), -1.), np.full((2, 2), -3.), np.full(2, 5.), .5, "synthetic")
+        result = capability_profile(Path(np.array([0., 1.]), np.zeros(2)), chart,
+                                    boundary="rolling", start_speed=2., step=1.)
+        self.assertTrue(result.converged)
+        self.assertAlmostEqual(result.speed[-1], math.sqrt(2.), places=7)
+
+    def test_signed_positive_minimum_branch_continues_from_current_state(self):
+        chart = SignedTransientCapability(np.array([0., 1.]), np.array([0., 1.]),
+            np.full((2, 2), 3.), np.full((2, 2), 1.), np.full(2, 5.), .5, "synthetic")
+        result = capability_profile(Path(np.array([0., 1.]), np.zeros(2)), chart,
+                                    boundary="rolling", start_speed=1., step=1.)
+        self.assertTrue(result.converged)
+        self.assertGreater(result.speed[-1], 1.)
+
+    def test_signed_transition_refuses_disconnected_current_state_prefix(self):
+        # The high-speed branch is feasible but cannot be reached continuously
+        # from v=1: its amax at the current-state side first demands braking.
+        chart = SignedTransientCapability(np.array([0., 1.]), np.array([0., 1.]),
+            np.array([[-2., -2.], [4., 4.]]), np.full((2, 2), -5.),
+            np.full(2, 3.), .5, "synthetic")
+        result = capability_profile(Path(np.array([0., 10.]), np.zeros(2)), chart,
+                                    boundary="rolling", start_speed=1., step=10.)
+        self.assertFalse(result.converged)
+        self.assertEqual(result.status, "transition-domain-failed")
+        self.assertIn("connected current-state", result.diagnostics["detail"])
+
     def test_actual_signed_acceleration_profile_matches_ocp_near_discretization(self):
         root = FilePath(__file__).resolve().parents[1]
-        solution = np.load(root / "runs/no_tv_reliability/sixcase_signed_coarse_20261022/acceleration/mesh-5_basis-35_centerline/solution.npz")
-        chart = load_signed_transient_capability(root / "runs/no_tv_reliability/signed_lp_fullrange_product_20261022.npz")
+        solution_path = root / "runs/no_tv_reliability/sixcase_signed_coarse_20261022/acceleration/mesh-5_basis-35_centerline/solution.npz"
+        chart_path = root / "runs/no_tv_reliability/signed_lp_fullrange_product_20261022.npz"
+        if not solution_path.is_file() or not chart_path.is_file():
+            self.skipTest("optional signed acceleration artifacts are not present in this checkout")
+        solution = np.load(solution_path)
+        chart = load_signed_transient_capability(chart_path)
         path = PathCoordinates(solution["distance"], solution["curvature"], np.zeros_like(solution["distance"]),
                                np.zeros_like(solution["distance"]), np.zeros_like(solution["distance"]), False)
         result = capability_profile(path, chart, boundary="rolling", start_speed=10., step=.25)

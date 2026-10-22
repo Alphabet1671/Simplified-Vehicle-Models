@@ -140,7 +140,7 @@ def solve_adaptive_line(track, corridor, surface, mesh, spline, settings, *, veh
                                          settings, seed=current_seed)
             if _solution_status(solution) != "Solve_Succeeded":
                 raise RuntimeError(f"strict solver returned {_solution_status(solution)}")
-        except (RuntimeError, ValueError, TypeError, FloatingPointError) as error:
+        except Exception as error:
             record = _round_record(round_index, current_mesh, None, None,
                                    stop="solver_failed", error=error)
             rounds.append(record); notify(record)
@@ -149,7 +149,7 @@ def solve_adaptive_line(track, corridor, surface, mesh, spline, settings, *, veh
         try:
             validation = validate_line(solution, corridor, surface, settings, vehicle=vehicle,
                                        maximum_refinements=dense_maximum_refinements)
-        except (RuntimeError, ValueError, TypeError, FloatingPointError) as error:
+        except Exception as error:
             record = _round_record(round_index, current_mesh, solution, None,
                                    stop="validation_failed", error=error)
             rounds.append(record); notify(record)
@@ -184,7 +184,7 @@ def solve_adaptive_line(track, corridor, surface, mesh, spline, settings, *, veh
             additions = _refinement_stations(current_mesh, spline, solution, validation)
             proposed = merge_refinement_mesh(current_mesh, additions,
                                              minimum_spacing=minimum_spacing)
-        except (RuntimeError, ValueError, TypeError, FloatingPointError) as error:
+        except Exception as error:
             record["stop"] = "refinement_failed"; record["error"] = str(error)
             final_stop = record["stop"]; notify(record)
             break
@@ -200,7 +200,7 @@ def solve_adaptive_line(track, corridor, surface, mesh, spline, settings, *, veh
             current_seed, seed_diagnostics = project_energy_seed(
                 solution, proposed, spline, minimum_spacing=minimum_spacing,
             )
-        except (RuntimeError, ValueError, TypeError, FloatingPointError) as error:
+        except Exception as error:
             record["stop"] = "seed_projection_failed"; record["error"] = str(error)
             final_stop = record["stop"]; notify(record)
             break

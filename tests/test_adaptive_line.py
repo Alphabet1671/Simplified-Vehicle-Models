@@ -106,6 +106,26 @@ class AdaptiveLineTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "integer"):
                     solve_adaptive_line(*self.common, **{keyword: 1.9})
 
+    def test_ordinary_dependency_errors_return_failed_reports(self):
+        cases = [
+            ("solve_spline_line", KeyError("solver metadata"), "solver_failed"),
+            ("validate_line", AttributeError("validator field"), "validation_failed"),
+            ("_refinement_stations", IndexError("refinement index"), "refinement_failed"),
+        ]
+        for target, error, stop in cases:
+            with self.subTest(target=target), \
+                 patch("simplified_vehicle_models.solvers.adaptive_line.solve_spline_line",
+                       return_value=self.solution), \
+                 patch("simplified_vehicle_models.solvers.adaptive_line.validate_line",
+                       return_value=self._validation(passed=False, station=.8)):
+                with patch("simplified_vehicle_models.solvers.adaptive_line." + target,
+                           side_effect=error):
+                    solution, report = solve_adaptive_line(*self.common, maximum_rounds=2)
+            self.assertIsNone(solution)
+            self.assertFalse(report["accepted"])
+            self.assertEqual(report["stop"], stop)
+            self.assertEqual(report["rounds"][-1]["stop"], stop)
+
     def test_solver_failure_is_never_accepted(self):
         with patch("simplified_vehicle_models.solvers.adaptive_line.solve_spline_line",
                    side_effect=RuntimeError("genuine failure")):

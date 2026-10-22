@@ -56,12 +56,17 @@ class CapabilityProfileTest(unittest.TestCase):
         # Braking begins before the curvature-node cap, rather than local clipping.
         self.assertTrue(np.any(np.diff(actual.speed[:16]**2) < 0.))
 
-    def test_closed_flying_is_periodic_and_open_flying_rejected(self):
-        closed = Path(np.array([0., 5., 10.]), np.zeros(3), True)
+    def test_closed_flying_requires_duplicate_physical_xy(self):
+        closed = PathCoordinates(np.array([0., 5., 10.]), np.array([0., 1., 0.]),
+                                 np.array([0., 0., 0.]), np.zeros(3), np.zeros(3), True)
         result = capability_profile(closed, surface(), boundary="flying", step=1.)
         self.assertTrue(result.converged); self.assertEqual(result.speed[0], result.speed[-1])
         with self.assertRaisesRegex(ValueError, "closed"):
             capability_profile(Path(np.array([0., 10.]), np.zeros(2)), surface(), boundary="flying")
+        malformed = PathCoordinates(np.array([0., 5., 10.]), np.array([0., 1., 2.]),
+                                   np.zeros(3), np.zeros(3), np.zeros(3), True)
+        with self.assertRaisesRegex(ValueError, "closed"):
+            capability_profile(malformed, surface(), boundary="flying")
 
     def test_exact_start_and_impossible_high_start(self):
         path = Path(np.array([0., 4.]), np.zeros(2))
@@ -96,15 +101,50 @@ class CapabilityProfileTest(unittest.TestCase):
         replay = matched_profile_replay(object(), result)
         np.testing.assert_allclose(replay.reference_distance, result.reference_distance)
 
-    def test_trajectory_uses_reference_mapping_not_geometry_refit(self):
+    def test_trajectory_uses_exact_station_map_not_path_table_interpolation(self):
         path = PathCoordinates(np.array([0., 2.]), np.array([0., 2.]), np.zeros(2),
                                np.zeros(2), np.zeros(2), False, np.array([10., 20.]))
+        class Map:
+            calls = []
+            def to_reference(self, ell):
+                self.calls.append(np.array(ell)); return 10. + 2.5*np.asarray(ell)**2
         class Trajectory:
+            station_map = Map()
             def evaluate(self, stations):
-                return type("Values", (), {"curvature": np.asarray(stations)/20.})()
-        # curvature at path end is 1; strict legacy domain supports exactly [0,1].
+                return type("Values", (), {"curvature": np.zeros_like(stations)})()
         result = capability_profile(path, surface(), boundary="rolling", start_speed=1., step=1., trajectory=Trajectory())
         self.assertTrue(result.converged)
+        np.testing.assert_allclose(result.reference_distance, 10. + 2.5*result.distance**2)
+        self.assertEqual(len(Trajectory.station_map.calls), 1)
+        with self.assertRaisesRegex(ValueError, "station_map"):
+            capability_profile(path, surface(), boundary="rolling", start_speed=1., step=1.,
+                               trajectory=type("NoMap", (), {"evaluate": lambda self, s: None})())
+
+    def test_signed_energy_midpoint_limits_bound_achieved_segments(self):
+        # A speed-dependent signed upper bound distinguishes the energy midpoint
+        # sqrt((vi^2+vj^2)/2) from the arithmetic speed midpoint.
+        chart = SignedTransientCapability(np.array([0., 1.]), np.array([0., 1.]),
+            np.array([[4., 4.], [0.5, .5]]), np.full((2, 2), -4.),
+            np.full(2, 10.), .5, "synthetic")
+        result = capability_profile(Path(np.array([0., 3.]), np.zeros(2)), chart,
+                                    boundary="rolling", start_speed=1., step=.25)
+        self.assertTrue(result.converged)
+        for left, right in zip(result.speed[:-1], result.speed[1:]):
+            vm = math.sqrt(.5*(left*left + right*right))
+            acceleration = (right*right-left*left)/(2*.25)
+            lower, upper = chart.limits(vm, 0.)
+            self.assertGreaterEqual(acceleration, lower-1.e-7)
+            self.assertLessEqual(acceleration, upper+1.e-7)
+
+    def test_rest_join_checks_interior_interpolated_curvature(self):
+        chart = SignedTransientCapability(np.array([0., 1.]), np.array([0., 1.]),
+            np.full((2, 2), 2.), np.full((2, 2), -3.), np.full(2, 20.), .5, "synthetic")
+        path = Path(np.array([0., 1.]), np.array([0., 1.]))
+        def discontinuous(v, k):
+            return (-3., 3.) if .4 < k < .6 else (-3., 2.)
+        # step forces a midpoint curvature query at k=.5.
+        with self.assertRaisesRegex(ValueError, "continuously match"):
+            capability_profile(path, chart, boundary="standing", step=.5, rest_limits=discontinuous)
 
 
 if __name__ == "__main__":

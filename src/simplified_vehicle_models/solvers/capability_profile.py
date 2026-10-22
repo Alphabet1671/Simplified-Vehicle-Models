@@ -100,7 +100,8 @@ def _path_samples(path, step: float, trajectory):
     reference = getattr(path, "reference_distance", None)
     if reference is not None:
         reference = np.asarray(reference, dtype=float)
-        if reference.shape != raw_distance.shape or np.any(np.diff(reference) <= 0.0):
+        if (reference.shape != raw_distance.shape or not np.all(np.isfinite(reference))
+                or np.any(np.diff(reference) <= 0.0)):
             raise ValueError("path reference_distance must match a strictly increasing path grid")
         mapped = np.interp(distance, raw_distance, reference)
     else:
@@ -109,16 +110,16 @@ def _path_samples(path, step: float, trajectory):
         curvature = np.interp(distance, raw_distance, raw_curvature)
     else:
         station_map = getattr(trajectory, "station_map", None)
-        if station_map is None:
-            if mapped is None:
-                raise ValueError("trajectory curvature requires explicit path reference_distance")
-        else:
-            # The authoritative analytic map, rather than interpolation through a
-            # sampled path table, establishes ell -> source-station correspondence.
-            try:
-                mapped = np.asarray(station_map.to_reference(distance), dtype=float)
-            except ValueError as error:
-                raise ValueError("sampled path arclength is outside trajectory station-map coverage") from error
+        if station_map is None or not callable(getattr(station_map, "to_reference", None)):
+            raise ValueError("trajectory curvature requires an explicit station_map.to_reference")
+        # The authoritative analytic map, rather than interpolation through a
+        # sampled path table, establishes ell -> source-station correspondence.
+        try:
+            mapped = np.asarray(station_map.to_reference(distance), dtype=float)
+        except (TypeError, ValueError) as error:
+            raise ValueError("sampled path arclength is outside trajectory station-map coverage") from error
+        if mapped.shape != distance.shape or not np.all(np.isfinite(mapped)) or np.any(np.diff(mapped) <= 0.0):
+            raise ValueError("trajectory station map must cover every sampled path station monotonically")
         values = trajectory.evaluate(mapped)
         curvature = np.asarray(values.curvature, dtype=float)
         if curvature.shape != distance.shape or not np.all(np.isfinite(curvature)):
@@ -129,12 +130,14 @@ def _path_samples(path, step: float, trajectory):
 def _closed_duplicate(path, curvature: np.ndarray) -> bool:
     if not bool(path.is_closed) or not np.isclose(curvature[0], curvature[-1], rtol=0., atol=1.e-10):
         return False
-    # PathCoordinates carries positions; use them where supplied to reject an
-    # open table accidentally labelled closed.
-    if hasattr(path, "x_north") and hasattr(path, "y_east"):
-        x, y = np.asarray(path.x_north), np.asarray(path.y_east)
-        return bool(np.isclose(x[0], x[-1]) and np.isclose(y[0], y[-1]))
-    return True
+    # Periodicity is physical, not a boolean/table-curvature convention: XY
+    # endpoint evidence is required for a duplicated-end ring.
+    if not (hasattr(path, "x_north") and hasattr(path, "y_east")):
+        return False
+    x, y = np.asarray(path.x_north, dtype=float), np.asarray(path.y_east, dtype=float)
+    if x.ndim != 1 or y.shape != x.shape or x.size < 2 or not np.all(np.isfinite(x)) or not np.all(np.isfinite(y)):
+        return False
+    return bool(np.isclose(x[0], x[-1], rtol=0., atol=1.e-9) and np.isclose(y[0], y[-1], rtol=0., atol=1.e-9))
 
 
 def capability_profile(path, surface, *, boundary: str = "flying", start_speed=None,
@@ -189,6 +192,8 @@ def capability_profile(path, surface, *, boundary: str = "flying", start_speed=N
     caps[1:] = np.minimum(caps[1:], midpoint_caps)
     if np.any(~np.isfinite(caps)) or np.any(caps <= 0.0):
         raise ValueError("capability speed caps must be finite and positive")
+    if hasattr(surface, "speed") and np.any(caps > float(np.max(np.asarray(surface.speed, dtype=float)))):
+        raise ValueError("capability speed ceiling exceeds sampled speed domain")
     if boundary == "rolling" and start_speed > caps[0] + tolerance:
         raise ValueError("rolling start_speed exceeds the initial capability domain")
     if boundary == "rolling" and start_speed < floor:
@@ -196,7 +201,7 @@ def capability_profile(path, surface, *, boundary: str = "flying", start_speed=N
     if boundary == "standing":
         # A rest extension must connect to the chart at every encountered
         # curvature rather than create an unverified discontinuity at the floor.
-        for k in np.unique(curvature):
+        for k in np.unique(np.r_[curvature, .5*(curvature[:-1] + curvature[1:])]):
             lo, hi = rest_limits(floor, float(k))
             clo, chi = chart_limits(floor, float(k))
             if not all(math.isfinite(float(x)) for x in (lo, hi)) or lo > hi:
@@ -239,7 +244,7 @@ def capability_profile(path, surface, *, boundary: str = "flying", start_speed=N
                 vi, candidate = float(speed[i]), float(speed[i+1])
                 k = .5*(curvature[i] + curvature[i+1])
                 for _ in range(32):
-                    vm = .5*(vi + candidate)
+                    vm = math.sqrt(.5*(vi*vi + candidate*candidate))
                     _, amax = limits(vm, k)
                     radicand = vi*vi + 2.*amax*ds
                     if radicand < -tolerance:
@@ -260,7 +265,7 @@ def capability_profile(path, surface, *, boundary: str = "flying", start_speed=N
                 vj, candidate = float(speed[i+1]), float(speed[i])
                 k = .5*(curvature[i] + curvature[i+1])
                 for _ in range(32):
-                    vm = .5*(candidate + vj)
+                    vm = math.sqrt(.5*(candidate*candidate + vj*vj))
                     amin, _ = limits(vm, k)
                     radicand = vj*vj - 2.*amin*segment[i]
                     if radicand < -tolerance:
@@ -289,7 +294,7 @@ def capability_profile(path, surface, *, boundary: str = "flying", start_speed=N
         if vi + vj <= 0.0:
             return failed("launch-failed", iteration, max_change, "first segment has no positive speed")
         a = (vj*vj-vi*vi)/(2.*ds)
-        lo, hi = limits(.5*(vi+vj), .5*(curvature[i]+curvature[i+1]))
+        lo, hi = limits(math.sqrt(.5*(vi*vi+vj*vj)), .5*(curvature[i]+curvature[i+1]))
         if a < lo-tolerance or a > hi+tolerance:
             return failed("dynamically-infeasible", iteration, max_change, "segment acceleration outside physical limits")
     elapsed = np.r_[0., np.cumsum(2.*segment/(speed[:-1]+speed[1:]))]

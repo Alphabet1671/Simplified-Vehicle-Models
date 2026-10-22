@@ -119,3 +119,39 @@ class SignedCapabilityTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "disconnected"):
             signed_feasible_interval(lambda a: (-4 < a < -3) or a > 2,
                                      acceleration_min=-5., acceleration_max=5., scan_points=101)
+
+class LinearProgramSignedCapabilityTest(unittest.TestCase):
+    def test_lp_fit_preserves_width_where_common_interval_would_shrink(self):
+        """A spatially varying signed band is feasible for LP vertex fitting.
+
+        A legacy all-probe common interval is only [-.5, 2], while the LP retains
+        the four-unit local interval; this guards against silently routing the
+        opt-in mode through the reviewed common-interval builder.
+        """
+        from unittest.mock import patch
+        import simplified_vehicle_models.formulations.signed_capability as signed
+        class Vehicle: pass
+        def fake_equilibrium(vehicle, speed, curvature, acceleration):
+            coordinate = (speed-.5)/9.5
+            low = -2. + 1.5*coordinate + .25*curvature
+            return type("State", (), {"is_feasible": low <= acceleration <= low + 4.})()
+        with patch.object(signed, "maximum_vehicle_speed", return_value=10.), \
+             patch.object(signed, "_speed_domain", return_value=10.), \
+             patch.object(signed, "capability_hash", return_value="synthetic"), \
+             patch.object(signed, "evaluate_equilibrium", side_effect=fake_equilibrium):
+            chart = signed.build_signed_transient_capability(
+                Vehicle(), interval_fit="linear_program", curvature=np.array([-.5, .5]),
+                u=np.array([0., 1.]), maximum_speed=10., acceleration_range=(-5., 5.),
+                scan_points=41, refinement_steps=4, speed_scan_points=3,
+                endpoint_buffer=.1, domain_backoff=.0, minimum_interval_width=.02,
+                construction_subdivisions=2, validation_grid=(5, 5),
+                heldout_validation_grid=(4, 4), cut_plane_attempts=0)
+        self.assertEqual(chart.build_settings["interval_fit"], "linear_program")
+        self.assertGreater(float((chart.acceleration_max-chart.acceleration_min).min()), 3.7)
+        self.assertEqual(chart.validation["heldout_endpoint_checks"], 32)
+
+    def test_lp_mode_rejects_bad_options_and_default_stays_common(self):
+        import simplified_vehicle_models.formulations.signed_capability as signed
+        with self.assertRaisesRegex(ValueError, "interval_fit"):
+            signed.build_signed_transient_capability(object(), interval_fit="unreviewed", curvature=np.array([0., .1]))
+        self.assertEqual(signed.build_signed_transient_capability.__kwdefaults__["interval_fit"], "common_interval")

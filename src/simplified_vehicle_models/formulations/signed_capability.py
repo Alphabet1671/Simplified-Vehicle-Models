@@ -167,7 +167,7 @@ def _speed_domain(vehicle, curvature: float, floor: float, upper: float, acceler
     return good
 
 
-def build_signed_transient_capability(vehicle, *, curvature: np.ndarray, u: np.ndarray | None = None,
+def _build_common_interval_signed_transient_capability(vehicle, *, curvature: np.ndarray, u: np.ndarray | None = None,
                                        speed_floor: float = 0.5, maximum_speed: float | None = None,
                                        acceleration_range: tuple[float, float] = (-30.0, 10.0),
                                        scan_points: int = 401, refinement_steps: int = 32,
@@ -321,3 +321,141 @@ def symbolic_lookup(chart: SignedTransientCapability, prefix: str = "signed"):
         coordinate = ca.fmin(1.0, ca.fmax(0.0, coordinate))
         return amin_grid(ca.vertcat(coordinate, curvature)), amax_grid(ca.vertcat(coordinate, curvature)), cap
     return limits
+
+
+
+def _lp_bilinear_row(u_axis: np.ndarray, k_axis: np.ndarray, coordinate: float, curvature: float):
+    """Return flattened vertex indices and bilinear weights for one probe."""
+    i = min(int(np.searchsorted(u_axis, coordinate, side="right") - 1), u_axis.size - 2)
+    j = min(int(np.searchsorted(k_axis, curvature, side="right") - 1), k_axis.size - 2)
+    i = max(i, 0); j = max(j, 0)
+    du = (coordinate-u_axis[i])/(u_axis[i+1]-u_axis[i])
+    dk = (curvature-k_axis[j])/(k_axis[j+1]-k_axis[j])
+    n_k = k_axis.size
+    return (i*n_k+j, (i+1)*n_k+j, i*n_k+j+1, (i+1)*n_k+j+1), ((1-du)*(1-dk), du*(1-dk), (1-du)*dk, du*dk)
+
+
+def _build_linear_program_signed_transient_capability(
+        vehicle, *, curvature: np.ndarray, u: np.ndarray | None = None,
+        speed_floor: float = .5, maximum_speed: float | None = None,
+        acceleration_range: tuple[float, float] = (-30., 10.), scan_points: int = 81,
+        refinement_steps: int = 16, speed_scan_points: int = 25,
+        endpoint_buffer: float = .15, domain_backoff: float = 1.,
+        minimum_interval_width: float = .02, construction_subdivisions: int = 2,
+        validation_grid: tuple[int, int] = (113, 211), heldout_validation_grid: tuple[int, int] = (107, 199),
+        cut_plane_attempts: int = 2) -> SignedTransientCapability:
+    """Fit sparse shared vertex intervals by LP, refusing any failed held-out grid.
+
+    This is an opt-in sampled conservative profile.  It maximizes fitted widths,
+    but is not claimed to be a physical unrestricted minimum-time optimum.
+    """
+    try:
+        from scipy.optimize import linprog
+        from scipy.sparse import csr_matrix, eye, hstack, vstack
+    except ImportError as exc:  # clear build-time dependency rather than silent fallback
+        raise RuntimeError("interval_fit='linear_program' requires scipy") from exc
+    curvature = _readonly(curvature, name="curvature")
+    u = np.linspace(0., 1., 17) if u is None else _readonly(u, name="u")
+    if (curvature.size < 2 or u.size < 2 or np.any(np.diff(curvature) <= 0)
+            or np.any(np.diff(u) <= 0) or u[0] != 0. or u[-1] != 1.):
+        raise ValueError("curvature and u must be increasing axes with u=[0,1]")
+    grids = (validation_grid, heldout_validation_grid)
+    finite_settings = (speed_floor, endpoint_buffer, domain_backoff, minimum_interval_width)
+    finite_maximum_speed = maximum_speed is None or math.isfinite(float(maximum_speed))
+    valid_grids = all(isinstance(grid, tuple) and len(grid) == 2 and all(
+        isinstance(x, int) and not isinstance(x, bool) and x >= 2 for x in grid) for grid in grids)
+    if (not valid_grids or not isinstance(cut_plane_attempts, int) or isinstance(cut_plane_attempts, bool)
+            or not all(math.isfinite(float(x)) for x in finite_settings) or not finite_maximum_speed):
+        raise ValueError("invalid linear-program signed capability build settings")
+    if (speed_floor <= 0 or scan_points < 3 or refinement_steps < 1 or speed_scan_points < 3
+            or construction_subdivisions < 1 or endpoint_buffer < 0 or domain_backoff < 0
+            or minimum_interval_width <= 0 or cut_plane_attempts < 0):
+        raise ValueError("invalid linear-program signed capability build settings")
+    hardware_top = min(float(maximum_vehicle_speed(vehicle)), 60.)
+    top = hardware_top if maximum_speed is None else float(maximum_speed)
+    if not math.isfinite(top) or top <= speed_floor:
+        raise ValueError("maximum_speed must exceed speed_floor")
+    if top > hardware_top + 1.e-12:
+        raise ValueError("maximum_speed exceeds declared vehicle mechanical limit")
+    raw_domains = np.array([_speed_domain(vehicle, float(k), speed_floor, top, acceleration_range,
+                                           scan_points, refinement_steps, speed_scan_points) for k in curvature])
+    domains = raw_domains-domain_backoff
+    if np.any(domains <= speed_floor):
+        raise ValueError("signed speed domain vanished under requested conservative backoff")
+    cache = {}
+    def live(coordinate, k):
+        speed = speed_floor + coordinate*(float(np.interp(k, curvature, domains))-speed_floor)
+        key = (float(speed), float(k))
+        if key not in cache:
+            cache[key] = signed_feasible_interval(lambda a: evaluate_equilibrium(vehicle, key[0], key[1], a),
+                acceleration_min=acceleration_range[0], acceleration_max=acceleration_range[1],
+                scan_points=scan_points, refinement_steps=refinement_steps)
+        answer = cache[key]
+        if answer is None or answer[1]-answer[0] < 2*endpoint_buffer + minimum_interval_width:
+            raise ValueError("linear-program chart refused: no sufficiently wide live signed interval")
+        return answer, speed
+    n = u.size*curvature.size
+    vertex_lo = np.empty(n); vertex_hi = np.empty(n)
+    for i, coordinate in enumerate(u):
+        for j, k in enumerate(curvature):
+            interval, _ = live(float(coordinate), float(k))
+            vertex_lo[i*curvature.size+j] = interval[0]+endpoint_buffer
+            vertex_hi[i*curvature.size+j] = interval[1]-endpoint_buffer
+    probes = {(round(float(q), 14), round(float(k), 14))
+              for i in range(u.size-1) for j in range(curvature.size-1)
+              for q in np.linspace(u[i], u[i+1], construction_subdivisions+1)
+              for k in np.linspace(curvature[j], curvature[j+1], construction_subdivisions+1)}
+    def solve(points):
+        rr=[]; cc=[]; values=[]; lows=[]; highs=[]
+        for row, (coordinate, k) in enumerate(sorted(points)):
+            interval, _ = live(coordinate, k); cols, weights = _lp_bilinear_row(u, curvature, coordinate, k)
+            for col, weight in zip(cols, weights): rr.append(row); cc.append(col); values.append(weight)
+            lows.append(interval[0]+endpoint_buffer); highs.append(interval[1]-endpoint_buffer)
+        B=csr_matrix((values, (rr, cc)), shape=(len(lows), n)); Z=csr_matrix((len(lows),n)); I=eye(n, format='csr')
+        result=linprog(np.r_[np.ones(n), -np.ones(n)],
+            A_ub=vstack([hstack([-B,Z]), hstack([Z,B]), hstack([I,-I])]),
+            b_ub=np.r_[-np.asarray(lows), highs, -np.full(n, minimum_interval_width)],
+            bounds=list(zip(vertex_lo,vertex_hi))*2, method='highs')
+        if not result.success: raise ValueError("linear-program chart refused: LP " + result.message)
+        return result.x[:n].reshape(u.size,curvature.size), result.x[n:].reshape(u.size,curvature.size), result.message
+    def validate(lo, hi, grid):
+        failures=[]; checks=0
+        for coordinate in np.linspace(0.,1.,grid[0]):
+            for k in np.linspace(curvature[0],curvature[-1],grid[1]):
+                # Validation intentionally does not rescan a live interval at every
+                # point: it validates the two reconstructed endpoints directly in
+                # original physics.  Only failed points join the next LP cut plane.
+                speed = speed_floor + float(coordinate)*(float(np.interp(k, curvature, domains))-speed_floor)
+                cols, weights=_lp_bilinear_row(u,curvature,float(coordinate),float(k))
+                for endpoint, values in (("lower",lo), ("upper",hi)):
+                    acceleration=float(sum(values.flat[col]*weight for col,weight in zip(cols,weights)))
+                    checks += 1
+                    if not evaluate_equilibrium(vehicle,speed,float(k),acceleration).is_feasible:
+                        failures.append({"endpoint":endpoint,"u":float(coordinate),"curvature":float(k),"speed":speed,"acceleration":acceleration})
+        return checks, failures
+    passes=[]; lo=hi=None; status=""
+    for iteration in range(cut_plane_attempts+1):
+        lo,hi,status=solve(probes); checks,failures=validate(lo,hi,validation_grid)
+        passes.append({"iteration":iteration,"constraint_count":len(probes),"endpoint_checks":checks,"failure_count":len(failures)})
+        if not failures: break
+        if iteration == cut_plane_attempts:
+            raise ValueError("linear-program chart refused: validation failures after bounded cut planes")
+        probes.update((round(x['u'],14),round(x['curvature'],14)) for x in failures)
+    held_checks, held_failures=validate(lo,hi,heldout_validation_grid)
+    if held_failures:
+        raise ValueError("linear-program chart refused: independent validation failure")
+    settings={"interval_fit":"linear_program","fit_method":"sparse_shared_vertex_linear_program","acceleration_range":list(acceleration_range),"scan_points":scan_points,"refinement_steps":refinement_steps,"speed_scan_points":speed_scan_points,"maximum_speed":top,"endpoint_buffer":endpoint_buffer,"domain_backoff":domain_backoff,"minimum_interval_width":minimum_interval_width,"construction_subdivisions":construction_subdivisions,"actual_u":u.tolist(),"actual_curvature":curvature.tolist(),"model_hash":capability_hash(vehicle),"conservatism":"sampled inward buffer/domain backoff, not universal physical optimum"}
+    validation={"sampled":True,"construction_probe_count_initial":(u.size-1)*construction_subdivisions*(curvature.size-1)*construction_subdivisions + (u.size-1)*construction_subdivisions + (curvature.size-1)*construction_subdivisions + 1,"sample_counts":{"live_interval_evaluations":len(cache),"LP_vertices":n,"LP_constraints":len(probes)},"cut_plane_passes":passes,"validation_grid":list(validation_grid),"heldout_validation_grid":list(heldout_validation_grid),"validation_endpoint_checks":passes[-1]["endpoint_checks"],"heldout_endpoint_checks":held_checks,"failures":[],"LP_status":status,"claim":"distinct dense original-physics validation passed; sampled evidence only, not continuum certification"}
+    return SignedTransientCapability(u,curvature,hi,lo,domains,speed_floor,capability_hash(vehicle),settings,validation)
+
+
+def build_signed_transient_capability(vehicle, *, interval_fit: str = "common_interval", **kwargs) -> SignedTransientCapability:
+    """Build a signed chart; default reviewed common interval behavior is unchanged.
+
+    ``interval_fit='linear_program'`` selects the separately scoped sparse LP fit.
+    """
+    if interval_fit == "common_interval":
+        return _build_common_interval_signed_transient_capability(vehicle, **kwargs)
+    if interval_fit == "linear_program":
+        return _build_linear_program_signed_transient_capability(vehicle, **kwargs)
+    raise ValueError("interval_fit must be 'common_interval' or 'linear_program'")

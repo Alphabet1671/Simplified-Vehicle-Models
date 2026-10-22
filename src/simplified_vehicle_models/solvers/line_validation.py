@@ -247,6 +247,20 @@ def validate_line(solution, corridor, surface, settings=None, *, vehicle=None,
                                            interior, "rad", tolerances["heading_rad"]))
             diagnostics.append(_diagnostic("xy_curvature", np.abs(fd_curvature-np.asarray(interior_geometry.curvature)),
                                            interior, "1/m", tolerances["curvature_per_m"]))
+            # Do not trust analytic heading_error_s: independently differentiate
+            # the exported heading-error field at off-grid stations.
+            heading_error_left = np.asarray(trajectory.evaluate(interior-step).heading_error)
+            heading_error_right = np.asarray(trajectory.evaluate(interior+step).heading_error)
+            fd_heading_rate = np.angle(np.exp(1j * (heading_error_right-heading_error_left))) / (2*step)
+            diagnostics.append(_diagnostic(
+                "xy_heading_rate", np.abs(fd_heading_rate-np.asarray(interior_geometry.heading_error_s)),
+                interior, "1/m", tolerances["curvature_per_m"],
+            ))
+            if settings is not None:
+                diagnostics.append(_diagnostic(
+                    "xy_heading_rate_limit", np.abs(fd_heading_rate)-settings.maximum_curvature_rate,
+                    interior, "1/m", tolerances["curvature_per_m"],
+                ))
         else:
             diagnostics.append({"name": "xy_geometry", "passed": False,
                                 "maximum_violation": None, "worst_station": None,
@@ -302,5 +316,5 @@ def validate_line(solution, corridor, surface, settings=None, *, vehicle=None,
             model_feasible = True
         except Exception: model_feasible = False
     if model_feasible is False: dense_ok = False
-    geometry_ok = all(item["passed"] for item in final["diagnostics"] if item["name"] in {"xy_metric","xy_heading","xy_curvature","fold"})
+    geometry_ok = all(item["passed"] for item in final["diagnostics"] if item["name"] in {"xy_metric", "xy_heading", "xy_curvature", "xy_heading_rate", "xy_heading_rate_limit", "fold"})
     return {"checks":{"geometry_consistency":geometry_ok,"dense_feasibility":dense_ok}, "sampling_converged":converged, "samples_per_element":samples_per_element,"refinements_used":level+1,"sample_count":int(final["stations"].size),"diagnostics":final["diagnostics"],"sampling_history":history,"model_feasible":model_feasible,"surrogate_validated":dense_ok and model_feasible is None,"physically_validated":False,"missing_evidence":[],"tolerances":tolerances}

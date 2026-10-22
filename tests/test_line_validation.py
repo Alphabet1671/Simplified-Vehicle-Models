@@ -190,6 +190,30 @@ class LineValidationTest(unittest.TestCase):
         for name in ("fold", "heading_limit", "heading_rate_limit", "xy_curvature", "lap_time"):
             self.assertFalse(by_name[name]["passed"], name)
 
+    def test_independent_heading_rate_rejects_misreported_derivative(self):
+        solution, corridor, surface = _fixture()
+        source = solution.trajectory
+        class LyingHeadingRate:
+            def __init__(self):
+                self.reference, self.spline, self.station_map = source.reference, source.spline, source.station_map
+            def evaluate(self, station):
+                value = source.evaluate(station)
+                s = np.asarray(station, dtype=float)
+                # Actual heading error has 0.8 rad/m slope, while the claimed
+                # derivative is zero and thus would pass the old direct check.
+                return SimpleNamespace(north=value.north, east=value.east, heading=value.heading,
+                    heading_error=.8*s, heading_error_s=np.zeros(s.shape), curvature=value.curvature,
+                    offset=value.offset, metric=value.metric, fold_factor=value.fold_factor)
+        solution.trajectory = LyingHeadingRate()
+        report = validate_line(solution, corridor, surface,
+                               QssSettings(maximum_heading=10., maximum_curvature_rate=.5))
+        by_name = {item["name"]: item for item in report["diagnostics"]}
+        self.assertTrue(by_name["heading_rate_limit"]["passed"])
+        self.assertFalse(by_name["xy_heading_rate"]["passed"])
+        self.assertFalse(by_name["xy_heading_rate_limit"]["passed"])
+        self.assertFalse(report["checks"]["geometry_consistency"])
+        self.assertFalse(report["checks"]["dense_feasibility"])
+
     def test_independent_speed_derivative_rejects_lying_evaluator_rates(self):
         solution, corridor, surface = _fixture()
         class LyingRates(_State):

@@ -3,9 +3,11 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 
+from simplified_vehicle_models.solvers import closed_loop_line
 from simplified_vehicle_models.solvers.closed_loop_line import (
     CAP_MARGIN,
     ReplaySample,
@@ -129,6 +131,68 @@ class ClosedLoopCorrectionTest(unittest.TestCase):
             self.assertTrue(np.all(result.speed_caps[1] <= result.speed_caps[0]))
             self.assertTrue(np.any(result.speed_caps[1] < result.speed_caps[0]))
             self.assertAlmostEqual(result.replay_time, capped.lap_time)
+
+    def test_replay_faster_than_the_ocp_is_accepted_without_correction(self):
+        with tempfile.TemporaryDirectory() as directory:
+            track, corridor, spline, mesh, settings = _case(directory, spacing=5.0)
+            surface = _surface()
+            baseline = solve_spline_line(
+                track, corridor, surface, mesh, spline, settings,
+            )
+            faster = 0.95 * baseline.lap_time
+
+            def replay(path, controller):
+                return ReplaySample(
+                    path.distance, np.full(path.distance.size, 8.0), True, faster,
+                )
+
+            result = correct_to_replay(
+                track, corridor, surface, mesh, spline, settings, None, replay,
+            )
+
+            self.assertTrue(result.accepted)
+            self.assertEqual(result.rounds, 1)
+            self.assertEqual(len(result.speed_caps), 1)
+            self.assertAlmostEqual(result.replay_time, faster)
+            # A faster replay must not tighten the caps for another solve.
+            np.testing.assert_allclose(
+                result.speed_caps[0], baseline.speed, rtol=0.0, atol=1.0e-9,
+            )
+
+    def test_solver_failure_under_a_cap_returns_an_unaccepted_result(self):
+        with tempfile.TemporaryDirectory() as directory:
+            track, corridor, spline, mesh, settings = _case(directory, spacing=5.0)
+            surface = _surface()
+            real_solve = closed_loop_line.solve_spline_line
+            calls = []
+            replay_times = []
+
+            def replay(path, controller):
+                calls.append(path.distance.copy())
+                replay_times.append(float(path.lap_length / 8.0))
+                return ReplaySample(
+                    path.distance, np.full(path.distance.size, 8.0), False,
+                    replay_times[-1], ('speed',),
+                )
+
+            def fail_under_cap(*args, **kwargs):
+                if kwargs.get('speed_cap') is None:
+                    return real_solve(*args, **kwargs)
+                raise RuntimeError("infeasible under the corrected cap")
+
+            with patch.object(
+                closed_loop_line, 'solve_spline_line', side_effect=fail_under_cap,
+            ):
+                result = correct_to_replay(
+                    track, corridor, surface, mesh, spline, settings, None, replay,
+                )
+
+            self.assertFalse(result.accepted)
+            self.assertEqual(result.rounds, 2)
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(len(result.speed_caps), 1)
+            self.assertTrue(np.isfinite(result.replay_time))
+            self.assertAlmostEqual(result.replay_time, replay_times[-1])
 
     def test_rejects_invalid_correction_controls(self):
         def replay(path, controller):

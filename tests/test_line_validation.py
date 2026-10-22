@@ -126,6 +126,31 @@ class LineValidationTest(unittest.TestCase):
         # reconstruction per finite-difference stencil point.
         self.assertLess(counter.calls, 20)
 
+    def test_derivative_uncertainty_consumes_physical_error_budget(self):
+        # The smooth sinusoid is dynamically exact when acceleration equals
+        # v*dv/ds/metric, but a deliberately tight physical tolerance leaves
+        # no room for the independently estimated FD uncertainty.
+        solution, corridor, surface = _fixture()
+        class ExactWavySpeed(_State):
+            def evaluate(self, station):
+                station = np.asarray(station, dtype=float)
+                speed = 10. + .1*np.sin(station)
+                acceleration = speed * .1*np.cos(station) / 2.
+                return {"speed": speed, "acceleration": acceleration,
+                        "speed_rate": np.zeros(station.shape), "rhs_speed_rate": np.zeros(station.shape)}
+        solution.state_evaluator = ExactWavySpeed()
+        stations = np.linspace(0., 10., 10001)
+        speed = solution.state_evaluator.evaluate(stations)["speed"]
+        solution.lap_time = float(np.sum(np.diff(stations) *
+            ((2./speed)[:-1] + (2./speed)[1:]) / 2.))
+        report = validate_line(solution, corridor, surface, samples_per_element=4,
+                               tolerance={"sampling_stability": 1.e-5,
+                                          "acceleration_mps2": 1.e-9})
+        by_name = {item["name"]: item for item in report["diagnostics"]}
+        self.assertTrue(by_name["implied_acceleration"]["passed"])
+        self.assertFalse(by_name["implied_acceleration_upper_bound"]["passed"])
+        self.assertFalse(report["checks"]["dense_feasibility"])
+
     def test_unresolved_derivative_sampling_fails_closed(self):
         solution, corridor, surface = _fixture()
         class OscillatorySpeed(_State):

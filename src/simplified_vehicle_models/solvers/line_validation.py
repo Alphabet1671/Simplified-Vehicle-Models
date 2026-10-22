@@ -356,6 +356,16 @@ def validate_line(solution, corridor, surface, settings=None, *, vehicle=None,
             implied_uncertainty_unit["passed"] = bool(np.all(derivative_stable) and implied_uncertainty_unit["passed"])
             implied_uncertainty_unit["stability_resolved"] = bool(np.all(derivative_stable))
             diagnostics.append(implied_uncertainty_unit)
+            # Sampling error is an evidence budget, not a tolerance waiver:
+            # require the conservative residual-plus-uncertainty upper bound.
+            diagnostics.append(_diagnostic(
+                "dynamics_defect_upper_bound", dynamics + derivative_uncertainty,
+                interior, "(m/s)/m", tolerances["dynamics_mps_per_m"],
+            ))
+            diagnostics.append(_diagnostic(
+                "implied_acceleration_upper_bound", implied + implied_uncertainty,
+                interior, "m/s^2", tolerances["acceleration_mps2"],
+            ))
             # Geometry stencils still need two centred spans; endpoint speed
             # derivatives above are valid one-sided evidence but cannot feed
             # these separate geometry checks.

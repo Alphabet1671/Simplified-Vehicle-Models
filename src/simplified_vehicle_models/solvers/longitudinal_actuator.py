@@ -163,6 +163,9 @@ def invert_longitudinal_actuators(vehicle, wheel_speed, soc,
                     command, torque = middle, result_torque
                     break
                 if (right - left) <= 2. * np.finfo(float).eps * max(abs(left), abs(right), 1.):
+                    best_error = min(abs(left_torque - requested), abs(right_torque - requested))
+                    if best_error > settings.torque_tolerance_nm:
+                        raise RuntimeError("actuator map has no torque-matching solution at requested tolerance")
                     command, torque = ((left, left_torque) if abs(left_torque-requested) <= abs(right_torque-requested)
                                        else (right, right_torque))
                     break

@@ -61,6 +61,11 @@ class LongitudinalActuatorTests(unittest.TestCase):
             return FakeOutput((0., 0., (100. * pedal if pedal < .5 else 60. - 100. * (pedal-.5)), 0.))
         with self.assertRaises(RuntimeError):
             invert_longitudinal_actuators(vehicle, np.zeros(4), .5, 30., evaluator=bad)
+        def discontinuous(*args):
+            pedal = args[-1].throttle
+            return FakeOutput((0., 0., 0. if pedal < .5 else 100., 0.))
+        with self.assertRaises(RuntimeError):
+            invert_longitudinal_actuators(vehicle, np.zeros(4), .5, 50., evaluator=discontinuous)
 
     def test_max_iterations_input_validation_and_copy(self):
         vehicle = fake_vehicle()

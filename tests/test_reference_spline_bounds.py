@@ -79,9 +79,15 @@ class ReferenceSplineBoundsTests(unittest.TestCase):
         out = bound_reference_derivatives(self.reference, (.25, 4.75))
         with self.assertRaises(ValueError):
             bound_reference_derivatives(self.reference, (.25, 4.75), maximum_spans=out.span_count-1)
-        for interval in ((-1., 1.), (1., 1., 2.), (True, 2.), (float('nan'), 2.)):
+        for interval in ((-1., 1.), (1., 1., 2.), (True, 2.), (float('nan'), 2.),
+                         (Fraction(5)+Fraction(1, 10**400), Fraction(5)+Fraction(1, 10**400)),
+                         (Fraction(1, 3), Fraction(2, 3)),
+                         (Fraction(1, 2), Fraction(1, 2)+Fraction(1, 10**400)),
+                         (Fraction(3, 2), Fraction(1, 2))):
             with self.assertRaises((TypeError, ValueError)):
                 bound_reference_derivatives(self.reference, interval)
+        exact_fraction = bound_reference_derivatives(self.reference, (Fraction(1, 2), Fraction(1, 2)))
+        self.assertEqual(exact_fraction.station_interval, (.5, .5))
         with self.assertRaises(ValueError):
             bound_reference_derivatives(self.reference, (0., 5.), maximum_spans=0)
         original = self.reference._x

@@ -135,7 +135,11 @@ def _coordinate(spline: BSpline, start: float, end: float, lo: Fraction, hi: Fra
 
 def bound_reference_derivatives(reference: ReferenceCurve, station_interval: object, *,
                                 maximum_spans: int = 4096) -> ReferenceDerivativeBounds:
-    """Enclose north/east spline values and derivatives on an in-domain interval."""
+    """Enclose derivatives on the in-domain interval of binary64 station endpoints.
+
+    Real inputs must convert exactly to binary64; lossy conversion is rejected
+    rather than silently shrinking or collapsing the requested interval.
+    """
     if type(reference) is not ReferenceCurve:
         raise TypeError("reference must be an exact ReferenceCurve")
     if isinstance(maximum_spans, bool) or not isinstance(maximum_spans, int) or maximum_spans <= 0:
@@ -145,10 +149,15 @@ def bound_reference_derivatives(reference: ReferenceCurve, station_interval: obj
     if any(isinstance(v, bool) or not isinstance(v, Real) for v in station_interval):
         raise TypeError("station endpoints must be real non-bool values")
     try:
-        lo_f, hi_f = float(station_interval[0]), float(station_interval[1])
+        original_lo, original_hi = station_interval
+        lo_f, hi_f = float(original_lo), float(original_hi)
     except (OverflowError, ValueError) as exc:
         raise ValueError("invalid station interval") from exc
-    if not math.isfinite(lo_f) or not math.isfinite(hi_f) or lo_f > hi_f:
+    if (not math.isfinite(lo_f) or not math.isfinite(hi_f)
+            or _fraction(lo_f) != Fraction(original_lo)
+            or _fraction(hi_f) != Fraction(original_hi)):
+        raise ValueError("station endpoints must be exactly representable as binary64")
+    if lo_f > hi_f:
         raise ValueError("station interval must be finite and ordered")
     if lo_f < reference.start or hi_f > reference.end:
         raise ValueError("station interval is outside the reference domain")

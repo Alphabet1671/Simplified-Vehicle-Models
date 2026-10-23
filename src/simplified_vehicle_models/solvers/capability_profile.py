@@ -230,7 +230,8 @@ def _signed_transition(surface, *, vi: float, bound: float, curvature: float, ds
 def _bracketed_energy_transition(limits, *, vi: float, bound: float, curvature: float,
                                 ds: float, forward: bool, tolerance: float,
                                 maximum_iterations: int = 64,
-                                segment_limit_sampling: str = "midpoint") -> float:
+                                segment_limit_sampling: str = "midpoint",
+                                curvature_samples=None) -> float:
     """Return a feasible bracketed endpoint under sampled monotone residuals.
 
     Monotonicity is checked at fixed fractions and during bisection; it is not a
@@ -248,6 +249,15 @@ def _bracketed_energy_transition(limits, *, vi: float, bound: float, curvature: 
         raise ValueError("bracketed transition requires nonnegative speeds and positive ds/tolerance")
     if isinstance(maximum_iterations, bool) or not isinstance(maximum_iterations, (int, np.integer)) or maximum_iterations < 1:
         raise ValueError("maximum_iterations must be a positive integer")
+    if curvature_samples is not None:
+        if not isinstance(curvature_samples, (tuple, list, np.ndarray)):
+            raise ValueError("curvature_samples must be a nonempty finite real sequence")
+        frozen_curvatures = tuple(curvature_samples)
+        if not frozen_curvatures or any(isinstance(k, (bool, np.bool_)) or
+                not isinstance(k, (int, float, np.integer, np.floating)) or not math.isfinite(float(k))
+                for k in frozen_curvatures):
+            raise ValueError("curvature_samples must be a nonempty finite real sequence")
+        frozen_curvatures = tuple(float(k) for k in frozen_curvatures)
     w0, wb = vi*vi, bound*bound
     if not math.isfinite(w0) or not math.isfinite(wb):
         raise ValueError("bracketed transition squared speeds overflow")
@@ -261,16 +271,17 @@ def _bracketed_energy_transition(limits, *, vi: float, bound: float, curvature: 
                         else (vi, endpoint, midpoint))
         queried = []
         for speed in query_speeds:
-            pair = limits(speed, curvature)
-            if not isinstance(pair, (tuple, list)) or len(pair) != 2:
-                raise ValueError("transition limits must return two accelerations")
-            real_types = (int, float, np.integer, np.floating)
-            if any(isinstance(x, (bool, np.bool_)) or not isinstance(x, real_types) for x in pair):
-                raise ValueError("transition limits must be real non-boolean scalars")
-            amin_i, amax_i = float(pair[0]), float(pair[1])
-            if not math.isfinite(amin_i) or not math.isfinite(amax_i) or amin_i > amax_i:
-                raise ValueError("transition limits are nonfinite or unordered")
-            queried.append((amin_i, amax_i))
+            for k_query in ((curvature,) if curvature_samples is None else frozen_curvatures):
+                pair = limits(speed, k_query)
+                if not isinstance(pair, (tuple, list)) or len(pair) != 2:
+                    raise ValueError("transition limits must return two accelerations")
+                real_types = (int, float, np.integer, np.floating)
+                if any(isinstance(x, (bool, np.bool_)) or not isinstance(x, real_types) for x in pair):
+                    raise ValueError("transition limits must be real non-boolean scalars")
+                amin_i, amax_i = float(pair[0]), float(pair[1])
+                if not math.isfinite(amin_i) or not math.isfinite(amax_i) or amin_i > amax_i:
+                    raise ValueError("transition limits are nonfinite or unordered")
+                queried.append((amin_i, amax_i))
         amin = max(item[0] for item in queried)
         amax = min(item[1] for item in queried)
         value = (endpoint*endpoint - w0 - 2.*ds*amax if forward
@@ -371,7 +382,8 @@ def capability_profile(path, surface, *, boundary: str = "flying", start_speed=N
                        step: float = .25, tolerance: float = 1.e-7,
                        maximum_iterations: int = 200, rest_limits: Callable | None = None,
                        trajectory=None, transition_method: str = "legacy_fixed_point",
-                        segment_limit_sampling: str = "midpoint") -> CapabilityProfile:
+                        segment_limit_sampling: str = "midpoint",
+                        segment_curvature_sampling: str = "node_average") -> CapabilityProfile:
     """Solve a bounded forward/backward energy profile on exact path arclength.
 
     ``rest_limits(speed, curvature)`` is an explicit original-physics low-speed
@@ -384,6 +396,15 @@ def capability_profile(path, surface, *, boundary: str = "flying", start_speed=N
         raise ValueError("maximum_iterations must be a positive integer")
     if not isinstance(transition_method, str) or transition_method not in ("legacy_fixed_point", "bracketed_energy"):
         raise ValueError("transition_method must be 'legacy_fixed_point' or 'bracketed_energy'")
+    if not isinstance(segment_curvature_sampling, str) or segment_curvature_sampling not in ("node_average", "trajectory_five_fractions"):
+        raise ValueError("segment_curvature_sampling must be 'node_average' or 'trajectory_five_fractions'")
+    if segment_curvature_sampling == "trajectory_five_fractions":
+        if trajectory is None:
+            raise ValueError("trajectory_five_fractions requires a trajectory")
+        if transition_method != "bracketed_energy":
+            raise ValueError("trajectory_five_fractions requires transition_method='bracketed_energy'")
+        if hasattr(surface, "u") and hasattr(surface, "domain_speed"):
+            raise ValueError("trajectory_five_fractions is unsupported for signed charts")
     if not isinstance(segment_limit_sampling, str) or segment_limit_sampling not in ("midpoint", "speed_endpoints_and_midpoint"):
         raise ValueError("segment_limit_sampling must be 'midpoint' or 'speed_endpoints_and_midpoint'")
     if segment_limit_sampling != "midpoint" and transition_method != "bracketed_energy":
@@ -392,6 +413,38 @@ def capability_profile(path, surface, *, boundary: str = "flying", start_speed=N
         raise ValueError("boundary must be 'flying', 'rolling', or 'standing'")
     distance, curvature, reference = _path_samples(path, step, trajectory)
     cap, chart_limits, floor = _surface_interface(surface)
+    segment = np.diff(distance)
+    curvature_samples = None
+    if segment_curvature_sampling == "trajectory_five_fractions":
+        station_map = getattr(trajectory, "station_map", None)
+        inverse = getattr(station_map, "to_reference", None)
+        evaluate = getattr(trajectory, "evaluate", None)
+        if not callable(inverse) or not callable(evaluate):
+            raise ValueError("trajectory_five_fractions requires station_map.to_reference and trajectory.evaluate")
+        sample_rows = []
+        wall_guard = getattr(surface, "ensure_wall_budget", None)
+        if callable(wall_guard):
+            wall_guard()
+        for i, ds_i in enumerate(segment):
+            physical = np.asarray((distance[i], distance[i] + .25*ds_i, distance[i] + .5*ds_i,
+                                   distance[i] + .75*ds_i, distance[i+1]), dtype=float)
+            try:
+                mapped = np.asarray(inverse(physical), dtype=float)
+            except (TypeError, ValueError) as error:
+                raise ValueError("trajectory geometry sample is outside station-map coverage") from error
+            if mapped.shape != physical.shape or not np.all(np.isfinite(mapped)):
+                raise ValueError("trajectory station map returned malformed geometry samples")
+            source_bounds = np.asarray(getattr(getattr(trajectory, "reference", None), "source_station", ()), dtype=float)
+            if source_bounds.ndim != 1 or source_bounds.size < 2 or not np.all(np.isfinite(source_bounds)) or np.any(np.diff(source_bounds) <= 0.) or np.any(mapped < source_bounds[0]) or np.any(mapped > source_bounds[-1]):
+                raise ValueError("trajectory geometry sample is outside strict source station bounds")
+            values = evaluate(mapped)
+            sampled = np.asarray(getattr(values, "curvature", None), dtype=float)
+            if sampled.shape != physical.shape or not np.all(np.isfinite(sampled)):
+                raise ValueError("trajectory did not return finite curvature at every segment fraction")
+            sample_rows.append(tuple(float(k) for k in np.r_[sampled, .5*(curvature[i]+curvature[i+1])]))
+        curvature_samples = tuple(sample_rows)
+        if callable(wall_guard):
+            wall_guard()
     if boundary == "flying":
         if start_speed is not None:
             raise ValueError("flying boundary does not accept start_speed")
@@ -417,13 +470,17 @@ def capability_profile(path, surface, *, boundary: str = "flying", start_speed=N
         caps = np.asarray([cap(k) for k in curvature], dtype=float)
     except ValueError as error:
         raise ValueError("path curvature is outside the declared capability domain") from error
-    # A segment is queried at its midpoint curvature, so its endpoints must
-    # already carry that admissible capability cap; otherwise a corner cap can
-    # be crossed without a dynamically feasible braking preview.
-    midpoint_caps = np.asarray([cap(.5*(curvature[i] + curvature[i+1]))
-                                for i in range(curvature.size - 1)], dtype=float)
-    caps[:-1] = np.minimum(caps[:-1], midpoint_caps)
-    caps[1:] = np.minimum(caps[1:], midpoint_caps)
+    # A segment's selected curvature caps constrain both endpoint speeds.
+    if curvature_samples is not None:
+        try:
+            segment_caps = np.asarray([min(cap(k) for k in row) for row in curvature_samples], dtype=float)
+        except ValueError as error:
+            raise ValueError("sampled path curvature is outside the declared capability domain") from error
+    else:
+        segment_caps = np.asarray([cap(.5*(curvature[i] + curvature[i+1]))
+                                   for i in range(curvature.size - 1)], dtype=float)
+    caps[:-1] = np.minimum(caps[:-1], segment_caps)
+    caps[1:] = np.minimum(caps[1:], segment_caps)
     if np.any(~np.isfinite(caps)) or np.any(caps <= 0.0):
         raise ValueError("capability speed caps must be finite and positive")
     if hasattr(surface, "speed") and np.any(caps > float(np.max(np.asarray(surface.speed, dtype=float)))):
@@ -435,7 +492,9 @@ def capability_profile(path, surface, *, boundary: str = "flying", start_speed=N
     if boundary == "standing":
         # A rest extension must connect to the chart at every encountered
         # curvature rather than create an unverified discontinuity at the floor.
-        for k in np.unique(np.r_[curvature, .5*(curvature[:-1] + curvature[1:])]):
+        selected_k = (np.asarray(curvature_samples, dtype=float).reshape(-1) if curvature_samples is not None else
+                      np.r_[curvature, .5*(curvature[:-1] + curvature[1:])])
+        for k in np.unique(selected_k):
             lo, hi = rest_limits(floor, float(k))
             clo, chi = chart_limits(floor, float(k))
             if not all(math.isfinite(float(x)) for x in (lo, hi)) or lo > hi:
@@ -464,18 +523,22 @@ def capability_profile(path, surface, *, boundary: str = "flying", start_speed=N
         return chart_limits(float(v), float(k))
 
     def failed(status, iteration, change, detail):
+        details = {"detail": detail, "boundary": boundary, "floor": floor}
+        if transition_method == "bracketed_energy":
+            details.update({"transition_method": transition_method,
+                            "root_assumption": "sampled_non_decreasing_energy_residual_not_continuous_certificate",
+                            "segment_limit_sampling": segment_limit_sampling})
+            if curvature_samples is not None:
+                details.update({"segment_curvature_sampling": segment_curvature_sampling,
+                                "curvature_samples_per_segment": 6,
+                                "geometry_query_stations_kind": "physical_fraction_via_computational_station_map_inverse",
+                                "continuous_feasibility_certified": False})
         return CapabilityProfile(distance, speed, np.full(distance.shape, np.nan), math.nan,
-                                 False, status, iteration, change, reference,
-                                 {"detail": detail, "boundary": boundary, "floor": floor,
-                                   **({"transition_method": transition_method,
-                                      "root_assumption": "sampled_non_decreasing_energy_residual_not_continuous_certificate",
-                                       "segment_limit_sampling": segment_limit_sampling}
-                                      if transition_method == "bracketed_energy" else {})})
+                                 False, status, iteration, change, reference, details)
 
     signed_chart = hasattr(surface, "u") and hasattr(surface, "domain_speed")
     if signed_chart and transition_method == "bracketed_energy":
         raise ValueError("bracketed_energy is only supported for original-live/generic surfaces, not signed charts")
-    segment = np.diff(distance)
     max_change = math.inf
     for iteration in range(1, maximum_iterations + 1):
         previous = speed.copy()
@@ -489,10 +552,11 @@ def capability_profile(path, surface, *, boundary: str = "flying", start_speed=N
                                                     curvature=k, ds=ds, forward=True,
                                                     tolerance=tolerance)
                 elif transition_method == "bracketed_energy":
+                    kwargs = ({"curvature_samples": curvature_samples[i]} if curvature_samples is not None else {})
                     speed[i+1] = _bracketed_energy_transition(
                         limits, vi=vi, bound=candidate, curvature=k, ds=ds,
                         forward=True, tolerance=tolerance,
-                        segment_limit_sampling=segment_limit_sampling)
+                        segment_limit_sampling=segment_limit_sampling, **kwargs)
                 else:
                     for _ in range(32):
                         vm = math.sqrt(.5*(vi*vi + candidate*candidate))
@@ -520,10 +584,11 @@ def capability_profile(path, surface, *, boundary: str = "flying", start_speed=N
                                                   curvature=k, ds=segment[i], forward=False,
                                                   tolerance=tolerance)
                 elif transition_method == "bracketed_energy":
+                    kwargs = ({"curvature_samples": curvature_samples[i]} if curvature_samples is not None else {})
                     speed[i] = _bracketed_energy_transition(
                         limits, vi=vj, bound=candidate, curvature=k, ds=segment[i],
                         forward=False, tolerance=tolerance,
-                        segment_limit_sampling=segment_limit_sampling)
+                        segment_limit_sampling=segment_limit_sampling, **kwargs)
                 else:
                     for _ in range(32):
                         vm = math.sqrt(.5*(candidate*candidate + vj*vj))
@@ -558,7 +623,8 @@ def capability_profile(path, surface, *, boundary: str = "flying", start_speed=N
         k = .5*(curvature[i]+curvature[i+1])
         verify_speeds = ((math.sqrt(.5*(vi*vi+vj*vj)),) if segment_limit_sampling == "midpoint"
                          else (vi, vj, math.sqrt(.5*(vi*vi+vj*vj))))
-        checked = [limits(v, k) for v in verify_speeds]
+        verify_curvatures = curvature_samples[i] if curvature_samples is not None else (k,)
+        checked = [limits(v, k_query) for v in verify_speeds for k_query in verify_curvatures]
         lo = max(pair[0] for pair in checked)
         hi = min(pair[1] for pair in checked)
         if a < lo-tolerance or a > hi+tolerance:
@@ -569,7 +635,8 @@ def capability_profile(path, surface, *, boundary: str = "flying", start_speed=N
                              {"boundary": boundary, "floor": floor, "reference_kind": "capability-table",
                                **({"transition_method": transition_method,
                                   "root_assumption": "sampled_non_decreasing_energy_residual_not_continuous_certificate",
-                                       "segment_limit_sampling": segment_limit_sampling}
+                                       "segment_limit_sampling": segment_limit_sampling,
+                                        **({"segment_curvature_sampling": segment_curvature_sampling, "curvature_samples_per_segment": 6, "geometry_query_stations_kind": "physical_fraction_via_computational_station_map_inverse", "continuous_feasibility_certified": False} if curvature_samples is not None else {})}
                                   if transition_method == "bracketed_energy" else {})})
 
 

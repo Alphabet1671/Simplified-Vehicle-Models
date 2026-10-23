@@ -30,12 +30,17 @@ class LiveStandingSettings:
     maximum_queries: int = 20000
     transition_method: str = "legacy_fixed_point"
     segment_limit_sampling: str = "midpoint"
+    segment_curvature_sampling: str = "node_average"
 
     def __post_init__(self):
         if not isinstance(self.transition_method, str) or self.transition_method not in ("legacy_fixed_point", "bracketed_energy"):
             raise ValueError("transition_method must be 'legacy_fixed_point' or 'bracketed_energy'")
         if not isinstance(self.segment_limit_sampling, str) or self.segment_limit_sampling not in ("midpoint", "speed_endpoints_and_midpoint"):
             raise ValueError("segment_limit_sampling must be 'midpoint' or 'speed_endpoints_and_midpoint'")
+        if not isinstance(self.segment_curvature_sampling, str) or self.segment_curvature_sampling not in ("node_average", "trajectory_five_fractions"):
+            raise ValueError("segment_curvature_sampling must be 'node_average' or 'trajectory_five_fractions'")
+        if self.segment_curvature_sampling == "trajectory_five_fractions" and self.transition_method != "bracketed_energy":
+            raise ValueError("trajectory_five_fractions requires transition_method='bracketed_energy'")
         if self.segment_limit_sampling != "midpoint" and self.transition_method != "bracketed_energy":
             raise ValueError("speed endpoint sampling requires transition_method='bracketed_energy'")
         for name in ("step", "tolerance", "maximum_wall_seconds"):
@@ -156,6 +161,11 @@ def solve_live_standing_profile(vehicle, trajectory, *, settings=None,
         "queries": 0, "cache_hits": 0, "elapsed_wall_seconds": 0.0,
         "transition_method": settings.transition_method if isinstance(settings, LiveStandingSettings) else None,
         "segment_limit_sampling": settings.segment_limit_sampling if isinstance(settings, LiveStandingSettings) else None,
+        **({"segment_curvature_sampling": settings.segment_curvature_sampling,
+            "curvature_samples_per_segment": 6,
+            "geometry_query_stations_kind": "physical_fraction_via_computational_station_map_inverse",
+            "continuous_feasibility_certified": False}
+           if isinstance(settings, LiveStandingSettings) and settings.segment_curvature_sampling == "trajectory_five_fractions" else {}),
         "phase": "input_validation", "status": "failed",
     }
     start = time.monotonic()
@@ -169,6 +179,10 @@ def solve_live_standing_profile(vehicle, trajectory, *, settings=None,
             raise ValueError("trajectory must have an open reference")
         if not callable(getattr(trajectory, "to_path", None)) or station_map is None:
             raise ValueError("trajectory must provide exact to_path and station_map")
+        if settings.segment_curvature_sampling == "trajectory_five_fractions" and (
+                not callable(getattr(station_map, "to_reference", None)) or
+                not callable(getattr(trajectory, "evaluate", None))):
+            raise ValueError("trajectory_five_fractions requires station_map.to_reference and trajectory.evaluate")
         source = np.asarray(getattr(reference, "source_station", None), dtype=float)
         if source.ndim != 1 or source.size < 2 or not np.all(np.isfinite(source)) or np.any(np.diff(source) <= 0):
             raise ValueError("reference source station coverage must be finite and strictly increasing")
@@ -188,11 +202,15 @@ def solve_live_standing_profile(vehicle, trajectory, *, settings=None,
             raise TypeError("live evaluator overrides must be callable")
         surface = _LiveSurface(vehicle, settings, limit_evaluator, speed_cap_evaluator, start)
         report["phase"] = "profile"
+        profile_kwargs = {}
+        if settings.segment_curvature_sampling != "node_average":
+            profile_kwargs["segment_curvature_sampling"] = settings.segment_curvature_sampling
         profile = capability_profile(fullpath, surface, boundary="standing", step=settings.step,
                                      tolerance=settings.tolerance, maximum_iterations=settings.maximum_iterations,
                                      rest_limits=surface.limits, trajectory=trajectory,
-                                      transition_method=settings.transition_method,
-                                      segment_limit_sampling=settings.segment_limit_sampling)
+                                     transition_method=settings.transition_method,
+                                     segment_limit_sampling=settings.segment_limit_sampling,
+                                     **profile_kwargs)
         surface.ensure_wall_budget()
         change = float(profile.max_change)
         if settings.transition_method == "bracketed_energy":
@@ -226,6 +244,11 @@ def solve_live_standing_profile(vehicle, trajectory, *, settings=None,
         elapsed = 2*segment/(profile.speed[:-1]+profile.speed[1:])
         if not np.allclose(np.diff(profile.elapsed_time), elapsed, rtol=1e-10, atol=1e-10):
             raise ValueError("profile elapsed time violates exact energy-segment formula")
+        if settings.segment_curvature_sampling == "trajectory_five_fractions":
+            report.update({"segment_curvature_sampling": settings.segment_curvature_sampling,
+                           "curvature_samples_per_segment": 6,
+                           "geometry_query_stations_kind": "physical_fraction_via_computational_station_map_inverse",
+                           "continuous_feasibility_certified": False})
         report.update({"phase": "complete", "status": "converged", "all_accepted": False,
                        "profile_returned": True, "path_length": float(distance[-1]), "lap_time": float(profile.lap_time),
                        "sample_count": int(profile.distance.size), "accepted": False})

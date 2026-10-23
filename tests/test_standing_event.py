@@ -104,6 +104,24 @@ class StandingEventTests(unittest.TestCase):
             self.assertEqual(diag["phase"], "remainder")
             self.assertFalse(diag["event_qualified"])
 
+    def test_profile_elapsed_time_and_energy_consistency_required(self):
+        cases = (([0., 2.], 2., [2., 20.]),
+                 ([0., np.nan], 9., [2., 20.]),
+                 ([0., -1.], 9., [2., 20.]),
+                 ([0., 8.], 9., [2., 20.]),
+                 ([0., 2., 9.], 9., [2., 8., 20.]),
+                 ([0., 9.], 9., [2., 18.]))
+        for elapsed, lap_time, speeds in cases:
+            def fake(path, surface, **kwargs):
+                return CapabilityProfile(np.array([0., 99.]), np.array(speeds), np.array(elapsed),
+                    lap_time, True, "converged", 1, 0.,
+                    np.array([path.reference_distance[0], path.reference_distance[-1]]))
+            result, diag = solve_frozen_standing_profile(None, Trajectory(), Surface(),
+                launch_settings=LaunchSettings(transition_speed=2.), acceleration_limit=lambda *_: 2.,
+                profile_solver=fake)
+            self.assertIsNone(result)
+            self.assertEqual(diag["phase"], "remainder")
+
     def test_wrong_interior_reference_profile_rejected(self):
         def fake(path, surface, **kwargs):
             refs = np.array([path.reference_distance[0], 50., path.reference_distance[-1]])
@@ -114,6 +132,24 @@ class StandingEventTests(unittest.TestCase):
             profile_solver=fake)
         self.assertIsNone(result)
         self.assertEqual(diag["phase"], "remainder")
+
+    def test_inconsistent_launch_transition_data_rejected(self):
+        from dataclasses import replace
+        from simplified_vehicle_models.solvers.standing_launch import integrate_standing_launch
+        trajectory = Trajectory()
+        good = integrate_standing_launch(None, trajectory,
+            settings=LaunchSettings(transition_speed=2.), acceleration_limit=lambda *_: 2.)
+        mutations = (
+            {"path_distance": np.r_[good.path_distance[:-1], good.path_distance[-1] + 1.]},
+            {"speed": np.r_[good.speed[:-1], good.speed[-1] + 1.]},
+            {"reference_station": np.r_[good.reference_station[:-1], good.reference_station[-1] + 1.]},
+            {"transition_speed": True},
+            {"transition_time": np.nan},
+        )
+        for changes in mutations:
+            with self.subTest(changes=changes):
+                with self.assertRaises(ValueError):
+                    FrozenPathRemainder(trajectory, replace(good, **changes))
 
     def test_launch_failure_returns_no_result(self):
         result, diag = solve_frozen_standing_profile(None, Trajectory(), Surface(),

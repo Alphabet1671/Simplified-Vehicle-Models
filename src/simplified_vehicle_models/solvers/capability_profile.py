@@ -411,7 +411,14 @@ def capability_profile(path, surface, *, boundary: str = "flying", start_speed=N
         raise ValueError("speed endpoint sampling requires transition_method='bracketed_energy'")
     if boundary not in ("flying", "rolling", "standing"):
         raise ValueError("boundary must be 'flying', 'rolling', or 'standing'")
+    geometry_wall_guard = None
+    if segment_curvature_sampling == "trajectory_five_fractions":
+        geometry_wall_guard = getattr(surface, "ensure_wall_budget", None)
+        if callable(geometry_wall_guard):
+            geometry_wall_guard()
     distance, curvature, reference = _path_samples(path, step, trajectory)
+    if callable(geometry_wall_guard):
+        geometry_wall_guard()
     cap, chart_limits, floor = _surface_interface(surface)
     segment = np.diff(distance)
     curvature_samples = None
@@ -422,7 +429,7 @@ def capability_profile(path, surface, *, boundary: str = "flying", start_speed=N
         if not callable(inverse) or not callable(evaluate):
             raise ValueError("trajectory_five_fractions requires station_map.to_reference and trajectory.evaluate")
         sample_rows = []
-        wall_guard = getattr(surface, "ensure_wall_budget", None)
+        wall_guard = geometry_wall_guard
         if callable(wall_guard):
             wall_guard()
         for i, ds_i in enumerate(segment):

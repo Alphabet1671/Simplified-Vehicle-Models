@@ -147,6 +147,27 @@ class SegmentCurvatureSamplingTests(unittest.TestCase):
                 transition_method="bracketed_energy", trajectory=_Trajectory(),
                 segment_curvature_sampling="trajectory_five_fractions")
 
+    def test_slow_node_geometry_is_bracketed_before_five_fraction_queries(self):
+        clock = [0.]
+        calls = [0]
+        class ClockSurface(_Surface):
+            maximum_wall_seconds = 1.
+            started = 0.
+            def ensure_wall_budget(self):
+                if clock[0] - self.started > self.maximum_wall_seconds:
+                    raise TimeoutError("geometry wall budget exhausted")
+        class SlowTrajectory(_Trajectory):
+            def evaluate(self, source):
+                calls[0] += 1
+                clock[0] += 2.
+                return super().evaluate(source)
+        with self.assertRaisesRegex(TimeoutError, "wall budget"):
+            capability_profile(_Path(), ClockSurface(), boundary="rolling", start_speed=1., step=10.,
+                transition_method="bracketed_energy", trajectory=SlowTrajectory(),
+                segment_curvature_sampling="trajectory_five_fractions")
+        # One evaluation is the initial _path_samples node query; no fraction query follows it.
+        self.assertEqual(calls[0], 1)
+
     def test_settings_and_live_wrapper_report_sampled_mode_unqualified(self):
         with self.assertRaises(ValueError):
             LiveStandingSettings(segment_curvature_sampling="unknown")

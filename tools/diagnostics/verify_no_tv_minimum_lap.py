@@ -811,23 +811,51 @@ def _same_refinement_conditions(left: dict, right: dict) -> bool:
             and left.get("surface_representation") == right.get("surface_representation"))
 
 
+def _effective_geometry_contract(attempt: dict) -> str:
+    """Resolve historical native request identity without upgrading old cut requests."""
+    request = attempt.get("request", {})
+    supplied = request.get("source_geometry_contract")
+    if supplied is not None:
+        return supplied
+    return (None if request.get("case", {}).get("topology") == "full_cut_open"
+            else NATIVE_GEOMETRY_CONTRACT)
+
+
 def _comparison(case: str, left: dict, right: dict, output: Path, *, kind: str) -> dict | None:
-    try:
-        metrics = _rms_difference(output / case / left["artifact"], output / case / right["artifact"])
-    except (FileNotFoundError, ValueError):
-        return None
+    left_contract = _effective_geometry_contract(left)
+    right_contract = _effective_geometry_contract(right)
+    geometry_contract_match = left_contract is not None and left_contract == right_contract
+    if geometry_contract_match:
+        try:
+            metrics = _rms_difference(output / case / left["artifact"], output / case / right["artifact"])
+        except (FileNotFoundError, ValueError):
+            return None
+        left_time, right_time = left.get("objective_s"), right.get("objective_s")
+        time_difference = left_time - right_time if left_time is not None and right_time is not None else None
+        time_relative_difference = (_relative_difference(float(left_time), float(right_time))
+                                    if left_time is not None and right_time is not None else None)
+    else:
+        # Different source-geometry contracts are different problems, not a
+        # physical comparison. Keep the row visible but never compute deltas.
+        metric_names = ("rms_xy_m", "rms_path", "rms_metric", "rms_offset_m", "length_relative",
+                        "rms_speed_mps", "rms_curvature_per_m", "rms_speed", "rms_curvature")
+        metrics = {name: None for name in metric_names}
+        time_difference = time_relative_difference = None
     return {"case": case, "kind": kind,
-            "left": {"attempt_id": left.get("attempt_id"), "mesh_m": left["request"]["mesh_spacing_m"], "basis_m": left["request"]["basis_spacing_m"], "time_s": left.get("objective_s")},
-            "right": {"attempt_id": right.get("attempt_id"), "mesh_m": right["request"]["mesh_spacing_m"], "basis_m": right["request"]["basis_spacing_m"], "time_s": right.get("objective_s")},
-            "time_difference_s": (left.get("objective_s") - right.get("objective_s")) if left.get("objective_s") is not None and right.get("objective_s") is not None else None,
-            "time_relative_difference": _relative_difference(float(left["objective_s"]), float(right["objective_s"]))
-            if left.get("objective_s") is not None and right.get("objective_s") is not None else None,
+            "comparison_status": "comparable" if geometry_contract_match else "non_comparable_geometry",
+            "geometry_contract_match": geometry_contract_match,
+            "left": {"attempt_id": left.get("attempt_id"), "mesh_m": left["request"]["mesh_spacing_m"], "basis_m": left["request"]["basis_spacing_m"], "time_s": left.get("objective_s"),
+                     "source_geometry_contract": left_contract},
+            "right": {"attempt_id": right.get("attempt_id"), "mesh_m": right["request"]["mesh_spacing_m"], "basis_m": right["request"]["basis_spacing_m"], "time_s": right.get("objective_s"),
+                      "source_geometry_contract": right_contract},
+            "time_difference_s": time_difference,
+            "time_relative_difference": time_relative_difference,
             **metrics, "convergence_criteria": left["request"].get("convergence_criteria"),
             # User-supplied budgets are visible diagnostics only.  No approved,
             # source-hashed geometry/state convergence policy exists yet, so they
             # cannot become strict evidence regardless of their magnitudes.
-            "metric_diagnostic_within_user_budget": _criteria_qualified(
-                metrics, left["request"].get("convergence_criteria")),
+            "metric_diagnostic_within_user_budget": (False if not geometry_contract_match else
+                _criteria_qualified(metrics, left["request"].get("convergence_criteria"))),
             "metric_diagnostic_nonqualifying": left["request"].get("convergence_criteria") is not None,
             "geometry_state_convergence": None}
 
@@ -850,7 +878,8 @@ def _qualified_edge(comparisons: list[dict], *, kind: str) -> dict | None:
         preregistered = (all(rung in DEFAULT_MESH_SPACINGS for rung in rungs)
                          if kind == "mesh_refinement"
                          else all(rung in DEFAULT_BASIS_SPACINGS for rung in rungs))
-        if (comparison.get("reference_qualified") is True and preregistered
+        if (comparison.get("geometry_contract_match") is True
+                and comparison.get("reference_qualified") is True and preregistered
                 and comparison.get("time_relative_difference") is not None
                 and comparison["time_relative_difference"] <= REFERENCE_TIME_CONVERGENCE_RELATIVE
                 # Strict geometry/state convergence is deliberately unavailable

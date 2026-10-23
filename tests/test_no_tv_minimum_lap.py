@@ -607,10 +607,50 @@ class NoTvMinimumLapHarnessTest(unittest.TestCase):
         self.assertGreater(report["candidate_diagnostics"][0]["rms_path"], 0.0)
         self.assertIn("rms_speed", report["candidate_diagnostics"][0])
         self.assertIn("rms_curvature", report["candidate_diagnostics"][0])
+        self.assertEqual(report["candidate_diagnostics"][0]["comparison_status"], "comparable")
+        self.assertTrue(report["candidate_diagnostics"][0]["geometry_contract_match"])
         self.assertEqual(report["mesh_refinement"], [])
         self.assertEqual(report["basis_refinement"], [])
         self.assertFalse(report["strict_aggregate"]["accepted"])
         self.assertEqual(report["strict_aggregate"]["status"], "incomplete")
+
+    def test_aggregate_mixed_cut_geometry_contracts_have_no_physical_deltas(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); case_dir = root / "mis_cut_open"; case_dir.mkdir()
+            rows = []
+            for attempt, mesh, contract, offset in (
+                    ("new-fit", 5.0, harness.SOURCE_GEOMETRY_CONTRACT, 0.0),
+                    ("legacy-refit", 2.5, None, 100.0)):
+                target = case_dir / attempt; target.mkdir()
+                artifact = target / "solution.npz"
+                np.savez(artifact, distance=np.array([0., 1.]),
+                         offset=np.array([offset, offset]), speed=np.array([10., 12.]),
+                         curvature=np.array([0., 0.]))
+                request = {"case": {"name": "mis_cut_open", "topology": "full_cut_open"},
+                           "seed": "centerline", "settings": {"tolerance": 1e-6},
+                           "source_hashes": {"input": "same"}, "mesh_spacing_m": mesh,
+                           "basis_spacing_m": 35.0}
+                if contract is not None:
+                    request["source_geometry_contract"] = contract
+                rows.append({"request": request, "source_hashes_after": {"input": "same"},
+                             "surface_representation": "signed", "artifact": f"{attempt}/solution.npz",
+                             "objective_s": 100.0 + offset, "status": "Solve_Succeeded",
+                             "solver_succeeded": True, "dense_original_model": {"checks": {
+                                 "geometry_consistency": True, "dense_feasibility": True},
+                                 "model_feasible": True}})
+            report = harness.aggregate(rows, root, expected_cases=("mis_cut_open",))
+        self.assertEqual(len(report["candidate_diagnostics"]), 1)
+        comparison = report["candidate_diagnostics"][0]
+        self.assertEqual(comparison["comparison_status"], "non_comparable_geometry")
+        self.assertFalse(comparison["geometry_contract_match"])
+        self.assertEqual(comparison["left"]["source_geometry_contract"], harness.SOURCE_GEOMETRY_CONTRACT)
+        self.assertIsNone(comparison["right"]["source_geometry_contract"])
+        for field in ("time_difference_s", "time_relative_difference", "rms_offset_m", "rms_speed_mps"):
+            self.assertIsNone(comparison[field], field)
+        self.assertFalse(comparison["metric_diagnostic_within_user_budget"])
+        self.assertEqual(report["mesh_refinement"], [])
+        self.assertEqual(report["basis_refinement"], [])
+        self.assertFalse(report["strict_aggregate"]["accepted"])
 
     def test_aggregate_qualifies_only_one_axis_with_matching_conditions(self):
         with tempfile.TemporaryDirectory() as directory:

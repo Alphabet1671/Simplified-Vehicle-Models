@@ -169,35 +169,47 @@ def replay_exact_trajectory(loaded_or_path, vehicle, *, settings=None, plant_fac
         report["endpoint_distance_error_m"] = float(s[-1] - length)
         periodic = None
         if reference.is_closed:
-            pidx = tuple(getattr(plant, "periodic_indices", ()))
+            raw_indices = tuple(getattr(plant, "periodic_indices", ()))
             tolerances = np.asarray(getattr(plant, "periodic_tolerances", []), dtype=float)
-            pidx = tuple(i for i in pidx if 0 <= i < len(names)
-                         and i != idx["s"] and names[i] != "soc")
-            if (len(tolerances) != len(getattr(plant, "periodic_indices", ()))
-                    or not np.all(np.isfinite(tolerances)) or np.any(tolerances < 0)
-                    or any(not isinstance(i, (int, np.integer)) for i in getattr(plant, "periodic_indices", ()))
-                    or any(i < 0 or i >= len(names) for i in getattr(plant, "periodic_indices", ()))
-                    or len(set(getattr(plant, "periodic_indices", ()))) != len(getattr(plant, "periodic_indices", ()))):
+            if (len(tolerances) != len(raw_indices)
+                    or not np.all(np.isfinite(tolerances)) or np.any(tolerances <= 0)
+                    or any(not isinstance(i, (int, np.integer)) for i in raw_indices)
+                    or any(i < 0 or i >= len(names) for i in raw_indices)
+                    or len(set(raw_indices)) != len(raw_indices)):
                 raise ValueError("plant periodicity metadata is invalid")
-            periodic = {names[i]: float(y[i, -1]-y[i, 0]) for i in pidx}
-            limits = {names[i]: float(tolerances[j])
-                      for j, i in enumerate(getattr(plant, "periodic_indices", ())) if i in pidx}
-            metrics_periodic_within = all(abs(periodic[name]) <= limits[name]
-                                          for name in periodic)
+            applicable = tuple((i, tolerances[j]) for j, i in enumerate(raw_indices)
+                               if i != idx["s"] and names[i] != "soc")
+            pidx = tuple(i for i, _ in applicable)
+            periodic = ({names[i]: float(y[i, -1]-y[i, 0]) for i in pidx}
+                        if pidx else None)
+            limits = {names[i]: float(limit) for i, limit in applicable}
+            metrics_periodic_within = (all(abs(periodic[name]) <= limits[name]
+                                           for name in periodic) if periodic is not None else None)
         else:
             metrics_periodic_within = None
         max_lateral = float(np.max(np.abs(nerr)))
         maximum_spatial_step = float(np.max(np.diff(s))) if s.size > 1 else 0.
         tracking_gate = bool(max_lateral <= .25 and maximum_spatial_step <= .5)
+        if loaded.physical_time is None:
+            time_error_abs = time_error_rel = None
+        else:
+            physical_time = _positive_real("loaded physical_time", loaded.physical_time)
+            time_error_abs = float(t[-1] - physical_time)
+            time_error_rel = float(time_error_abs / physical_time)
+        solver_message = getattr(result, "message", None)
         metrics = {"max_abs_speed_error_mps": float(np.max(np.abs(error))), "rms_speed_error_mps": float(np.sqrt(np.mean(error**2))),
             "max_abs_lateral_error_m": max_lateral, "max_abs_heading_error_rad": float(np.max(np.abs(herr))),
             "maximum_spatial_step_m": maximum_spatial_step,
             "diagnostic_tracking_within_existing_gate": tracking_gate,
             "distance_coverage_m": float(s[-1]), "distance_overshoot_m": float(max(0., s[-1]-length)),
-            "time_vs_reference_seconds_diagnostic_only": None if loaded.physical_time is None else float(t[-1]-loaded.physical_time),
+            "time_vs_reference_seconds_diagnostic_only": time_error_abs,
+            "time_vs_reference_relative_diagnostic_only": time_error_rel,
+            "forward_message": solver_message,
             "periodic_state_delta": periodic, "periodic_within_published_tolerances": metrics_periodic_within,
             "endpoint_query_count": reference.outside_query_count,
             "endpoint_max_outside_distance_m": reference.maximum_outside_distance,
+            "endpoint_first_query_before_m": reference.first_outside_before,
+            "endpoint_first_query_after_m": reference.first_outside_after,
             "midpoint_sample_validation_complete": bool(getattr(result, "midpoint_sample_validation_complete", False)),
             "evaluations": getattr(result, "evaluations", None), "forward_wall_seconds": getattr(result, "wall_seconds", None)}
         wall_overrun = perf_counter() - start > settings.maximum_wall_seconds

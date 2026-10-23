@@ -106,6 +106,9 @@ class SplineSolution:
     time_quadrature_metadata: dict[str, object] = field(default_factory=_time_quadrature_metadata)
     # Explicitly labels the stored controls; omitted metadata on old artifacts is legacy.
     control_representation: str = "quadratic_acceleration_v1"
+    off_site_stations: FloatArray | None = None
+    off_site_elements: FloatArray | None = None
+    off_site_fractions: FloatArray | None = None
 
 
 def _reference_curve(track):
@@ -356,8 +359,40 @@ def _sample_corridor(values, corridor, positions, track):
 
 
 
+def _canonical_constraint_sites(mesh, fractions, constraint_stations):
+    """Union legacy fractional sites with explicit stations, excluding nodes/mids."""
+    mesh = np.asarray(mesh, dtype=float)
+    fractions = np.asarray(fractions, dtype=float)
+    widths = np.diff(mesh)
+    legacy = (mesh[:-1, None] + widths[:, None] * fractions).ravel()
+    explicit = np.asarray([] if constraint_stations is None else constraint_stations,
+                          dtype=float)
+    if explicit.ndim > 1:
+        raise ValueError("constraint_stations must be a one-dimensional sequence")
+    if explicit.size and (not np.all(np.isfinite(explicit))
+                          or np.any(explicit <= mesh[0])
+                          or np.any(explicit >= mesh[-1])):
+        raise ValueError("constraint_stations must be finite interior mesh-domain stations")
+    candidates = np.sort(np.r_[legacy, explicit])
+    tolerance = 1.0e-11 * max(1.0, float(mesh[-1] - mesh[0]))
+    kept = []
+    for station in candidates:
+        if np.min(np.abs(mesh - station)) <= tolerance:
+            continue
+        midpoints = 0.5 * (mesh[:-1] + mesh[1:])
+        if np.min(np.abs(midpoints - station)) <= tolerance:
+            continue
+        if not kept or station - kept[-1] > tolerance:
+            kept.append(float(station))
+    stations = np.asarray(kept, dtype=float)
+    elements = np.searchsorted(mesh, stations, side="right") - 1
+    site_fractions = (stations - mesh[elements]) / widths[elements]
+    by_element = [np.flatnonzero(elements == i) for i in range(widths.size)]
+    return stations, elements.astype(int), site_fractions, by_element
+
+
 def build_spline_ocp(track, corridor, surface, mesh, spline, settings: QssSettings,
-                     speed_cap=None):
+                     speed_cap=None, *, constraint_stations=None):
     """Build the spline CasADi NLP and its variable/constraint bounds.
 
     The return value has the same shape as :func:`qss_line_ocp.build_ocp`:
@@ -375,7 +410,9 @@ def build_spline_ocp(track, corridor, surface, mesh, spline, settings: QssSettin
     midpoints = 0.5 * (mesh[:-1] + mesh[1:])
     widths = np.diff(mesh)
     fractions = np.asarray(settings.off_collocation_fractions, dtype=float)
-    off_sites = (mesh[:-1, None] + widths[:, None] * fractions).ravel()
+    off_sites, off_elements, off_fractions, off_by_element = _canonical_constraint_sites(
+        mesh, fractions, constraint_stations,
+    )
 
     node_values, node_first, node_second = spline.basis(mesh)
     mid_values, mid_first, mid_second = spline.basis(midpoints)
@@ -652,8 +689,7 @@ def build_spline_ocp(track, corridor, surface, mesh, spline, settings: QssSettin
             add(n_nodes[index], float(corridor_lower[index]),
                 float(corridor_upper[index]))
             add(n_mids[index], float(mid_lower[index]), float(mid_upper[index]))
-            for local in range(fractions.size):
-                site = index * fractions.size + local
+            for site in off_by_element[index]:
                 add(n_off[site], float(off_lower[site]), float(off_upper[site]))
             add(n_nodes[index + 1], float(corridor_lower[index + 1]),
                 float(corridor_upper[index + 1]))
@@ -678,10 +714,10 @@ def build_spline_ocp(track, corridor, surface, mesh, spline, settings: QssSettin
         node_acceleration_lower_indices.append(acceleration_indices[0])
         node_acceleration_upper_indices.append(acceleration_indices[1])
         node_domain_speed_indices.append(acceleration_indices[2])
-        for local in range(fractions.size):
-            site = index * fractions.size + local
-            off_speed = energy_speed(hermite_energy(index, fractions[local]))
-            off_control = quadratic_control(index, fractions[local])
+        for site in off_by_element[index]:
+            fraction = float(off_fractions[site])
+            off_speed = energy_speed(hermite_energy(index, fraction))
+            off_control = quadratic_control(index, fraction)
             off_acceleration = offsite_physical_acceleration(off_control, off_geometry[site][4])
             # These are feasibility rows only: retain the single HS speed
             # defect above rather than enforcing additional polynomial dynamics.
@@ -744,6 +780,11 @@ def build_spline_ocp(track, corridor, surface, mesh, spline, settings: QssSettin
         "g_lower": np.asarray(lower, dtype=float),
         "g_upper": np.asarray(upper, dtype=float),
         "mesh": mesh,
+        "off_site_stations": np.array(off_sites, dtype=float, copy=True),
+        "off_site_elements": np.array(off_elements, dtype=int, copy=True),
+        "off_site_fractions": np.array(off_fractions, dtype=float, copy=True),
+        "off_site_element_indices": tuple(np.array(indices, dtype=int, copy=True)
+                                          for indices in off_by_element),
         "count": count,
         "control_count": control_count,
         "spline": spline,
@@ -992,6 +1033,9 @@ def _spline_failure_diagnostics(*, status, iter_count, total_iterations, objecti
         "dual_x_coordinates": "scaled_decision",
         "dual_g_coordinates": "unscaled_constraint_residuals",
         "time_quadrature": TIME_QUADRATURE_NAME,
+        "off_site_stations": np.array(built.get("off_site_stations", []), copy=True).tolist(),
+        "off_site_elements": np.array(built.get("off_site_elements", []), copy=True).tolist(),
+        "off_site_fractions": np.array(built.get("off_site_fractions", []), copy=True).tolist(),
     }
     iterations = stats.get("iterations") if isinstance(stats, dict) else None
     if isinstance(iterations, dict) and "inf_du" in iterations:
@@ -1025,7 +1069,7 @@ def _raise_spline_solver_failure(*, status, values, constraints, objective,
 
 def solve_spline_line(track, corridor, surface, mesh, spline,
                       settings: QssSettings, *, seed: FloatArray | None = None,
-                      speed_cap=None) -> SplineSolution:
+                      speed_cap=None, constraint_stations=None) -> SplineSolution:
     """Solve the consistent spline minimum-time problem on a fixed mesh.
 
     The status and tolerance contract matches :func:`solve_line`: a solver
@@ -1036,6 +1080,7 @@ def solve_spline_line(track, corridor, surface, mesh, spline,
 
     built = build_spline_ocp(
         track, corridor, surface, mesh, spline, settings, speed_cap=speed_cap,
+        constraint_stations=constraint_stations,
     )
     count = built["count"]
     control_count = built["control_count"]
@@ -1173,4 +1218,7 @@ def solve_spline_line(track, corridor, surface, mesh, spline,
             "control_representation": settings.control_representation,
         },
         control_representation=settings.control_representation,
+        off_site_stations=np.array(built["off_site_stations"], dtype=float, copy=True),
+        off_site_elements=np.array(built["off_site_elements"], dtype=int, copy=True),
+        off_site_fractions=np.array(built["off_site_fractions"], dtype=float, copy=True),
     )

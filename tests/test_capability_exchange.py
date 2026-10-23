@@ -391,7 +391,7 @@ class ResidualSearchTests(unittest.TestCase):
                  {"name": "acceleration_max", "station": .8, "violation": .3, "element": 0}]
         validation = {"checks": {}, "diagnostics": [
             {"name": "acceleration_min", "passed": False, "worst_station": .3, "refinement_stations": [.31]},
-            {"name": "corridor_min", "passed": False, "worst_station": .4},
+            {"name": "corridor", "passed": False, "worst_station": .4},
             {"name": "acceleration_max", "passed": False, "worst_station": .5}]}
         calls, snapshots = [], []
         with patch("simplified_vehicle_models.solvers.capability_exchange.locate_physical_residuals",
@@ -409,8 +409,30 @@ class ResidualSearchTests(unittest.TestCase):
         self.assertFalse(report["accepted"])
         self.assertNotIn("full_coverage", record)
         self.assertEqual([x["source"] for x in record["planned_additions"]],
-                         ["validator:acceleration_min", "validator:corridor_min"])
+                         ["validator:acceleration_min", "validator:corridor"])
         self.assertEqual(snapshots[-1]["constraint_stations"], report["constraint_stations"])
+
+    def test_optin_search_peak_severity_uses_matching_validator_tolerance(self):
+        from unittest.mock import patch
+        from simplified_vehicle_models.solvers.capability_exchange import solve_constraint_exchange
+        solution = SimpleNamespace(status="Solve_Succeeded", distance=np.array([0., 1.]),
+            trajectory=self.solution.trajectory, state_evaluator=self.solution.state_evaluator,
+            coefficients=np.zeros(1), speed=np.ones(2), acceleration=np.zeros(2), midpoint_acceleration=np.zeros(1))
+        peaks = [{"name": "corridor_max", "station": .2, "violation": .5},
+                 {"name": "acceleration_max", "station": .8, "violation": .3}]
+        validation = {"checks": {}, "diagnostics": [
+            {"name": "xy_metric", "passed": False, "worst_station": .05},
+            {"name": "lap_time", "passed": False, "worst_station": .06}],
+                      "tolerances": {"corridor_m": .1, "acceleration_mps2": 1.}}
+        with patch("simplified_vehicle_models.solvers.capability_exchange.locate_physical_residuals",
+                   return_value={"completed": True, "constraint_stations": [.2, .8], "peaks": peaks}):
+            _, report = solve_constraint_exchange(None, self.corridor, Surface(), np.array([0., 1.]), None, None,
+                solver=lambda *a, **k: solution, validator=lambda *a, **k: validation,
+                maximum_new_sites_per_round=1, maximum_rounds=1)
+        planned = report["rounds"][0]["planned_additions"]
+        self.assertEqual(planned[0]["source"], "search:corridor_max")
+        self.assertAlmostEqual(planned[0]["normalized_severity"], 5.)
+        self.assertEqual(report["constraint_stations"], [.2])
 
     def test_optin_budget_validates_and_default_remains_none(self):
         from simplified_vehicle_models.solvers.capability_exchange import solve_constraint_exchange

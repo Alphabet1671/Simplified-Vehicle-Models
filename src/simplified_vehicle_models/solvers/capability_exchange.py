@@ -352,10 +352,11 @@ def solve_constraint_exchange(track, corridor, surface, mesh, spline, settings, 
             mesh_arr = np.asarray(mesh, dtype=float)
             old = list(retained)
             validator_records = []
-            excluded = {"derivative_uncertainty", "implied_acceleration_derivative_uncertainty",
-                        "dynamics_defect_upper_bound", "implied_acceleration_upper_bound"}
+            physical_diagnostics = {"corridor", "fold", "speed_domain", "capability_domain",
+                                    "heading_limit", "heading_rate_limit", "acceleration_max",
+                                    "acceleration_min", "speed_ceiling"}
             for diagnostic in validation.get("diagnostics", ()):
-                if not isinstance(diagnostic, dict) or diagnostic.get("passed") is not False or diagnostic.get("name") in excluded:
+                if not isinstance(diagnostic, dict) or diagnostic.get("passed") is not False or diagnostic.get("name") not in physical_diagnostics:
                     continue
                 station = diagnostic.get("worst_station")
                 if station is None or isinstance(station, (bool, np.bool_)):
@@ -367,15 +368,34 @@ def solve_constraint_exchange(track, corridor, surface, mesh, spline, settings, 
             raw_search = search.get("constraint_stations", ())
             peak_records = []
             tolerance = validation.get("tolerances", {})
-            scales = {"acceleration_max": 1., "acceleration_min": 1., "speed_floor": 1.,
-                      "capability_domain": 1., "corridor_max": 1., "corridor_min": 1., "fold_guard": 1.}
+            tolerance_keys = {"acceleration_max": "acceleration_mps2", "acceleration_min": "acceleration_mps2",
+                             "speed_floor": "speed_mps", "speed_ceiling": "speed_mps",
+                             "speed_domain": "speed_mps", "capability_domain": "speed_mps",
+                             "corridor_max": "corridor_m", "corridor_min": "corridor_m",
+                             "fold_guard": "fold", "fold": "fold",
+                             "heading_limit": "heading_rad", "heading_rate_limit": "curvature_per_m",
+                             "corridor": "corridor_m", "dynamics_defect": "dynamics_mps_per_m",
+                             "implied_acceleration": "acceleration_mps2"}
+            fallback_scales = {"acceleration_max": 1., "acceleration_min": 1.,
+                               "implied_acceleration": 1., "speed_floor": 1.,
+                               "speed_ceiling": 1., "speed_domain": 1., "capability_domain": 1.,
+                               "corridor_max": 1., "corridor_min": 1., "corridor": 1.,
+                               "fold_guard": 1., "fold": 1., "heading_limit": 1.,
+                               "heading_rate_limit": 1., "dynamics_defect": 1.}
             for peak in search.get("peaks", ()):
                 try:
                     station, name, violation = float(peak["station"]), str(peak["name"]), float(peak["violation"])
                 except (KeyError, TypeError, ValueError): continue
                 if math.isfinite(station) and math.isfinite(violation) and mesh_arr[0] < station < mesh_arr[-1]:
-                    scale = float(tolerance.get(name, scales.get(name, 1.))) if isinstance(tolerance, dict) else 1.
-                    severity = violation / scale if math.isfinite(scale) and scale > 0 else violation
+                    tolerance_key = tolerance_keys.get(name)
+                    scale_value = tolerance.get(tolerance_key) if tolerance_key and isinstance(tolerance, dict) else None
+                    try: scale = float(scale_value) if scale_value is not None else math.nan
+                    except (TypeError, ValueError): scale = math.nan
+                    # Explicit physical-unit fallback when validator tolerance evidence
+                    # is absent; this ranks sites only and cannot relax acceptance.
+                    if not math.isfinite(scale) or scale <= 0:
+                        scale = fallback_scales.get(name, 1.)
+                    severity = violation / scale
                     peak_records.append((station, name, severity))
             def already_enforced(s):
                 element = max(0, min(len(mesh_arr)-2, int(np.searchsorted(mesh_arr, s, side="right")-1)))

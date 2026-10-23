@@ -703,6 +703,46 @@ class SplineTranscriptionTest(unittest.TestCase):
         self.assertLess(constraints[quarter_indices[0]], -0.9)
         self.assertGreaterEqual(constraints[quarter_indices[1]], -1.e-9)
 
+    def test_energy_rate_node_midpoint_capability_uses_physical_site_a(self) -> None:
+        """Node/midpoint chart rows consume raw physical a in both modes."""
+        import casadi as ca
+        from simplified_vehicle_models.solvers.qss_line_ocp import QssSettings
+        from simplified_vehicle_models.solvers.qss_spline_ocp import build_spline_ocp
+
+        track = self._track()
+        mesh = np.array([0.0, track.lap_length / 2.0, track.lap_length])
+        corridor = Corridor(track.distance, np.full(track.distance.size, -3.0),
+                            np.full(track.distance.size, 3.0), "test", True)
+        for representation in ("quadratic_acceleration_v1",
+                               "quadratic_energy_rate_over_metric_v1"):
+            with self.subTest(representation=representation):
+                settings = QssSettings(control_representation=representation,
+                                       off_collocation_fractions=(0.25,))
+                built = build_spline_ocp(track, corridor, _surface(), mesh,
+                                         OffsetSpline(track, control_spacing=20.0), settings)
+                controls, nodes = built["control_count"], mesh.size
+                values = np.zeros(controls + 3 * nodes - 1)
+                values[controls:controls + nodes] = 10.0
+                values[controls + nodes:controls + 2 * nodes] = [3.0, -8.0, 3.0]
+                values[controls + 2 * nodes:] = [-8.0, 3.0]
+                constraints = np.asarray(ca.Function(
+                    f"site_a_rows_{representation}", [built["nlp"]["x"]], [built["nlp"]["g"]],
+                )(values), dtype=float).ravel()
+                np.testing.assert_allclose(
+                    constraints[built["node_acceleration_upper_indices"]], [0.0, 11.0, 11.0, 0.0],
+                    atol=2.e-11,
+                )
+                np.testing.assert_allclose(
+                    constraints[built["node_acceleration_lower_indices"]], [11.0, 0.0, 0.0, 11.0],
+                    atol=2.e-11,
+                )
+                np.testing.assert_allclose(
+                    constraints[built["midpoint_acceleration_upper_indices"]], [11.0, 0.0], atol=2.e-11,
+                )
+                np.testing.assert_allclose(
+                    constraints[built["midpoint_acceleration_lower_indices"]], [0.0, 11.0], atol=2.e-11,
+                )
+
     def test_energy_rate_offsite_capability_uses_metric_weighted_ratio(self) -> None:
         """Off-site capability consumes F(s)/(2G(s)), not raw a interpolation."""
         import casadi as ca

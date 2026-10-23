@@ -523,8 +523,8 @@ def build_spline_ocp(track, corridor, surface, mesh, spline, settings: QssSettin
         """Return F=W_s at a physical acceleration site."""
         return 2.0 * site_acceleration * metric
 
-    def physical_acceleration(control, metric):
-        """Recover physical a from a quadratic F only in the rate form."""
+    def offsite_physical_acceleration(control, metric):
+        """Recover a=F/(2G) only for the off-site quadratic rate control."""
         return control / (2.0 * metric) if rate_control else control
 
     def hermite_energy(index, coordinate):
@@ -576,8 +576,7 @@ def build_spline_ocp(track, corridor, surface, mesh, spline, settings: QssSettin
                            + h / 8.0 * (f0 - f1))
         midpoint_speed = energy_speed(midpoint_energy)
         f_mid = energy_rate(mid_acceleration[index], metric_mid)
-        # Simpson is exact for a straight-line quadratic acceleration control:
-        # W_s = 2 a G is quadratic and W itself is cubic.
+        # Simpson integrates the quadratic F=W_s control exactly; W is cubic.
         # Normalize this m²/s² row by a fixed 10 m/s reference speed for NLP
         # conditioning. This does not redefine the independently reported
         # physical energy residual or provide a speed-uniform error bound.
@@ -626,20 +625,19 @@ def build_spline_ocp(track, corridor, surface, mesh, spline, settings: QssSettin
                 float(corridor_upper[index + 1]))
         acceleration_indices = limits(
             n_nodes[index], node0[1], node0[2], node0[3], speed[index],
-            physical_acceleration(acceleration[index], metric0), float(k0_nodes[index]),
+            acceleration[index], float(k0_nodes[index]),
         )
         node_acceleration_lower_indices.append(acceleration_indices[0])
         node_acceleration_upper_indices.append(acceleration_indices[1])
         acceleration_indices = limits(
             n_mids[index], middle[1], middle[2], middle[3], midpoint_speed,
-            physical_acceleration(mid_acceleration[index], metric_mid), float(k0_mids[index]),
+            mid_acceleration[index], float(k0_mids[index]),
         )
         midpoint_acceleration_lower_indices.append(acceleration_indices[0])
         midpoint_acceleration_upper_indices.append(acceleration_indices[1])
         acceleration_indices = limits(
             n_nodes[index + 1], node1[1], node1[2], node1[3],
-            speed[index + 1], physical_acceleration(acceleration[index + 1], metric1),
-            float(k0_nodes[index + 1]),
+            speed[index + 1], acceleration[index + 1], float(k0_nodes[index + 1]),
         )
         node_acceleration_lower_indices.append(acceleration_indices[0])
         node_acceleration_upper_indices.append(acceleration_indices[1])
@@ -647,7 +645,7 @@ def build_spline_ocp(track, corridor, surface, mesh, spline, settings: QssSettin
             site = index * fractions.size + local
             off_speed = energy_speed(hermite_energy(index, fractions[local]))
             off_control = quadratic_control(index, fractions[local])
-            off_acceleration = physical_acceleration(off_control, off_geometry[site][4])
+            off_acceleration = offsite_physical_acceleration(off_control, off_geometry[site][4])
             # These are feasibility rows only: retain the single HS speed
             # defect above rather than enforcing additional polynomial dynamics.
             add(off_speed - float(settings.minimum_speed), 0.0, math.inf)

@@ -87,8 +87,11 @@ class ReplayTests(unittest.TestCase):
         self.assertFalse(ev.metrics["midpoint_sample_validation_complete"])
         self.assertEqual(ev.metrics["forward_message"], "fake finished")
         expected_time_delta = 1. - loaded.physical_time
-        self.assertAlmostEqual(ev.metrics["time_vs_reference_seconds_diagnostic_only"], expected_time_delta)
-        self.assertAlmostEqual(ev.metrics["time_vs_reference_relative_diagnostic_only"], expected_time_delta / loaded.physical_time)
+        self.assertAlmostEqual(ev.metrics["time_vs_reference_seconds_diagnostic_only"], abs(expected_time_delta))
+        self.assertAlmostEqual(ev.metrics["time_vs_reference_signed_seconds_diagnostic_only"], expected_time_delta)
+        self.assertAlmostEqual(ev.metrics["time_vs_reference_relative_diagnostic_only"], abs(expected_time_delta) / loaded.physical_time)
+        self.assertAlmostEqual(ev.metrics["time_difference_absolute_seconds"], abs(expected_time_delta))
+        self.assertAlmostEqual(ev.metrics["time_difference_signed_relative"], expected_time_delta / loaded.physical_time)
 
     def test_closed_path_periodicity_excludes_progress_and_soc(self):
         helper = artifact_tests.TrajectoryArtifactTest()

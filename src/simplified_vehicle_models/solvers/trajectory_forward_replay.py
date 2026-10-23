@@ -191,11 +191,14 @@ def replay_exact_trajectory(loaded_or_path, vehicle, *, settings=None, plant_fac
         maximum_spatial_step = float(np.max(np.diff(s))) if s.size > 1 else 0.
         tracking_gate = bool(max_lateral <= .25 and maximum_spatial_step <= .5)
         if loaded.physical_time is None:
-            time_error_abs = time_error_rel = None
+            time_error_abs = time_error_rel = signed_time_error_rel = None
+            signed_time_error = None
         else:
             physical_time = _positive_real("loaded physical_time", loaded.physical_time)
-            time_error_abs = float(t[-1] - physical_time)
+            signed_time_error = float(t[-1] - physical_time)
+            time_error_abs = abs(signed_time_error)
             time_error_rel = float(time_error_abs / physical_time)
+            signed_time_error_rel = float(signed_time_error / physical_time)
         solver_message = getattr(result, "message", None)
         metrics = {"max_abs_speed_error_mps": float(np.max(np.abs(error))), "rms_speed_error_mps": float(np.sqrt(np.mean(error**2))),
             "max_abs_lateral_error_m": max_lateral, "max_abs_heading_error_rad": float(np.max(np.abs(herr))),
@@ -204,6 +207,9 @@ def replay_exact_trajectory(loaded_or_path, vehicle, *, settings=None, plant_fac
             "distance_coverage_m": float(s[-1]), "distance_overshoot_m": float(max(0., s[-1]-length)),
             "time_vs_reference_seconds_diagnostic_only": time_error_abs,
             "time_vs_reference_relative_diagnostic_only": time_error_rel,
+            "time_vs_reference_signed_seconds_diagnostic_only": signed_time_error,
+            "time_difference_absolute_seconds": time_error_abs,
+            "time_difference_signed_relative": signed_time_error_rel,
             "forward_message": solver_message,
             "periodic_state_delta": periodic, "periodic_within_published_tolerances": metrics_periodic_within,
             "endpoint_query_count": reference.outside_query_count,

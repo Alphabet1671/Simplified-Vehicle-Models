@@ -477,8 +477,12 @@ def _attempt_worker(request_path: str, result_path: str, artifact_path: str) -> 
         # A profile is an independent centreline initializer. Attempt it before
         # constructing the established envelope seed, so a legacy initializer
         # failure cannot preempt its explicitly requested recovery path.
+        selected_projection = request.get("profile_control_projection", "direct_gradient")
         result["profile_seed"] = {"requested": request.get("seed_profile", "none"),
-                                  "requested_control_projection": request.get("profile_control_projection", "direct_gradient"),
+                                  "requested_control_projection": selected_projection,
+                                  "initializer_attempted": False,
+                                  "control_projection_attempted": False,
+                                  "control_projection_used_by_seed": None,
                                   "used": False, "fallback": None}
         use_old_seed = True
         seed = None
@@ -487,22 +491,27 @@ def _attempt_worker(request_path: str, result_path: str, artifact_path: str) -> 
             # never overwrite it without recomputing its analytic trajectory.
             if request["seed"] != "centerline":
                 result["profile_seed"].update({"fallback": "declared-offset-perturbation",
-                                                "control_projection_used": None,
-                                                "diagnostics": {"available": False, "reason": "profile-centreline-only"}})
+                                                "diagnostics": {"available": False, "reason": "profile-centreline-only",
+                                                    "control_projection": selected_projection,
+                                                    "projection_method": selected_projection,
+                                                    "projection_attempted": False,
+                                                    "projection_used_by_seed": False}})
                 if request.get("strict_profile_seed", False):
                     raise RuntimeError("strict profile seed requires the centerline seed")
             else:
+                result["profile_seed"]["initializer_attempted"] = True
                 options = request["profile_options"]
                 profile_seed, diagnostics = build_profile_line_seed(
                     track, corridor, surface, mesh, spline, settings,
                     profile_step=options["profile_step_m"],
                     maximum_profile_iterations=options["maximum_profile_iterations"],
                     maximum_profile_seconds=options["maximum_profile_seconds"],
-                    control_projection=request.get("profile_control_projection", "direct_gradient"))
-                result["profile_seed"]["diagnostics"] = diagnostics
-                result["profile_seed"]["control_projection_used"] = (
-                    request.get("profile_control_projection", "direct_gradient")
-                    if profile_seed is not None else None)
+                    control_projection=selected_projection)
+                result["profile_seed"].update({
+                    "control_projection_attempted": bool(diagnostics.get("projection_attempted", False)),
+                    "control_projection_used_by_seed": selected_projection if profile_seed is not None else None,
+                    "diagnostics": diagnostics,
+                })
                 if profile_seed is not None:
                     seed = profile_seed
                     use_old_seed = False
@@ -739,7 +748,8 @@ def _initializer_stable_identity(request: dict, actual_initializer: dict) -> dic
     profile_seed = actual_initializer.get("profile_seed", {})
     return {"requested_mode": request.get("initializer"), "requested_seed": request.get("seed"),
             "requested_control_projection": request.get("profile_control_projection", "direct_gradient"),
-            "actual_control_projection": profile_seed.get("control_projection_used"),
+            "actual_control_projection": profile_seed.get("control_projection_used_by_seed"),
+            "projection_attempted": profile_seed.get("control_projection_attempted", False),
             "actual_profile_used": profile_seed.get("used"),
             "fallback_category": profile_seed.get("fallback"),
             "used": actual_initializer.get("used"),

@@ -48,16 +48,19 @@ class ProfileLineSeedTest(unittest.TestCase):
         spline = SimpleNamespace(control_count=2)
         settings = SimpleNamespace(start_speed=0., minimum_speed=.5, tolerance=1e-6)
         mesh = np.array([0., 1., 2.])
-        surface = SimpleNamespace(acceleration_min=np.array([-2.]), acceleration_max=np.array([2.]),
+        surface = SimpleNamespace(acceleration_min=np.array([-.1]), acceleration_max=np.array([.8]),
                                   speed=np.array([.5, 20.]))
+        def geometry(stations):
+            stations = np.asarray(stations)
+            return SimpleNamespace(metric=1.0 + stations)
         trajectory = SimpleNamespace(
             to_path=lambda stations: object(),
             station_map=SimpleNamespace(to_path=lambda stations: np.asarray(stations)),
-            evaluate=lambda stations: SimpleNamespace(metric=np.ones_like(np.asarray(stations))),
+            evaluate=geometry,
         )
         profile = SimpleNamespace(converged=True, status="ok", diagnostics={}, iterations=1,
-                                  lap_time=2., distance=np.array([0., 2.]), speed=np.array([2., 2.]))
-        bounded = np.zeros(5)
+                                  lap_time=2., distance=np.array([0., 2.]), speed=np.array([2., np.sqrt(6.)]))
+        bounded = np.array([0., 0., 0., .5, .3])
         projection_report = {"available": True, "maximum_hs_energy_defect": 0.}
         with patch.object(seeds, "_reference_curve", return_value=SimpleNamespace(source_station=mesh)), \
              patch.object(seeds, "OffsetTrajectory", return_value=trajectory), \
@@ -68,13 +71,24 @@ class ProfileLineSeedTest(unittest.TestCase):
             seed, diagnostics = seeds.build_profile_line_seed(
                 track, object(), surface, mesh, spline, settings, control_projection="bounded_energy_l1")
         self.assertIsNotNone(seed)
-        np.testing.assert_allclose(seed[2:5], [2., 2., 2.])
+        np.testing.assert_allclose(seed[2:5], [2., np.sqrt(5.), np.sqrt(6.)])
         np.testing.assert_allclose(seed[5:], bounded)
         self.assertEqual(diagnostics["projection_method"], "bounded_energy_l1")
         self.assertEqual(diagnostics["nested_control_projection_diagnostics"], projection_report)
-        self.assertEqual(diagnostics["maximum_hs_energy_defect"], 0.)
+        energy = np.array([4., 5., 6.])
+        node_metric = np.array([1., 2., 3.])
+        mid_metric = np.array([1.5, 2.5])
+        expected_residual = np.diff(energy) - np.diff(mesh) / 6.0 * (
+            2.0 * node_metric[:-1] * bounded[:2]
+            + 8.0 * mid_metric * bounded[3:]
+            + 2.0 * node_metric[1:] * bounded[1:3])
+        self.assertAlmostEqual(diagnostics["maximum_hs_energy_defect"],
+                               float(np.max(np.abs(expected_residual))))
+        self.assertLess(diagnostics["maximum_hs_energy_defect"], 1e-12)
+        self.assertTrue(diagnostics["projection_attempted"])
+        self.assertTrue(diagnostics["projection_used_by_seed"])
         self.assertFalse(diagnostics["solver_feasibility_claimed"])
-        np.testing.assert_allclose(diagnostics["midpoint_energy_minimum"], 4.0)
+        np.testing.assert_allclose(diagnostics["midpoint_energy_minimum"], 4.5)
         self.assertFalse(diagnostics["midpoint_capability_checked"])
         self.assertTrue(projector.call_args.kwargs["settings"].periodic_endpoint)
 

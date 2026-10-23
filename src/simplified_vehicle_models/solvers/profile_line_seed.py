@@ -85,6 +85,9 @@ def build_profile_line_seed(track, corridor, surface, mesh, spline, settings, *,
     started = time.monotonic()
     if control_projection not in {"direct_gradient", "bounded_energy_l1"}:
         raise ValueError("control_projection must be direct_gradient or bounded_energy_l1")
+    method_details = {"control_projection": control_projection,
+                      "projection_method": control_projection,
+                      "projection_attempted": False}
     try:
         if not math.isfinite(profile_step) or profile_step <= 0.0:
             raise ValueError("profile_step must be finite and positive")
@@ -103,7 +106,9 @@ def build_profile_line_seed(track, corridor, surface, mesh, spline, settings, *,
         if not profile.converged:
             return None, _diagnostics("profile-not-converged", boundary=boundary,
                 profile_status=profile.status, profile_detail=profile.diagnostics.get("detail"),
-                profile_iterations=profile.iterations, elapsed_seconds=time.monotonic() - started)
+                profile_iterations=profile.iterations, **method_details,
+                projection_used_by_seed=False,
+                elapsed_seconds=time.monotonic() - started)
         node_ell = np.asarray(trajectory.station_map.to_path(np.asarray(mesh, dtype=float)), dtype=float)
         energy, acceleration = _interpolate_energy(profile, node_ell)
         node_geometry = trajectory.evaluate(np.asarray(mesh, dtype=float))
@@ -115,6 +120,7 @@ def build_profile_line_seed(track, corridor, surface, mesh, spline, settings, *,
         mesh_array = np.asarray(mesh, dtype=float)
         projection_diagnostics = None
         if control_projection == "bounded_energy_l1":
+            method_details["projection_attempted"] = True
             from simplified_vehicle_models.solvers.energy_seed_projection import (
                 EnergySeedProjectionSettings, project_energy_seed_controls,
             )
@@ -127,8 +133,8 @@ def build_profile_line_seed(track, corridor, surface, mesh, spline, settings, *,
             if projected is None:
                 return None, _diagnostics(
                     "bounded-control-projection-failed", boundary=boundary,
-                    control_projection=control_projection,
-                    projection_method="bounded_energy_l1",
+                    **method_details,
+                    projection_used_by_seed=False,
                     nested_control_projection_diagnostics=projection_diagnostics,
                     energy_unchanged=True, source_global_acceleration_bounds=[
                         float(np.min(surface.acceleration_min)), float(np.max(surface.acceleration_max))],
@@ -154,11 +160,13 @@ def build_profile_line_seed(track, corridor, surface, mesh, spline, settings, *,
         valid, reason = _within_bounds(seed, surface, spline, np.asarray(mesh, dtype=float), settings)
         if not valid:
             return None, _diagnostics(reason, boundary=boundary,
-                profile_status=profile.status, elapsed_seconds=time.monotonic() - started)
+                profile_status=profile.status, **method_details,
+                projection_used_by_seed=False,
+                elapsed_seconds=time.monotonic() - started)
         return seed, {"kind": "energy-nlp-profile-line-seed", "available": True,
                       "reason": None, "projection_only": True, "boundary": boundary,
-                      "control_projection": control_projection,
-                      "projection_method": control_projection,
+                      **method_details,
+                      "projection_used_by_seed": True,
                       "nested_control_projection_diagnostics": projection_diagnostics,
                       "energy_unchanged": True, "solver_feasibility_claimed": False,
                       "maximum_hs_energy_defect": float(np.max(np.abs(hs_residual))),
@@ -175,7 +183,9 @@ def build_profile_line_seed(track, corridor, surface, mesh, spline, settings, *,
                       "coefficient_sha256": __import__("hashlib").sha256(coefficients.tobytes()).hexdigest(),
                       "ocp_feasible": False}
     except Exception as error:
-        return None, _diagnostics("unsupported-or-invalid", error=f"{type(error).__name__}: {error}",
+        return None, _diagnostics("unsupported-or-invalid", **method_details,
+                                  projection_used_by_seed=False,
+                                  error=f"{type(error).__name__}: {error}",
                                   elapsed_seconds=time.monotonic() - started)
 
 

@@ -72,7 +72,9 @@ def _snapshot(loaded):
                          "evaluator_control": ev.control_representation,
                          "quadrature": loaded.time_quadrature,
                          "is_closed": bool(tr.reference.is_closed),
-                         "interpolation_periodic": bool(tr.reference.interpolation_periodic)},
+                         "interpolation_periodic": bool(tr.reference.interpolation_periodic),
+                         "reference_start": float(tr.reference.start),
+                         "reference_end": float(tr.reference.end)},
                         sort_keys=True, separators=(",", ":")).encode())
     for name in sorted(arrays):
         a = arrays[name]
@@ -119,6 +121,15 @@ def check_artifact_chart_element(loaded_or_path, surface, element_index, *, sett
             raise TypeError("element_index must be an integer non-bool")
         arrays, fingerprint = _snapshot(loaded)
         mesh = arrays["mesh"]
+        source_station = arrays["source_reference_station"]
+        domain_start, domain_end = float(source_station[0]), float(source_station[-1])
+        if (not math.isfinite(loaded.trajectory.reference.start)
+                or not math.isfinite(loaded.trajectory.reference.end)
+                or not domain_start < domain_end
+                or loaded.trajectory.reference.start != domain_start
+                or loaded.trajectory.reference.end != domain_end
+                or not np.array_equal(mesh[[0, -1]], np.array([domain_start, domain_end]))):
+            raise ValueError("artifact mesh must cover the exact analytic reference domain")
         n = mesh.size
         if (arrays["node_station"].shape != mesh.shape or not np.array_equal(arrays["node_station"], mesh)
                 or arrays["speed"].shape != mesh.shape or arrays["acceleration"].shape != mesh.shape

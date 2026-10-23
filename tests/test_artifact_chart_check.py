@@ -113,6 +113,37 @@ class ArtifactChartCheckTests(unittest.TestCase):
         self.assertFalse(out["chart_constraints_proven"])
         self.assertEqual(out["reason"], "wall_budget_exhausted")
 
+    def test_preloaded_subset_mesh_does_not_bind_full_reference_domain(self):
+        from dataclasses import replace
+        mesh = self.loaded.node_station[1:-1].copy()
+        ev = _SplineStateEvaluator(self.loaded.trajectory, mesh,
+            self.loaded.state_evaluator.speed[1:-1],
+            self.loaded.state_evaluator.acceleration[1:-1],
+            self.loaded.state_evaluator.midpoint_acceleration[1:-2],
+            control_representation=self.loaded.control_repr)
+        subset = replace(self.loaded, state_evaluator=ev, node_station=mesh)
+        out = check_artifact_chart_element(subset, chart(), 0)
+        self.assertFalse(out["chart_constraints_proven"])
+        self.assertIn("reference domain", out["reason"])
+        json.dumps(out, allow_nan=False)
+
+    def test_reference_domain_mutation_invalidates_wrapper_proof(self):
+        from simplified_vehicle_models.solvers import artifact_chart_check as module
+        original = module.check_chart_element
+        reference = self.loaded.trajectory.reference
+        old_end = reference.end
+        try:
+            def mutate(*args, **kwargs):
+                result = original(*args, **kwargs)
+                reference.end = old_end - .01
+                return result
+            with patch.object(module, "check_chart_element", side_effect=mutate):
+                out = check_artifact_chart_element(self.loaded, chart(), 0)
+            self.assertFalse(out["chart_constraints_proven"])
+            self.assertTrue(out["source_mutation_detected"])
+        finally:
+            reference.end = old_end
+
     def test_source_kernel_degree_mutation_invalidates_wrapper_proof(self):
         from simplified_vehicle_models.solvers import artifact_chart_check as module
         original = module.check_chart_element

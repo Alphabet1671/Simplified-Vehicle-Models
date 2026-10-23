@@ -125,6 +125,64 @@ class OffsetGeometryBoundsTests(unittest.TestCase):
         finally:
             t._offset_curve.c=original
 
+    def test_curved_closed_periodic_seam_endpoint_and_domain_rejection(self):
+        s=np.linspace(0.,2*np.pi,9)
+        profile=track(s,np.cos(s),np.sin(s),closed=True)
+        ref=ReferenceCurve(profile)
+        spline=OffsetSpline(profile,2*np.pi/8)
+        coeff=.08*np.sin(2*np.pi*np.arange(spline.control_count)/spline.control_count)
+        trajectory=OffsetTrajectory(ref,spline,coeff)
+        start=bound_offset_geometry(trajectory,(0.,0.))
+        end=bound_offset_geometry(trajectory,(2*np.pi,2*np.pi))
+        self.assertNotEqual(start.curvature_interval,(Fraction(0),Fraction(0)))
+        for bound, station in ((start,0.),(end,2*np.pi)):
+            value=trajectory.evaluate(station).curvature
+            self.assertGreaterEqual(value,float(bound.curvature_interval[0])-1e-12)
+            self.assertLessEqual(value,float(bound.curvature_interval[1])+1e-12)
+        with self.assertRaises(ValueError):
+            bound_offset_geometry(trajectory,(np.nextafter(0.,-np.inf),.1))
+        with self.assertRaises(ValueError):
+            bound_offset_geometry(trajectory,(0.,np.nextafter(2*np.pi,np.inf)))
+        out=bound_offset_geometry(trajectory,(0.,2*np.pi))
+        dense=np.linspace(0.,2*np.pi,101)
+        values=trajectory.evaluate(dense)
+        for value in values.curvature:
+            self.assertGreaterEqual(value,float(out.curvature_interval[0])-1e-12)
+            self.assertLessEqual(value,float(out.curvature_interval[1])+1e-12)
+
+    def test_open_periodic_source_fit_keeps_open_offset_endpoint_coefficients(self):
+        s=np.linspace(0.,2*np.pi,9)
+        profile=track(s,np.cos(s),np.sin(s),closed=False)
+        ref=ReferenceCurve(profile,interpolation_periodic=True)
+        spline=OffsetSpline(profile,2*np.pi/8)
+        coeff=np.linspace(-.04,.11,spline.control_count)
+        self.assertNotEqual(coeff[0],coeff[-1])
+        trajectory=OffsetTrajectory(ref,spline,coeff)
+        self.assertFalse(trajectory.reference.is_closed)
+        left=bound_offset_geometry(trajectory,(0.,0.))
+        right=bound_offset_geometry(trajectory,(2*np.pi,2*np.pi))
+        self.assertNotEqual(left.offset_interval,right.offset_interval)
+        out=bound_offset_geometry(trajectory,(0.,2*np.pi))
+        dense=np.linspace(0.,2*np.pi,101)
+        values=trajectory.evaluate(dense)
+        for value in values.curvature:
+            self.assertGreaterEqual(value,float(out.curvature_interval[0])-1e-12)
+            self.assertLessEqual(value,float(out.curvature_interval[1])+1e-12)
+        with self.assertRaises(ValueError):
+            bound_offset_geometry(trajectory,(0.,np.nextafter(2*np.pi,np.inf)))
+
+    def test_exact_total_panel_budget_and_depth_failure(self):
+        t=self.trajectory
+        interval=(1.25,1.25)
+        exact=bound_offset_geometry(t,interval,maximum_panels=1)
+        self.assertEqual(exact.panel_count,1)
+        with self.assertRaises(RuntimeError):
+            bound_offset_geometry(t,(.25,4.75),maximum_panels=20,
+                                  maximum_panel_curvature_width=Fraction(1,10**6))
+        with self.assertRaises(RuntimeError):
+            bound_offset_geometry(t,(.25,4.75),maximum_depth=0,
+                                  maximum_panel_curvature_width=Fraction(1,10**6))
+
     def test_sources_and_stored_offset_coefficients_are_unchanged(self):
         t=self.trajectory
         arrays=(t.reference._x.c.copy(),t.reference._x.t.copy(),t._offset_curve.c.copy(),t._offset_curve.x.copy())

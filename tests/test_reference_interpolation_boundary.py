@@ -60,6 +60,10 @@ class ReferenceInterpolationBoundaryTests(unittest.TestCase):
     def test_periodic_fit_metadata_and_type_validation(self):
         self.assertEqual(ReferenceCurve(_loop(False), interpolation_periodic=True).fit_discrepancy[
             "source_interpolation_periodic"], True)
+        reference = ReferenceCurve(_loop(False), interpolation_periodic=True)
+        with self.assertRaises(AttributeError):
+            reference.interpolation_periodic = False
+        self.assertTrue(reference.interpolation_periodic)
         for invalid in ("true", 1, 0, object()):
             with self.assertRaises(TypeError):
                 ReferenceCurve(_loop(False), interpolation_periodic=invalid)

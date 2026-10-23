@@ -106,8 +106,8 @@ class ReferenceCurve:
         self.is_closed = bool(getattr(coordinates, "is_closed", getattr(track, "is_closed", False)))
         if interpolation_periodic is not None and not bool(interpolation_periodic) and self.is_closed:
             raise ValueError("closed reference cannot use a nonperiodic source interpolation")
-        self.interpolation_periodic = (self.is_closed if interpolation_periodic is None
-                                       else bool(interpolation_periodic))
+        self._interpolation_periodic = (self.is_closed if interpolation_periodic is None
+                                        else bool(interpolation_periodic))
         self.start = float(s[0])
         self.end = float(s[-1])
         if self.end <= self.start:
@@ -158,6 +158,11 @@ class ReferenceCurve:
                 "curvature_rms_vs_source": float(np.sqrt(np.mean(curvature_error ** 2))),
                 "curvature_max_vs_source": float(np.max(np.abs(curvature_error))),
             })
+
+    @property
+    def interpolation_periodic(self) -> bool:
+        """Whether the fitted source interpolant uses periodic boundary conditions."""
+        return self._interpolation_periodic
 
     def evaluate(self, station: object) -> ReferenceEvaluation:
         s, scalar = _check_station(station, self.start, self.end, self.is_closed)

@@ -1,6 +1,6 @@
 # All-track execution evidence — 2026-10-23
 
-**Verdict: not complete; not approved for all-track use.** This is a bounded snapshot of reviewed implementation and actual run evidence, not a release report. A solver's `Solve_Succeeded`, one case's local checks, or successful consumer completion does not satisfy the all-track gates. The roadmap's “ALL” is six configurations; failures and qualifications cannot be averaged. The current branch tip is `47abf8d` (full revision `47abf8dfc5ce089bbd571c1b9cebb0560a8ae2cc`). No merge, push, or broad all-repository green claim is made.
+**Verdict: not complete; not approved for all-track use.** This is a bounded snapshot of reviewed implementation and actual run evidence, not a release report. A solver's `Solve_Succeeded`, one case's local checks, or successful consumer completion does not satisfy the all-track gates. The roadmap's “ALL” is six configurations; failures and qualifications cannot be averaged. The evidence baseline is revision `47abf8d` (`47abf8dfc5ce089bbd571c1b9cebb0560a8ae2cc`); the documentation commit adding this report is later. No merge or push is made. No merge, push, or broad all-repository green claim is made.
 
 ## Implemented and reviewed components
 
@@ -33,7 +33,7 @@ Mesh/basis refinement rejects a convergence claim:
 
 The refinement runs are diagnostic and unregistered. Their differences and failures mean the candidate is **non-converged**. A successful optimizer status is not a contrary result.
 
-The actual serialized skidpad round-trip (`skidpad_artifact_roundtrip_20261023/result.json`) showed near-machine parity for the tested same analytic trajectory: speed error `5.33e-15`, acceleration `3.96e-13`, north/XY `4.26e-14`, curvature `6.70e-13`; serialized and original physical times were equal to displayed precision (21.767776745763612 vs 21.76777674576362 s). This establishes artifact identity/reload for that test, **not plant tracking**.
+The actual serialized skidpad round-trip (`skidpad_artifact_roundtrip_20261023/result.json`) showed near-machine parity for the tested same analytic trajectory: speed error `5.33e-15`, acceleration `3.96e-13`, north-position error `4.26e-14`, curvature `6.70e-13`; serialized and original physical times were equal to displayed precision (21.767776745763612 vs 21.76777674576362 s). This establishes artifact identity/reload for that test, **not plant tracking**; an east-position error is not reported here.
 
 ### MIS and FSC
 
@@ -52,7 +52,7 @@ The full dynamic skidpad run used the explicit endpoint-hold consumer adapter an
 
 The actual fresh environment in `runs/no_tv_reliability/runtime_install_20261023/manifest.json` reports Python 3.13.13, NumPy 2.5.4, SciPy 1.17.1, and CasADi 3.8.1, with each module loaded from the run's own fresh virtual environment (not `/tmp`) and exact compatibility true. The reviewed focused verification log records **174 tests passing in 18.451 s**. The full recorded command line and module list are not in that log; reproduce the 174-test result only from the original invocation record, not from an inferred command. This is focused verification, not a claim that the entire repository suite is green. Historical unrelated failures, timeouts, and a Qt stall remain unresolved/relevant to broad readiness.
 
-The recorded provenance review found all seven source hashes unchanged from the prior ledger; no source XML/CSV or cache changes are claimed. These run outputs live in ignored local workspace artifacts: they are development evidence, not versioned release results or a durable evidence package. The snapshot reports their statuses as observed; it does not upgrade failed artifacts or infer absent gates. Earlier debug runs with incorrect result layout are invalid evidence and are excluded.
+The recorded provenance review verified all seven source hashes and the tracked cache state unchanged from the prior ledger; no source XML/CSV or cache changes are claimed. These run outputs live in ignored local workspace artifacts: they are development evidence, not versioned release results or a durable evidence package. The snapshot reports their statuses as observed; it does not upgrade failed artifacts or infer absent gates. Earlier debug runs with incorrect result layout are invalid evidence and are excluded.
 
 ## Exact remaining roadmap checklist
 
@@ -71,6 +71,17 @@ In particular, the independent Task 5a review kept policy approval on **HOLD**: 
 
 ## Reproduction and interpretation guardrails
 
-Use the exact commands and inputs recorded in the ignored run manifests/reports; run into a new output directory rather than overwriting retained artifacts. For focused verification, the recorded invocation is `PYTHONPATH=src:runs/no_tv_reliability/runtime_install_20261023/venv/lib/python3.13/site-packages python -m unittest ...` as captured by `.superpowers/sdd/2026-10-23-all-track-virtual-driver/reviewed-feature-verification.log`; preserve the explicit test-module list from that run record when reproducing. Verify source hashes against the recorded run provenance before comparing outputs. Do not substitute debug-layout runs, change the source revision/representation, or reuse outputs as if a different validation policy applied.
+Use the exact commands and inputs recorded in the ignored run manifests/reports; run into a new output directory rather than overwriting retained artifacts. The recorded focused verification command was:
+
+```sh
+runs/no_tv_reliability/runtime_install_20261023/venv/bin/python -m unittest \\
+  tests.test_convergence_policy tests.test_no_tv_runtime tests.test_trajectory_artifact \\
+  tests.test_standing_event tests.test_standing_launch tests.test_profile_line_seed \\
+  tests.test_spline_stage_timing tests.test_no_tv_minimum_lap tests.test_capability_exchange \\
+  tests.test_qss_constraint_stations tests.test_line_validation tests.test_adaptive_line \\
+  tests.test_line_refinement tests.test_fixed_path_energy_nlp tests.test_repository_layout -q
+```
+
+This is the original invocation with its explicit 15 modules; it uses the fresh-venv interpreter without an inferred `PYTHONPATH`. The result is captured in `.superpowers/sdd/2026-10-23-all-track-virtual-driver/reviewed-feature-verification.log`. Verify source hashes against the recorded run provenance before comparing outputs. Do not substitute debug-layout runs, change the source revision/representation, or reuse outputs as if a different validation policy applied.
 
 No numerical/runtime changes, new thresholds, research claims, or “all finished” declaration are introduced by this evidence summary. The full adaptive plan and its original release gates remain in [the implementation plan](../superpowers/plans/2026-10-23-all-track-virtual-driver.md) and [the research roadmap](virtual-driver-all-track-research-roadmap.md).

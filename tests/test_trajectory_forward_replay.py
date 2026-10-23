@@ -25,6 +25,91 @@ class ReplayTests(unittest.TestCase):
             _write_trajectory_metadata(path, solution)
             return load_trajectory_artifact(path)
 
+    def test_provenance_captures_effective_inputs_and_invalid_hash_is_unknown(self):
+        from dataclasses import replace
+        from simplified_vehicle_models.solvers.trajectory_artifact import ExactTrajectoryDriverReference
+        loaded = self.make_loaded()
+        endpoint = ExactTrajectoryDriverReference(loaded).length
+        vehicle = SimpleNamespace(steering_maximum_angle=.5, steering_maximum_rate=1.,
+                                  maximum_pedal_force=100., wheelbase=2.)
+        class Plant:
+            state_names = ("s", "n", "heading_error", "v_x", "v_y")
+            def __init__(self, *a): pass
+            def initial_state(self, speed): return np.zeros(5)
+        class Driver:
+            preview_seconds = .5
+            pedal_travel_time = None
+            speed_gain = 2.
+            heading_gain = lateral_gain = 1.5
+            steering_time_constant = .08
+            brake_governor_margin = .85
+            pedal_travel_time = None
+            pedal_time_constant = .02
+            wheelbase = 2.
+            maximum_steering = .5
+            maximum_steering_rate = 1.
+            maximum_brake_force = 100.
+            live_limit = False
+            def __init__(self, *a, **kw): pass
+        result = SimpleNamespace(time=np.array([0., 1.]), state=np.array([
+            [0., endpoint], [0., 0.], [0., 0.], [12., 12.], [0., 0.]]), lap_completed=True)
+        evidence, report = replay_exact_trajectory(loaded, vehicle, plant_factory=Plant,
+            driver_factory=Driver, forward_solver=lambda *a, **k: result)
+        p = report["provenance"]
+        self.assertEqual(p["artifact"]["source_sha256"], loaded.source_sha256)
+        self.assertEqual(p["artifact"]["state_representation"], loaded.state_repr)
+        self.assertEqual(p["artifact"]["control_representation"], loaded.control_repr)
+        self.assertEqual(p["artifact"]["time_quadrature"], loaded.time_quadrature)
+        self.assertEqual(p["artifact"]["physical_time_seconds"], loaded.physical_time)
+        self.assertEqual(p["driver_configuration"]["preview_seconds"], .5)
+        self.assertIsNone(p["driver_configuration"]["pedal_travel_time"])
+        self.assertNotIn("pedal_travel_time", p["unavailable_driver_fields"])
+        self.assertEqual(p["components"]["driver"], f"{Driver.__module__}.{Driver.__qualname__}")
+        self.assertFalse(p["vehicle_model_identity_verified"])
+        self.assertIsNone(p["vehicle_model_sha256"])
+        self.assertFalse(p["source_content_identity_verified"])
+        self.assertEqual(p["artifact"]["sha256_semantics"], "serialized_artifact_hash_at_load_not_mutable_object_reverification")
+        self.assertFalse(report["accepted"])
+        json.dumps(report, allow_nan=False)
+        returned = report
+        returned["provenance"]["artifact"]["state_representation"] = "mutated"
+        self.assertNotEqual(evidence.report["provenance"]["artifact"]["state_representation"], "mutated")
+
+        unverified = replace(loaded, source_sha256="unverified")
+        _, invalid_report = replay_exact_trajectory(unverified, vehicle, plant_factory=Plant,
+            driver_factory=Driver, forward_solver=lambda *a, **k: result)
+        self.assertIsNone(invalid_report["provenance"]["artifact"]["source_sha256"])
+        self.assertIn("artifact_source_sha256", invalid_report["provenance"]["missing_identity"])
+
+    def test_provenance_present_on_early_and_forward_failures(self):
+        loaded = self.make_loaded()
+        vehicle = SimpleNamespace(steering_maximum_angle=.5, steering_maximum_rate=1.,
+                                  maximum_pedal_force=100., wheelbase=2.)
+        _, early = replay_exact_trajectory(loaded, vehicle, physical_mapper_settings=object())
+        self.assertEqual(early["provenance"]["schema_version"], 1)
+        self.assertIsNone(early["provenance"]["artifact"]["source_sha256"])
+        self.assertFalse(early["provenance"]["vehicle_model_identity_verified"])
+        json.dumps(early, allow_nan=False)
+
+        class Plant:
+            state_names = ("s", "n", "heading_error", "v_x", "v_y")
+            def __init__(self, *a): pass
+            def initial_state(self, speed): return np.zeros(5)
+        class Driver:
+            preview_seconds = np.nan
+            pedal_travel_time = np.nan
+            def __init__(self, *a, **k): pass
+        _, failed = replay_exact_trajectory(loaded, vehicle, plant_factory=Plant,
+            driver_factory=Driver,
+            forward_solver=lambda *a, **k: (_ for _ in ()).throw(RuntimeError("primary-forward-error")))
+        self.assertIn("primary-forward-error", failed["error"])
+        self.assertEqual(failed["provenance"]["artifact"]["source_sha256"], loaded.source_sha256)
+        self.assertEqual(failed["provenance"]["components"]["driver"], f"{Driver.__module__}.{Driver.__qualname__}")
+        self.assertIsNone(failed["provenance"]["driver_configuration"]["preview_seconds"])
+        self.assertIn("preview_seconds", failed["provenance"]["unavailable_driver_fields"])
+        self.assertIn("pedal_travel_time", failed["provenance"]["unavailable_driver_fields"])
+        json.dumps(failed, allow_nan=False)
+
     def test_settings_guard_types_and_ceiling(self):
         for kwargs in ({"duration_seconds": True}, {"preview_seconds": -1},
                        {"maximum_wall_seconds": 301}, {"rtol": np.inf}):

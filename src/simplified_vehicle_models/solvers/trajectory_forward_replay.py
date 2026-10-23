@@ -6,9 +6,13 @@ includes artifact loading and setup but cannot preempt setup itself.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, fields
+import importlib.metadata
+import re
 from types import MappingProxyType
 from time import perf_counter
+import platform
+import sys
 
 import numpy as np
 
@@ -134,6 +138,95 @@ def _json_native(value, nonfinite_fields=None, path=""):
     raise TypeError(f"report value {type(value).__name__} is not JSON-safe")
 
 
+def _identity(value):
+    if value is None:
+        return None
+    try:
+        if callable(value) and not isinstance(value, type):
+            module = getattr(value, "__module__", type(value).__module__)
+            name = getattr(value, "__qualname__", type(value).__qualname__)
+        else:
+            cls = value if isinstance(value, type) else type(value)
+            module, name = cls.__module__, cls.__qualname__
+        return f"{module}.{name}" if isinstance(module, str) and isinstance(name, str) else None
+    except Exception:
+        return None
+
+
+def _provenance_snapshot(loaded, settings, mapping, vehicle_values, plant, driver, solver):
+    """Build a best-effort, allowlisted snapshot of effective replay inputs."""
+    missing = []
+    artifact = {"source_sha256": None, "state_representation": None,
+                "control_representation": None, "time_quadrature": None,
+                "physical_time_seconds": None}
+    if loaded is not None:
+        for key, attr in (("source_sha256", "source_sha256"),
+                          ("state_representation", "state_repr"),
+                          ("control_representation", "control_repr"),
+                          ("time_quadrature", "time_quadrature"),
+                          ("physical_time_seconds", "physical_time")):
+            try:
+                value = getattr(loaded, attr)
+                if key == "source_sha256":
+                    value = value if isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) else None
+                elif value is not None and key == "physical_time_seconds":
+                    value = float(value)
+                    if not np.isfinite(value): value = None
+                elif value is not None and not isinstance(value, str):
+                    value = None
+                artifact[key] = value
+            except Exception:
+                pass
+    for key, val in artifact.items():
+        if val is None: missing.append("artifact_" + key)
+    driver_fields = ("preview_seconds", "speed_gain", "heading_gain", "lateral_gain",
+                     "steering_time_constant", "brake_governor_margin", "pedal_travel_time",
+                     "pedal_time_constant", "wheelbase", "maximum_steering",
+                     "maximum_steering_rate", "maximum_brake_force", "live_limit")
+    config, unavailable = {}, []
+    for name in driver_fields:
+        raw_value = None
+        try:
+            raw_value = getattr(driver, name) if driver is not None else None
+            value = raw_value
+            if isinstance(value, (bool, np.bool_)): value = bool(value)
+            elif value is None: pass
+            elif isinstance(value, (int, float, np.number)):
+                value = float(value)
+                if not np.isfinite(value): value = None
+            else: value = None
+            if value is None and not (driver is not None and name == "pedal_travel_time"
+                                      and raw_value is None):
+                unavailable.append(name)
+            config[name] = value
+        except Exception:
+            config[name] = None
+            unavailable.append(name)
+    model_identity = {"vehicle_model_identity_verified": False, "vehicle_model_sha256": None}
+    missing += ["vehicle_model_sha256"]
+    components = {}
+    for name, obj in (("plant", plant), ("driver", driver), ("forward_solver", solver)):
+        components[name] = _identity(obj)
+        if components[name] is None: missing.append(name)
+    versions = {"python": platform.python_version(), "implementation": sys.implementation.name,
+                "numpy": np.__version__}
+    for package in ("scipy", "casadi"):
+        try: versions[package] = importlib.metadata.version(package)
+        except importlib.metadata.PackageNotFoundError: versions[package] = None
+    artifact["sha256_semantics"] = "serialized_artifact_hash_at_load_not_mutable_object_reverification"
+    return {"schema_version": 1, "artifact": artifact,
+            "runtime": versions,
+            "source_content_identity_verified": False,
+            "replay_settings": (asdict(settings) if settings is not None else
+                                {f.name: None for f in fields(FrozenReplaySettings)}),
+            "longitudinal_mapping": {"mode": mapping.get("mode"),
+                "settings": dict(mapping.get("settings") or {})},
+            "components": components, "driver_configuration": config,
+            "unavailable_driver_fields": sorted(set(unavailable)),
+            "vehicle_configuration": dict(vehicle_values), **model_identity,
+            "missing_identity": sorted(set(missing))}
+
+
 def replay_exact_trajectory(loaded_or_path, vehicle, *, settings=None, plant_factory=None,
                             driver_factory=None, forward_solver=None,
                             physical_mapper_settings=None):
@@ -144,6 +237,20 @@ def replay_exact_trajectory(loaded_or_path, vehicle, *, settings=None, plant_fac
               "completed": False, "phase": "setup", "consumer_endpoint_extension": "hold_reference_only"}
     mapping_enabled = physical_mapper_settings is not None
     mapper = None
+    loaded = plant = driver = None
+    effective_settings = None
+    vehicle_values = {}
+    def refresh_provenance():
+        try:
+            report["provenance"] = _provenance_snapshot(
+                loaded, effective_settings, report["longitudinal_command_mapping"],
+                vehicle_values, plant, driver, forward_solver)
+        except Exception as exc:
+            # Provenance is diagnostic only and must never mask replay failures.
+            report["provenance"] = {"schema_version": 1, "artifact": {},
+                "runtime": {"python": platform.python_version(), "implementation": sys.implementation.name,
+                            "numpy": np.__version__}, "error": type(exc).__name__,
+                "missing_identity": ["provenance_snapshot"]}
     report["longitudinal_command_mapping"] = {
         "mode": ("explicit_quasi_steady_physical_mapper" if mapping_enabled
                  else "legacy_acceleration_fraction"),
@@ -151,9 +258,11 @@ def replay_exact_trajectory(loaded_or_path, vehicle, *, settings=None, plant_fac
         "trial_query_semantics": "per_callback_including_newton_and_rejected_trials",
         "diagnostics": None,
     }
+    refresh_provenance()
     if mapping_enabled:
         if not isinstance(physical_mapper_settings, PhysicalMapperSettings):
             report["error"] = "TypeError: physical_mapper_settings must be PhysicalMapperSettings"
+            refresh_provenance()
             return None, _json_native(report)
         report["longitudinal_command_mapping"]["settings"] = {
             "speed_gain": float(physical_mapper_settings.speed_gain),
@@ -161,15 +270,19 @@ def replay_exact_trajectory(loaded_or_path, vehicle, *, settings=None, plant_fac
             "root_method": physical_mapper_settings.root_method,
             "include_wheel_inertia": physical_mapper_settings.include_wheel_inertia,
         }
+    refresh_provenance()
     evidence = None
     try:
         settings = FrozenReplaySettings() if settings is None else settings
         if not isinstance(settings, FrozenReplaySettings):
             raise TypeError("settings must be FrozenReplaySettings")
+        effective_settings = settings
+        refresh_provenance()
         if isinstance(loaded_or_path, LoadedTrajectory):
             loaded = loaded_or_path
         else:
             loaded = load_trajectory_artifact(loaded_or_path)
+        refresh_provenance()
         reference = EndpointHoldReferenceConsumer(ExactTrajectoryDriverReference(loaded))
         from simplified_vehicle_models.solvers.forward_driver import PreviewDriver
         from simplified_vehicle_models.solvers.planar_forward import PlanarForwardPlant
@@ -180,10 +293,13 @@ def replay_exact_trajectory(loaded_or_path, vehicle, *, settings=None, plant_fac
         for name in ("steering_maximum_angle", "steering_maximum_rate", "maximum_pedal_force", "wheelbase"):
             value = _positive_real(name, getattr(vehicle, name))
             report[name] = value
+            vehicle_values[name] = float(value)
+        refresh_provenance()
         initial_speed = float(reference.speed[0])
         if initial_speed <= (1. if reference.is_closed else 0.):
             report.update(phase="unsupported_standing_start", error="reference initial speed is outside planar plant domain")
-            return None, report
+            refresh_provenance()
+            return None, _json_native(report)
         report["event_mode"] = "flying" if reference.is_closed else ("rolling" if initial_speed > 0. else "standing")
         elapsed = perf_counter() - start
         remaining = settings.maximum_wall_seconds - elapsed
@@ -197,6 +313,7 @@ def replay_exact_trajectory(loaded_or_path, vehicle, *, settings=None, plant_fac
                                 vehicle.steering_maximum_rate, vehicle.maximum_pedal_force,
                                 preview_seconds=settings.preview_seconds)
         state0 = plant.initial_state(initial_speed)
+        refresh_provenance()
         if mapping_enabled:
             driver_gain = _positive_real("driver.speed_gain", driver.speed_gain)
             mapper_gain = float(physical_mapper_settings.speed_gain)

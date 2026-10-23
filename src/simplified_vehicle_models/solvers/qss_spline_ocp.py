@@ -365,28 +365,38 @@ def _canonical_constraint_sites(mesh, fractions, constraint_stations):
     fractions = np.asarray(fractions, dtype=float)
     widths = np.diff(mesh)
     legacy = (mesh[:-1, None] + widths[:, None] * fractions).ravel()
-    explicit = np.asarray([] if constraint_stations is None else constraint_stations,
-                          dtype=float)
-    if explicit.ndim > 1:
+    legacy_elements = np.repeat(np.arange(widths.size), fractions.size)
+    legacy_site_fractions = np.tile(fractions, widths.size)
+    if constraint_stations is None:
+        by_element = [np.flatnonzero(legacy_elements == i) for i in range(widths.size)]
+        return legacy.copy(), legacy_elements, legacy_site_fractions.copy(), by_element
+    explicit = np.asarray(constraint_stations, dtype=float)
+    if explicit.ndim != 1:
         raise ValueError("constraint_stations must be a one-dimensional sequence")
     if explicit.size and (not np.all(np.isfinite(explicit))
                           or np.any(explicit <= mesh[0])
                           or np.any(explicit >= mesh[-1])):
         raise ValueError("constraint_stations must be finite interior mesh-domain stations")
-    candidates = np.sort(np.r_[legacy, explicit])
     tolerance = 1.0e-11 * max(1.0, float(mesh[-1] - mesh[0]))
-    kept = []
-    for station in candidates:
-        if np.min(np.abs(mesh - station)) <= tolerance:
+    midpoints = 0.5 * (mesh[:-1] + mesh[1:])
+    retained = []
+    for station in np.sort(explicit):
+        element = int(np.searchsorted(mesh, station, side="right") - 1)
+        local_tol = min(tolerance, 1.0e-8 * float(widths[element]))
+        if np.min(np.abs(mesh - station)) <= local_tol:
             continue
-        midpoints = 0.5 * (mesh[:-1] + mesh[1:])
-        if np.min(np.abs(midpoints - station)) <= tolerance:
+        if np.min(np.abs(midpoints - station)) <= local_tol:
             continue
-        if not kept or station - kept[-1] > tolerance:
-            kept.append(float(station))
-    stations = np.asarray(kept, dtype=float)
+        if np.min(np.abs(legacy - station)) <= local_tol:
+            continue
+        if retained and station - retained[-1] <= local_tol:
+            continue
+        retained.append(float(station))
+    stations = np.sort(np.r_[legacy, retained])
     elements = np.searchsorted(mesh, stations, side="right") - 1
     site_fractions = (stations - mesh[elements]) / widths[elements]
+    # Sorting can retain nearby historical legacy samples; each belongs to its
+    # original containing element and is never discarded by explicit additions.
     by_element = [np.flatnonzero(elements == i) for i in range(widths.size)]
     return stations, elements.astype(int), site_fractions, by_element
 
@@ -554,6 +564,8 @@ def build_spline_ocp(track, corridor, surface, mesh, spline, settings: QssSettin
     node_domain_speed_indices: list[int] = []
     midpoint_domain_speed_indices: list[int] = []
     off_site_domain_speed_indices: list[int] = []
+    off_site_corridor_indices: list[int] = []
+    off_site_speed_cap_indices: list[int] = []
 
     def add(expression, low, high):
         constraints.append(expression)
@@ -690,7 +702,9 @@ def build_spline_ocp(track, corridor, surface, mesh, spline, settings: QssSettin
                 float(corridor_upper[index]))
             add(n_mids[index], float(mid_lower[index]), float(mid_upper[index]))
             for site in off_by_element[index]:
-                add(n_off[site], float(off_lower[site]), float(off_upper[site]))
+                off_site_corridor_indices.append(
+                    add(n_off[site], float(off_lower[site]), float(off_upper[site]))
+                )
             add(n_nodes[index + 1], float(corridor_lower[index + 1]),
                 float(corridor_upper[index + 1]))
         acceleration_indices = limits(
@@ -731,7 +745,9 @@ def build_spline_ocp(track, corridor, surface, mesh, spline, settings: QssSettin
             off_site_acceleration_upper_indices.append(acceleration_indices[1])
             off_site_domain_speed_indices.append(acceleration_indices[2])
             if cap_off is not None:
-                add(off_speed - float(cap_off[site]), -math.inf, 0.0)
+                off_site_speed_cap_indices.append(
+                    add(off_speed - float(cap_off[site]), -math.inf, 0.0)
+                )
         if cap_values is not None:
             add(speed[index] - float(cap_values[index]), -math.inf, 0.0)
             add(speed[index + 1] - float(cap_values[index + 1]), -math.inf, 0.0)
@@ -820,6 +836,8 @@ def build_spline_ocp(track, corridor, surface, mesh, spline, settings: QssSettin
         "off_site_domain_speed_indices": np.asarray(
             off_site_domain_speed_indices, dtype=int,
         ),
+        "off_site_corridor_indices": np.asarray(off_site_corridor_indices, dtype=int),
+        "off_site_speed_cap_indices": np.asarray(off_site_speed_cap_indices, dtype=int),
     }
 
 

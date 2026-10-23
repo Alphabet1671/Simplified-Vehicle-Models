@@ -54,12 +54,16 @@ def _guard_station_input(value):
     for item in raw:
         if isinstance(item, (bool, np.bool_)) or not isinstance(item, numbers.Real):
             raise ValueError("curvature_guard_stations must contain finite real non-boolean values")
-        converted = float(item)
+        try:
+            converted = float(item)
+        except (OverflowError, TypeError, ValueError) as error:
+            raise ValueError("curvature_guard_stations must be finite and representable as float64") from error
         if not math.isfinite(converted):
             raise ValueError("curvature_guard_stations must contain finite values")
         if isinstance(item, numbers.Rational) and item != converted:
             raise ValueError("curvature_guard_stations must be exactly representable as float64")
         vals.append(converted)
+    # Empty explicit input is the exact no-guards/default path.
     return tuple(float(x) for x in np.unique(np.asarray(vals, dtype=np.float64))) or None
 
 
@@ -536,7 +540,8 @@ def capability_profile(path, surface, *, boundary: str = "flying", start_speed=N
     if boundary == "standing":
         # A rest extension must connect to the chart at every encountered
         # curvature rather than create an unverified discontinuity at the floor.
-        selected_k = (np.asarray(curvature_samples, dtype=float).reshape(-1) if curvature_samples is not None else
+        selected_k = (np.fromiter((k for row in curvature_samples for k in row), dtype=float)
+                      if curvature_samples is not None else
                       np.r_[curvature, .5*(curvature[:-1] + curvature[1:])])
         for k in np.unique(selected_k):
             lo, hi = rest_limits(floor, float(k))
@@ -569,6 +574,8 @@ def capability_profile(path, surface, *, boundary: str = "flying", start_speed=N
     def failed(status, iteration, change, detail):
         details = {"detail": detail, "boundary": boundary, "floor": floor}
         if transition_method == "bracketed_energy":
+            # Keep this legacy field as the nominal five-fraction plus node-average
+            # base count; variable actual totals are reported separately below.
             details.update({"transition_method": transition_method,
                             "root_assumption": "sampled_non_decreasing_energy_residual_not_continuous_certificate",
                             "segment_limit_sampling": segment_limit_sampling})

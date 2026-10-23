@@ -81,7 +81,7 @@ class CurvatureGuardStationTests(unittest.TestCase):
                 calls.append(k)
                 return super().domain_speed(k)
         from fractions import Fraction
-        for bad in ([True], [np.bool_(False)], [True, 1.25], [np.bool_(True), 1.25], [np.inf], ["1.25"], [1+0j], [Fraction(1, 3)], [[1.25]], np.zeros(4097)):
+        for bad in ([True], [np.bool_(False)], [True, 1.25], [np.bool_(True), 1.25], [np.inf], ["1.25"], [1+0j], [Fraction(1, 3)], [10**1000], [[1.25]], np.zeros(4097)):
             with self.assertRaises(ValueError):
                 capability_profile(_Path(), Count(), boundary="rolling", start_speed=1., step=10.,
                     transition_method="bracketed_energy", trajectory=_Trajectory(),
@@ -121,6 +121,29 @@ class CurvatureGuardStationTests(unittest.TestCase):
             segment_curvature_sampling="trajectory_five_fractions", curvature_guard_stations=[1.25, 10., 11.25])
         self.assertEqual(profile.diagnostics["additional_curvature_samples_per_segment"], (1, 1))
         self.assertEqual(profile.diagnostics["total_curvature_samples_per_segment"], (7, 7))
+
+    def test_live_standing_wrapper_accepts_variable_sample_count_rows(self):
+        class TwoCellMap:
+            path_start = 0.
+            path_end = 20.
+            def to_reference(self, x): return np.asarray(x, dtype=float)
+        class TwoCellTrajectory(_Trajectory):
+            station_map = TwoCellMap()
+            reference = type("Ref", (), {"is_closed": False, "source_station": np.array([0., 20.])})()
+            def to_path(self, source):
+                s = np.asarray(source, dtype=float)
+                return PathCoordinates(s, s, np.zeros_like(s), np.zeros_like(s), np.zeros_like(s), False, s)
+            def evaluate(self, source):
+                x = np.asarray(source, dtype=float)
+                return type("Geometry", (), {"curvature": np.zeros_like(x)})()
+        settings = LiveStandingSettings(step=10., transition_method="bracketed_energy",
+            segment_curvature_sampling="trajectory_five_fractions")
+        profile, report = solve_live_standing_profile(object(), TwoCellTrajectory(), settings=settings,
+            curvature_guard_stations=[1.25], limit_evaluator=lambda *a: (-10., 10.),
+            speed_cap_evaluator=lambda *a: 100.)
+        self.assertIsNotNone(profile, report)
+        self.assertEqual(report["additional_curvature_samples_per_segment"], [1, 0])
+        self.assertEqual(report["total_curvature_samples_per_segment"], [7, 6])
 
     def test_domain_boundaries_accepted_and_outside_rejected(self):
         for station in (0., 10.):

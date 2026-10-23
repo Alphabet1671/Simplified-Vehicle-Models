@@ -15,6 +15,9 @@ import numpy as np
 from simplified_vehicle_models.solvers.trajectory_artifact import (
     LoadedTrajectory, ExactTrajectoryDriverReference, load_trajectory_artifact,
 )
+from simplified_vehicle_models.solvers.physical_longitudinal_mapper import (
+    PhysicalLongitudinalMapper, PhysicalMapperSettings,
+)
 
 
 def _positive_real(name, value, *, allow_zero=False):
@@ -114,12 +117,32 @@ def _json_native(value, nonfinite_fields=None, path=""):
 
 
 def replay_exact_trajectory(loaded_or_path, vehicle, *, settings=None, plant_factory=None,
-                            driver_factory=None, forward_solver=None):
+                            driver_factory=None, forward_solver=None,
+                            physical_mapper_settings=None):
     """Return (diagnostic evidence or None, fail-closed report)."""
     start = perf_counter()
     report = {"accepted": False, "physically_validated": False, "event_qualified": False,
               "numerically_validated": False, "U3_qualified": False,
               "completed": False, "phase": "setup", "consumer_endpoint_extension": "hold_reference_only"}
+    mapping_enabled = physical_mapper_settings is not None
+    mapper = None
+    report["longitudinal_command_mapping"] = {
+        "mode": ("explicit_quasi_steady_physical_mapper" if mapping_enabled
+                 else "legacy_acceleration_fraction"),
+        "settings": None,
+        "trial_query_semantics": "per_callback_including_newton_and_rejected_trials",
+        "diagnostics": None,
+    }
+    if mapping_enabled:
+        if not isinstance(physical_mapper_settings, PhysicalMapperSettings):
+            report["error"] = "TypeError: physical_mapper_settings must be PhysicalMapperSettings"
+            return None, _json_native(report)
+        report["longitudinal_command_mapping"]["settings"] = {
+            "speed_gain": float(physical_mapper_settings.speed_gain),
+            "torque_tolerance_nm": float(physical_mapper_settings.torque_tolerance_nm),
+            "root_method": physical_mapper_settings.root_method,
+            "include_wheel_inertia": physical_mapper_settings.include_wheel_inertia,
+        }
     evidence = None
     try:
         settings = FrozenReplaySettings() if settings is None else settings
@@ -156,15 +179,39 @@ def replay_exact_trajectory(loaded_or_path, vehicle, *, settings=None, plant_fac
                                 vehicle.steering_maximum_rate, vehicle.maximum_pedal_force,
                                 preview_seconds=settings.preview_seconds)
         state0 = plant.initial_state(initial_speed)
+        if mapping_enabled:
+            driver_gain = _positive_real("driver.speed_gain", driver.speed_gain)
+            mapper_gain = float(physical_mapper_settings.speed_gain)
+            if driver_gain != mapper_gain:
+                raise ValueError("physical mapper speed_gain must match actual driver.speed_gain")
+            governor_margin = _positive_real("driver.brake_governor_margin", driver.brake_governor_margin)
+            if not hasattr(plant, "state_names"):
+                raise ValueError("physical mapper requires actual plant.state_names")
+            mapper = PhysicalLongitudinalMapper(
+                vehicle, reference, state_names=plant.state_names,
+                settings=physical_mapper_settings,
+                brake_governor_margin=governor_margin)
         remaining = settings.maximum_wall_seconds - (perf_counter() - start)
         if remaining <= 0:
+            if mapper is not None:
+                report["longitudinal_command_mapping"]["diagnostics"] = _json_native(mapper.snapshot_diagnostics())
             report.update(phase="wall_budget_before_forward", wall_overrun=True,
                           elapsed_wall_seconds=perf_counter() - start)
-            return None, report
+            return None, _json_native(report)
         report["phase"] = "forward"
-        result = forward_solver(plant, driver, state0, duration=settings.duration_seconds,
+        forward_kwargs = dict(duration=settings.duration_seconds,
             wall_seconds=remaining, maximum_step=settings.maximum_step_seconds,
             rtol=settings.rtol, atol=settings.atol, maximum_wall_seconds=300.)
+        if mapping_enabled:
+            forward_kwargs["command_mapper"] = mapper
+        try:
+            result = forward_solver(plant, driver, state0, **forward_kwargs)
+        except Exception:
+            if mapper is not None:
+                report["longitudinal_command_mapping"]["diagnostics"] = _json_native(mapper.snapshot_diagnostics())
+            raise
+        if mapper is not None:
+            report["longitudinal_command_mapping"]["diagnostics"] = _json_native(mapper.snapshot_diagnostics())
         t = np.asarray(result.time, dtype=float)
         y = np.asarray(result.state, dtype=float)
         names = tuple(plant.state_names)
@@ -252,6 +299,8 @@ def replay_exact_trajectory(loaded_or_path, vehicle, *, settings=None, plant_fac
                                          MappingProxyType(metrics), MappingProxyType(report.copy()))
         return evidence, report
     except Exception as exc:
+        if mapper is not None:
+            report["longitudinal_command_mapping"]["diagnostics"] = _json_native(mapper.snapshot_diagnostics())
         report.update(phase=report.get("phase", "setup"), error=f"{type(exc).__name__}: {exc}",
                       elapsed_wall_seconds=perf_counter()-start)
-        return evidence, report
+        return evidence, _json_native(report)

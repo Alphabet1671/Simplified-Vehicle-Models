@@ -239,6 +239,96 @@ class ReplayTests(unittest.TestCase):
         self.assertEqual(called, [])
         self.assertEqual(report["phase"], "wall_budget_before_forward")
 
+    def test_physical_mapper_opt_in_capture_failure_snapshot_and_legacy_kwargs(self):
+        from unittest.mock import patch
+        from simplified_vehicle_models.solvers.physical_longitudinal_mapper import PhysicalMapperSettings
+        from simplified_vehicle_models.solvers.trajectory_artifact import ExactTrajectoryDriverReference
+
+        loaded = self.make_loaded()
+        endpoint = ExactTrajectoryDriverReference(loaded).length
+        vehicle = SimpleNamespace(steering_maximum_angle=.5, steering_maximum_rate=1.,
+                                  maximum_pedal_force=100., wheelbase=2.)
+        names = ("s", "n", "heading_error", "v_x", "v_y", "yaw_rate",
+                 "omega_fl", "omega_fr", "omega_rl", "omega_rr", "soc", "steering")
+        class Plant:
+            state_names = names
+            def __init__(self, v, plan):
+                self.plan = plan
+                seen["plant_reference"] = plan
+            def initial_state(self, speed): return np.zeros(len(names))
+        class Driver:
+            speed_gain = 2.
+            brake_governor_margin = .85
+            def __init__(self, *a, **kw): pass
+        settings = PhysicalMapperSettings(speed_gain=2.)
+        seen = {}
+        class FakeMapper:
+            def __init__(self, v, ref, *, state_names, settings, brake_governor_margin):
+                seen.update(vehicle=v, reference=ref, state_names=state_names,
+                            settings=settings, margin=brake_governor_margin)
+                self.diag = {"callback_queries": np.int64(3), "accepted": False}
+            def snapshot_diagnostics(self): return self.diag
+        with patch("simplified_vehicle_models.solvers.trajectory_forward_replay.PhysicalLongitudinalMapper", FakeMapper):
+            def fail_forward(*args, **kwargs):
+                seen["kwargs"] = kwargs
+                seen["mapper"] = kwargs["command_mapper"]
+                raise RuntimeError("synthetic forward failure")
+            evidence, report = replay_exact_trajectory(loaded, vehicle,
+                plant_factory=Plant, driver_factory=Driver, forward_solver=fail_forward,
+                physical_mapper_settings=settings)
+        self.assertIsNone(evidence)
+        self.assertEqual(seen["vehicle"], vehicle)
+        self.assertIs(seen["reference"], seen["plant_reference"])
+        self.assertEqual(seen["state_names"], names)
+        self.assertIs(seen["settings"], settings)
+        self.assertEqual(seen["margin"], .85)
+        self.assertIs(seen["kwargs"]["command_mapper"], seen["mapper"])
+        self.assertEqual(report["phase"], "forward")
+        self.assertEqual(report["longitudinal_command_mapping"]["diagnostics"]["callback_queries"], 3)
+        self.assertFalse(report["accepted"])
+        json.dumps(report, allow_nan=False)
+
+        legacy_kwargs = []
+        class ShortPlant:
+            state_names = ("s", "n", "heading_error", "v_x", "v_y")
+            def __init__(self, v, plan): pass
+            def initial_state(self, speed): return np.zeros(5)
+        class LegacyDriver:
+            def __init__(self, *a, **kw): pass
+        legacy = SimpleNamespace(time=np.array([0., 1.]), state=np.array([
+            [0., endpoint], [0., 0.], [0., 0.], [12., 12.], [0., 0.]]), lap_completed=True)
+        _, legacy_report = replay_exact_trajectory(loaded, vehicle, plant_factory=ShortPlant,
+            driver_factory=LegacyDriver,
+            forward_solver=lambda *a, **kw: (legacy_kwargs.append(kw) or legacy))
+        self.assertNotIn("command_mapper", legacy_kwargs[0])
+        self.assertEqual(legacy_report["longitudinal_command_mapping"]["mode"], "legacy_acceleration_fraction")
+
+    def test_physical_mapper_bad_type_and_gain_mismatch_fail_closed(self):
+        from simplified_vehicle_models.solvers.physical_longitudinal_mapper import PhysicalMapperSettings
+        loaded = self.make_loaded()
+        vehicle = SimpleNamespace(steering_maximum_angle=.5, steering_maximum_rate=1.,
+                                  maximum_pedal_force=100., wheelbase=2.)
+        calls = []
+        _, bad = replay_exact_trajectory(loaded, vehicle, physical_mapper_settings=object(),
+                                        forward_solver=lambda *a, **k: calls.append(True))
+        self.assertIn("PhysicalMapperSettings", bad["error"])
+        self.assertEqual(calls, [])
+        class Plant:
+            state_names = ("s", "n", "heading_error", "v_x", "v_y", "yaw_rate",
+                           "omega_fl", "omega_fr", "omega_rl", "omega_rr", "soc", "steering")
+            def __init__(self, v, p): pass
+            def initial_state(self, speed): return np.zeros(12)
+        class Driver:
+            speed_gain = 3.
+            brake_governor_margin = .85
+            def __init__(self, *a, **kw): pass
+        _, mismatch = replay_exact_trajectory(loaded, vehicle, plant_factory=Plant,
+            driver_factory=Driver, physical_mapper_settings=PhysicalMapperSettings(),
+            forward_solver=lambda *a, **k: calls.append(True))
+        self.assertIn("speed_gain", mismatch["error"])
+        self.assertEqual(calls, [])
+        self.assertFalse(mismatch["accepted"])
+
     def test_bad_forward_result_fails_closed(self):
         vehicle = SimpleNamespace(steering_maximum_angle=.5, steering_maximum_rate=1.,
                                   maximum_pedal_force=100., wheelbase=2.)

@@ -708,6 +708,7 @@ class SplineTranscriptionTest(unittest.TestCase):
         import casadi as ca
         from simplified_vehicle_models.solvers.qss_line_ocp import QssSettings
         from simplified_vehicle_models.solvers.qss_spline_ocp import build_spline_ocp
+        from simplified_vehicle_models.tracks.line_trajectory import OffsetTrajectory
 
         track = self._track()
         mesh = np.array([0.0, track.lap_length / 2.0, track.lap_length])
@@ -722,19 +723,44 @@ class SplineTranscriptionTest(unittest.TestCase):
                                          OffsetSpline(track, control_spacing=20.0), settings)
                 controls, nodes = built["control_count"], mesh.size
                 values = np.zeros(controls + 3 * nodes - 1)
+                # Nonzero offset coefficients make analytic G nonunit, so a
+                # mistaken site conversion a/(2G) cannot pass this identity.
+                values[:controls] = np.linspace(-.15, .15, controls)
                 values[controls:controls + nodes] = 10.0
-                values[controls + nodes:controls + 2 * nodes] = [3.0, -8.0, 3.0]
-                values[controls + 2 * nodes:] = [-8.0, 3.0]
+                values[controls + nodes:controls + 2 * nodes] = [3.5, -8.5, 3.5]
+                values[controls + 2 * nodes:] = [-8.5, 3.5]
                 constraints = np.asarray(ca.Function(
                     f"site_a_rows_{representation}", [built["nlp"]["x"]], [built["nlp"]["g"]],
                 )(values), dtype=float).ravel()
+                metric = np.asarray(OffsetTrajectory(
+                    built["reference"], built["spline"], values[:controls],
+                ).evaluate(np.r_[mesh, .5 * (mesh[:-1] + mesh[1:])]).metric)
+                self.assertGreater(float(np.max(np.abs(metric - 1.0))), 1.e-4)
                 np.testing.assert_allclose(
-                    constraints[built["node_acceleration_upper_indices"]], [0.0, 11.0, 11.0, 0.0],
+                    constraints[built["node_acceleration_upper_indices"]], [-.5, 11.5, 11.5, -.5],
                     atol=2.e-11,
                 )
                 np.testing.assert_allclose(
-                    constraints[built["node_acceleration_lower_indices"]], [11.0, 0.0, 0.0, 11.0],
+                    constraints[built["node_acceleration_lower_indices"]], [11.5, -.5, -.5, 11.5],
                     atol=2.e-11,
+                )
+                np.testing.assert_allclose(
+                    constraints[built["midpoint_acceleration_upper_indices"]], [11.5, -.5], atol=2.e-11,
+                )
+                np.testing.assert_allclose(
+                    constraints[built["midpoint_acceleration_lower_indices"]], [-.5, 11.5], atol=2.e-11,
+                )
+                # Exact chart faces remain identities independently of G.
+                values[controls + nodes:controls + 2 * nodes] = [3.0, -8.0, 3.0]
+                values[controls + 2 * nodes:] = [-8.0, 3.0]
+                constraints = np.asarray(ca.Function(
+                    f"site_a_faces_{representation}", [built["nlp"]["x"]], [built["nlp"]["g"]],
+                )(values), dtype=float).ravel()
+                np.testing.assert_allclose(
+                    constraints[built["node_acceleration_upper_indices"]], [0.0, 11.0, 11.0, 0.0], atol=2.e-11,
+                )
+                np.testing.assert_allclose(
+                    constraints[built["node_acceleration_lower_indices"]], [11.0, 0.0, 0.0, 11.0], atol=2.e-11,
                 )
                 np.testing.assert_allclose(
                     constraints[built["midpoint_acceleration_upper_indices"]], [11.0, 0.0], atol=2.e-11,

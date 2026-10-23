@@ -63,7 +63,7 @@ def _jsonsafe(value):
     return value
 
 
-def _report(reason, started, n=0, rows=(), unattempted=(), *, clock=None, **extra):
+def _report(reason, started, n=0, rows=(), unattempted=(), *, clock=None, wall_limit=None, **extra):
     rows = list(rows)
     clock = time.monotonic if clock is None else clock
     proven = sum(bool(r.get("chart_constraints_proven")) for r in rows)
@@ -82,7 +82,15 @@ def _report(reason, started, n=0, rows=(), unattempted=(), *, clock=None, **extr
            "physical_feasibility_certified": False, "original_vehicle_validated": False,
            "event_qualified": False, "U3_qualified": False, "policy_approved": False}
     out.update(extra)
-    return _jsonsafe(out)
+    result = _jsonsafe(out)
+    # Include report assembly and JSON normalization in the global deadline.
+    elapsed = max(0., clock()-started)
+    result["elapsed_wall_seconds"] = float(elapsed)
+    if (result.get("all_elements_chart_constraints_proven") is True
+            and wall_limit is not None and elapsed >= wall_limit):
+        result.update(status="not_proven", all_elements_chart_constraints_proven=False,
+                      reason="wall_budget_exhausted")
+    return result
 
 
 def _exact_ratio(value):
@@ -171,7 +179,7 @@ def audit_artifact_chart(loaded_or_path, surface, *, settings=None, element_sett
             after_chart = _chart_fingerprint(surface)
             mutated_source = after_source != source_fp
             mutated_chart = after_chart != chart_fp
-            elapsed = time.monotonic()-started
+            elapsed = clock()-started
             row = dict(child) if isinstance(child, dict) else {"status": "not_proven", "reason": "invalid_element_result"}
             row["element_index"] = i
             if row.get("chart_constraints_proven") is True and row.get("input_fingerprint_sha256") != source_fp:
@@ -216,7 +224,7 @@ def audit_artifact_chart(loaded_or_path, surface, *, settings=None, element_sett
     if failure_reason is None and (len(rows) != n or any(not r.get("chart_constraints_proven") for r in rows)):
         failure_reason = "elements_not_proven"
     reason = "all_elements_chart_constraints_proven" if failure_reason is None else failure_reason
-    return _report(reason, started, n, rows, unattempted, clock=clock,
+    return _report(reason, started, n, rows, unattempted, clock=clock, wall_limit=wall_limit,
                    source_fingerprint_sha256=source_fp, chart_fingerprint_sha256=chart_fp,
                    artifact_sha256=str(loaded.source_sha256),
                    artifact_file_identity_reverified=isinstance(loaded_or_path, (str, Path)),

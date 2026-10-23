@@ -143,6 +143,29 @@ class ArtifactChartAuditTests(unittest.TestCase):
         self.assertEqual(result["criteria_exact"]["minimum_fold"], {"numerator": 1, "denominator": 3})
         json.dumps(result, allow_nan=False)
 
+    def test_report_assembly_time_counts_toward_whole_deadline(self):
+        from simplified_vehicle_models.solvers.artifact_chart_audit import _jsonsafe, _snapshot
+        _, fingerprint = _snapshot(self.loaded)
+        proven = {"chart_constraints_proven": True, "status": "chart_constraints_proven",
+                  "input_fingerprint_sha256": fingerprint}
+        tick = {"value": 0.}
+        def clock():
+            return tick["value"]
+        def slow_assembly(value):
+            result = _jsonsafe(value)
+            tick["value"] = 2.
+            return result
+        with (
+            patch("simplified_vehicle_models.solvers.artifact_chart_audit._monotonic", side_effect=clock),
+            patch("simplified_vehicle_models.solvers.artifact_chart_audit.check_artifact_chart_element",
+                  return_value=proven),
+            patch("simplified_vehicle_models.solvers.artifact_chart_audit._jsonsafe", side_effect=slow_assembly),
+        ):
+            result = audit_artifact_chart(self.loaded, chart(), settings=ArtifactAuditSettings(maximum_wall_seconds=1.))
+        self.assertFalse(result["all_elements_chart_constraints_proven"])
+        self.assertEqual(result["reason"], "wall_budget_exhausted")
+        self.assertEqual(result["elapsed_wall_seconds"], 2.)
+
     def test_wall_deadline_before_and_after_delegate(self):
         from simplified_vehicle_models.solvers.artifact_chart_audit import ArtifactAuditSettings
         from simplified_vehicle_models.solvers.artifact_chart_audit import _snapshot

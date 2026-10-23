@@ -87,6 +87,46 @@ Acceleration and skidpad remain explicitly `NOTstandingstart`, because a
 positive speed floor is used and launch-distance/time accounting is not
 implemented.
 
+## Last bounded-round outcomes (local, ignored artifacts)
+
+The last bounded round used the opt-in metric-rate control, a conservative
+`0.1 m/s` inner-domain margin, zero corridor, 64 capability sites, mesh
+`1.25 m`, and LM. These are local artifacts under `runs/no_tv_reliability/`,
+which are ignored and not versioned evidence.
+
+| Case / artifact | Returned result | Independent result | Status |
+|---|---|---|---|
+| acceleration `centreline_controls_final_runtime38` | `Solve_Succeeded`, 29 iterations, `4.50887997 s` | dense/model `true` | Local rolling result only; not standing-start or global evidence. |
+| skidpad `centreline_controls_final_runtime38` | `Solve_Succeeded`, 41 iterations, `22.820988 s` | live/model `true`; dense `false` (`a_max +0.00107`, `a_min +0.00654 m/s²`) | Not accepted. |
+| FSC and MIS, same round | hard 75 s wall timeouts | no qualifying dense/live result | Timeout is not acceptance or infeasibility proof. |
+
+The bounded FSC seed-control LP (`fsc_bounded_projection_runtime38/projection.json`)
+was feasible with zero global-bound violation, maximum HS energy defect
+`1.42e-14`, and unchanged energy. It is only a fixed-HS-control projection:
+it does **not** establish capability feasibility or OCP feasibility. Its actual
+FSC path-seed follow-on (`fsc_bounded_projection_solve_runtime38/timeout.json`)
+hit the hard 120 s wall timeout and was not accepted.
+
+## Bounded utility review and reproducibility
+
+The bounded-energy projection utility is `4704ac7`, independently tested at
+`a0cac03`; its focused LP-math suite passed 11 tests. Review is still a bounded
+utility handoff, not a claim that the reliability work is done. Node and
+midpoint physical controls are unchanged. The global result remains
+**NOT READY**: the full six-case matrix is incomplete, standing-start use is
+unsupported, the strict geometry/state policy is `None`, broad-test known
+failures remain, and immutable-source-hash status is preserved rather than
+replaced by these runs.
+
+The ignored artifacts above can be inspected, and the narrow checks rerun, with:
+
+```bash
+python3 -m json.tool runs/no_tv_reliability/centreline_controls_final_runtime38/acceleration/result.json
+python3 -m json.tool runs/no_tv_reliability/centreline_controls_final_runtime38/skidpad/validation.json
+python3 -m json.tool runs/no_tv_reliability/fsc_bounded_projection_runtime38/projection.json
+PYTHONPATH=src:/tmp/no-tv-casadi-runtime python3 -m unittest tests.test_energy_seed_projection -v
+```
+
 ## What remains outstanding
 
 1. Obtain dense/live-feasible curved-case candidates and independent mesh,
@@ -111,9 +151,12 @@ PYTHONPATH="$CURRENTPYTHONPATH" python3 -m unittest tests.test_qss_spline_ocp -v
 
 The frozen spline suite passed **37 tests in 272.421 s**. The earlier focused
 selection passed **92 tests in 12.826 s**; the later final integration selection
-passed **128 tests in 15.124 s**. Broad non-GUI testing reported 101 of 106
-modules passing; five outcomes were nonzero (closed-loop/energy 75-second
-timeouts and stale vertical provenance/between-step failures). The motor
+passed **128 tests in 15.124 s**. After the bounded-utility proof, the parent
+final focused selection passed **137 tests in 13.132 s** with no skips
+(`round19-final-focused.log`, local ignored workspace evidence). Broad non-GUI
+testing reported 101 of 106 modules passing; five outcomes were nonzero
+(closed-loop/energy 75-second timeouts and stale vertical provenance/between-step
+failures). The motor
 fixture issue was fixed in `cb1d344` and reviewed. A full Qt GUI run stalled and
 was cancelled. Consequently, no all-repository-green claim is made.
 

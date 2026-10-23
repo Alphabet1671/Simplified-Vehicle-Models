@@ -94,6 +94,25 @@ def _readonly(value):
     return result
 
 
+def _json_native(value, nonfinite_fields=None, path=""):
+    """Convert report scalars recursively to strict-JSON-safe Python values."""
+    if isinstance(value, np.generic):
+        value = value.item()
+    if isinstance(value, dict):
+        return {str(key): _json_native(item, nonfinite_fields, f"{path}.{key}".strip("."))
+                for key, item in value.items()}
+    if isinstance(value, (tuple, list)):
+        return [_json_native(item, nonfinite_fields, f"{path}[{index}]")
+                for index, item in enumerate(value)]
+    if isinstance(value, float) and not np.isfinite(value):
+        if nonfinite_fields is not None:
+            nonfinite_fields.append(path)
+        return None
+    if value is None or isinstance(value, (str, bool, int, float)):
+        return value
+    raise TypeError(f"report value {type(value).__name__} is not JSON-safe")
+
+
 def replay_exact_trajectory(loaded_or_path, vehicle, *, settings=None, plant_factory=None,
                             driver_factory=None, forward_solver=None):
     """Return (diagnostic evidence or None, fail-closed report)."""
@@ -164,7 +183,8 @@ def replay_exact_trajectory(loaded_or_path, vehicle, *, settings=None, plant_fac
         solver_lap_completed = getattr(result, "lap_completed", False)
         if not isinstance(solver_lap_completed, (bool, np.bool_)):
             raise ValueError("forward lap_completed must be boolean")
-        completed = bool(solver_lap_completed) and abs(s[-1] - length) <= max(1e-6, 1e-6 * length)
+        completed = bool(bool(solver_lap_completed) and
+                         abs(s[-1] - length) <= max(1e-6, 1e-6 * length))
         report["solver_lap_completed"] = bool(solver_lap_completed)
         report["endpoint_distance_error_m"] = float(s[-1] - length)
         periodic = None
@@ -224,6 +244,10 @@ def replay_exact_trajectory(loaded_or_path, vehicle, *, settings=None, plant_fac
         report.update(phase="complete" if completed else "incomplete", completed=completed,
                       wall_overrun=wall_overrun,
                       midpoint_sample_validation_complete=metrics["midpoint_sample_validation_complete"])
+        nonfinite_fields = []
+        metrics = _json_native(metrics, nonfinite_fields, "metrics")
+        report["nonfinite_metadata_fields"] = nonfinite_fields
+        report = _json_native(report)
         evidence = ForwardReplayEvidence(_readonly(t), _readonly(y), _readonly(target),
                                          MappingProxyType(metrics), MappingProxyType(report.copy()))
         return evidence, report

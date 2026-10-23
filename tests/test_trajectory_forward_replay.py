@@ -1,5 +1,6 @@
 """Fast contract tests for bounded serialized-trajectory replay."""
 import unittest
+import json
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -86,6 +87,7 @@ class ReplayTests(unittest.TestCase):
         self.assertAlmostEqual(ev.metrics["max_abs_speed_error_mps"], 2.)
         self.assertFalse(ev.metrics["midpoint_sample_validation_complete"])
         self.assertEqual(ev.metrics["forward_message"], "fake finished")
+        json.dumps({"report": report, "metrics": dict(ev.metrics)}, allow_nan=False)
         expected_time_delta = 1. - loaded.physical_time
         self.assertAlmostEqual(ev.metrics["time_vs_reference_seconds_diagnostic_only"], abs(expected_time_delta))
         self.assertAlmostEqual(ev.metrics["time_vs_reference_signed_seconds_diagnostic_only"], expected_time_delta)
@@ -123,6 +125,49 @@ class ReplayTests(unittest.TestCase):
         self.assertTrue(evidence.metrics["periodic_within_published_tolerances"])
         self.assertNotIn("soc", evidence.metrics["periodic_state_delta"])
         self.assertNotIn("s", evidence.metrics["periodic_state_delta"])
+
+    def test_nonfinite_diagnostic_is_null_and_annotated_in_report(self):
+        from simplified_vehicle_models.solvers.trajectory_artifact import ExactTrajectoryDriverReference
+        loaded = self.make_loaded()
+        endpoint = ExactTrajectoryDriverReference(loaded).length
+        vehicle = SimpleNamespace(steering_maximum_angle=.5, steering_maximum_rate=1.,
+                                  maximum_pedal_force=100., wheelbase=2.)
+        class Plant:
+            state_names = ("s", "n", "heading_error", "v_x", "v_y")
+            def __init__(self, v, p): pass
+            def initial_state(self, speed): return np.zeros(5)
+        class Driver:
+            def __init__(self, *a, **kw): pass
+        result = SimpleNamespace(time=np.array([0., 1.]), state=np.array([
+            [0., endpoint], [0., 0.], [0., 0.], [12., 12.], [0., 0.]]),
+            lap_completed=True, message="nonfinite diagnostic",
+            evaluations=np.nan, midpoint_sample_validation_complete=False)
+        evidence, report = replay_exact_trajectory(loaded, vehicle, plant_factory=Plant,
+            driver_factory=Driver, forward_solver=lambda *a, **kw: result)
+        self.assertIsNone(evidence.metrics["evaluations"])
+        self.assertIn("metrics.evaluations", report["nonfinite_metadata_fields"])
+        json.dumps({"report": report, "metrics": dict(evidence.metrics)}, allow_nan=False)
+
+    def test_numpy_bool_completion_remains_json_serializable(self):
+        from simplified_vehicle_models.solvers.trajectory_artifact import ExactTrajectoryDriverReference
+        loaded = self.make_loaded()
+        endpoint = ExactTrajectoryDriverReference(loaded).length
+        vehicle = SimpleNamespace(steering_maximum_angle=.5, steering_maximum_rate=1.,
+                                  maximum_pedal_force=100., wheelbase=2.)
+        class Plant:
+            state_names = ("s", "n", "heading_error", "v_x", "v_y")
+            def __init__(self, v, p): pass
+            def initial_state(self, speed): return np.zeros(5)
+        class Driver:
+            def __init__(self, *a, **kw): pass
+        result = SimpleNamespace(time=np.array([0., 1.]), state=np.array([
+            [0., endpoint], [0., 0.], [0., 0.], [12., 12.], [0., 0.]]),
+            lap_completed=np.bool_(True), evaluations=np.int64(3),
+            wall_seconds=np.float64(.1), message="numpy typed")
+        evidence, report = replay_exact_trajectory(loaded, vehicle, plant_factory=Plant,
+            driver_factory=Driver, forward_solver=lambda *a, **kw: result)
+        self.assertIs(report["completed"], True)
+        json.dumps({"report": report, "metrics": dict(evidence.metrics)}, allow_nan=False)
 
     def test_periodic_empty_applicable_set_is_not_vacuous_pass(self):
         helper = artifact_tests.TrajectoryArtifactTest()

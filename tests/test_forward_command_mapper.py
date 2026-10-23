@@ -4,7 +4,7 @@ import unittest
 import numpy as np
 
 from simplified_vehicle_models.solvers.forward_driver import (
-    DriverCommand, DriverObservation, PreviewDriver, RateSystem,
+    DriverCommand, DriverObservation, PreviewDriver, RateSystem, TrialStateError,
     build_speed_plan, solve_forward,
 )
 
@@ -103,6 +103,35 @@ class ForwardCommandMapperTests(unittest.TestCase):
             return requested
         self.run_forward(plant, command_mapper=mapper)
         np.testing.assert_array_equal(initial, self.initial)
+
+    def test_callback_trial_state_error_after_initial_call_propagates_without_retry(self):
+        plant = LinearPlant()
+        error = TrialStateError("mapper trial rejected")
+        calls = []
+        def mapper(*args):
+            calls.append(args)
+            if len(calls) == 1:
+                return args[3]
+            raise error
+        with self.assertRaisesRegex(TrialStateError, "mapper trial rejected") as caught:
+            self.run_forward(plant, command_mapper=mapper)
+        self.assertIs(caught.exception, error)
+        self.assertEqual(len(calls), 2)
+
+    def test_plant_trial_state_error_remains_a_retry(self):
+        class RetryPlant(LinearPlant):
+            def __init__(self):
+                super().__init__()
+                self.failed_once = False
+            def evaluate(self, time, state, command):
+                if time > 0. and not self.failed_once:
+                    self.failed_once = True
+                    raise TrialStateError("plant domain trial")
+                return super().evaluate(time, state, command)
+        plant = RetryPlant()
+        result = self.run_forward(plant)
+        self.assertGreater(result.rejected_domain_trials, 0)
+        self.assertTrue(np.all(np.isfinite(result.state)))
 
     def test_callback_error_propagates(self):
         error = RuntimeError("mapper failed")

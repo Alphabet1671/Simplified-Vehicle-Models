@@ -17,6 +17,13 @@ class TrialStateError(ValueError):
     """Reject an integrator trial outside the plant state domain."""
 
 
+class _CommandMapperTrialStateError(Exception):
+    """Keep mapper TrialStateError separate from plant domain rejections."""
+
+    def __init__(self, original):
+        self.original = original
+
+
 @dataclass(frozen=True)
 class RateSystem:
     """Store the system M * state_rate = forcing at one evaluation."""
@@ -520,7 +527,10 @@ def _map_driver_command(command_mapper, time, plant_state, observation, requeste
     """Apply and validate a longitudinal command mapping with read-only state."""
     snapshot = np.array(plant_state, dtype=float, copy=True)
     snapshot.setflags(write=False)
-    mapped = command_mapper(time, snapshot, observation, requested)
+    try:
+        mapped = command_mapper(time, snapshot, observation, requested)
+    except TrialStateError as error:
+        raise _CommandMapperTrialStateError(error) from None
     if not isinstance(mapped, DriverCommand):
         raise ValueError("command_mapper must return a DriverCommand")
     command_values = (mapped.throttle, mapped.brake_force, mapped.steering_rate)
@@ -585,8 +595,11 @@ def solve_forward(plant: ForwardPlant, driver: PreviewDriver, initial_state,
         observation = plant.observe(plant_initial)
         requested = driver.command(observation)
         if command_mapper is not None:
-            requested = _map_driver_command(command_mapper, 0., plant_initial,
-                                            observation, requested, driver)
+            try:
+                requested = _map_driver_command(command_mapper, 0., plant_initial,
+                                                observation, requested, driver)
+            except _CommandMapperTrialStateError as error:
+                raise error.original from None
         initial = np.r_[plant_initial, driver.pedal_target(requested)
                         if initial_pedal is None else initial_pedal]
     else:
@@ -624,6 +637,8 @@ def solve_forward(plant: ForwardPlant, driver: PreviewDriver, initial_state,
         evaluations += 1
         try:
             rates = state_rates(time, state)
+        except _CommandMapperTrialStateError as error:
+            raise error.original from None
         except TrialStateError:
             rejected_domain_trials += 1
             # Radau rejects this Newton trial and reduces its integration step.

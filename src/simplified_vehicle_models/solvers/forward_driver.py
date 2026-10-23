@@ -6,6 +6,7 @@ The driver uses physical observations instead of plant state indices.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from numbers import Real
 from typing import Protocol
 from time import perf_counter
 
@@ -515,12 +516,33 @@ class StepSample:
     pedal: float | None
 
 
+def _map_driver_command(command_mapper, time, plant_state, observation, requested, driver):
+    """Apply and validate a longitudinal command mapping with read-only state."""
+    snapshot = np.array(plant_state, dtype=float, copy=True)
+    snapshot.setflags(write=False)
+    mapped = command_mapper(time, snapshot, observation, requested)
+    if not isinstance(mapped, DriverCommand):
+        raise ValueError("command_mapper must return a DriverCommand")
+    command_values = (mapped.throttle, mapped.brake_force, mapped.steering_rate)
+    if any(isinstance(value, (bool, np.bool_)) or not isinstance(value, Real)
+           for value in command_values):
+        raise ValueError("mapped command values must be finite real numbers")
+    values = np.asarray(command_values, dtype=float)
+    if (not np.all(np.isfinite(values)) or not 0. <= mapped.throttle <= 1.
+            or not 0. <= mapped.brake_force <= driver.maximum_brake_force
+            or mapped.throttle * mapped.brake_force > 1.e-12
+            or abs(mapped.steering_rate) > driver.maximum_steering_rate
+            or mapped.steering_rate != requested.steering_rate):
+        raise ValueError("mapped command must be finite, physical, nonoverlapping, and preserve steering")
+    return mapped
+
+
 def solve_forward(plant: ForwardPlant, driver: PreviewDriver, initial_state,
                   duration=300., wall_seconds=290., maximum_step=0.02,
                   rtol=1.e-6, atol=1.e-8, method="Radau",
                    initial_pedal: float | None = None,
                    maximum_wall_seconds: float = 300.,
-                   step_sink=None) -> ForwardResult:
+                   step_sink=None, *, command_mapper=None) -> ForwardResult:
     """Integrate all states with a stiff method and stop at the path end.
 
     ``wall_seconds`` is this call's wall budget and ``maximum_wall_seconds`` is
@@ -539,6 +561,8 @@ def solve_forward(plant: ForwardPlant, driver: PreviewDriver, initial_state,
     """
     from scipy.integrate import solve_ivp
 
+    if command_mapper is not None and not callable(command_mapper):
+        raise ValueError("command_mapper must be callable or None")
     limits = np.asarray([duration, wall_seconds, maximum_step, rtol, atol,
                          maximum_wall_seconds], dtype=float)
     if not np.all(np.isfinite(limits)) or np.any(limits <= 0):
@@ -558,7 +582,11 @@ def solve_forward(plant: ForwardPlant, driver: PreviewDriver, initial_state,
     if pedal_dynamics:
         # The foot starts where the driver wants it, so the run does not open
         # with a pedal transient.
-        requested = driver.command(plant.observe(plant_initial))
+        observation = plant.observe(plant_initial)
+        requested = driver.command(observation)
+        if command_mapper is not None:
+            requested = _map_driver_command(command_mapper, 0., plant_initial,
+                                            observation, requested, driver)
         initial = np.r_[plant_initial, driver.pedal_target(requested)
                         if initial_pedal is None else initial_pedal]
     else:
@@ -572,7 +600,11 @@ def solve_forward(plant: ForwardPlant, driver: PreviewDriver, initial_state,
 
     def state_rates(time, state):
         plant_state = state[:plant_size]
-        requested = driver.command(plant.observe(plant_state))
+        observation = plant.observe(plant_state)
+        requested = driver.command(observation)
+        if command_mapper is not None:
+            requested = _map_driver_command(command_mapper, float(time), plant_state,
+                                            observation, requested, driver)
         if not pedal_dynamics:
             applied[0] = requested
             return plant.evaluate(time, plant_state, requested).solve()

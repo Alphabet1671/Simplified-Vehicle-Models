@@ -253,6 +253,7 @@ class _ExchangeFailure(Exception):
 def solve_constraint_exchange(track, corridor, surface, mesh, spline, settings, *, vehicle=None,
                               seed=None, constraint_stations=None, maximum_rounds=5,
                               maximum_sites=500, maximum_wall_seconds=600,
+                              maximum_new_sites_per_round=None,
                               search_settings=None, solver=None, validator=None, on_round=None):
     """Solve/refine on fixed mesh; independent validation alone controls acceptance.
 
@@ -265,6 +266,12 @@ def solve_constraint_exchange(track, corridor, surface, mesh, spline, settings, 
     validator = validator or validate_line
     if isinstance(maximum_rounds, bool) or not isinstance(maximum_rounds, (int, np.integer)) or maximum_rounds < 1: raise ValueError("maximum_rounds must be positive integer")
     if isinstance(maximum_sites, bool) or not isinstance(maximum_sites, (int, np.integer)) or maximum_sites < 0: raise ValueError("maximum_sites must be nonnegative integer")
+    if maximum_new_sites_per_round is not None and (
+        isinstance(maximum_new_sites_per_round, (bool, np.bool_))
+        or not isinstance(maximum_new_sites_per_round, (int, np.integer))
+        or maximum_new_sites_per_round < 1
+    ):
+        raise ValueError("maximum_new_sites_per_round must be None or an integer >= 1")
     if isinstance(maximum_wall_seconds, (bool, np.bool_)) or not isinstance(maximum_wall_seconds, (int, float, np.number)) or not math.isfinite(float(maximum_wall_seconds)) or maximum_wall_seconds <= 0: raise ValueError("maximum_wall_seconds must be positive")
     mesh = np.asarray(mesh, dtype=float)
     if mesh.ndim != 1 or mesh.size < 2 or not np.all(np.isfinite(mesh)) or np.any(np.diff(mesh) <= 0):
@@ -344,16 +351,79 @@ def solve_constraint_exchange(track, corridor, surface, mesh, spline, settings, 
             round_record["search_progress_only"] = bool(partial_domain_progress)
             mesh_arr = np.asarray(mesh, dtype=float)
             old = list(retained)
-            candidate_sites = sorted(set(search["constraint_stations"] + _validator_refinement_stations(validation, mesh_arr)))
-            added = []
-            for s in candidate_sites:
-                local = min(np.diff(mesh_arr)[max(0, min(len(mesh_arr)-2, int(np.searchsorted(mesh_arr, s, side="right")-1)))] * 1e-8, 1e-8)
-                if min(abs(np.asarray([*mesh_arr, *((mesh_arr[:-1]+mesh_arr[1:])/2), *old])-s), default=math.inf) > local:
-                    added.append(float(s))
+            validator_records = []
+            excluded = {"derivative_uncertainty", "implied_acceleration_derivative_uncertainty",
+                        "dynamics_defect_upper_bound", "implied_acceleration_upper_bound"}
+            for diagnostic in validation.get("diagnostics", ()):
+                if not isinstance(diagnostic, dict) or diagnostic.get("passed") is not False or diagnostic.get("name") in excluded:
+                    continue
+                station = diagnostic.get("worst_station")
+                if station is None or isinstance(station, (bool, np.bool_)):
+                    continue
+                try: station = float(station)
+                except (TypeError, ValueError): continue
+                if math.isfinite(station) and mesh_arr[0] < station < mesh_arr[-1]:
+                    validator_records.append((station, str(diagnostic.get("name", ""))))
+            raw_search = search.get("constraint_stations", ())
+            peak_records = []
+            tolerance = validation.get("tolerances", {})
+            scales = {"acceleration_max": 1., "acceleration_min": 1., "speed_floor": 1.,
+                      "capability_domain": 1., "corridor_max": 1., "corridor_min": 1., "fold_guard": 1.}
+            for peak in search.get("peaks", ()):
+                try:
+                    station, name, violation = float(peak["station"]), str(peak["name"]), float(peak["violation"])
+                except (KeyError, TypeError, ValueError): continue
+                if math.isfinite(station) and math.isfinite(violation) and mesh_arr[0] < station < mesh_arr[-1]:
+                    scale = float(tolerance.get(name, scales.get(name, 1.))) if isinstance(tolerance, dict) else 1.
+                    severity = violation / scale if math.isfinite(scale) and scale > 0 else violation
+                    peak_records.append((station, name, severity))
+            def already_enforced(s):
+                element = max(0, min(len(mesh_arr)-2, int(np.searchsorted(mesh_arr, s, side="right")-1)))
+                local = min(np.diff(mesh_arr)[element] * 1e-8, 1e-8)
+                return min(abs(np.asarray([*mesh_arr, *((mesh_arr[:-1]+mesh_arr[1:])/2), *old])-s), default=math.inf) <= local
+            # Build independently ranked families: validator worst stations first,
+            # then one search maximum per (mesh element, diagnostic family).
+            priority = []
+            for station, name in sorted(set(validator_records), key=lambda x: (x[0], x[1])):
+                if not already_enforced(station): priority.append((station, "validator:" + name, math.inf))
+            best_family = {}
+            for station, name, severity in peak_records:
+                element = max(0, min(len(mesh_arr)-2, int(np.searchsorted(mesh_arr, station, side="right")-1)))
+                key = (element, name)
+                if key not in best_family or (severity, -station) > (best_family[key][1], -best_family[key][0]):
+                    best_family[key] = (station, severity)
+            priority.extend((station, "search:" + name, severity) for (element, name), (station, severity) in sorted(best_family.items()) if not already_enforced(station))
+            priority.sort(key=lambda x: (0 if x[1].startswith("validator:") else 1, -x[2], x[0], x[1]))
+            ranked = list(priority)
+            for station in sorted(set(map(float, raw_search))):
+                if math.isfinite(station) and mesh_arr[0] < station < mesh_arr[-1] and not already_enforced(station) and all(abs(station-x[0]) > 1e-12 for x in ranked):
+                    ranked.append((station, "search:other", 0.))
+            for station in _validator_refinement_stations(validation, mesh_arr):
+                if not already_enforced(station) and all(abs(station-x[0]) > 1e-12 for x in ranked):
+                    ranked.append((station, "validator:refinement", 0.))
+            # Multiple failed families can identify the same physical station;
+            # count/select unique stations so the per-round budget is literal.
+            unique_ranked = []
+            for candidate in ranked:
+                if all(abs(candidate[0]-existing[0]) > 1e-12 for existing in unique_ranked):
+                    unique_ranked.append(candidate)
+            ranked = unique_ranked
+            available = maximum_sites - len(old)
+            if available <= 0: raise _ExchangeFailure("maximum_sites")
+            budget = available if maximum_new_sites_per_round is None else min(int(maximum_new_sites_per_round), available)
+            selected = ranked[:budget]
+            added = sorted(set(x[0] for x in selected))
             if not added: raise _ExchangeFailure("no_new_stations")
-            if len(old)+len(added) > maximum_sites: raise _ExchangeFailure("maximum_sites")
+            unselected = ranked[budget:]
             retained = sorted(set(old+added)); report["constraint_stations"] = retained
-            report["rounds"][-1]["added_stations"] = added
+            record = report["rounds"][-1]
+            record["added_stations"] = added
+            if maximum_new_sites_per_round is not None:
+                record["unselected_stations_count"] = len(unselected)
+                record["truncated_additions"] = bool(unselected)
+                record["planned_additions"] = [{"station": s, "source": source, "normalized_severity": severity}
+                                                for s, source, severity in selected]
+                record["addition_budget"] = budget
             report["rounds"][-1]["status"] = "exchange_sites_added"
             if index+1 >= maximum_rounds:
                 round_record["status"] = "maximum_rounds"

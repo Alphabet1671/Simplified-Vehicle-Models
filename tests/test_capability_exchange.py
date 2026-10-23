@@ -380,4 +380,45 @@ class ResidualSearchTests(unittest.TestCase):
         self.assertFalse(result["completed"])
         self.assertEqual(result["stop"], "peak_budget_exhausted")
 
+    def test_optin_budget_prioritizes_validator_families_retains_sites_and_reports_truncation(self):
+        from unittest.mock import patch
+        from simplified_vehicle_models.solvers.capability_exchange import solve_constraint_exchange
+        solution = SimpleNamespace(status="Solve_Succeeded", distance=np.array([0., 1.]),
+            trajectory=self.solution.trajectory, state_evaluator=self.solution.state_evaluator,
+            coefficients=np.zeros(1), speed=np.ones(2), acceleration=np.zeros(2), midpoint_acceleration=np.zeros(1))
+        peaks = [{"name": "corridor_max", "station": .1, "violation": .5, "element": 0},
+                 {"name": "corridor_max", "station": .2, "violation": .4, "element": 0},
+                 {"name": "acceleration_max", "station": .8, "violation": .3, "element": 0}]
+        validation = {"checks": {}, "diagnostics": [
+            {"name": "acceleration_min", "passed": False, "worst_station": .3, "refinement_stations": [.31]},
+            {"name": "corridor_min", "passed": False, "worst_station": .4},
+            {"name": "acceleration_max", "passed": False, "worst_station": .5}]}
+        calls, snapshots = [], []
+        with patch("simplified_vehicle_models.solvers.capability_exchange.locate_physical_residuals",
+                   return_value={"completed": True, "constraint_stations": [.1, .2, .8], "peaks": peaks}):
+            _, report = solve_constraint_exchange(None, self.corridor, Surface(), np.array([0., 1.]), None, None,
+                solver=lambda *a, **k: (calls.append(list(k["constraint_stations"])) or solution),
+                validator=lambda *a, **k: validation, constraint_stations=[.6], maximum_sites=3,
+                maximum_new_sites_per_round=2, maximum_rounds=1, on_round=snapshots.append)
+        record = report["rounds"][0]
+        self.assertEqual(calls, [[.6]])
+        self.assertEqual(report["constraint_stations"], [.3, .4, .6])
+        self.assertEqual(len(record["added_stations"]), 2)
+        self.assertEqual(record["unselected_stations_count"], 4)
+        self.assertTrue(record["truncated_additions"])
+        self.assertFalse(report["accepted"])
+        self.assertNotIn("full_coverage", record)
+        self.assertEqual([x["source"] for x in record["planned_additions"]],
+                         ["validator:acceleration_min", "validator:corridor_min"])
+        self.assertEqual(snapshots[-1]["constraint_stations"], report["constraint_stations"])
+
+    def test_optin_budget_validates_and_default_remains_none(self):
+        from simplified_vehicle_models.solvers.capability_exchange import solve_constraint_exchange
+        import inspect
+        self.assertIsNone(inspect.signature(solve_constraint_exchange).parameters["maximum_new_sites_per_round"].default)
+        for value in (True, False, 0, -1, 1.5, float("nan")):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                solve_constraint_exchange(None, self.corridor, Surface(), np.array([0., 1.]), None, None,
+                                          maximum_new_sites_per_round=value)
+
 if __name__ == "__main__": unittest.main()

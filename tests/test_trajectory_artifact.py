@@ -14,6 +14,7 @@ from simplified_vehicle_models.solvers.trajectory_artifact import (
     ExactTrajectoryDriverReference, load_trajectory_artifact,
 )
 from simplified_vehicle_models.tracks.line_trajectory import ReferenceCurve, OffsetTrajectory
+from simplified_vehicle_models.tracks.profile import load_track
 from simplified_vehicle_models.tracks.offset_spline import OffsetSpline
 from tools.run.solve_minimum_time_line import _write_trajectory_metadata
 from simplified_vehicle_models.solvers.qss_spline_ocp import (
@@ -25,7 +26,7 @@ from simplified_vehicle_models.solvers.forward_driver import (
 
 
 class TrajectoryArtifactTest(unittest.TestCase):
-    def make_solution(self, closed=False, control="quadratic_acceleration_v1"):
+    def make_solution(self, closed=False, control="quadratic_acceleration_v1", fit_periodic=None):
         n = 41
         s = np.linspace(0., 400., n)
         angle = np.linspace(0, 2*np.pi, n)
@@ -34,11 +35,15 @@ class TrajectoryArtifactTest(unittest.TestCase):
         if not closed:
             north = s * 0.7
             east = 20*np.sin(s/80.)
+            if fit_periodic:
+                north = 100*np.cos(angle)
+                east = 100*np.sin(angle)
+                north[-1], east[-1] = north[0], east[0]
         else:
             north[-1], east[-1] = north[0], east[0]
         track = SimpleNamespace(path_coordinates=SimpleNamespace(distance=s, x_north=north,
                             y_east=east, is_closed=closed), lap_length=400., is_closed=closed)
-        reference = ReferenceCurve(track)
+        reference = ReferenceCurve(track, interpolation_periodic=fit_periodic)
         spline = OffsetSpline(track, 35.)
         coeff = 2*np.sin(np.linspace(0, 2*np.pi, spline.control_count, endpoint=not closed))
         if closed:
@@ -128,6 +133,96 @@ class TrajectoryArtifactTest(unittest.TestCase):
 
     def test_closed_roundtrip(self):
         self.roundtrip(True)
+    def test_writer_legacy_topology_keeps_schema1(self):
+        for closed in (False, True):
+            solution, _ = self.make_solution(closed)
+            with tempfile.TemporaryDirectory() as td:
+                path = Path(td) / "legacy.npz"
+                _write_trajectory_metadata(path, solution)
+                with np.load(path, allow_pickle=False) as archive:
+                    meta = json.loads(str(archive["metadata"].item()))
+                self.assertEqual(meta["schema_version"], 1)
+                self.assertNotIn("source_interpolation_periodic", meta)
+
+    def test_open_domain_periodic_fit_roundtrip_preserves_geometry(self):
+        from dataclasses import replace
+        track = load_track("tracks_out/fsc_may_2026.xml")
+        opened = replace(track, is_closed=False,
+                         path_coordinates=replace(track.path_coordinates, is_closed=False))
+        reference = ReferenceCurve(opened, interpolation_periodic=True)
+        spline = OffsetSpline(opened, 35.)
+        coeff = np.linspace(-0.00437, 0.00437, spline.control_count)
+        trajectory = OffsetTrajectory(reference, spline, coeff)
+        mesh = np.linspace(reference.start, reference.end, 41)
+        speed = np.full(mesh.size, 18.)
+        acc = np.zeros(mesh.size)
+        mid = np.zeros(mesh.size - 1)
+        evaluator = _SplineStateEvaluator(trajectory, mesh, speed, acc, mid)
+        solution = SimpleNamespace(trajectory=trajectory, midpoint_acceleration=mid,
+            coefficients=coeff, distance=mesh, speed=speed, acceleration=acc,
+            state_representation="energy_hs_v1", control_representation="quadratic_acceleration_v1",
+            time_quadrature=TIME_QUADRATURE_NAME, time_quadrature_metadata=_time_quadrature_metadata())
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "periodic-fit-open.npz"
+            _write_trajectory_metadata(path, solution)
+            loaded = load_trajectory_artifact(path)
+            self.assertEqual(loaded.metadata["schema_version"], 2)
+            self.assertIs(loaded.metadata["source_interpolation_periodic"], True)
+            self.assertFalse(loaded.trajectory.reference.is_closed)
+            self.assertTrue(loaded.trajectory.reference.interpolation_periodic)
+            queries = np.linspace(solution.trajectory.reference.start,
+                                  solution.trajectory.reference.end, 1001)
+            got = loaded.trajectory.reference.evaluate(queries)
+            want = solution.trajectory.reference.evaluate(queries)
+            for field in ("north", "east", "north_s", "east_s", "north_ss", "east_ss",
+                          "north_sss", "east_sss", "metric", "metric_s", "curvature", "curvature_s"):
+                np.testing.assert_allclose(getattr(got, field), getattr(want, field), atol=1e-12)
+            self.assertTrue(np.any(np.abs(solution.coefficients) > 0.004))
+            self.assertGreater(np.max(np.abs(loaded.trajectory.coefficients)), 0.004)
+            with self.assertRaises(ValueError):
+                loaded.trajectory.reference.evaluate(solution.trajectory.reference.start - 1e-6)
+            with self.assertRaises(ValueError):
+                loaded.trajectory.reference.evaluate(solution.trajectory.reference.end + 1e-6)
+
+    def test_schema2_requires_typed_fit_flag_and_schema1_rejects_conflict(self):
+        solution, _ = self.make_solution(False, fit_periodic=True)
+        with tempfile.TemporaryDirectory() as td:
+            good = Path(td) / "good.npz"
+            _write_trajectory_metadata(good, solution)
+            with np.load(good, allow_pickle=False) as z:
+                pristine = {k: np.array(z[k], copy=True) for k in z.files}
+            bad = Path(td) / "bad.npz"
+            for value in (None, "true", 1):
+                data = {k: np.array(v, copy=True) for k, v in pristine.items()}
+                meta = json.loads(str(data["metadata"].item()))
+                if value is None:
+                    del meta["source_interpolation_periodic"]
+                else:
+                    meta["source_interpolation_periodic"] = value
+                data["metadata"] = np.array(json.dumps(meta))
+                np.savez_compressed(bad, **data)
+                with self.assertRaisesRegex(ValueError, "source_interpolation_periodic"):
+                    load_trajectory_artifact(bad)
+            data = {k: np.array(v, copy=True) for k, v in pristine.items()}
+            meta = json.loads(str(data["metadata"].item()))
+            meta["schema_version"] = 1
+            data["metadata"] = np.array(json.dumps(meta))
+            np.savez_compressed(bad, **data)
+            with self.assertRaisesRegex(ValueError, "conflicts"):
+                load_trajectory_artifact(bad)
+            for version in (3, True):
+                meta["schema_version"] = version
+                data["metadata"] = np.array(json.dumps(meta))
+                np.savez_compressed(bad, **data)
+                with self.assertRaisesRegex(ValueError, "unknown trajectory artifact schema"):
+                    load_trajectory_artifact(bad)
+            meta["schema_version"] = 2
+            meta["is_closed"] = True
+            meta["source_interpolation_periodic"] = False
+            data["metadata"] = np.array(json.dumps(meta))
+            np.savez_compressed(bad, **data)
+            with self.assertRaisesRegex(ValueError, "invalid source interpolation topology"):
+                load_trajectory_artifact(bad)
 
     def test_rejects_malformed_artifacts_table_driven(self):
         solution, _ = self.make_solution()

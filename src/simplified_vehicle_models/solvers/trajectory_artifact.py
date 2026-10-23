@@ -17,7 +17,7 @@ import numpy as np
 from simplified_vehicle_models.tracks.line_trajectory import ReferenceCurve, OffsetTrajectory
 from simplified_vehicle_models.tracks.offset_spline import OffsetSpline
 
-_SCHEMA = 1
+_SCHEMAS = {1, 2}
 _CONTROLS = {"quadratic_acceleration_v1", "quadratic_energy_rate_over_metric_v1"}
 _TIME = "gauss_legendre_16_energy_hermite_knot_union_v1"
 
@@ -151,7 +151,7 @@ def load_trajectory_artifact(path) -> LoadedTrajectory:
             raise
         raise ValueError(f"invalid trajectory artifact: {exc}") from exc
     schema_version = metadata.get("schema_version")
-    if isinstance(schema_version, bool) or not isinstance(schema_version, int) or schema_version != _SCHEMA:
+    if isinstance(schema_version, bool) or not isinstance(schema_version, int) or schema_version not in _SCHEMAS:
         raise ValueError("unknown trajectory artifact schema")
     state_repr = metadata.get("state_representation")
     if state_repr != "energy_hs_v1":
@@ -188,9 +188,22 @@ def load_trajectory_artifact(path) -> LoadedTrajectory:
     closed = metadata.get("is_closed")
     if not isinstance(closed, bool):
         raise ValueError("is_closed must be boolean")
+    if schema_version == 1:
+        fit_periodic = closed
+        if "source_interpolation_periodic" in metadata:
+            legacy_fit = metadata["source_interpolation_periodic"]
+            if not isinstance(legacy_fit, bool) or legacy_fit != closed:
+                raise ValueError("schema-1 source interpolation flag conflicts with is_closed")
+    else:
+        fit_periodic = metadata.get("source_interpolation_periodic")
+        if not isinstance(fit_periodic, bool):
+            raise ValueError("schema-2 source_interpolation_periodic must be boolean")
     track = SimpleNamespace(path_coordinates=SimpleNamespace(distance=s, x_north=north, y_east=east, is_closed=closed),
                             lap_length=float(s[-1] - s[0]), is_closed=closed)
-    ref = ReferenceCurve(track)
+    try:
+        ref = ReferenceCurve(track, interpolation_periodic=fit_periodic)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"invalid source interpolation topology: {exc}") from exc
     if metadata["reference_degree"] != (5 if s.size >= 6 else 3):
         raise ValueError("reference degree does not match source grid")
     spacing = metadata.get("offset_control_spacing_m")

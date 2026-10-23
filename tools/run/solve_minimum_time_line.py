@@ -308,8 +308,16 @@ def _write_trajectory_metadata(path: Path, solution) -> None:
         raise ValueError("trajectory node arrays must have matching shape")
     if arrays["midpoint_acceleration"].size != arrays["node_station"].size - 1:
         raise ValueError("trajectory midpoint accelerations must match mesh intervals")
-    metadata = json.dumps({
-        "schema_version": 1,
+    reference_fit_periodic = getattr(
+        trajectory.reference, "interpolation_periodic", bool(trajectory.reference.is_closed),
+    )
+    if not isinstance(reference_fit_periodic, (bool, np.bool_)):
+        raise ValueError("reference interpolation periodicity must be boolean")
+    reference_fit_periodic = bool(reference_fit_periodic)
+    reference_closed = bool(trajectory.reference.is_closed)
+    schema_version = 2 if reference_fit_periodic != reference_closed else 1
+    metadata_fields = {
+        "schema_version": schema_version,
         "state_representation": str(getattr(solution, "state_representation", "legacy_speed_hs_v1")),
         # Missing control metadata identifies old artifacts as their established
         # physical-acceleration quadratic representation; it is never inferred
@@ -323,7 +331,10 @@ def _write_trajectory_metadata(path: Path, solution) -> None:
         "offset_control_spacing_m": float(trajectory.spline.control_spacing),
         "time_quadrature": str(getattr(solution, "time_quadrature", "legacy_unspecified")),
         "time_quadrature_metadata": getattr(solution, "time_quadrature_metadata", None),
-    }, sort_keys=True)
+    }
+    if schema_version == 2:
+        metadata_fields["source_interpolation_periodic"] = reference_fit_periodic
+    metadata = json.dumps(metadata_fields, sort_keys=True)
     # Do not overwrite a reproducibility artifact even if called outside runner
     # preflight.
     with path.open("xb") as handle:

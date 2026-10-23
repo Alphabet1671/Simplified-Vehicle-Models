@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import math
+import numbers
 import time
 
 import numpy as np
@@ -115,6 +116,8 @@ class SplineSolution:
     # snapshot records coefficients eliminated from the active NLP.
     fixed_coefficients: FloatArray | None = None
     line_optimized: bool = True
+    coefficient_coordinate_scale: float = 1.0
+    coefficient_coordinate_scale_applied: bool = False
 
     def __post_init__(self):
         if self.fixed_coefficients is not None:
@@ -1046,7 +1049,9 @@ def initial_guess(track, corridor, surface, mesh, spline, settings: QssSettings,
 def _spline_failure_diagnostics(*, status, iter_count, total_iterations, objective,
                                 constraint_violation, bound_violation, stats, built,
                                 settings, stage_timings=None,
-                                active_decision_indices=None) -> dict[str, object]:
+                                active_decision_indices=None,
+                                coefficient_coordinate_scale=1.0,
+                                coefficient_coordinate_scale_applied=False) -> dict[str, object]:
     """Serialize only solver-state facts needed to diagnose strict rejection."""
     diagnostics: dict[str, object] = {
         "return_status": str(status),
@@ -1065,6 +1070,8 @@ def _spline_failure_diagnostics(*, status, iter_count, total_iterations, objecti
         # common physical coordinate system for both multiplier vectors.
         "dual_x_coordinates": "scaled_decision",
         "dual_g_coordinates": "unscaled_constraint_residuals",
+        "coefficient_coordinate_scale": float(coefficient_coordinate_scale),
+        "coefficient_coordinate_scale_applied": bool(coefficient_coordinate_scale_applied),
         "time_quadrature": TIME_QUADRATURE_NAME,
         "off_site_stations": np.array(built.get("off_site_stations", []), copy=True).tolist(),
         "off_site_elements": np.array(built.get("off_site_elements", []), copy=True).tolist(),
@@ -1091,7 +1098,9 @@ def _spline_failure_diagnostics(*, status, iter_count, total_iterations, objecti
 def _raise_spline_solver_failure(*, status, values, constraints, objective,
                                  constraint_violation, bound_violation, iter_count,
                                  total_iterations, stats, result, built, settings,
-                                 stage_timings=None, active_decision_indices=None):
+                                 stage_timings=None, active_decision_indices=None,
+                                 coefficient_coordinate_scale=1.0,
+                                 coefficient_coordinate_scale_applied=False):
     """Run the unchanged strict gate and decorate a rejection with raw evidence."""
     try:
         _validate_solver_result(
@@ -1105,6 +1114,8 @@ def _raise_spline_solver_failure(*, status, values, constraints, objective,
             bound_violation=bound_violation, stats=stats, built=built, settings=settings,
             stage_timings=stage_timings,
             active_decision_indices=active_decision_indices,
+            coefficient_coordinate_scale=coefficient_coordinate_scale,
+            coefficient_coordinate_scale_applied=coefficient_coordinate_scale_applied,
         )
         raise SplineSolveError(
             str(error), diagnostics, failed_values=values,
@@ -1116,13 +1127,23 @@ def _raise_spline_solver_failure(*, status, values, constraints, objective,
 def solve_spline_line(track, corridor, surface, mesh, spline,
                       settings: QssSettings, *, seed: FloatArray | None = None,
                       speed_cap=None, constraint_stations=None,
-                       fixed_coefficients=None) -> SplineSolution:
+                      fixed_coefficients=None,
+                      coefficient_coordinate_scale: float = 1.0) -> SplineSolution:
     """Solve the consistent spline minimum-time problem on a fixed mesh.
 
     The status and tolerance contract matches :func:`solve_line`: a solver
     status other than ``Solve_Succeeded``, a non-finite value, or a constraint
     violation above ``settings.tolerance`` raises ``RuntimeError``.
     """
+    if (isinstance(coefficient_coordinate_scale, (bool, np.bool_))
+            or not isinstance(coefficient_coordinate_scale, numbers.Real)):
+        raise ValueError("coefficient_coordinate_scale must be a finite positive real scalar")
+    try:
+        coefficient_coordinate_scale = float(coefficient_coordinate_scale)
+    except (OverflowError, TypeError, ValueError) as error:
+        raise ValueError("coefficient_coordinate_scale must be a finite positive real scalar") from error
+    if not math.isfinite(coefficient_coordinate_scale) or coefficient_coordinate_scale <= 0.0:
+        raise ValueError("coefficient_coordinate_scale must be a finite positive real scalar")
     total_started = time.perf_counter()
     timings = {name: 0.0 for name in (
         "build_seconds", "initialization_seconds", "symbolic_scaling_seconds",
@@ -1176,6 +1197,9 @@ def solve_spline_line(track, corridor, surface, mesh, spline,
 
     scaling_started = time.perf_counter()
     center, scale = _decision_scaling(control_count, built["mesh"].size)
+    coefficient_scale_applied = fixed is None and coefficient_coordinate_scale != 1.0
+    if coefficient_scale_applied:
+        scale[:control_count] = coefficient_coordinate_scale
     original_x = built["nlp"]["x"]
     if fixed is None:
         active_indices = np.arange(size, dtype=int)
@@ -1286,6 +1310,8 @@ def solve_spline_line(track, corridor, surface, mesh, spline,
         result=result or {}, built=built, settings=settings,
         stage_timings=dict(timings),
         active_decision_indices=active_indices if fixed is not None else None,
+        coefficient_coordinate_scale=coefficient_coordinate_scale,
+        coefficient_coordinate_scale_applied=coefficient_scale_applied,
     )
     violation = max(violation, bound_violation)
     postprocess_started = time.perf_counter()
@@ -1313,6 +1339,8 @@ def solve_spline_line(track, corridor, surface, mesh, spline,
         coefficients=blocks["coefficients"],
         fixed_coefficients=fixed,
         line_optimized=fixed is None,
+        coefficient_coordinate_scale=coefficient_coordinate_scale,
+        coefficient_coordinate_scale_applied=coefficient_scale_applied,
         trajectory=trajectory,
         midpoint_acceleration=np.array(blocks["mid_acceleration"], copy=True),
         objective_value=objective,

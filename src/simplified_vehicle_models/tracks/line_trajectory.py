@@ -216,6 +216,8 @@ class StationMap:
     def to_path(self, station: object) -> Any:
         source, scalar = _check_station(station, self.start, self.end, self.is_closed)
         result = np.asarray(self._forward(source), dtype=float)
+        result = np.where(source == self.start, self.path_start, result)
+        result = np.where(source == self.end, self.path_end, result)
         if np.any(~np.isfinite(result)):
             raise ValueError("station is not covered by the station map")
         return _scalar_or_array(result, scalar)
@@ -233,7 +235,10 @@ class StationMap:
             if np.any(raw < self.path_start) or np.any(raw > self.path_end):
                 raise ValueError("path station is outside map coverage")
             checked = raw
-        result = np.asarray(self._inverse(np.atleast_1d(checked)), dtype=float)
+        checked = np.atleast_1d(checked)
+        result = np.asarray(self._inverse(checked), dtype=float)
+        result = np.where(checked == self.path_start, self.start, result)
+        result = np.where(checked == self.path_end, self.end, result)
         if np.any(~np.isfinite(result)):
             raise ValueError("path station is not covered by the station map")
         return _scalar_or_array(result, scalar)

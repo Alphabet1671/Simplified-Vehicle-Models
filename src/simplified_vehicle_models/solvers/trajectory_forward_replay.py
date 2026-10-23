@@ -237,7 +237,8 @@ def replay_exact_trajectory(loaded_or_path, vehicle, *, settings=None, plant_fac
               "completed": False, "phase": "setup", "consumer_endpoint_extension": "hold_reference_only"}
     mapping_enabled = physical_mapper_settings is not None
     mapper = None
-    loaded = plant = driver = None
+    loaded = loaded_or_path if isinstance(loaded_or_path, LoadedTrajectory) else None
+    plant = driver = None
     effective_settings = None
     vehicle_values = {}
     def refresh_provenance():

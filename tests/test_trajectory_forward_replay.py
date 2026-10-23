@@ -87,9 +87,24 @@ class ReplayTests(unittest.TestCase):
                                   maximum_pedal_force=100., wheelbase=2.)
         _, early = replay_exact_trajectory(loaded, vehicle, physical_mapper_settings=object())
         self.assertEqual(early["provenance"]["schema_version"], 1)
-        self.assertIsNone(early["provenance"]["artifact"]["source_sha256"])
+        self.assertEqual(early["provenance"]["artifact"]["source_sha256"], loaded.source_sha256)
+        self.assertEqual(early["provenance"]["artifact"]["state_representation"], loaded.state_repr)
+        self.assertEqual(early["provenance"]["artifact"]["control_representation"], loaded.control_repr)
+        self.assertEqual(early["provenance"]["artifact"]["time_quadrature"], loaded.time_quadrature)
+        self.assertEqual(early["provenance"]["artifact"]["physical_time_seconds"], loaded.physical_time)
+        self.assertIsNone(early["provenance"]["components"]["plant"])
+        self.assertIn("plant", early["provenance"]["missing_identity"])
         self.assertFalse(early["provenance"]["vehicle_model_identity_verified"])
         json.dumps(early, allow_nan=False)
+
+        from unittest.mock import patch
+        with patch("simplified_vehicle_models.solvers.trajectory_forward_replay.load_trajectory_artifact",
+                   side_effect=AssertionError("path must not load on invalid mapper settings")):
+            _, path_early = replay_exact_trajectory("not-loaded.npz", vehicle,
+                                                     physical_mapper_settings=object())
+        self.assertIsNone(path_early["provenance"]["artifact"]["source_sha256"])
+        self.assertIn("artifact_source_sha256", path_early["provenance"]["missing_identity"])
+        json.dumps(path_early, allow_nan=False)
 
         class Plant:
             state_names = ("s", "n", "heading_error", "v_x", "v_y")

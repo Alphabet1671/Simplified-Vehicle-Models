@@ -237,6 +237,8 @@ def build_attempt(case: MatrixCase, *, mesh_spacing_m: float, basis_spacing_m: f
                   dense_maximum_refinements: int = DEFAULT_DENSE_MAXIMUM_REFINEMENTS,
                   diagnostic_rungs: bool = False,
                   hessian_approximation: str = "exact",
+                  control_representation: str = "quadratic_acceleration_v1",
+                  speed_domain_margin_mps: float = 0.0,
                   matched_reference: bool = False, seed_profile: str = "none",
                   strict_profile_seed: bool = False, profile_step: float = 2.0,
                    maximum_profile_iterations: int = 200, maximum_profile_seconds: float = 30.0,
@@ -260,6 +262,13 @@ def build_attempt(case: MatrixCase, *, mesh_spacing_m: float, basis_spacing_m: f
     if (not isinstance(hessian_approximation, str)
             or hessian_approximation not in {"exact", "limited-memory"}):
         raise ValueError("hessian_approximation must be exact or limited-memory")
+    if control_representation not in {"quadratic_acceleration_v1",
+                                      "quadratic_energy_rate_over_metric_v1"}:
+        raise ValueError("control_representation must be a supported QSS control representation")
+    if (isinstance(speed_domain_margin_mps, (bool, np.bool_))
+            or not isinstance(speed_domain_margin_mps, (int, float, np.integer, np.floating))
+            or not math.isfinite(speed_domain_margin_mps) or speed_domain_margin_mps < 0.0):
+        raise ValueError("speed_domain_margin_mps must be a finite nonnegative number")
     if seed_profile not in {"none", "energy-nlp"}:
         raise ValueError("seed_profile must be none or energy-nlp")
     profile_options = _profile_options(profile_step, maximum_profile_iterations, maximum_profile_seconds)
@@ -268,7 +277,9 @@ def build_attempt(case: MatrixCase, *, mesh_spacing_m: float, basis_spacing_m: f
                            maximum_iterations=int(maximum_iterations),
                            start_speed=float(case.start_speed_mps), open_regularisation=1e-6,
                            off_collocation_fractions=_off_collocation_fractions(off_collocation_divisions),
-                           hessian_approximation=hessian_approximation)
+                           hessian_approximation=hessian_approximation,
+                            control_representation=control_representation,
+                            speed_domain_margin_mps=float(speed_domain_margin_mps))
     return {
         "case": asdict(case), "mesh_spacing_m": float(mesh_spacing_m),
         "basis_spacing_m": float(basis_spacing_m), "seed": seed_name,
@@ -534,6 +545,10 @@ def _attempt_worker(request_path: str, result_path: str, artifact_path: str) -> 
                               common_path_length_m=np.array(float(path_grid[-1] - path_grid[0])),
                               control_station_m=np.asarray(spline.control_distance, dtype=float),
                               state_representation=np.array(solution.state_representation),
+                              control_representation=np.array(getattr(
+                                  solution, "control_representation",
+                                  settings.control_representation,
+                              )),
                               time_quadrature=np.array(solution.time_quadrature),
                               time_metadata=np.array(json.dumps(solution.time_quadrature_metadata, sort_keys=True)))
         # Persist exact reference/map metadata separately with the established
@@ -568,6 +583,10 @@ def _attempt_worker(request_path: str, result_path: str, artifact_path: str) -> 
                        "validation_status": strict["validation_status"],
                        "surface_representation": representation,
                        "state_representation": solution.state_representation,
+                       "control_representation": getattr(
+                           solution, "control_representation",
+                           settings.control_representation,
+                       ),
                        "time_quadrature": solution.time_quadrature,
                        "time_metadata": solution.time_quadrature_metadata,
                        "trajectory_metadata_artifact": str(trajectory_metadata.name),
@@ -879,6 +898,10 @@ def run_matrix(args) -> dict:
                         dense_maximum_refinements=getattr(args, "dense_maximum_refinements", DEFAULT_DENSE_MAXIMUM_REFINEMENTS),
                         diagnostic_rungs=getattr(args, "diagnostic_rungs", False),
                         hessian_approximation=getattr(args, "hessian_approximation", "exact"),
+                        control_representation=getattr(
+                            args, "control_representation", "quadratic_acceleration_v1",
+                        ),
+                        speed_domain_margin_mps=getattr(args, "speed_domain_margin_mps", 0.0),
                         matched_reference=getattr(args, "matched_reference", False),
                         seed_profile=getattr(args, "seed_profile", "none"),
                         strict_profile_seed=getattr(args, "strict_profile_seed", False),
@@ -935,6 +958,11 @@ def main(argv=None):
     parser.add_argument("--nlp-tolerance", type=float, default=DEFAULT_NLP_TOLERANCE)
     parser.add_argument("--hessian-approximation", choices=("exact", "limited-memory"),
                         default="exact", help="IPOPT Hessian model for the spline solve")
+    parser.add_argument("--control-representation", choices=(
+        "quadratic_acceleration_v1", "quadratic_energy_rate_over_metric_v1",
+    ), default="quadratic_acceleration_v1")
+    parser.add_argument("--speed-domain-margin-mps", type=float, default=0.0,
+                        help="optional conservative inner margin below the speed-domain boundary")
     parser.add_argument("--off-collocation-divisions", type=int, default=None,
                         help="explicit interior i/N sites excluding midpoint; omitted preserves legacy sites")
     parser.add_argument("--dense-maximum-refinements", type=int, default=DEFAULT_DENSE_MAXIMUM_REFINEMENTS)
@@ -957,6 +985,8 @@ def main(argv=None):
                         help="JSON object declaring six explicit geometry/state convergence budgets")
     args = parser.parse_args(argv)
     _validate_finite_positive("nlp_tolerance", args.nlp_tolerance)
+    if not math.isfinite(args.speed_domain_margin_mps) or args.speed_domain_margin_mps < 0.0:
+        parser.error("--speed-domain-margin-mps must be finite and nonnegative")
     _off_collocation_fractions(args.off_collocation_divisions)
     _validate_dense_maximum_refinements(args.dense_maximum_refinements)
     args.convergence_criteria = (_convergence_criteria(json.loads(args.convergence_criteria_json))

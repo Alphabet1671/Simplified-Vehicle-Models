@@ -44,6 +44,9 @@ class QssSettings:
     # Preserve the established acceleration-quadratic transcription by default.
     # The opt-in rate form represents F = W_s and reports a = F / (2 G).
     control_representation: str = "quadratic_acceleration_v1"
+    # Optional conservative inner margin below the capability-chart speed domain.
+    # Zero preserves the historical domain constraint exactly.
+    speed_domain_margin_mps: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,6 +93,11 @@ def _validate_inputs(track, corridor, surface, mesh, settings):
             "control_representation must be one of "
             f"{', '.join(CONTROL_REPRESENTATIONS)}"
         )
+    domain_margin = settings.speed_domain_margin_mps
+    if (isinstance(domain_margin, (bool, np.bool_))
+            or not isinstance(domain_margin, (int, float, np.integer, np.floating))
+            or not math.isfinite(domain_margin) or domain_margin < 0.0):
+        raise ValueError("speed_domain_margin_mps must be a finite nonnegative number")
     if not math.isfinite(settings.start_speed) or settings.start_speed < 0.0:
         raise ValueError("start_speed must be finite and nonnegative")
     if not math.isfinite(settings.open_regularisation) or settings.open_regularisation < 0.0:
@@ -149,12 +157,20 @@ def _validate_inputs(track, corridor, surface, mesh, settings):
             raise ValueError("signed domain speeds must exceed the physical speed floor")
         if settings.minimum_speed < float(surface.speed_floor) or settings.minimum_speed >= float(np.max(ceiling_values)):
             raise ValueError("minimum_speed must lie within the signed physical speed domain")
+        if domain_margin > 0.0 and np.any(ceiling_values <= settings.minimum_speed + domain_margin):
+            raise ValueError(
+                "signed domain speeds must exceed minimum_speed + speed_domain_margin_mps"
+            )
     else:
         ceiling_values = np.asarray(surface.speed_ceiling, dtype=float)
         if ceiling_values.shape != axes[1].shape or not np.all(np.isfinite(ceiling_values)) or np.any(ceiling_values <= 0.0):
             raise ValueError("speed_ceiling must be finite, positive, and match curvature axis")
         if settings.minimum_speed < axes[0][0] or settings.minimum_speed >= axes[0][-1]:
             raise ValueError("minimum_speed must lie within the capability speed axis")
+        if domain_margin > 0.0 and np.any(ceiling_values <= settings.minimum_speed + domain_margin):
+            raise ValueError(
+                "speed ceilings must exceed minimum_speed + speed_domain_margin_mps"
+            )
     if np.any(np.asarray(track.curvature, dtype=float) < axes[1][0] - 1e-12) or np.any(np.asarray(track.curvature, dtype=float) > axes[1][-1] + 1e-12):
         raise ValueError("track curvature lies outside capability surface")
     return mesh
@@ -336,6 +352,10 @@ def _offset_basis(track, mesh, spacing: float | None):
 
 def build_ocp(track, corridor, surface, mesh, settings: QssSettings):
     """Build CasADi NLP and its variable/constraint bounds."""
+    if settings.speed_domain_margin_mps != 0.0:
+        raise ValueError(
+            "speed_domain_margin_mps is supported only by build_spline_ocp"
+        )
     import casadi as ca
 
     if getattr(surface, "representation", None) == "signed_transient_normalized_v1":
@@ -576,6 +596,10 @@ def solve_line(track, corridor, surface, mesh, settings: QssSettings, *, seed: F
         raise ValueError(
             "hessian_approximation='limited-memory' is supported only by "
             "solve_spline_line; solve_line requires 'exact'"
+        )
+    if settings.speed_domain_margin_mps != 0.0:
+        raise ValueError(
+            "speed_domain_margin_mps is supported only by solve_spline_line"
         )
     import casadi as ca
     built=build_ocp(track,corridor,surface,mesh,settings); count=built["count"]

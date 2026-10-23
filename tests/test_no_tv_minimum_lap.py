@@ -222,10 +222,14 @@ class NoTvMinimumLapHarnessTest(unittest.TestCase):
             lap_time = 1.0; objective_value = 1.0; iterations = 2; maximum_violation = 0.0
         request = harness.build_attempt(harness.default_cases()["acceleration"], mesh_spacing_m=5.0,
             basis_spacing_m=35.0, maximum_iterations=7, wall_cap_s=3.0, seed_name="centerline",
-            formulation=Path("form.xml"), surface=Path("surface.npz"), dense_maximum_refinements=6)
+            formulation=Path("form.xml"), surface=Path("surface.npz"), dense_maximum_refinements=6,
+            control_representation="quadratic_energy_rate_over_metric_v1",
+            speed_domain_margin_mps=.125)
         captured = {}
         def fake_validate(solution, corridor, surface, settings, **kwargs):
             captured["fractions"] = settings.off_collocation_fractions
+            captured["control_representation"] = settings.control_representation
+            captured["speed_domain_margin_mps"] = settings.speed_domain_margin_mps
             captured["refinements"] = kwargs["maximum_refinements"]
             return {"checks": {"geometry_consistency": True, "dense_feasibility": True},
                     "model_feasible": True}
@@ -252,9 +256,16 @@ class NoTvMinimumLapHarnessTest(unittest.TestCase):
             self.assertEqual(result["status"], "Solve_Succeeded")
             self.assertEqual(result["validation_status"], "incomplete")
             self.assertEqual(captured["fractions"], harness.DEFAULT_OFF_COLLOCATION_FRACTIONS)
+            self.assertEqual(captured["control_representation"],
+                             "quadratic_energy_rate_over_metric_v1")
+            self.assertEqual(captured["speed_domain_margin_mps"], .125)
             self.assertEqual(captured["refinements"], 6)
+            self.assertEqual(result["control_representation"],
+                             "quadratic_energy_rate_over_metric_v1")
             with np.load(root / "solution.npz", allow_pickle=False) as artifact:
                 self.assertEqual(str(artifact["state_representation"]), "energy_hs_v1")
+                self.assertEqual(str(artifact["control_representation"]),
+                                 "quadratic_energy_rate_over_metric_v1")
                 self.assertEqual(str(artifact["time_quadrature"]), "fixture_quadrature")
                 np.testing.assert_array_equal(artifact["control_station_m"], [0.0, 1.0])
             self.assertTrue((root / result["trajectory_metadata_artifact"]).is_file())

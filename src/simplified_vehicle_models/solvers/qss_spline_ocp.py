@@ -487,6 +487,9 @@ def build_spline_ocp(track, corridor, surface, mesh, spline, settings: QssSettin
     bernstein_middle_indices: list[int] = []
     off_site_acceleration_lower_indices: list[int] = []
     off_site_acceleration_upper_indices: list[int] = []
+    node_domain_speed_indices: list[int] = []
+    midpoint_domain_speed_indices: list[int] = []
+    off_site_domain_speed_indices: list[int] = []
 
     def add(expression, low, high):
         constraints.append(expression)
@@ -513,9 +516,13 @@ def build_spline_ocp(track, corridor, surface, mesh, spline, settings: QssSettin
                                        capability_margin, math.inf)
         acceleration_upper_index = add(upper_acceleration - car_acceleration,
                                        capability_margin, math.inf)
-        add(domain_speed - car_speed, 0.0, math.inf)
+        # This optional setting explicitly constructs a conservative inner
+        # profile, rather than claiming the unrestricted chart-domain optimum.
+        domain_speed_index = add(
+            domain_speed - car_speed, float(settings.speed_domain_margin_mps), math.inf,
+        )
         add(1.0 - centreline_curvature * offset, fold_guard, math.inf)
-        return acceleration_lower_index, acceleration_upper_index
+        return acceleration_lower_index, acceleration_upper_index, domain_speed_index
 
     rate_control = settings.control_representation == "quadratic_energy_rate_over_metric_v1"
 
@@ -629,18 +636,21 @@ def build_spline_ocp(track, corridor, surface, mesh, spline, settings: QssSettin
         )
         node_acceleration_lower_indices.append(acceleration_indices[0])
         node_acceleration_upper_indices.append(acceleration_indices[1])
+        node_domain_speed_indices.append(acceleration_indices[2])
         acceleration_indices = limits(
             n_mids[index], middle[1], middle[2], middle[3], midpoint_speed,
             mid_acceleration[index], float(k0_mids[index]),
         )
         midpoint_acceleration_lower_indices.append(acceleration_indices[0])
         midpoint_acceleration_upper_indices.append(acceleration_indices[1])
+        midpoint_domain_speed_indices.append(acceleration_indices[2])
         acceleration_indices = limits(
             n_nodes[index + 1], node1[1], node1[2], node1[3],
             speed[index + 1], acceleration[index + 1], float(k0_nodes[index + 1]),
         )
         node_acceleration_lower_indices.append(acceleration_indices[0])
         node_acceleration_upper_indices.append(acceleration_indices[1])
+        node_domain_speed_indices.append(acceleration_indices[2])
         for local in range(fractions.size):
             site = index * fractions.size + local
             off_speed = energy_speed(hermite_energy(index, fractions[local]))
@@ -656,6 +666,7 @@ def build_spline_ocp(track, corridor, surface, mesh, spline, settings: QssSettin
             )
             off_site_acceleration_lower_indices.append(acceleration_indices[0])
             off_site_acceleration_upper_indices.append(acceleration_indices[1])
+            off_site_domain_speed_indices.append(acceleration_indices[2])
             if cap_off is not None:
                 add(off_speed - float(cap_off[site]), -math.inf, 0.0)
         if cap_values is not None:
@@ -734,6 +745,13 @@ def build_spline_ocp(track, corridor, surface, mesh, spline, settings: QssSettin
         "off_site_acceleration_upper_indices": np.asarray(
             off_site_acceleration_upper_indices, dtype=int,
         ),
+        "node_domain_speed_indices": np.asarray(node_domain_speed_indices, dtype=int),
+        "midpoint_domain_speed_indices": np.asarray(
+            midpoint_domain_speed_indices, dtype=int,
+        ),
+        "off_site_domain_speed_indices": np.asarray(
+            off_site_domain_speed_indices, dtype=int,
+        ),
     }
 
 
@@ -806,6 +824,9 @@ def _envelope_guess(track, surface, mesh, settings: QssSettings, speed_cap=None)
     signed = getattr(surface, "representation", None) == "signed_transient_normalized_v1"
     ceiling = (np.asarray([surface.domain_speed(float(k)) for k in curvature]) if signed
                else np.interp(curvature, surface.curvature, surface.speed_ceiling))
+    # Match the chart-domain rows while leaving an optional user speed cap
+    # independent and unchanged.
+    ceiling = ceiling - float(settings.speed_domain_margin_mps)
     cap_values = _speed_cap_values(speed_cap, nodes)
     minimum = float(settings.minimum_speed)
     top = float(np.max(surface.domain_speed_values)) if signed else float(surface.speed[-1])
@@ -815,7 +836,11 @@ def _envelope_guess(track, surface, mesh, settings: QssSettings, speed_cap=None)
         if signed:
             # A forward/backward sweep reuses a speed at a neighbouring
             # curvature; clamp its *seed query* to that local domain only.
-            car_speed = min(float(car_speed), surface.domain_speed(float(car_curvature)))
+            car_speed = min(
+                float(car_speed),
+                surface.domain_speed(float(car_curvature))
+                - float(settings.speed_domain_margin_mps),
+            )
             return surface.limits(car_speed, float(car_curvature))[1]
         return _bilinear(
             surface.acceleration_max, surface.speed, surface.curvature,
@@ -824,7 +849,11 @@ def _envelope_guess(track, surface, mesh, settings: QssSettings, speed_cap=None)
 
     def amin(car_speed, car_curvature):
         if signed:
-            car_speed = min(float(car_speed), surface.domain_speed(float(car_curvature)))
+            car_speed = min(
+                float(car_speed),
+                surface.domain_speed(float(car_curvature))
+                - float(settings.speed_domain_margin_mps),
+            )
             return surface.limits(car_speed, float(car_curvature))[0]
         return _bilinear(
             surface.acceleration_min, surface.speed, surface.curvature,

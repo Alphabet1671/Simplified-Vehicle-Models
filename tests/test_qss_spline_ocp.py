@@ -123,6 +123,20 @@ class SplineHessianSettingsTest(unittest.TestCase):
             _validate_inputs(None, None, None, None,
                              QssSettings(control_representation="unknown-rate-form"))
 
+    def test_speed_domain_margin_default_invalid_and_legacy_build_rejection(self) -> None:
+        from simplified_vehicle_models.solvers.qss_line_ocp import (
+            QssSettings, _validate_inputs, build_ocp,
+        )
+        self.assertEqual(QssSettings().speed_domain_margin_mps, 0.0)
+        for value in (True, -0.1, float("nan"), float("inf")):
+            with self.subTest(value=value), self.assertRaisesRegex(
+                ValueError, "speed_domain_margin_mps",
+            ):
+                _validate_inputs(None, None, None, None,
+                                 QssSettings(speed_domain_margin_mps=value))
+        with self.assertRaisesRegex(ValueError, "build_spline_ocp"):
+            build_ocp(None, None, None, None, QssSettings(speed_domain_margin_mps=.1))
+
 
 @unittest.skipUnless(CASADI, "CasADi is not installed")
 class SplineTranscriptionTest(unittest.TestCase):
@@ -816,6 +830,47 @@ class SplineTranscriptionTest(unittest.TestCase):
                + 4*x*(1 - x) * midpoint_acceleration[0]
                + 2*(x - .5)*(x - 1) * node_acceleration[0])
         self.assertGreater(abs(actual - raw), 1.e-5)
+
+    def test_domain_margin_is_raw_speed_constraint_at_nodes_midpoints_and_offsites(self) -> None:
+        import casadi as ca
+        from simplified_vehicle_models.solvers.qss_line_ocp import QssSettings
+        from simplified_vehicle_models.solvers.qss_spline_ocp import build_spline_ocp
+
+        track = self._track()
+        mesh = np.array([0.0, track.lap_length / 2.0, track.lap_length])
+        corridor = _zero_corridor(track, is_closed=True)
+        with self.assertRaisesRegex(ValueError, "speed_domain_margin_mps"):
+            build_spline_ocp(
+                track, corridor, _surface(), mesh,
+                OffsetSpline(track, control_spacing=20.0),
+                QssSettings(speed_domain_margin_mps=24.5),
+            )
+        for representation in ("quadratic_acceleration_v1",
+                               "quadratic_energy_rate_over_metric_v1"):
+            with self.subTest(representation=representation):
+                margin = .75
+                built = build_spline_ocp(
+                    track, corridor, _surface(), mesh,
+                    OffsetSpline(track, control_spacing=20.0),
+                    QssSettings(control_representation=representation,
+                                speed_domain_margin_mps=margin,
+                                off_collocation_fractions=(.25,)),
+                )
+                controls, nodes = built["control_count"], mesh.size
+                values = np.zeros(controls + 3 * nodes - 1)
+                values[controls:controls + nodes] = 24.25
+                constraint = np.asarray(ca.Function(
+                    f"domain_margin_{representation}",
+                    [built["nlp"]["x"]], [built["nlp"]["g"]],
+                )(values), dtype=float).ravel()
+                indices = np.concatenate([
+                    built["node_domain_speed_indices"],
+                    built["midpoint_domain_speed_indices"],
+                    built["off_site_domain_speed_indices"],
+                ])
+                self.assertEqual(indices.size, 4 + 2 + 2)
+                np.testing.assert_allclose(constraint[indices], margin, atol=2.e-11)
+                np.testing.assert_allclose(built["g_lower"][indices], margin, atol=0.0)
 
     def test_midpoint_speed_has_a_minimum_speed_lower_bound(self) -> None:
         import casadi as ca

@@ -28,6 +28,8 @@ class ReferenceGeometryBounds:
     station_interval: tuple[float, float]
     panel_count: int
     sqrt_bits: int
+    maximum_panel_curvature_width: Fraction | None
+    max_accepted_panel_curvature_width: Fraction
     exact_rational_enclosure: bool = True
     whole_trajectory_certified: bool = False
 
@@ -129,12 +131,15 @@ def _validate_real_pair(value: object) -> tuple[float, float]:
 def bound_reference_geometry(reference: ReferenceCurve, station_interval: object, *,
                              maximum_panels: int = 4096, maximum_depth: int = 24,
                              sqrt_bits: int = 80,
-                             maximum_curvature_width: Real | None = None) -> ReferenceGeometryBounds:
+                             maximum_panel_curvature_width: Real | None = None) -> ReferenceGeometryBounds:
     """Enclose h, k, and k_s on the entire binary64 source interval.
 
-    Budgets count every panel evaluation. Panels are bisected at a binary64
-    interior midpoint; inability to form one fails closed. No sampling fallback
-    is used when tangent regularity or requested curvature width is unresolved.
+    The optional width is a per-accepted-panel resolution goal, not a bound on
+    the returned global curvature range. The global union includes actual
+    curvature variation and may be wider. Budgets count every panel evaluation.
+    Panels are bisected at a binary64 interior midpoint; inability to form one
+    fails closed. No sampling fallback is used when tangent regularity or the
+    requested per-panel curvature width is unresolved.
     """
     if type(reference) is not ReferenceCurve:
         raise TypeError("reference must be an exact ReferenceCurve")
@@ -144,16 +149,16 @@ def bound_reference_geometry(reference: ReferenceCurve, station_interval: object
     if isinstance(sqrt_bits, bool) or not isinstance(sqrt_bits, int) or not 16 <= sqrt_bits <= 256:
         raise ValueError("sqrt_bits must be an integer from 16 through 256")
     width = None
-    if maximum_curvature_width is not None:
-        if isinstance(maximum_curvature_width, bool) or not isinstance(maximum_curvature_width, Real):
-            raise TypeError("maximum_curvature_width must be a positive real")
+    if maximum_panel_curvature_width is not None:
+        if isinstance(maximum_panel_curvature_width, bool) or not isinstance(maximum_panel_curvature_width, Real):
+            raise TypeError("maximum_panel_curvature_width must be a positive real")
         try:
-            wf = float(maximum_curvature_width)
+            wf = float(maximum_panel_curvature_width)
         except (OverflowError, ValueError) as exc:
-            raise ValueError("invalid maximum_curvature_width") from exc
+            raise ValueError("invalid maximum_panel_curvature_width") from exc
         if not math.isfinite(wf) or wf <= 0:
-            raise ValueError("maximum_curvature_width must be finite and positive")
-        width = Fraction.from_float(wf)
+            raise ValueError("maximum_panel_curvature_width must be finite and positive")
+        width = Fraction(maximum_panel_curvature_width)
 
     lo, hi = _validate_real_pair(station_interval)
     if lo < reference.start or hi > reference.end:
@@ -196,4 +201,10 @@ def bound_reference_geometry(reference: ReferenceCurve, station_interval: object
     def union(index: int) -> Interval:
         return min(p[index][0] for p in accepted), max(p[index][1] for p in accepted)
 
-    return ReferenceGeometryBounds(union(0), union(1), union(2), (lo, hi), evaluations, sqrt_bits)
+    max_panel_width = max((p[1][1] - p[1][0] for p in accepted), default=Fraction(0))
+    if width is not None and max_panel_width > width:
+        raise AssertionError("accepted curvature panel exceeds requested resolution")
+    return ReferenceGeometryBounds(
+        union(0), union(1), union(2), (lo, hi), evaluations, sqrt_bits,
+        width, max_panel_width,
+    )

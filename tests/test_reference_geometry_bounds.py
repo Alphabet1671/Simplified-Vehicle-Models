@@ -120,7 +120,8 @@ class ReferenceGeometryBoundsTests(unittest.TestCase):
         ref = ReferenceCurve(track(s, s+.2*s*s, s**3/7))
         before = tuple((v.t.copy(), v.c.copy()) for v in (ref._x, ref._y))
         for kw in ({"maximum_panels": True}, {"maximum_depth": -1}, {"sqrt_bits": 15},
-                   {"sqrt_bits": 257}, {"maximum_curvature_width": 0}):
+                   {"sqrt_bits": 257}, {"maximum_panel_curvature_width": 0},
+                   {"maximum_curvature_width": 0}):
             with self.assertRaises((TypeError, ValueError)):
                 bound_reference_geometry(ref, (.25, 4.75), **kw)
         with self.assertRaises(RuntimeError):
@@ -142,12 +143,24 @@ class ReferenceGeometryBoundsTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             bound_reference_geometry(ref, (0., float(np.nextafter(2*np.pi, np.inf))))
 
+    def test_width_is_per_panel_and_global_union_keeps_real_variation(self):
+        s = np.array([0., .5, 1.2, 2., 2.8, 3.5, 4.])
+        ref = ReferenceCurve(track(s, s, s*s))
+        target = Fraction(1, 5)
+        out = bound_reference_geometry(ref, (.1, 3.9), maximum_panels=1000,
+                                       maximum_panel_curvature_width=target)
+        self.assertEqual(out.maximum_panel_curvature_width, target)
+        self.assertLessEqual(out.max_accepted_panel_curvature_width, target)
+        # The global range contains actual curvature variation, not just
+        # per-panel dependency width; it is therefore allowed to exceed target.
+        self.assertGreater(out.curvature_interval[1]-out.curvature_interval[0], target)
+
     def test_requested_tight_width_fails_closed_when_budget_is_insufficient(self):
         s = np.array([0., 1., 2., 3., 4., 5.])
         ref = ReferenceCurve(track(s, s+.2*s*s, s**3/7))
         with self.assertRaises(RuntimeError):
             bound_reference_geometry(ref, (.25, 4.75), maximum_panels=8,
-                                     maximum_depth=1, maximum_curvature_width=Fraction(1, 10**12))
+                                     maximum_depth=1, maximum_panel_curvature_width=Fraction(1, 10**12))
 
 
 if __name__ == "__main__":

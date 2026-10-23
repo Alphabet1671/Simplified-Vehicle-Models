@@ -21,6 +21,8 @@ import math
 import multiprocessing as mp
 from pathlib import Path
 import time
+
+from tools.diagnostics.no_tv_provenance import resolve_base_commit, runtime_provenance
 import traceback
 import xml.etree.ElementTree as ET
 
@@ -199,6 +201,35 @@ def _validate_dense_maximum_refinements(value: int) -> int:
     return int(value)
 
 
+def _profile_options(profile_step: float, maximum_profile_iterations: int,
+                     maximum_profile_seconds: float) -> dict:
+    step = _validate_finite_positive("profile_step", profile_step)
+    seconds = _validate_finite_positive("maximum_profile_seconds", maximum_profile_seconds)
+    if (isinstance(maximum_profile_iterations, bool)
+            or not isinstance(maximum_profile_iterations, (int, float, np.integer, np.floating))
+            or not math.isfinite(maximum_profile_iterations)
+            or int(maximum_profile_iterations) != maximum_profile_iterations
+            or int(maximum_profile_iterations) <= 0):
+        raise ValueError("maximum_profile_iterations must be a positive integer")
+    return {"profile_step_m": step, "maximum_profile_iterations": int(maximum_profile_iterations),
+            "maximum_profile_seconds": seconds}
+
+
+def _convergence_criteria(criteria: dict | None) -> dict | None:
+    if criteria is None:
+        return None
+    required = {"rms_xy_m", "rms_metric", "rms_offset_m", "length_relative", "rms_speed_mps", "rms_curvature_per_m"}
+    if not isinstance(criteria, dict) or set(criteria) != required:
+        raise ValueError("convergence_criteria must declare exactly the six dimensional metric budgets")
+    answer = {}
+    for name in sorted(required):
+        value = criteria[name]
+        if isinstance(value, bool) or not isinstance(value, (int, float, np.integer, np.floating)) or not math.isfinite(value) or value < 0.0:
+            raise ValueError(f"convergence_criteria[{name!r}] must be finite and nonnegative")
+        answer[name] = float(value)
+    return answer
+
+
 def build_attempt(case: MatrixCase, *, mesh_spacing_m: float, basis_spacing_m: float,
                   maximum_iterations: int, wall_cap_s: float, seed_name: str,
                   formulation: Path, surface: Path, nlp_tolerance: float = DEFAULT_NLP_TOLERANCE,
@@ -207,7 +238,9 @@ def build_attempt(case: MatrixCase, *, mesh_spacing_m: float, basis_spacing_m: f
                   diagnostic_rungs: bool = False,
                   hessian_approximation: str = "exact",
                   matched_reference: bool = False, seed_profile: str = "none",
-                  strict_profile_seed: bool = False) -> dict:
+                  strict_profile_seed: bool = False, profile_step: float = 2.0,
+                   maximum_profile_iterations: int = 200, maximum_profile_seconds: float = 30.0,
+                   convergence_criteria: dict | None = None, provenance: dict | None = None) -> dict:
     """Build a fully serializable solve request; this has no solver side effects."""
     allowed_meshes = DEFAULT_MESH_SPACINGS + ((DIAGNOSTIC_MESH_SPACING,) if diagnostic_rungs else ())
     allowed_basis = diagnostic_rungs or basis_spacing_m in DEFAULT_BASIS_SPACINGS
@@ -229,6 +262,8 @@ def build_attempt(case: MatrixCase, *, mesh_spacing_m: float, basis_spacing_m: f
         raise ValueError("hessian_approximation must be exact or limited-memory")
     if seed_profile not in {"none", "energy-nlp"}:
         raise ValueError("seed_profile must be none or energy-nlp")
+    profile_options = _profile_options(profile_step, maximum_profile_iterations, maximum_profile_seconds)
+    criteria = _convergence_criteria(convergence_criteria)
     settings = QssSettings(tolerance=_validate_finite_positive("nlp_tolerance", nlp_tolerance),
                            maximum_iterations=int(maximum_iterations),
                            start_speed=float(case.start_speed_mps), open_regularisation=1e-6,
@@ -243,7 +278,10 @@ def build_attempt(case: MatrixCase, *, mesh_spacing_m: float, basis_spacing_m: f
         "basis_rung_status": "preregistered" if basis_spacing_m in DEFAULT_BASIS_SPACINGS else "diagnostic_not_preregistered",
         "formulation": str(Path(formulation).resolve()), "surface": str(Path(surface).resolve()),
         "matched_reference": bool(matched_reference), "seed_profile": seed_profile,
-        "strict_profile_seed": bool(strict_profile_seed),
+        "strict_profile_seed": bool(strict_profile_seed), "profile_options": profile_options,
+        "initializer": {"seed": seed_name, "seed_profile": seed_profile,
+                        "strict_profile_seed": bool(strict_profile_seed), "profile_options": profile_options},
+        "convergence_criteria": criteria, "provenance": provenance,
         "no_torque_vectoring": True, "mode_switches": False, "controller_globals": False,
     }
 
@@ -436,7 +474,12 @@ def _attempt_worker(request_path: str, result_path: str, artifact_path: str) -> 
                 if request.get("strict_profile_seed", False):
                     raise RuntimeError("strict profile seed requires the centerline seed")
             else:
-                profile_seed, diagnostics = build_profile_line_seed(track, corridor, surface, mesh, spline, settings)
+                options = request["profile_options"]
+                profile_seed, diagnostics = build_profile_line_seed(
+                    track, corridor, surface, mesh, spline, settings,
+                    profile_step=options["profile_step_m"],
+                    maximum_profile_iterations=options["maximum_profile_iterations"],
+                    maximum_profile_seconds=options["maximum_profile_seconds"])
                 result["profile_seed"]["diagnostics"] = diagnostics
                 if profile_seed is not None:
                     seed = profile_seed
@@ -453,16 +496,43 @@ def _attempt_worker(request_path: str, result_path: str, artifact_path: str) -> 
             result["initial_seed"] = _seed_domain_report(track, corridor, spline, coefficients)
         else:
             result["initial_seed"] = {"used": "energy-nlp-profile", "note": "projection seed; not OCP feasible"}
+        actual_initializer = {"requested": request["initializer"], "used": "energy-nlp-profile" if not use_old_seed else request["seed"],
+                              "profile_seed": result["profile_seed"],
+                              "seed_sha256": hashlib.sha256(np.asarray(seed, dtype=float).tobytes()).hexdigest()}
+        actual_initializer["fingerprint"] = hashlib.sha256(
+            json.dumps(_json_safe(actual_initializer), sort_keys=True).encode("utf-8")).hexdigest()
+        result["actual_initializer"] = actual_initializer
         solution = solve_spline_line(track, corridor, surface, mesh, spline, settings, seed=seed)
+        source_grid = np.linspace(float(solution.distance[0]), float(solution.distance[-1]), 256)
+        if getattr(solution, "trajectory", None) is not None and getattr(solution, "state_evaluator", None) is not None:
+            geometry = solution.trajectory.evaluate(source_grid)
+            state = solution.state_evaluator.evaluate(source_grid)
+            path_grid = np.asarray(solution.trajectory.station_map.to_path(source_grid), dtype=float)
+            common_north, common_east = np.asarray(geometry.north, dtype=float), np.asarray(geometry.east, dtype=float)
+            common_metric, common_offset = np.asarray(geometry.metric, dtype=float), np.asarray(geometry.offset, dtype=float)
+            common_speed, common_curvature = np.asarray(state["speed"], dtype=float), np.asarray(geometry.curvature, dtype=float)
+        else:  # mocked test-only solver fixture; deliberately lacks real convergence evidence
+            path_grid = source_grid
+            common_north, common_east = source_grid, np.zeros_like(source_grid)
+            common_metric, common_offset = np.ones_like(source_grid), np.interp(source_grid, solution.distance, solution.offset)
+            common_speed, common_curvature = np.interp(source_grid, solution.distance, solution.speed), np.interp(source_grid, solution.distance, solution.curvature)
         np.savez_compressed(artifact_path, distance=solution.distance, offset=solution.offset,
-                             heading_error=solution.heading_error, curvature=solution.curvature,
-                             speed=solution.speed, acceleration=solution.acceleration,
-                             midpoint_acceleration=solution.midpoint_acceleration,
-                             coefficients=solution.coefficients,
-                             control_station_m=np.asarray(spline.control_distance, dtype=float),
-                             state_representation=np.array(solution.state_representation),
-                             time_quadrature=np.array(solution.time_quadrature),
-                             time_metadata=np.array(json.dumps(solution.time_quadrature_metadata, sort_keys=True)))
+                              heading_error=solution.heading_error, curvature=solution.curvature,
+                              speed=solution.speed, acceleration=solution.acceleration,
+                              midpoint_acceleration=solution.midpoint_acceleration,
+                              coefficients=solution.coefficients,
+                              common_source_s=source_grid, common_path_ell_m=path_grid,
+                              common_north_m=common_north,
+                              common_east_m=common_east,
+                              common_metric=common_metric,
+                              common_offset_m=common_offset,
+                              common_speed_mps=common_speed,
+                              common_curvature_per_m=common_curvature,
+                              common_path_length_m=np.array(float(path_grid[-1] - path_grid[0])),
+                              control_station_m=np.asarray(spline.control_distance, dtype=float),
+                              state_representation=np.array(solution.state_representation),
+                              time_quadrature=np.array(solution.time_quadrature),
+                              time_metadata=np.array(json.dumps(solution.time_quadrature_metadata, sort_keys=True)))
         # Persist exact reference/map metadata separately with the established
         # runner contract, without changing runner behavior or overwriting files.
         from tools.run.solve_minimum_time_line import _write_trajectory_metadata
@@ -541,12 +611,41 @@ def run_bounded_worker(request: dict, output: Path) -> dict:
 
 
 def _rms_difference(left: Path, right: Path) -> dict:
+    """Compare exact common-source artifacts; never synthesize acceptance data."""
     with np.load(left) as a, np.load(right) as b:
-        common = np.linspace(max(a["distance"][0], b["distance"][0]), min(a["distance"][-1], b["distance"][-1]), 256)
-        answer = {}
-        for name in ("offset", "speed", "curvature"):
-            answer[f"rms_{'path' if name == 'offset' else name}"] = float(np.sqrt(np.mean((np.interp(common, a["distance"], a[name]) - np.interp(common, b["distance"], b[name])) ** 2)))
-        return answer
+        required = ("common_source_s", "common_north_m", "common_east_m", "common_metric",
+                    "common_offset_m", "common_speed_mps", "common_curvature_per_m", "common_path_length_m")
+        if any(name not in a or name not in b for name in required):
+            # Historical/fixture artifacts retain candidate diagnostics only; they
+            # cannot pass strict edges because criteria remain absent.
+            common = np.linspace(max(a["distance"][0], b["distance"][0]), min(a["distance"][-1], b["distance"][-1]), 256)
+            def old(name):
+                return np.interp(common, a["distance"], a[name]) - np.interp(common, b["distance"], b[name])
+            offset, speed, curvature = old("offset"), old("speed"), old("curvature")
+            return {"rms_xy_m": None, "rms_metric": None, "rms_offset_m": float(np.sqrt(np.mean(offset ** 2))),
+                    "rms_speed_mps": float(np.sqrt(np.mean(speed ** 2))),
+                    "rms_curvature_per_m": float(np.sqrt(np.mean(curvature ** 2))), "length_relative": None,
+                    "rms_path": float(np.sqrt(np.mean(offset ** 2))),
+                    "rms_speed": float(np.sqrt(np.mean(speed ** 2))),
+                    "rms_curvature": float(np.sqrt(np.mean(curvature ** 2)))}
+        grid = a["common_source_s"]
+        if not np.array_equal(grid, b["common_source_s"]):
+            raise ValueError("common-source grids differ")
+        def rms(name):
+            return float(np.sqrt(np.mean((a[name] - b[name]) ** 2)))
+        return {"rms_xy_m": float(np.sqrt(np.mean((a["common_north_m"] - b["common_north_m"]) ** 2
+                                                 + (a["common_east_m"] - b["common_east_m"]) ** 2))),
+                "rms_metric": rms("common_metric"), "rms_offset_m": rms("common_offset_m"),
+                "rms_speed_mps": rms("common_speed_mps"),
+                "rms_curvature_per_m": rms("common_curvature_per_m"),
+                "length_relative": _relative_difference(float(a["common_path_length_m"]), float(b["common_path_length_m"])),
+                # compatibility name, now explicitly offset rather than path XY
+                "rms_path": rms("common_offset_m")}
+
+
+def _criteria_qualified(comparison: dict, criteria: dict | None) -> bool:
+    return criteria is not None and all(comparison.get(name) is not None and comparison[name] <= budget
+                                        for name, budget in criteria.items())
 
 
 def _dense_live_qualified(row: dict) -> bool:
@@ -567,13 +666,17 @@ def _attempt_sources_unchanged(row: dict) -> bool:
     """Return whether one attempt retained its exact pre-spawn inputs."""
     request = row.get("request", {})
     return (request.get("source_hashes") is not None
-            and request.get("source_hashes") == row.get("source_hashes_after"))
+            and request.get("source_hashes") == row.get("source_hashes_after")
+            and request.get("provenance") == row.get("provenance_after"))
 
 
 def _same_refinement_conditions(left: dict, right: dict) -> bool:
     """Forbid seed/settings/source changes from masquerading as refinement."""
     a, b = left["request"], right["request"]
-    return (a.get("seed") == b.get("seed") and a.get("settings") == b.get("settings")
+    return (a.get("settings") == b.get("settings") and a.get("initializer") == b.get("initializer")
+            and left.get("actual_initializer", {}).get("fingerprint") == right.get("actual_initializer", {}).get("fingerprint")
+            and a.get("provenance") == b.get("provenance")
+            and a.get("convergence_criteria") == b.get("convergence_criteria")
             and _attempt_sources_unchanged(left) and _attempt_sources_unchanged(right)
             and a.get("source_hashes") == b.get("source_hashes")
             and left.get("surface_representation") == right.get("surface_representation"))
@@ -590,7 +693,8 @@ def _comparison(case: str, left: dict, right: dict, output: Path, *, kind: str) 
             "time_difference_s": (left.get("objective_s") - right.get("objective_s")) if left.get("objective_s") is not None and right.get("objective_s") is not None else None,
             "time_relative_difference": _relative_difference(float(left["objective_s"]), float(right["objective_s"]))
             if left.get("objective_s") is not None and right.get("objective_s") is not None else None,
-            **metrics}
+            **metrics, "convergence_criteria": left["request"].get("convergence_criteria"),
+            "geometry_state_convergence": _criteria_qualified(metrics, left["request"].get("convergence_criteria"))}
 
 
 def _reference_qualified(row: dict) -> bool:
@@ -613,7 +717,8 @@ def _qualified_edge(comparisons: list[dict], *, kind: str) -> dict | None:
                          else all(rung in DEFAULT_BASIS_SPACINGS for rung in rungs))
         if (comparison.get("reference_qualified") is True and preregistered
                 and comparison.get("time_relative_difference") is not None
-                and comparison["time_relative_difference"] <= REFERENCE_TIME_CONVERGENCE_RELATIVE):
+                and comparison["time_relative_difference"] <= REFERENCE_TIME_CONVERGENCE_RELATIVE
+                and _criteria_qualified(comparison, comparison.get("convergence_criteria"))):
             return {"left_attempt": left.get("attempt_id"), "right_attempt": right.get("attempt_id"),
                     "time_relative_difference": comparison["time_relative_difference"],
                     "maximum_relative_time": REFERENCE_TIME_CONVERGENCE_RELATIVE,
@@ -707,6 +812,9 @@ def run_matrix(args) -> dict:
     output = Path(args.output).resolve()
     if output.exists() or output.is_symlink():
         raise FileExistsError("output must be a new exclusive directory")
+    repo = Path(__file__).resolve().parents[2]
+    actual_base_commit = resolve_base_commit(repo, args.base_commit)
+    actual_provenance = runtime_provenance(repo)
     cases = default_cases()
     requested_names = args.cases.split(",") if args.cases else list(cases)
     selected = [cases[name] for name in requested_names]
@@ -733,7 +841,12 @@ def run_matrix(args) -> dict:
                         hessian_approximation=getattr(args, "hessian_approximation", "exact"),
                         matched_reference=getattr(args, "matched_reference", False),
                         seed_profile=getattr(args, "seed_profile", "none"),
-                        strict_profile_seed=getattr(args, "strict_profile_seed", False))
+                        strict_profile_seed=getattr(args, "strict_profile_seed", False),
+                        profile_step=getattr(args, "profile_step", 2.0),
+                        maximum_profile_iterations=getattr(args, "maximum_profile_iterations", 200),
+                        maximum_profile_seconds=getattr(args, "maximum_profile_seconds", 30.0),
+                        convergence_criteria=getattr(args, "convergence_criteria", None),
+                        provenance=actual_provenance)
                     # Each spawned solve owns a fresh input snapshot. Do not reuse
                     # the matrix-start hashes: sources can change between attempts.
                     request["source_hashes"] = source_hashes(case.track, form, surface)
@@ -744,8 +857,10 @@ def run_matrix(args) -> dict:
                     # in-attempt mutation makes this row candidate-only, while its
                     # result and artifact remain retained for diagnostics.
                     result["source_hashes_after"] = source_hashes(case.track, form, surface)
+                    result["provenance_after"] = runtime_provenance(repo)
                     result["source_data_unchanged"] = (
-                        request["source_hashes"] == result["source_hashes_after"])
+                        request["source_hashes"] == result["source_hashes_after"]
+                        and request["provenance"] == result["provenance_after"])
                     # Artifact is relative to its attempt directory until aggregation.
                     if result.get("artifact"):
                         result["artifact"] = f"{attempt_name}/{result['artifact']}"
@@ -790,11 +905,20 @@ def main(argv=None):
     parser.add_argument("--strict-profile-seed", action="store_true",
                         help="fail the worker rather than use the explicit old seed on profile failure")
     parser.add_argument("--wall-cap-s", type=float, default=300.0)
-    parser.add_argument("--base-commit", default="6286c5fbb02217fc21148fdc0be276728f13b99c")
+    parser.add_argument("--base-commit", default=None,
+                        help="optional revision which must resolve to the actual current HEAD")
+    parser.add_argument("--baseline-label", default=None, help="historical baseline label; never provenance")
+    parser.add_argument("--profile-step", type=float, default=2.0)
+    parser.add_argument("--maximum-profile-iterations", type=int, default=200)
+    parser.add_argument("--maximum-profile-seconds", type=float, default=30.0)
+    parser.add_argument("--convergence-criteria-json", default=None,
+                        help="JSON object declaring six explicit geometry/state convergence budgets")
     args = parser.parse_args(argv)
     _validate_finite_positive("nlp_tolerance", args.nlp_tolerance)
     _off_collocation_fractions(args.off_collocation_divisions)
     _validate_dense_maximum_refinements(args.dense_maximum_refinements)
+    args.convergence_criteria = (_convergence_criteria(json.loads(args.convergence_criteria_json))
+                                 if args.convergence_criteria_json is not None else None)
     run_matrix(args)
     return 0
 

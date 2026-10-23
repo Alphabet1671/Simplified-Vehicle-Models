@@ -34,7 +34,11 @@ is offered.
 
 Each request persists its complete settings. JSON transport changes the
 settings tuple to a list, and the spawned worker restores it to the immutable
-`QssSettings` tuple before solving.
+`QssSettings` tuple before solving.  The optional energy-NLP initializer is
+also canonicalized in the request: `seed_profile`, strictness, resolved profile
+step, iteration limit, and wall limit are recorded, then the worker records the
+actual seed fingerprint and whether it used the projection or explicit old
+seed. A profile projection is not claimed feasible or globally optimal.
 
 ## Artifacts and qualification protections
 
@@ -49,9 +53,15 @@ changing runner output semantics.
 The existing protections remain unchanged: spawned-process wall timeout is
 authoritative, child evidence is retained separately; source SHA-256 values
 are recorded before and after every attempt; and strict acceptance remains
-fail-closed. Qualified mesh/basis comparisons additionally require solver
-success, dense geometry/feasibility, live original-model feasibility, identical
-seed/settings/source hashes/representation, and exactly one changed axis.
+fail-closed. The parent captures actual Git HEAD, tracked-dirty manifest,
+SHA-256 hashes for the executed harness/solver/geometry/validation/profile
+implementation, and Python/NumPy/CasADi runtime versions before spawn and
+again after each attempt. `--base-commit` is optional and, if supplied, must
+resolve to that exact HEAD; use `--baseline-label` for a historical comparison
+label. Qualified mesh/basis comparisons additionally require solver success,
+dense geometry/feasibility, live original-model feasibility, identical actual
+initializer fingerprint, settings, source hashes, code/runtime provenance, and
+exactly one changed axis.
 
 ## Optional matched fixed-path reference
 
@@ -99,6 +109,23 @@ or candidate-only cases keep it incomplete.
 Nominal basis spacing alone is not treated as an actual basis refinement.
 Every result records its realized `control_count` and `control_station_m`; two
 nominal spacings producing an identical realized grid remain candidate-only.
+
+## Common-source convergence evidence
+
+Each real worker artifact also carries dense samples evaluated from the exact
+trajectory and dense state evaluator on a common source-station grid: source
+station, mapped path station, north/east coordinates, metric, offset, speed,
+curvature, and derived path length. Aggregation displays RMS XY, metric,
+offset, speed, curvature, and relative length differences. `rms_path` remains
+only as a backward-compatible alias for offset RMS; it is not an XY claim.
+
+No universal geometry/state thresholds are invented by this harness. Without
+an explicit `--convergence-criteria-json` object declaring finite, nonnegative
+budgets for all six dimensional metrics, this evidence is `None` for
+qualification and strict aggregation stays `incomplete`, even when the existing
+0.5% time edge and 1% replay tests pass. Declared criteria are serialized with
+every request and must pass at both endpoints; malformed, nonfinite, negative,
+or incomplete criteria are refused.
 
 ## Parent measured evidence (2026-10-22)
 

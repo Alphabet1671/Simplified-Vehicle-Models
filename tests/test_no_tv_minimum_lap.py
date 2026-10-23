@@ -576,7 +576,7 @@ class NoTvMinimumLapHarnessTest(unittest.TestCase):
         args = SimpleNamespace(output=None, formulation=Path("form.xml"), surface=Path("surface.npz"),
                                cases="acceleration", mesh_spacings=[5.0, 2.5], basis_spacings=[35.0],
                                seeds=["centerline"], maximum_iterations=1, wall_cap_s=1.0,
-                               base_commit="fixture")
+                               base_commit=None)
         snapshots = iter([{"input": "initial"}, {"input": "initial"}, {"input": "initial"},
                           {"input": "changed"}, {"input": "changed"}, {"input": "changed"}])
         captured_requests = []
@@ -602,6 +602,48 @@ class NoTvMinimumLapHarnessTest(unittest.TestCase):
         strict = harness.strict_validation(False, {name: True for name in harness.REQUIRED_NUMERICAL_CHECKS})
         self.assertEqual(strict["validation_status"], "solver_failed")
         self.assertFalse(strict["accepted"])
+
+
+    def test_initializer_options_are_canonical_and_invalid_values_rejected(self):
+        case = harness.default_cases()["acceleration"]
+        request = harness.build_attempt(case, mesh_spacing_m=5., basis_spacing_m=35., maximum_iterations=1,
+            wall_cap_s=1., seed_name="centerline", formulation=Path("f"), surface=Path("s"),
+            seed_profile="energy-nlp", strict_profile_seed=True, profile_step=3.,
+            maximum_profile_iterations=11, maximum_profile_seconds=7.)
+        self.assertEqual(request["initializer"]["profile_options"]["profile_step_m"], 3.)
+        self.assertTrue(request["initializer"]["strict_profile_seed"])
+        for bad in (0., float("nan")):
+            with self.assertRaisesRegex(ValueError, "profile_step"):
+                harness.build_attempt(case, mesh_spacing_m=5., basis_spacing_m=35., maximum_iterations=1,
+                    wall_cap_s=1., seed_name="centerline", formulation=Path("f"), surface=Path("s"), profile_step=bad)
+
+    def test_explicit_criteria_are_required_for_qualified_edge(self):
+        metrics = {"rms_xy_m": .1, "rms_metric": .1, "rms_offset_m": .1, "length_relative": .1,
+                   "rms_speed_mps": .1, "rms_curvature_per_m": .1}
+        self.assertFalse(harness._criteria_qualified(metrics, None))
+        self.assertTrue(harness._criteria_qualified(metrics, {name: .1 for name in metrics}))
+        self.assertFalse(harness._criteria_qualified(metrics, {name: .09 for name in metrics}))
+        with self.assertRaisesRegex(ValueError, "nonnegative"):
+            harness._convergence_criteria({name: -1. for name in metrics})
+
+    def test_same_conditions_reject_initializer_or_runtime_provenance_changes(self):
+        request = {"settings": {}, "initializer": {"seed": "centerline"}, "convergence_criteria": None,
+                   "source_hashes": {"input": "a"}, "provenance": {"git_head": "a"}}
+        left = {"request": request, "source_hashes_after": {"input": "a"}, "provenance_after": {"git_head": "a"},
+                "actual_initializer": {"fingerprint": "one"}, "surface_representation": "signed"}
+        right = {**left, "request": dict(request), "actual_initializer": {"fingerprint": "two"}}
+        self.assertFalse(harness._same_refinement_conditions(left, right))
+        right["actual_initializer"] = {"fingerprint": "one"}
+        right["request"]["provenance"] = {"git_head": "other"}
+        self.assertFalse(harness._same_refinement_conditions(left, right))
+
+    def test_base_commit_resolution_requires_actual_head(self):
+        from tools.diagnostics.no_tv_provenance import resolve_base_commit
+        def git(repo, *args):
+            return "head" if args == ("rev-parse", "HEAD") else "other"
+        self.assertEqual(resolve_base_commit(Path("."), None, git=git), "head")
+        with self.assertRaisesRegex(ValueError, "actual current HEAD"):
+            resolve_base_commit(Path("."), "historical", git=git)
 
 
 if __name__ == "__main__":

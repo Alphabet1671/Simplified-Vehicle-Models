@@ -50,7 +50,9 @@ class FixedLineSplineSolveTest(unittest.TestCase):
         from simplified_vehicle_models.solvers.qss_spline_ocp import solve_spline_line
         valid = np.full(self.spline.control_count, .1)
         invalid = [np.zeros(valid.size - 1), np.full(valid.size, np.nan),
-                   np.full(valid.size, 100.), np.full(valid.size, True)]
+                   np.full(valid.size, 100.), np.full(valid.size, True),
+                   [True, *([.1] * (valid.size - 1))],
+                   [np.bool_(True), *([.1] * (valid.size - 1))]]
         with patch("casadi.nlpsol") as nlpsol:
             for values in invalid:
                 with self.subTest(values=values), self.assertRaises(ValueError):

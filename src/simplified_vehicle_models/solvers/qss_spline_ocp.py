@@ -1143,10 +1143,15 @@ def solve_spline_line(track, corridor, surface, mesh, spline,
     size = int(built["nlp"]["x"].numel())
     fixed = None
     if fixed_coefficients is not None:
-        raw_fixed = np.asarray(fixed_coefficients)
-        if (raw_fixed.ndim != 1 or raw_fixed.dtype.kind not in "iuf"
-                or raw_fixed.dtype.kind == "b"):
+        # Inspect elements before numeric promotion: mixed bool/float input
+        # would otherwise silently turn True into 1.0 via np.asarray.
+        raw_fixed = np.asarray(fixed_coefficients, dtype=object)
+        if raw_fixed.ndim != 1:
             raise ValueError("fixed_coefficients must be a one-dimensional real numeric vector")
+        for item in raw_fixed:
+            if (isinstance(item, (bool, np.bool_))
+                    or not isinstance(item, (int, float, np.integer, np.floating))):
+                raise ValueError("fixed_coefficients must be a one-dimensional real numeric vector")
         fixed = np.array(raw_fixed, dtype=float, copy=True)
         if fixed.shape != (control_count,):
             raise ValueError("fixed_coefficients must match spline.control_count")

@@ -227,6 +227,80 @@ def _signed_transition(surface, *, vi: float, bound: float, curvature: float, ds
     return endpoint
 
 
+def _bracketed_energy_transition(limits, *, vi: float, bound: float, curvature: float,
+                                ds: float, forward: bool, tolerance: float,
+                                maximum_iterations: int = 64) -> float:
+    """Return a feasible bracketed endpoint under sampled monotone residuals.
+
+    Monotonicity is checked at fixed fractions and during bisection; it is not a
+    continuous-domain certificate. The returned endpoint is always checked
+    against the actual acceleration callback.
+    """
+    scalars = (vi, bound, curvature, ds, tolerance)
+    if any(isinstance(x, bool) or not isinstance(x, (int, float, np.number))
+           or not math.isfinite(float(x)) for x in scalars):
+        raise ValueError("bracketed transition inputs must be finite real scalars")
+    vi, bound, curvature, ds, tolerance = map(float, scalars)
+    if vi < 0. or bound < 0. or ds <= 0. or tolerance <= 0.:
+        raise ValueError("bracketed transition requires nonnegative speeds and positive ds/tolerance")
+    if isinstance(maximum_iterations, bool) or not isinstance(maximum_iterations, (int, np.integer)) or maximum_iterations < 1:
+        raise ValueError("maximum_iterations must be a positive integer")
+    w0, wb = vi*vi, bound*bound
+    if not math.isfinite(w0) or not math.isfinite(wb):
+        raise ValueError("bracketed transition squared speeds overflow")
+    energy_tol = 2.*ds*tolerance + max(w0, wb, 1.)*32.*np.finfo(float).eps
+    if not math.isfinite(energy_tol):
+        raise ValueError("bracketed transition energy tolerance overflow")
+
+    def residual(endpoint):
+        midpoint = math.sqrt(.5*(w0 + endpoint*endpoint))
+        pair = limits(midpoint, curvature)
+        if not isinstance(pair, (tuple, list)) or len(pair) != 2:
+            raise ValueError("transition limits must return two accelerations")
+        raw_lo, raw_hi = pair
+        real_types = (int, float, np.integer, np.floating)
+        if any(isinstance(x, (bool, np.bool_)) or not isinstance(x, real_types) for x in pair):
+            raise ValueError("transition limits must be real non-boolean scalars")
+        amin, amax = float(raw_lo), float(raw_hi)
+        if not math.isfinite(amin) or not math.isfinite(amax) or amin > amax:
+            raise ValueError("transition limits are nonfinite or unordered")
+        value = (endpoint*endpoint - w0 - 2.*ds*amax if forward
+                 else endpoint*endpoint - w0 + 2.*ds*amin)
+        if not math.isfinite(value):
+            raise ValueError("transition energy residual overflow")
+        return value
+
+    points = [bound*f for f in (0., .25, .5, .75, 1.)]
+    values = [residual(x) for x in points]
+    if any(right < left-energy_tol for left, right in zip(values, values[1:])):
+        raise RuntimeError("sampled energy residual is nonmonotone; bracketed transition is not eligible")
+    if values[0] > energy_tol:
+        raise RuntimeError("no feasible bracketed energy transition")
+    if values[-1] <= 0.:
+        return bound
+    brackets = [(points[i], points[i+1], values[i], values[i+1])
+                for i in range(4) if values[i] <= 0. < values[i+1]]
+    if not brackets:
+        raise RuntimeError("no feasible bracketed energy transition")
+    lo, hi, flo, fhi = brackets[-1]
+    for _ in range(maximum_iterations):
+        if hi-lo <= tolerance and abs(flo)/(2.*ds) <= tolerance:
+            return lo
+        mid = .5*(lo+hi)
+        if mid == lo or mid == hi:
+            break
+        fm = residual(mid)
+        if fm < flo-energy_tol or fm > fhi+energy_tol:
+            raise RuntimeError("energy residual became nonmonotone during bisection")
+        if fm <= 0.:
+            lo, flo = mid, fm
+        else:
+            hi, fhi = mid, fm
+    if hi-lo <= tolerance and abs(flo)/(2.*ds) <= tolerance:
+        return lo
+    raise RuntimeError("bracketed energy transition did not meet physical residual guards")
+
+
 def _path_samples(path, step: float, trajectory):
     for name in ("distance", "curvature", "is_closed"):
         if not hasattr(path, name):
@@ -287,7 +361,7 @@ def _closed_duplicate(path, curvature: np.ndarray) -> bool:
 def capability_profile(path, surface, *, boundary: str = "flying", start_speed=None,
                        step: float = .25, tolerance: float = 1.e-7,
                        maximum_iterations: int = 200, rest_limits: Callable | None = None,
-                       trajectory=None) -> CapabilityProfile:
+                       trajectory=None, transition_method: str = "legacy_fixed_point") -> CapabilityProfile:
     """Solve a bounded forward/backward energy profile on exact path arclength.
 
     ``rest_limits(speed, curvature)`` is an explicit original-physics low-speed
@@ -298,6 +372,8 @@ def capability_profile(path, surface, *, boundary: str = "flying", start_speed=N
     tolerance = _finite_positive(tolerance, "tolerance")
     if isinstance(maximum_iterations, bool) or not isinstance(maximum_iterations, (int, np.integer)) or maximum_iterations < 1:
         raise ValueError("maximum_iterations must be a positive integer")
+    if not isinstance(transition_method, str) or transition_method not in ("legacy_fixed_point", "bracketed_energy"):
+        raise ValueError("transition_method must be 'legacy_fixed_point' or 'bracketed_energy'")
     if boundary not in ("flying", "rolling", "standing"):
         raise ValueError("boundary must be 'flying', 'rolling', or 'standing'")
     distance, curvature, reference = _path_samples(path, step, trajectory)
@@ -376,9 +452,14 @@ def capability_profile(path, surface, *, boundary: str = "flying", start_speed=N
     def failed(status, iteration, change, detail):
         return CapabilityProfile(distance, speed, np.full(distance.shape, np.nan), math.nan,
                                  False, status, iteration, change, reference,
-                                 {"detail": detail, "boundary": boundary, "floor": floor})
+                                 {"detail": detail, "boundary": boundary, "floor": floor,
+                                   **({"transition_method": transition_method,
+                                      "root_assumption": "sampled_non_decreasing_energy_residual_not_continuous_certificate"}
+                                      if transition_method == "bracketed_energy" else {})})
 
     signed_chart = hasattr(surface, "u") and hasattr(surface, "domain_speed")
+    if signed_chart and transition_method == "bracketed_energy":
+        raise ValueError("bracketed_energy is only supported for original-live/generic surfaces, not signed charts")
     segment = np.diff(distance)
     max_change = math.inf
     for iteration in range(1, maximum_iterations + 1):
@@ -392,6 +473,10 @@ def capability_profile(path, surface, *, boundary: str = "flying", start_speed=N
                     speed[i+1] = _signed_transition(surface, vi=vi, bound=candidate,
                                                     curvature=k, ds=ds, forward=True,
                                                     tolerance=tolerance)
+                elif transition_method == "bracketed_energy":
+                    speed[i+1] = _bracketed_energy_transition(
+                        limits, vi=vi, bound=candidate, curvature=k, ds=ds,
+                        forward=True, tolerance=tolerance)
                 else:
                     for _ in range(32):
                         vm = math.sqrt(.5*(vi*vi + candidate*candidate))
@@ -418,6 +503,10 @@ def capability_profile(path, surface, *, boundary: str = "flying", start_speed=N
                     speed[i] = _signed_transition(surface, vi=vj, bound=candidate,
                                                   curvature=k, ds=segment[i], forward=False,
                                                   tolerance=tolerance)
+                elif transition_method == "bracketed_energy":
+                    speed[i] = _bracketed_energy_transition(
+                        limits, vi=vj, bound=candidate, curvature=k, ds=segment[i],
+                        forward=False, tolerance=tolerance)
                 else:
                     for _ in range(32):
                         vm = math.sqrt(.5*(candidate*candidate + vj*vj))
@@ -455,7 +544,10 @@ def capability_profile(path, surface, *, boundary: str = "flying", start_speed=N
     elapsed = np.r_[0., np.cumsum(2.*segment/(speed[:-1]+speed[1:]))]
     return CapabilityProfile(distance, speed, elapsed, float(elapsed[-1]), True, "converged",
                              iteration, max_change, reference,
-                             {"boundary": boundary, "floor": floor, "reference_kind": "capability-table"})
+                             {"boundary": boundary, "floor": floor, "reference_kind": "capability-table",
+                               **({"transition_method": transition_method,
+                                  "root_assumption": "sampled_non_decreasing_energy_residual_not_continuous_certificate"}
+                                  if transition_method == "bracketed_energy" else {})})
 
 
 def matched_profile_replay(trajectory, profile: CapabilityProfile):

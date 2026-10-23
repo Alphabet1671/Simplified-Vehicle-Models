@@ -28,8 +28,11 @@ class LiveStandingSettings:
     maximum_iterations: int = 50
     maximum_wall_seconds: float = 60.0
     maximum_queries: int = 20000
+    transition_method: str = "legacy_fixed_point"
 
     def __post_init__(self):
+        if not isinstance(self.transition_method, str) or self.transition_method not in ("legacy_fixed_point", "bracketed_energy"):
+            raise ValueError("transition_method must be 'legacy_fixed_point' or 'bracketed_energy'")
         for name in ("step", "tolerance", "maximum_wall_seconds"):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, numbers.Real) or not math.isfinite(value) or value <= 0:
@@ -146,6 +149,7 @@ def solve_live_standing_profile(vehicle, trajectory, *, settings=None,
         "accepted": False, "numerically_validated": False,
         "physically_validated": False, "event_validated": False,
         "queries": 0, "cache_hits": 0, "elapsed_wall_seconds": 0.0,
+        "transition_method": settings.transition_method if isinstance(settings, LiveStandingSettings) else None,
         "phase": "input_validation", "status": "failed",
     }
     start = time.monotonic()
@@ -180,9 +184,13 @@ def solve_live_standing_profile(vehicle, trajectory, *, settings=None,
         report["phase"] = "profile"
         profile = capability_profile(fullpath, surface, boundary="standing", step=settings.step,
                                      tolerance=settings.tolerance, maximum_iterations=settings.maximum_iterations,
-                                     rest_limits=surface.limits, trajectory=trajectory)
+                                     rest_limits=surface.limits, trajectory=trajectory,
+                                      transition_method=settings.transition_method)
         surface.ensure_wall_budget()
         change = float(profile.max_change)
+        if settings.transition_method == "bracketed_energy":
+            report["root_assumption"] = "sampled_non_decreasing_energy_residual_not_continuous_certificate"
+            report["sampled_monotonicity_is_certificate"] = False
         report.update({"iterations": int(profile.iterations),
                        "max_change": change if math.isfinite(change) else None,
                        "profile_status": profile.status})

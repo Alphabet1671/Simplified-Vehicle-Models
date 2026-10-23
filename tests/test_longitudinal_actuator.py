@@ -57,6 +57,19 @@ class LongitudinalActuatorTests(unittest.TestCase):
             self.assertFalse(result.throttle and result.brake_force)
         self.assertAlmostEqual(invert_longitudinal_actuators(vehicle, np.ones(4), .8, -100., evaluator=analytic).brake_force, 150., places=5)
 
+    def test_interpolation_iteration_budget_allows_one_preloop_candidate(self):
+        vehicle = fake_vehicle()
+        calls = [0]
+        def nonlinear(*args):
+            calls[0] += 1
+            return FakeOutput((0., 0., 100. * args[-1].throttle ** 2, 0.))
+        with self.assertRaises(RuntimeError):
+            invert_longitudinal_actuators(vehicle, np.ones(4), .5, 37.1234, evaluator=nonlinear,
+                settings=ActuatorInversionSettings(maximum_iterations=1, root_method="safeguarded_interpolation"))
+        # Coast, endpoint, and three monotonicity probes, then at most one
+        # pre-loop secant sample and one bounded root-loop evaluation.
+        self.assertLessEqual(calls[0], 8)
+
     def test_interpolation_preserves_saturation_and_iteration_limit(self):
         vehicle = fake_vehicle()
         settings = ActuatorInversionSettings(root_method="safeguarded_interpolation")

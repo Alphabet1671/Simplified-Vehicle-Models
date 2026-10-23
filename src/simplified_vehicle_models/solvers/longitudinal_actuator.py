@@ -62,7 +62,13 @@ def _finite_real(value, name):
 def invert_longitudinal_actuators(vehicle, wheel_speed, soc,
                                   requested_total_wheel_torque_nm, *,
                                   settings=None, evaluator=None) -> InversionResult:
-    """Find exclusive throttle/brake command matching requested net wheel torque."""
+    """Find exclusive throttle/brake command matching requested net wheel torque.
+
+    ``maximum_iterations`` bounds the root-refinement loop. With opt-in
+    safeguarded interpolation, one additional pre-loop secant candidate may be
+    evaluated after the coarse monotone samples; that candidate is independently
+    checked against the actual evaluator residual and bracket monotonicity.
+    """
     requested = _finite_real(requested_total_wheel_torque_nm, "requested torque")
     soc = _finite_real(soc, "soc")
     if not 0. <= soc <= 1.:

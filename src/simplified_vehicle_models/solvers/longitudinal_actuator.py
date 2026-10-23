@@ -19,8 +19,12 @@ from simplified_vehicle_models.solvers.forward_driver import DriverCommand
 class ActuatorInversionSettings:
     torque_tolerance_nm: float = 1.e-5
     maximum_iterations: int = 60
+    root_method: str = "bisection"
 
     def __post_init__(self):
+        if (not isinstance(self.root_method, str)
+                or self.root_method not in ("bisection", "safeguarded_interpolation")):
+            raise ValueError("root_method must be 'bisection' or 'safeguarded_interpolation'")
         if (isinstance(self.torque_tolerance_nm, (bool, np.bool_))
                 or not isinstance(self.torque_tolerance_nm, (int, float, np.number))
                 or not math.isfinite(float(self.torque_tolerance_nm))
@@ -144,23 +148,59 @@ def invert_longitudinal_actuators(vehicle, wheel_speed, soc,
     else:
         left, right = low_command, high_command
         left_torque, right_torque = low_torque, high_torque
-        if abs(requested-left_torque) <= settings.torque_tolerance_nm:
-            command, torque, saturated = left, left_torque, False
-        elif abs(requested-right_torque) <= settings.torque_tolerance_nm:
-            command, torque, saturated = right, right_torque, False
-        else:
+        command = torque = None
+        if settings.root_method == "safeguarded_interpolation":
+            samples = sorted((key[0] if pedal == "throttle" else key[1], value[0])
+                             for key, value in cache.items()
+                             if ((key[1] == 0.) if pedal == "throttle" else (key[0] == 0.)))
+            for (command_a, torque_a), (command_b, torque_b) in zip(samples, samples[1:]):
+                if min(torque_a, torque_b) <= requested <= max(torque_a, torque_b):
+                    left, left_torque = command_a, torque_a
+                    right, right_torque = command_b, torque_b
+                    break
             command = torque = None
             saturated = False
+            if (abs(requested - left_torque) > settings.torque_tolerance_nm
+                    and abs(requested - right_torque) > settings.torque_tolerance_nm):
+                denominator = right_torque - left_torque
+                if denominator != 0.:
+                    first = left + (requested - left_torque) * (right - left) / denominator
+                    if left < first < right:
+                        first_torque = query(first, 0.)[0] if pedal == "throttle" else query(0., first)[0]
+                        if (first_torque < min(left_torque, right_torque) - settings.torque_tolerance_nm
+                                or first_torque > max(left_torque, right_torque) + settings.torque_tolerance_nm):
+                            raise RuntimeError("actuator torque map is not monotone")
+                        if abs(first_torque - requested) <= settings.torque_tolerance_nm:
+                            command, torque, saturated = first, first_torque, False
+                        elif (first_torque < requested) == increasing:
+                            left, left_torque = first, first_torque
+                        else:
+                            right, right_torque = first, first_torque
+        if command is None and abs(requested-left_torque) <= settings.torque_tolerance_nm:
+            command, torque, saturated = left, left_torque, False
+        elif command is None and abs(requested-right_torque) <= settings.torque_tolerance_nm:
+            command, torque, saturated = right, right_torque, False
+        elif command is None:
+            saturated = False
             for _ in range(settings.maximum_iterations):
+                width = right - left
                 middle = (left + right) / 2.
-                result_torque = query(middle, 0.)[0] if pedal == "throttle" else query(0., middle)[0]
+                candidate = middle
+                if settings.root_method == "safeguarded_interpolation":
+                    denominator = right_torque - left_torque
+                    if math.isfinite(denominator) and denominator != 0.:
+                        secant = left + (requested - left_torque) * width / denominator
+                        margin = .05 * width
+                        if math.isfinite(secant) and left + margin < secant < right - margin:
+                            candidate = secant
+                result_torque = query(candidate, 0.)[0] if pedal == "throttle" else query(0., candidate)[0]
                 if ((increasing and (result_torque < left_torque - settings.torque_tolerance_nm
                                      or result_torque > right_torque + settings.torque_tolerance_nm))
                         or (not increasing and (result_torque > left_torque + settings.torque_tolerance_nm
                                                 or result_torque < right_torque - settings.torque_tolerance_nm))):
                     raise RuntimeError("actuator torque map is not monotone")
                 if abs(result_torque-requested) <= settings.torque_tolerance_nm:
-                    command, torque = middle, result_torque
+                    command, torque = candidate, result_torque
                     break
                 if (right - left) <= 2. * np.finfo(float).eps * max(abs(left), abs(right), 1.):
                     best_error = min(abs(left_torque - requested), abs(right_torque - requested))
@@ -170,9 +210,9 @@ def invert_longitudinal_actuators(vehicle, wheel_speed, soc,
                                        else (right, right_torque))
                     break
                 if (result_torque < requested) == increasing:
-                    left, left_torque = middle, result_torque
+                    left, left_torque = candidate, result_torque
                 else:
-                    right, right_torque = middle, result_torque
+                    right, right_torque = candidate, result_torque
             if command is None:
                 raise RuntimeError("actuator inversion did not converge within maximum_iterations")
     throttle, brake = (command, 0.) if pedal == "throttle" else (0., command)

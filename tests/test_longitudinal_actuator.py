@@ -32,6 +32,23 @@ def analytic(*args):
 
 
 class LongitudinalActuatorTests(unittest.TestCase):
+    def test_safeguarded_interpolation_opt_in_reduces_queries(self):
+        vehicle = fake_vehicle()
+        for requested in (37.1234, -180.1234, -137.1234):
+            counts = {"bisection": 0, "safeguarded_interpolation": 0}
+            results = {}
+            for method in counts:
+                def counted(*args, _method=method):
+                    counts[_method] += 1
+                    return analytic(*args)
+                results[method] = invert_longitudinal_actuators(
+                    vehicle, np.ones(4), .8, requested, evaluator=counted,
+                    settings=ActuatorInversionSettings(root_method=method))
+            for method, result in results.items():
+                self.assertLessEqual(abs(result.torque_error_nm), 1.e-5)
+                self.assertEqual(result.evaluations, counts[method])
+            self.assertLessEqual(counts["safeguarded_interpolation"], counts["bisection"] / 2)
+
     def test_positive_negative_deadband_and_coast(self):
         vehicle = fake_vehicle()
         for requested in (0., 50., -100., -1800.):
@@ -39,6 +56,19 @@ class LongitudinalActuatorTests(unittest.TestCase):
             self.assertLessEqual(abs(result.torque_error_nm), 1.e-5)
             self.assertFalse(result.throttle and result.brake_force)
         self.assertAlmostEqual(invert_longitudinal_actuators(vehicle, np.ones(4), .8, -100., evaluator=analytic).brake_force, 150., places=5)
+
+    def test_interpolation_preserves_saturation_and_iteration_limit(self):
+        vehicle = fake_vehicle()
+        settings = ActuatorInversionSettings(root_method="safeguarded_interpolation")
+        saturated = invert_longitudinal_actuators(vehicle, np.ones(4), .5, 200.,
+            evaluator=analytic, settings=settings)
+        self.assertTrue(saturated.saturated)
+        self.assertEqual(saturated.achieved_total_wheel_torque_nm, 100.)
+        def nonlinear(*args):
+            return FakeOutput((0., 0., 100. * args[-1].throttle ** 2, 0.))
+        with self.assertRaises(RuntimeError):
+            invert_longitudinal_actuators(vehicle, np.ones(4), .5, 37.1234, evaluator=nonlinear,
+                settings=ActuatorInversionSettings(maximum_iterations=1, root_method="safeguarded_interpolation"))
 
     def test_saturation_and_actual_endpoint_ranges(self):
         vehicle = fake_vehicle()
@@ -48,6 +78,30 @@ class LongitudinalActuatorTests(unittest.TestCase):
         self.assertEqual(result.achieved_total_wheel_torque_nm, 100.)
         self.assertEqual((result.lower_reachable_torque_nm, result.upper_reachable_torque_nm), (-1800., 100.))
         self.assertEqual(result.requested_total_wheel_torque_nm, 200.)
+
+    def test_interpolation_handles_nonlinear_map_and_detects_discontinuity(self):
+        vehicle = fake_vehicle()
+        def nonlinear(*args):
+            return FakeOutput((0., 0., 100. * args[-1].throttle ** 2, 0.))
+        result = invert_longitudinal_actuators(vehicle, np.ones(4), .5, 23.4567,
+            evaluator=nonlinear, settings=ActuatorInversionSettings(root_method="safeguarded_interpolation"))
+        self.assertLessEqual(abs(result.torque_error_nm), 1.e-5)
+        def discontinuous(*args):
+            pedal = args[-1].throttle
+            return FakeOutput((0., 0., 0. if pedal < .5 else 100., 0.))
+        with self.assertRaises(RuntimeError):
+            invert_longitudinal_actuators(vehicle, np.ones(4), .5, 50., evaluator=discontinuous,
+                settings=ActuatorInversionSettings(root_method="safeguarded_interpolation"))
+
+    def test_interpolation_rejects_unobserved_nonmonotone_excursion(self):
+        vehicle = fake_vehicle()
+        def hidden_bump(*args):
+            pedal = args[-1].throttle
+            value = 100. * pedal + (20. if .34 < pedal < .36 else 0.)
+            return FakeOutput((0., 0., value, 0.))
+        with self.assertRaises(RuntimeError):
+            invert_longitudinal_actuators(vehicle, np.ones(4), .5, 35., evaluator=hidden_bump,
+                settings=ActuatorInversionSettings(root_method="safeguarded_interpolation"))
 
     def test_plateau_and_nonmonotonic_map(self):
         vehicle = fake_vehicle()
@@ -79,6 +133,9 @@ class LongitudinalActuatorTests(unittest.TestCase):
                 invert_longitudinal_actuators(vehicle, speeds, .5, bad, evaluator=analytic)
         with self.assertRaises(ValueError):
             ActuatorInversionSettings(maximum_iterations=True)
+        for invalid in (True, "secant", None):
+            with self.assertRaises(ValueError):
+                ActuatorInversionSettings(root_method=invalid)
 
     def test_regen_explicitly_unsupported(self):
         with self.assertRaises(NotImplementedError):

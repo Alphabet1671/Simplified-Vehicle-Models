@@ -92,26 +92,23 @@ def _get(obj: Any, name: str, default=None):
     return getattr(obj, name, default)
 
 
-def _source_fingerprint(reference: Any, trajectory: Any) -> str | None:
-    """Hash source station/XY plus an explicitly known world-frame convention."""
-    frame = getattr(reference, "coordinate_frame", None)
-    if frame is None:
-        # ReferenceCurve is constructed from PathCoordinates whose documented
-        # convention is north/east/down; synthetic/custom objects must declare it.
-        if type(reference).__name__ == "ReferenceCurve" and type(reference).__module__ == "simplified_vehicle_models.tracks.line_trajectory":
-            frame = "world_X_north_Y_east_Z_down_v1"
-        else:
-            return None
-    if frame != "world_X_north_Y_east_Z_down_v1":
+def _source_fingerprint(reference: Any) -> str | None:
+    """Fingerprint only the exact trusted repository ReferenceCurve type.
+
+    Knot XY samples from arbitrary interpolators cannot prove equality between
+    knots, so custom references require object identity in the caller.
+    """
+    from simplified_vehicle_models.tracks.line_trajectory import ReferenceCurve
+
+    if type(reference) is not ReferenceCurve:
         return None
+    frame = "world_X_north_Y_east_Z_down_v1"  # PathCoordinates convention.
+
     station = np.asarray(getattr(reference, "source_station", ()), dtype="<f8")
     if station.ndim != 1 or station.size < 2 or not np.all(np.isfinite(station)) or np.any(np.diff(station) <= 0):
         return None
     try:
-        evaluator = reference if hasattr(reference, "evaluate") else None
-        if evaluator is None:
-            return None
-        geom = evaluator.evaluate(station)
+        geom = reference.evaluate(station)
         north = np.asarray(geom.north, dtype="<f8")
         east = np.asarray(geom.east, dtype="<f8")
     except (AttributeError, TypeError, ValueError):
@@ -164,13 +161,17 @@ def compare_trajectory_states(left: Any, right: Any, *, maximum_refinements: int
             return _bad("source_domain_mismatch")
         if bool(lr.is_closed) != bool(rr.is_closed):
             return _bad("periodicity_mismatch")
-        left_source = _source_fingerprint(lr, lt)
-        right_source = _source_fingerprint(rr, rt)
-        if lr is not rr and (left_source is None or right_source is None):
-            return _bad("source_identity_unverifiable_or_unknown_frame")
-        if lr is not rr and left_source != right_source:
-            return _bad("source_reference_mismatch")
-        source_fingerprint = left_source if left_source is not None else "same_reference_object"
+        if lr is not rr:
+            left_source = _source_fingerprint(lr)
+            right_source = _source_fingerprint(rr)
+            if left_source is None or right_source is None:
+                return _bad("source_identity_unverifiable_or_untrusted_interpolant")
+            if left_source != right_source:
+                return _bad("source_reference_mismatch")
+        else:
+            left_source = _source_fingerprint(lr)
+
+        source_fingerprint = left_source if left_source is not None else "same_reference_object_unfingerprinted"
         def knots(sol, traj):
             seq = [np.asarray(sol.distance, dtype=float), np.asarray(traj.reference.source_station, dtype=float),
                    np.asarray(traj.spline.control_distance, dtype=float)]

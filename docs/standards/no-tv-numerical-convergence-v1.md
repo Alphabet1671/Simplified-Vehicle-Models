@@ -100,11 +100,14 @@ envelope membership are not certified by this implementation.
 All inputs, evaluator values, metrics, and exact path lengths must be finite;
 source endpoints and periodicity must match, and the metric must remain
 positive. Source equivalence is required: the same exact reference object may
-be used directly, otherwise a canonical fingerprint of source station and
-reference XY under a known coordinate-frame convention must match. Unknown
-frame/provenance or same endpoints without matching source geometry fails
-closed. Candidate trajectory XY must not be substituted for source-reference
-XY when computing this identity. Sampled envelope checks are labeled as sampled
+be used directly for a diagnostic comparison. Cross-object fingerprint matching
+is restricted to the exact trusted repository `ReferenceCurve` implementation,
+whose canonical source station and source XY are evaluated in the documented
+north/east world frame. Arbitrary custom interpolators are not fingerprinted:
+equal knot samples cannot prove equal interpolation between knots, so separate
+custom objects fail closed even if endpoints, knot data, and declared frame
+match. Candidate offset trajectory XY must not be substituted for
+source-reference XY when computing identity. Sampled envelope checks are labeled as sampled
 only. These comparisons do not replace feasibility checks: the existing
 independent `DEFAULT_TOLERANCES` remain unchanged.
 

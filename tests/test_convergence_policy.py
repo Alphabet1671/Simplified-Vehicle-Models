@@ -164,7 +164,7 @@ class NumericalConvergencePolicyTests(unittest.TestCase):
         right.trajectory.spline.control_distance = np.asarray([0., .5, 1.])
         result = compare_trajectory_states(left, right)
         self.assertFalse(result["meets_accuracy_budget"])
-        self.assertEqual(result["reason"], "source_reference_mismatch")
+        self.assertIn("source_identity_unverifiable", result["reason"])
 
     def test_unknown_frame_fails_closed_without_matching_source_proof(self):
         left = Solution(lambda s: np.zeros_like(s))
@@ -172,6 +172,30 @@ class NumericalConvergencePolicyTests(unittest.TestCase):
         left.trajectory.reference.coordinate_frame = "unknown"
         right.trajectory.reference.coordinate_frame = "unknown"
         self.assertIn("source_identity_unverifiable", compare_trajectory_states(left, right)["reason"])
+
+    def test_custom_sources_with_matching_knots_but_different_off_knot_curve_rejected(self):
+        left = Solution(lambda s: np.zeros_like(s))
+        right = Solution(lambda s: np.zeros_like(s))
+        # Even if both custom interpolators declare the same frame and agree at
+        # all stored knots, their behavior between knots is not proven equal.
+        left.trajectory.reference = SourceReference((0., .5, 1.), source_delta=0.)
+        right.trajectory.reference = SourceReference((0., .5, 1.), source_delta=0.)
+        left.trajectory.reference.evaluate = lambda s: SimpleNamespace(
+            north=np.asarray(s), east=np.zeros_like(np.asarray(s)))
+        right.trajectory.reference.evaluate = lambda s: SimpleNamespace(
+            north=np.asarray(s) + .1*np.sin(2*np.pi*np.asarray(s))**2,
+            east=np.zeros_like(np.asarray(s)))
+        result = compare_trajectory_states(left, right)
+        self.assertIsNone(result["meets_accuracy_budget"])
+        self.assertIn("source_identity_unverifiable", result["reason"])
+
+    def test_custom_same_reference_object_is_sufficient_for_diagnostic_comparison(self):
+        shared = SourceReference((0., 1.))
+        result = compare_trajectory_states(
+            Solution(lambda s: np.zeros_like(s), reference=shared),
+            Solution(lambda s: np.zeros_like(s), reference=shared))
+        self.assertIn("same_reference_object", result["source_fingerprint"])
+        self.assertIsNone(result["meets_accuracy_budget"])
 
     def test_bad_domain_and_nonfinite_fail_closed(self):
         left, right = Solution(lambda s: np.zeros_like(s)), Solution(lambda s: np.zeros_like(s))

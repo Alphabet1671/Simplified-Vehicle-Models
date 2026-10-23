@@ -7,14 +7,27 @@
 This is a versioned engineering accuracy proposal for comparing two numerical
 trajectory representations. It is not a physical prediction validation, track
 controller qualification, vehicle-readiness statement, or permission to relax
-feasibility checks. The declared requirements below are derived from a
-consumer-reference error budget before any final candidate comparison; they
-must not be adjusted to make current candidates pass. Independent review must
-examine the derivation. No reviewer or external approval is claimed here.
+feasibility checks. Every numerical threshold and consumer-envelope bound below
+is an **unapproved design assumption**, not an evidence-derived or approved
+consumer requirement. No suitable approved all-track trajectory-accuracy
+requirements were identified. Independent consumer evidence and review are
+required before any threshold can be called a requirement. No reviewer or
+external approval is claimed here.
 
-## Consumer envelope and lateral-acceleration allocation
+## Unapproved envelope and illustrative allocation (not requirements)
 
-The numerical-reference consumer envelope is speed `v <= 30 m/s`, absolute
+The values in this section and the following comparison table are assumptions
+for review only. A repository consumer-requirements audit found existing
+runner-tracking and periodic-closure tolerances, but these address other scopes;
+they do not establish general all-track trajectory accuracy, speed, curvature,
+clearance, or lap-time requirements. No approved all-track consumer requirements
+were found. Before a future approval decision, obtain consumer-owner evidence
+for operating envelopes, spatial and temporal fidelity, geometry/clearance,
+state/speed/curvature tolerances, and application-specific weighting; record
+sensitivity and rationale for each allocation. Do not infer approval from
+unrelated harness or closure tolerances.
+
+For arithmetic illustration only, this proposed envelope is speed `v <= 30 m/s`, absolute
 curvature `|k| <= 0.24 /m`, and wheelbase `L = 1.535 m` (the current vehicle
 value). This defines the domain for this numerical accuracy policy; it is not a
 vehicle performance cap. Values outside it are **not qualified** by this
@@ -35,9 +48,13 @@ reserved within the declared allocation. The corresponding feed-forward
 steering error from curvature perturbation is bounded by `L * dk =
 1.535e-5 rad`.
 
-## Frozen comparison requirements
+## Unapproved comparison assumptions (not pass criteria)
 
-| Quantity | RMS limit | Maximum / other limit |
+The following proposed numbers are stored only to enable review of an explicit
+candidate allocation. They have not been accepted as consumer requirements and
+must not be used to label candidates qualified or to alter harness status.
+
+| Quantity | RMS assumption | Maximum / other assumption |
 |---|---:|---:|
 | XY reference position | 0.005 m | 0.02 m |
 | Lateral offset | 0.005 m | 0.02 m |
@@ -48,10 +65,11 @@ steering error from curvature perturbation is bounded by `L * dk =
 | Lap time | — | absolute 0.01 s **and** relative 0.001 |
 | Path length | — | absolute 0.05 m **and** relative 1e-4 |
 
-The geometry maxima and RMS limits are separate requirements; a small RMS does
-not waive a failed maximum. The `0.02 m` geometry maximum is one percent of a
-declared `2 m` reference-clearance accuracy context. It is not a physical
-corridor allowance or a waiver of any geometry/corridor constraint.
+The geometry maxima and RMS assumptions are separate proposed metrics; a small
+RMS does not waive an observed sampled maximum. The `0.02 m` geometry value was
+motivated by a hypothetical `2 m` reference-clearance context only. No evidence
+establishes that clearance as a consumer requirement, and this number is not a
+physical corridor allowance or waiver of any geometry/corridor constraint.
 
 ## Sampling uncertainty and comparison method
 
@@ -68,21 +86,27 @@ smoothing a path. Exact station-map endpoints provide path length, while
 physical lap-time values are compared as reported rather than recomputed from
 an OCP.
 
-Sampling uncertainty is estimated empirically as twice the larger of the last
-two adjacent refinement changes for each RMS and maximum statistic. This is
-not a formal error bound. Each of those changes must be no greater than ten
-percent of its corresponding budget, the estimate itself must be no greater
-than ten percent, and measured error plus estimated uncertainty must remain
-within the full budget. If that stability is not resolved by the configured
-refinement limit, the comparison is incomplete (`meets_accuracy_budget: null`)
-and cannot pass. A measured over-budget result is a failure even before
-sampling uncertainty is resolved.
+Adjacent-grid changes are empirical refinement diagnostics only; they are not
+a formal error bound. In particular, stable nested grids cannot rule out an
+unsampled narrow peak. The comparator always returns
+`maximum_accuracy_certified: false`. Sampled RMS/max values, sampled envelope
+checks, and refinement changes are diagnostic fields, not certificates.
+`meets_accuracy_budget` remains `null` for a comparison with no known sampled
+or integral violation; it is `false` if a sampled or exact integral check
+already establishes a violation. It is never `true` merely because sampled
+values or refinement changes look stable. Continuous maxima and continuous
+envelope membership are not certified by this implementation.
 
 All inputs, evaluator values, metrics, and exact path lengths must be finite;
 source endpoints and periodicity must match, and the metric must remain
-positive. Malformed, nonfinite, or incompatible inputs fail closed. These
-comparisons do not replace feasibility checks: the existing independent
-`DEFAULT_TOLERANCES` remain unchanged.
+positive. Source equivalence is required: the same exact reference object may
+be used directly, otherwise a canonical fingerprint of source station and
+reference XY under a known coordinate-frame convention must match. Unknown
+frame/provenance or same endpoints without matching source geometry fails
+closed. Candidate trajectory XY must not be substituted for source-reference
+XY when computing this identity. Sampled envelope checks are labeled as sampled
+only. These comparisons do not replace feasibility checks: the existing
+independent `DEFAULT_TOLERANCES` remain unchanged.
 
 ## Versioning, hash, and approval boundary
 

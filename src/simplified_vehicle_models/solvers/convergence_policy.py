@@ -24,6 +24,7 @@ class AccuracyPolicy:
     identifier: str
     claim: str
     status: str
+    requirements_status: str
     operating_envelope: Mapping[str, Any]
     thresholds: Mapping[str, Any]
     derivation: Mapping[str, Any]
@@ -62,6 +63,7 @@ NUMERICAL_POLICY_V1 = AccuracyPolicy(
     schema="simplified_vehicle_models.numerical_accuracy_policy",
     version="1.0.0", identifier="no-tv-numerical-convergence-v1",
     claim="numerical_reference_accuracy", status="proposed_pending_independent_review",
+    requirements_status="unapproved_assumptions_for_review",
     operating_envelope=_frozen_map({"speed_max_m_s": 30.0, "abs_curvature_max_per_m": 0.24,
                                    "wheelbase_m": 1.535, "outside_envelope": "not_qualified_no_clipping"}),
     thresholds=_frozen_map({
@@ -90,10 +92,48 @@ def _get(obj: Any, name: str, default=None):
     return getattr(obj, name, default)
 
 
-def _bad(reason: str, *, policy=NUMERICAL_POLICY_V1) -> dict[str, Any]:
+def _source_fingerprint(reference: Any, trajectory: Any) -> str | None:
+    """Hash source station/XY plus an explicitly known world-frame convention."""
+    frame = getattr(reference, "coordinate_frame", None)
+    if frame is None:
+        # ReferenceCurve is constructed from PathCoordinates whose documented
+        # convention is north/east/down; synthetic/custom objects must declare it.
+        if type(reference).__name__ == "ReferenceCurve" and type(reference).__module__ == "simplified_vehicle_models.tracks.line_trajectory":
+            frame = "world_X_north_Y_east_Z_down_v1"
+        else:
+            return None
+    if frame != "world_X_north_Y_east_Z_down_v1":
+        return None
+    station = np.asarray(getattr(reference, "source_station", ()), dtype="<f8")
+    if station.ndim != 1 or station.size < 2 or not np.all(np.isfinite(station)) or np.any(np.diff(station) <= 0):
+        return None
+    try:
+        evaluator = reference if hasattr(reference, "evaluate") else None
+        if evaluator is None:
+            return None
+        geom = evaluator.evaluate(station)
+        north = np.asarray(geom.north, dtype="<f8")
+        east = np.asarray(geom.east, dtype="<f8")
+    except (AttributeError, TypeError, ValueError):
+        return None
+    if north.shape != station.shape or east.shape != station.shape or not np.all(np.isfinite(north)) or not np.all(np.isfinite(east)):
+        return None
+    digest = hashlib.sha256()
+    digest.update(b"reference-source-v1\\0")
+    digest.update(frame.encode("ascii"))
+    digest.update(b"\\0closed=" + (b"1" if bool(getattr(reference, "is_closed", False)) else b"0"))
+    for array in (station, north, east):
+        digest.update(np.asarray(array, dtype="<f8").tobytes(order="C"))
+    return digest.hexdigest()
+
+
+def _bad(reason: str, *, known_violation: bool = False,
+         policy=NUMERICAL_POLICY_V1) -> dict[str, Any]:
     return {"policy_id": policy.identifier, "policy_sha256": policy.sha256,
-            "policy_status": policy.status, "accepted": False,
-            "meets_accuracy_budget": False, "complete": False, "reason": reason,
+            "policy_status": policy.status, "requirements_status": policy.requirements_status,
+            "accepted": False, "maximum_accuracy_certified": False,
+            "meets_accuracy_budget": False if known_violation else None,
+            "complete": False, "reason": reason,
             "metrics": {}, "estimated_sampling_error": {}}
 
 
@@ -124,6 +164,13 @@ def compare_trajectory_states(left: Any, right: Any, *, maximum_refinements: int
             return _bad("source_domain_mismatch")
         if bool(lr.is_closed) != bool(rr.is_closed):
             return _bad("periodicity_mismatch")
+        left_source = _source_fingerprint(lr, lt)
+        right_source = _source_fingerprint(rr, rt)
+        if lr is not rr and (left_source is None or right_source is None):
+            return _bad("source_identity_unverifiable_or_unknown_frame")
+        if lr is not rr and left_source != right_source:
+            return _bad("source_reference_mismatch")
+        source_fingerprint = left_source if left_source is not None else "same_reference_object"
         def knots(sol, traj):
             seq = [np.asarray(sol.distance, dtype=float), np.asarray(traj.reference.source_station, dtype=float),
                    np.asarray(traj.spline.control_distance, dtype=float)]
@@ -185,7 +232,7 @@ def compare_trajectory_states(left: Any, right: Any, *, maximum_refinements: int
                     or np.any(speed_right > envelope["speed_max_m_s"])
                     or np.any(np.abs(curvature_left) > envelope["abs_curvature_max_per_m"])
                     or np.any(np.abs(curvature_right) > envelope["abs_curvature_max_per_m"])):
-                return _bad("outside_consumer_operating_envelope_not_qualified")
+                return _bad("outside_consumer_operating_envelope_not_qualified", known_violation=True)
             weight = metric_mean
             ds = np.diff(stations)
             metrics = {}
@@ -218,7 +265,8 @@ def compare_trajectory_states(left: Any, right: Any, *, maximum_refinements: int
                     if changes[-1][n][kind] > .1*budget or changes[-2][n][kind] > .1*budget:
                         stable = False
                     uncertainty[f"{n}_{kind}"] = 2*max(changes[-1][n][kind], changes[-2][n][kind])
-        within = all(last[n][kind] <= thresholds[n][idx] for n in names for kind, idx in (("rms", 0), ("max", 1)))
+        sampled_over = any(last[n][kind] > thresholds[n][idx]
+                           for n in names for kind, idx in (("rms", 0), ("max", 1)))
         uncertainty_ok = stable and all(uncertainty.get(f"{n}_{kind}", math.inf) <= .1*thresholds[n][idx]
                                         and last[n][kind] + uncertainty.get(f"{n}_{kind}", math.inf) <= thresholds[n][idx]
                                         for n in names for kind, idx in (("rms", 0), ("max", 1)))
@@ -227,14 +275,18 @@ def compare_trajectory_states(left: Any, right: Any, *, maximum_refinements: int
         time_ok = time_abs <= .01 and time_rel <= .001
         length_ok = length_abs <= .05 and length_rel <= 1e-4
         non_sampling_ok = time_ok and length_ok
-        aggregate = within and uncertainty_ok and non_sampling_ok
-        budget_result = (False if not within or not non_sampling_ok else
-                         (bool(aggregate) if uncertainty_ok else None))
+        known_violation = sampled_over or not non_sampling_ok
+        budget_result = False if known_violation else None
         return {"policy_id": NUMERICAL_POLICY_V1.identifier, "policy_sha256": NUMERICAL_POLICY_V1.sha256,
-                "policy_status": NUMERICAL_POLICY_V1.status, "accepted": False,
+                "policy_status": NUMERICAL_POLICY_V1.status,
+                "requirements_status": NUMERICAL_POLICY_V1.requirements_status,
+                "accepted": False, "maximum_accuracy_certified": False,
                 "meets_accuracy_budget": budget_result,
-                "complete": bool(uncertainty_ok), "reason": None if uncertainty_ok else "sampling_uncertainty_unresolved",
-                "sampling_uncertainty_kind": "empirical_twice_larger_of_last_two_level_changes_not_formal_bound",
+                "sampled_metrics_within_budget": not sampled_over,
+                "complete": bool(uncertainty_ok),
+                "reason": ("known_sampled_or_integral_budget_violation" if known_violation else
+                           "unsampled_maximum_not_certified"),
+                "sampling_uncertainty_kind": "empirical_refinement_stability_diagnostic_not_formal_unsampled_bound",
                 "metrics": last, "estimated_sampling_error": uncertainty,
                 "adjacent_level_changes": changes[-2:], "stable_two_levels": stable,
                 "lap_time": {"left_s": lap_times[0], "right_s": lap_times[1], "absolute_s": time_abs, "relative": time_rel,
@@ -242,7 +294,9 @@ def compare_trajectory_states(left: Any, right: Any, *, maximum_refinements: int
                 "pathlength": {"left_m": path_lengths[0], "right_m": path_lengths[1], "absolute_m": length_abs,
                                "relative": length_rel, "passes": length_ok},
                 "source_interval_count": int(base.size-1), "refinement_levels": maximum_refinements+1,
+                "source_fingerprint": source_fingerprint,
                 "operating_envelope": dict(NUMERICAL_POLICY_V1.operating_envelope),
-                "envelope_checked": False, "qualification_note": "caller must verify consumer envelope; out-of-envelope is not qualified"}
+                "sampled_envelope_checked": True, "continuous_envelope_certified": False,
+                "qualification_note": "sampled envelope only; unsampled envelope and maxima are uncertified"}
     except (AttributeError, TypeError, ValueError, OverflowError, FloatingPointError) as exc:
         return _bad(f"invalid_comparison_input:{type(exc).__name__}:{exc}")

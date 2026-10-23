@@ -1,5 +1,7 @@
 """Focused contract tests for state-aware forward command mapping."""
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import numpy as np
 
@@ -117,6 +119,33 @@ class ForwardCommandMapperTests(unittest.TestCase):
             self.run_forward(plant, command_mapper=mapper)
         self.assertIs(caught.exception, error)
         self.assertEqual(len(calls), 2)
+
+    def test_accepted_validation_mapper_trial_state_error_propagates_original(self):
+        error = TrialStateError("accepted validation mapper failure")
+        calls = []
+        def mapper(*args):
+            calls.append(args)
+            # Initial check, solver RHS calls, then accepted-state replay.
+            if len(calls) == 1:
+                return args[3]
+            raise error
+        fake_result = SimpleNamespace(
+            success=True, message="ok", t=np.array([0.]), y=self.initial[:, None],
+            t_events=[np.array([])], sol=lambda time: self.initial.copy())
+        with patch("scipy.integrate.solve_ivp", return_value=fake_result):
+            with self.assertRaisesRegex(TrialStateError,
+                                        "accepted validation mapper failure") as caught:
+                self.run_forward(LinearPlant(), command_mapper=mapper)
+        self.assertIs(caught.exception, error)
+        self.assertGreater(len(calls), 1)
+
+    def test_initial_no_pedal_mapper_trial_state_error_propagates_original(self):
+        error = TrialStateError("initial mapper failure")
+        def mapper(*args):
+            raise error
+        with self.assertRaisesRegex(TrialStateError, "initial mapper failure") as caught:
+            self.run_forward(LinearPlant(), command_mapper=mapper)
+        self.assertIs(caught.exception, error)
 
     def test_plant_trial_state_error_remains_a_retry(self):
         class RetryPlant(LinearPlant):

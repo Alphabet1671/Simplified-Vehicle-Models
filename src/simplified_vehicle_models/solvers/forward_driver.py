@@ -611,7 +611,7 @@ def solve_forward(plant: ForwardPlant, driver: PreviewDriver, initial_state,
     #: The command of the latest ``state_rates`` call, read only by ``step_sink``.
     applied = [None]
 
-    def state_rates(time, state):
+    def raw_state_rates(time, state):
         plant_state = state[:plant_size]
         observation = plant.observe(plant_state)
         requested = driver.command(observation)
@@ -627,6 +627,12 @@ def solve_forward(plant: ForwardPlant, driver: PreviewDriver, initial_state,
         rates = plant.evaluate(time, plant_state, realized).solve()
         return np.r_[rates, driver.pedal_rate(position, driver.pedal_target(requested))]
 
+    def state_rates(time, state):
+        try:
+            return raw_state_rates(time, state)
+        except _CommandMapperTrialStateError as error:
+            raise error.original from None
+
     # Reject an invalid initial state before the integrator can retry trials.
     state_rates(0., initial)
 
@@ -636,7 +642,7 @@ def solve_forward(plant: ForwardPlant, driver: PreviewDriver, initial_state,
             raise TimeoutError("forward integration exceeded its wall budget")
         evaluations += 1
         try:
-            rates = state_rates(time, state)
+            rates = raw_state_rates(time, state)
         except _CommandMapperTrialStateError as error:
             raise error.original from None
         except TrialStateError:

@@ -1,172 +1,176 @@
-# No-TV Minimum-Lap Reliability Matrix
+# No-TV Minimum-Lap Reliability Harness
 
-## Purpose and scope
+## Purpose, scope, and present verdict
 
 [`verify_no_tv_minimum_lap.py`](../../tools/diagnostics/verify_no_tv_minimum_lap.py)
 is a bounded, reproducible **no torque-vectoring** evidence harness for the
-existing spline minimum-time line solver. It neither installs a controller nor
-changes controller globals, modes, vehicle physics, capability/source inputs,
-or solver behavior. It is not an event-result, standing-start, or vehicle
-acceptance runner.
+existing spline minimum-time line solver. It does not install a controller or
+change controller globals, vehicle physics, source inputs, capability archives,
+or solver behavior merely by running. It is not an event-result,
+standing-start, or vehicle-acceptance runner.
 
-It uses the existing `solve_spline_line`, authoritative spline trajectory,
-Hermite--Simpson dense-state evaluator, and `validate_line`. It does not
-reconstruct or smooth physics outside those APIs.
+**Current verdict (reviewed at HEAD `c934b01`):** the harness and several
+numerical safeguards are implemented and focused-reviewed, but the global
+no-TV study is **incomplete**. A narrow rolling acceleration diagnostic has
+passing dense/live evidence across two mesh rungs and a genuine four-versus-six
+control basis comparison. It does not establish robust curved-track results,
+all six registered cases, standing-start event timing, a global numerical
+acceptance, or physical predictive validity. The detailed, dated measurement
+ledger is [`no-tv-reliability-results-2026-10-22.md`](no-tv-reliability-results-2026-10-22.md).
 
-## Registered and diagnostic rungs
+The implementation uses the existing `solve_spline_line`, authoritative spline
+trajectory, Hermite--Simpson dense-state evaluator, and `validate_line`; it
+does not reconstruct or smooth physics outside those APIs.
 
-The preregistered mesh rungs are `5`, `2.5`, and `1.25 m`; the preregistered
-nominal offset-basis spacings are `35` and `17.5 m`. The output labels those
-rungs as `preregistered`. A non-registered mesh (including `.625 m`) or basis
-spacing requires `--diagnostic-rungs` and is persisted as
-`diagnostic_not_preregistered`; it must never be presented as preregistered
-evidence.
+## Registered cases, rungs, and defaults
 
-The exact default off-collocation tuple remains the existing solver behavior:
-`(1/8, 1/4, 3/4, 7/8)`. Omitting `--off-collocation-divisions` preserves it
-exactly. An explicit `--off-collocation-divisions 32` selects every `i/32`
-interior fraction except the midpoint. The harness rejects invalid counts,
+The six registered cases are `mis_closed`, `mis_cut_open`, `fsc_closed`,
+`fsc_cut_open`, `skidpad`, and `acceleration`. The preregistered mesh rungs are
+`5`, `2.5`, and `1.25 m`; nominal offset-basis spacings are `35` and `17.5 m`.
+A non-registered mesh (including `.625 m`) or basis needs
+`--diagnostic-rungs` and is persisted as `diagnostic_not_preregistered`; it
+cannot be presented as preregistered evidence.
+
+The default off-collocation tuple remains the legacy solver behavior:
+`(1/8, 1/4, 3/4, 7/8)`. Omitting `--off-collocation-divisions` preserves it.
+An explicit `--off-collocation-divisions 32` selects every `i/32` interior
+fraction except the midpoint. Defaults are `--nlp-tolerance 1e-6` and
+`--dense-maximum-refinements 4`. The harness rejects invalid division counts,
 non-finite/non-positive NLP tolerances, and dense refinement counts below two.
-Defaults are `--nlp-tolerance 1e-6` and
-`--dense-maximum-refinements 4`; the measured run below used `1e-8`, `32`, and
-six refinements. No custom validation tolerance or tolerance-relaxation switch
-is offered.
+No custom validation tolerance or tolerance-relaxation switch is offered.
 
-Each request persists its complete settings. JSON transport changes the
-settings tuple to a list, and the spawned worker restores it to the immutable
-`QssSettings` tuple before solving.  The optional energy-NLP initializer is
-also canonicalized in the request: `seed_profile`, strictness, resolved profile
-step, iteration limit, and wall limit are recorded, then the worker records the
-actual seed fingerprint and whether it used the projection or explicit old
-seed. A profile projection is not claimed feasible or globally optimal.
+`QssSettings.control_representation` defaults to the legacy
+`quadratic_acceleration_v1`; old artifacts that lack the field are explicitly
+identified as legacy rather than silently reinterpreted. The reviewed opt-in
+`quadratic_energy_rate_over_metric_v1` representation uses a
+metric-consistent energy-rate control. At physical node/midpoint capability
+sites it uses raw physical acceleration; at off-sites it evaluates the
+quadratic interpolation of `F = 2 a G` and converts with `a = F / (2G)`.
+This makes the Hermite--Simpson energy equation consistent with the independent
+energy derivative (`W_s = F`) without changing the legacy default. Its old
+acceleration Bernstein certificate is intentionally not claimed for the new
+representation; the positive energy floor remains.
 
-## Artifacts and qualification protections
+`QssSettings.speed_domain_margin_mps` also defaults to `0.0`, preserving the
+legacy feasible set. A finite non-negative positive value requires
+`domain_speed - v >= margin` at nodes, midpoints, and configured off-sites and
+requires a compatible capability-domain floor before construction. It is an
+explicit **conservative inner-domain profile**, not a relaxation, correction
+of validation, or claim that the resulting time is the unrestricted zero-margin
+physical optimum. The legacy per-node builder/solver rejects a nonzero margin.
+The harness records both the selected representation and margin in request,
+result, and solution metadata.
 
-Each attempt has an exclusive output directory and writes `request.json`,
-`result.json`, and, after a solver return, `solution.npz`. The artifact records
-`state_representation`, `time_quadrature`, and serialized `time_metadata`.
-The separately written `trajectory_metadata.npz` is produced by the existing
-runner serializer and records exact reference and station-map metadata. These
-fields make energy-state and time-quadrature interpretation unambiguous without
-changing runner output semantics.
+## Artifacts, provenance, and qualification protections
 
-The existing protections remain unchanged: spawned-process wall timeout is
-authoritative, child evidence is retained separately; source SHA-256 values
-are recorded before and after every attempt; and strict acceptance remains
-fail-closed. The parent captures actual Git HEAD, tracked-dirty manifest,
-SHA-256 hashes for the executed harness/solver/geometry/validation/profile
-implementation, and Python/NumPy/CasADi runtime versions before spawn and
-again after each attempt. `--base-commit` is optional and, if supplied, must
-resolve to that exact HEAD; use `--baseline-label` for a historical comparison
-label. Qualified mesh/basis comparisons additionally require solver success,
-dense geometry/feasibility, live original-model feasibility, identical actual
-initializer fingerprint, settings, source hashes, code/runtime provenance, and
-exactly one changed axis.
+Each attempt receives an exclusive output directory and writes `request.json`,
+`result.json`, and, after a solver return, `solution.npz`. It records
+`state_representation`, `time_quadrature`, serialized `time_metadata`, control
+representation, and speed-domain margin. The runner-generated
+`trajectory_metadata.npz` records reference and station-map metadata.
 
-## Optional matched fixed-path reference
+The spawned-process wall timeout is authoritative and child evidence is kept
+separately. Before spawn and after every attempt, the parent captures actual
+Git HEAD, tracked-dirty manifest, hashes for the executed harness/solver/
+geometry/validation/profile implementation, runtime versions, and source-input
+hashes. `--base-commit` is optional only; if used, it must resolve to that
+actual HEAD. For current reproductions, do **not** supply a stale
+`--base-commit` override; use `--baseline-label` only for a historical
+comparison label. The reviewed evidence-policy changes `c2aa8c0` and `8d8ed57`
+keep initializer comparison stable by comparing requested strategy, resolved
+options, actual outcome/fallback category, and implementation/runtime rather
+than dimension-specific seed bytes or elapsed diagnostics. They also persist
+actual resolved HEAD, code/runtime/input provenance, and the distinct baseline
+label.
 
-`--matched-reference` is opt-in; its default is false, preserving the previous
-attempt behavior and `null` (`None`) matched-baseline/replay checks.  After the
-candidate artifact and exact trajectory metadata have been persisted, the
-worker computes a `capability_profile` on the candidate's exact analytic
-trajectory/path station map and a separate zero-offset analytic centerline
-trajectory.  The boundary is the declared `closed_flying` or `open_rolling_10`
-treatment; no standing-start phase, forward clipping, or synthetic event start
-is introduced.
+A mesh or basis edge can qualify only with solver success, dense geometry and
+feasibility, live original-model feasibility, identical qualified initializer/
+settings/provenance, and exactly one changed axis. Nominal basis labels are not
+a basis refinement when they realize the same control grid. A solver-returned
+row also needs an actual success status; a diagnostic payload cannot promote a
+failed solve.
 
-The declared capability-profile steps are `1.0`, `.5`, and `.25 m`.  The
-persisted output records each actual profile's status, iterations, time, and
-max-change.  Passing reference evidence requires both `.5` and `.25 m` profiles
-to converge, their sampled-time change to be at most the existing `0.5%`
-comparison limit, and the candidate `.25 m` profile time to agree with the
-reported solution time to the existing `1%` replay limit.  The same convergence
-requirement applies to the independent zero-offset baseline; the free candidate
-must not be slower than it beyond the existing physical time tolerance.
+The optional `--matched-reference` default is false. If selected, it produces
+candidate and zero-offset fixed-path capability profiles at `1.0`, `.5`, and
+`.25 m`, retaining profile failures rather than erasing the candidate. Passing
+reference evidence requires converged `.5`/`.25 m` profiles, their existing
+`0.5%` sampled-time comparison, the existing `1%` replay agreement, and a
+no-slower free candidate under the existing physical-time tolerance. This is a
+sampled fixed-path surrogate, not original-plant or empirical validation.
 
-This is a sampled **capability-table fixed-path surrogate**, not an empirical
-or original-plant validation.  It records analytic station-map replay RMS speed
-and path sampling RMS, but cannot make `physically_validated` true.  A profile
-exception/failure is retained explicitly with false reference checks rather
-than crashing the worker or erasing the candidate artifact.
+## Convergence policy and honest strict status
 
-At aggregation, strict `numerically_validated` status is possible only per
-case when one actual same-condition source/settings/seed-qualified edge
-establishes each mesh and distinct realized-grid basis axis, and both endpoints
-of that exact edge carry passing matched baseline and replay evidence.  Edges
-are never unioned or re-paired across configurations. Solver-returned rows also
-need an actual success status in addition to dense/live checks; a failed status
-cannot qualify even if a diagnostic payload says true. Nominal `35/17.5` labels
-with the same realized control grid remain ineligible.
+Workers carry common source-station samples for RMS XY, metric, offset, speed,
+curvature, and path-length comparisons. `rms_path` is retained only as a
+backward-compatible alias for offset RMS; it is not an XY claim.
 
-The default aggregate always evaluates all six preregistered cases and requires
-coverage of every registered mesh (`5`, `2.5`, `1.25 m`) and nominal basis rung
-(`35`, `17.5 m`) with actual passing reference/dense/live rows. Diagnostic
-rungs (including `.625 m` and custom bases) remain recorded as diagnostics and
-cannot establish global study coverage. Thus a bounded subset can report its
-per-case evidence but cannot mark the full study accepted; missing, unresolved,
-or candidate-only cases keep it incomplete.
+There is **no approved, source-hashed dimensional geometry/state convergence
+policy** for this study. User-supplied
+`--convergence-criteria-json` budgets remain diagnostic only: even finite
+passing CLI budgets cannot promote strict numerical validation. Therefore the
+geometry/state strict gate is `None` and the aggregate remains `incomplete`
+until an approved policy and supporting real measurements exist. This
+fail-closed rule, together with missing registered rungs/cases, is why the
+implemented harness must not be described as a globally ready simulator.
 
-Nominal basis spacing alone is not treated as an actual basis refinement.
-Every result records its realized `control_count` and `control_station_m`; two
-nominal spacings producing an identical realized grid remain candidate-only.
+## Runtime, source data, and reproducibility
 
-## Common-source convergence evidence
+The reviewed measurements used the explicit runtime:
 
-Each real worker artifact also carries dense samples evaluated from the exact
-trajectory and dense state evaluator on a common source-station grid: source
-station, mapped path station, north/east coordinates, metric, offset, speed,
-curvature, and derived path length. Aggregation displays RMS XY, metric,
-offset, speed, curvature, and relative length differences. `rms_path` remains
-only as a backward-compatible alias for offset RMS; it is not an XY claim.
+```bash
+CURRENTPYTHONPATH=src:/tmp/no-tv-casadi-runtime
+PYTHONPATH="$CURRENTPYTHONPATH" python3 -c \
+  "import casadi, numpy; print(casadi.__version__, numpy.__version__)"
+# CasADi 3.8.1; NumPy 2.5.4
+```
 
-No universal geometry/state thresholds are invented by this harness. Without
-an explicit `--convergence-criteria-json` object declaring finite, nonnegative
-budgets for all six dimensional metrics, this evidence is `None` for
-qualification and strict aggregation stays `incomplete`, even when the existing
-0.5% time edge and 1% replay tests pass. Declared criteria are serialized with
-every request and must pass at both endpoints; malformed, nonfinite, negative,
-or incomplete criteria are refused.
+The immutable source targets and their SHA-256 values are also preserved in the
+ignored local workspace record
+[`.superpowers/sdd/2026-10-22-no-tv-lap-reliability/source-hashes.txt`](../../.superpowers/sdd/2026-10-22-no-tv-lap-reliability/source-hashes.txt):
 
-## Parent measured evidence (2026-10-22)
-
-The following parent measurements are recorded at
-[`gl16_energy_dense_sites_runtime38`](../../runs/no_tv_reliability/gl16_energy_dense_sites_runtime38)
-for the acceleration course. They are rolling-10 open-course diagnostics, not
-standing-start event times:
-
-| Item | Observed result |
+| SHA-256 | Immutable target |
 |---|---|
-| Settings | mesh `1.25` and diagnostic `.625 m`; nominal basis `35 m`; rolling start `10 m/s`; NLP tolerance `1e-8`; 32 explicit off-collocation divisions; old-state warm start; dense maximum refinements six |
-| Solve status | strict success at both mesh rungs: 46 and 42 iterations; `4.508864642 s` and `4.508859374 s` |
-| Dense validation | geometry, dense feasibility, and live original-model checks true for both; independent profile with `.25 m` step agreed at approximately `1.1e-6` / `7e-8` relative |
-| Seed/nominal basis checks | centerline and perturbed seeds with nominal `35` and `17.5 m` returned strict successes near `4.508864651 s`, and independent dense checks passed |
+| `b9164ebbf2851b0e33b4a9a174c230eefa66e296b72e5b0fb9e10ef373071ca3` | `models/tracks/2024_michigan_endurance_closed_edged.xml` |
+| `ff8dcdc715eaff07eeb1d7a9e0a0739072480150577622ec8854000a0a44dbd4` | `models/tracks/2024_michigan_endurance_closed.csv` |
+| `276dce781d08db9d88dd77728b7389157a5cff351eb991055f39fde780846d84` | `models/tracks/2024_michigan_endurance_closed_width.csv` |
+| `b77fb256d1a24c7281ab43e84c643b78a499a11fd894610e306db3078ef69beb` | `tracks_out/fsc_may_2026.xml` |
+| `a3ba06448c663df79a09f0ae0ac1ab50adfc32ee07b7efbf4344c2f3569eba9b` | `tracks_out/fsc_may_2026.csv` |
+| `7a02c6e81971473445f6c82f963d9b6d4efabdcc7c83fc891661367443d0be71` | `models/tracks/fsae_2026_skidpad.xml` |
+| `97c2f3f868af1838444e2a0626e4308b67ff90828feed6a6ec35c4a2edb7d4fe` | `models/tracks/fsae_2026_acceleration.xml` |
 
-This is achieved mesh/refinement and seed-repeat evidence for this narrow
-rolling diagnostic. It does **not** establish all-track acceptance, an event
-standing start, torque-vectoring behavior, or a general solver guarantee.
+The local `runs/` outputs and `.superpowers/` working notes are deliberately
+ignored and are **not versioned deliverables**. They retain commands, result
+JSON, NPZ states, and source hashes for reproduction but must not be mistaken
+for committed curated evidence. Build a new exclusive signed chart rather than
+overwriting an existing artifact:
 
-### Explicit remaining limitation: basis convergence is unavailable
+```bash
+CURRENTPYTHONPATH=src:/tmp/no-tv-casadi-runtime
+PYTHONPATH="$CURRENTPYTHONPATH" python3 tools/model_data/build_signed_capability.py \
+  --formulation models/formulations/iem24_murphy_real_planar_7dof.xml \
+  --interval-fit linear_program \
+  --output runs/no_tv_reliability/signed_lp_fullrange_product_rebuild.npz
+```
 
-On this approximately `75.3 m` course, the nominal `35 m` and `17.5 m`
-settings both realize the same four control stations (`0`, `25.1`, `50.2`,
-`75.3 m`). Therefore their agreement is not a basis-convergence result. The
-actual diagnostic `12 m` basis creates six controls but hit the maximum
-iteration cap (initial cap 100); it is not accepted as basis evidence. A real
-basis refinement with distinct realized grids and qualified solves remains
-required.
+A bounded acceleration smoke reproduction (with no stale `--base-commit`) is:
 
-The acceleration/skidpad configurations remain `NOTstandingstart`: timed
-launch-distance accounting has not been implemented. Do not use these values
-as event times, proof of calibrated vehicle performance, or global physical
-acceptance.
+```bash
+CURRENTPYTHONPATH=src:/tmp/no-tv-casadi-runtime
+PYTHONPATH="$CURRENTPYTHONPATH" python3 -m tools.diagnostics.verify_no_tv_minimum_lap \
+  --cases acceleration --mesh-spacings 1.25 --basis-spacings 35 \
+  --wall-cap-s 120 --output runs/no_tv_reliability/acceleration_rebuild
+```
 
 ## Focused verification
 
 ```bash
-PYTHONPATH=src python3 -m unittest tests.test_no_tv_minimum_lap -v
+PYTHONPATH=src:/tmp/no-tv-casadi-runtime python3 -m unittest \
+  tests.test_qss_spline_ocp -v
 ```
 
-These mocked unit/harness tests cover default preservation, serialized tuple
-restoration, invalid settings, diagnostic-rung labels, artifact metadata,
-actual-grid basis qualification, exclusive output, timeout handling, source
-hashes, and fail-closed aggregation. They do not run a large solve matrix.
+The frozen parent run passed **37 tests in 272.421 s**; see the ignored
+[round-18 spline log](../../.superpowers/sdd/2026-10-22-no-tv-lap-reliability/round18-full-spline-tests.log).
+The final focused integration selection passed **92 tests in 12.826 s**.
+These tests exercise defaults, metadata, physical capability-site handling,
+margin constraints, provenance, harness serialization, and fail-closed
+aggregation. They do not substitute for the unresolved real-case matrix.

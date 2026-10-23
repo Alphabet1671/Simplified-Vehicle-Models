@@ -240,6 +240,7 @@ def build_attempt(case: MatrixCase, *, mesh_spacing_m: float, basis_spacing_m: f
                   control_representation: str = "quadratic_acceleration_v1",
                   speed_domain_margin_mps: float = 0.0,
                   matched_reference: bool = False, seed_profile: str = "none",
+                   profile_control_projection: str = "direct_gradient",
                   strict_profile_seed: bool = False, profile_step: float = 2.0,
                    maximum_profile_iterations: int = 200, maximum_profile_seconds: float = 30.0,
                    convergence_criteria: dict | None = None, provenance: dict | None = None) -> dict:
@@ -271,6 +272,8 @@ def build_attempt(case: MatrixCase, *, mesh_spacing_m: float, basis_spacing_m: f
         raise ValueError("speed_domain_margin_mps must be a finite nonnegative number")
     if seed_profile not in {"none", "energy-nlp"}:
         raise ValueError("seed_profile must be none or energy-nlp")
+    if profile_control_projection not in {"direct_gradient", "bounded_energy_l1"}:
+        raise ValueError("profile_control_projection must be direct_gradient or bounded_energy_l1")
     profile_options = _profile_options(profile_step, maximum_profile_iterations, maximum_profile_seconds)
     criteria = _convergence_criteria(convergence_criteria)
     settings = QssSettings(tolerance=_validate_finite_positive("nlp_tolerance", nlp_tolerance),
@@ -289,8 +292,10 @@ def build_attempt(case: MatrixCase, *, mesh_spacing_m: float, basis_spacing_m: f
         "basis_rung_status": "preregistered" if basis_spacing_m in DEFAULT_BASIS_SPACINGS else "diagnostic_not_preregistered",
         "formulation": str(Path(formulation).resolve()), "surface": str(Path(surface).resolve()),
         "matched_reference": bool(matched_reference), "seed_profile": seed_profile,
+        "profile_control_projection": profile_control_projection,
         "strict_profile_seed": bool(strict_profile_seed), "profile_options": profile_options,
         "initializer": {"seed": seed_name, "seed_profile": seed_profile,
+                         "profile_control_projection": profile_control_projection,
                         "strict_profile_seed": bool(strict_profile_seed), "profile_options": profile_options},
         "convergence_criteria": criteria, "provenance": provenance,
         "no_torque_vectoring": True, "mode_switches": False, "controller_globals": False,
@@ -473,6 +478,7 @@ def _attempt_worker(request_path: str, result_path: str, artifact_path: str) -> 
         # constructing the established envelope seed, so a legacy initializer
         # failure cannot preempt its explicitly requested recovery path.
         result["profile_seed"] = {"requested": request.get("seed_profile", "none"),
+                                  "requested_control_projection": request.get("profile_control_projection", "direct_gradient"),
                                   "used": False, "fallback": None}
         use_old_seed = True
         seed = None
@@ -481,6 +487,7 @@ def _attempt_worker(request_path: str, result_path: str, artifact_path: str) -> 
             # never overwrite it without recomputing its analytic trajectory.
             if request["seed"] != "centerline":
                 result["profile_seed"].update({"fallback": "declared-offset-perturbation",
+                                                "control_projection_used": None,
                                                 "diagnostics": {"available": False, "reason": "profile-centreline-only"}})
                 if request.get("strict_profile_seed", False):
                     raise RuntimeError("strict profile seed requires the centerline seed")
@@ -490,8 +497,12 @@ def _attempt_worker(request_path: str, result_path: str, artifact_path: str) -> 
                     track, corridor, surface, mesh, spline, settings,
                     profile_step=options["profile_step_m"],
                     maximum_profile_iterations=options["maximum_profile_iterations"],
-                    maximum_profile_seconds=options["maximum_profile_seconds"])
+                    maximum_profile_seconds=options["maximum_profile_seconds"],
+                    control_projection=request.get("profile_control_projection", "direct_gradient"))
                 result["profile_seed"]["diagnostics"] = diagnostics
+                result["profile_seed"]["control_projection_used"] = (
+                    request.get("profile_control_projection", "direct_gradient")
+                    if profile_seed is not None else None)
                 if profile_seed is not None:
                     seed = profile_seed
                     use_old_seed = False
@@ -531,6 +542,7 @@ def _attempt_worker(request_path: str, result_path: str, artifact_path: str) -> 
             common_metric, common_offset = np.ones_like(source_grid), np.interp(source_grid, solution.distance, solution.offset)
             common_speed, common_curvature = np.interp(source_grid, solution.distance, solution.speed), np.interp(source_grid, solution.distance, solution.curvature)
         np.savez_compressed(artifact_path, distance=solution.distance, offset=solution.offset,
+                            stage_timings=np.array(json.dumps(getattr(solution, "stage_timings", {}), sort_keys=True)),
                               heading_error=solution.heading_error, curvature=solution.curvature,
                               speed=solution.speed, acceleration=solution.acceleration,
                               midpoint_acceleration=solution.midpoint_acceleration,
@@ -593,6 +605,7 @@ def _attempt_worker(request_path: str, result_path: str, artifact_path: str) -> 
                        "speed_domain_margin_mps": settings.speed_domain_margin_mps,
                        "time_quadrature": solution.time_quadrature,
                        "time_metadata": solution.time_quadrature_metadata,
+                       "stage_timings": getattr(solution, "stage_timings", {}),
                        "trajectory_metadata_artifact": str(trajectory_metadata.name),
                        "artifact": str(Path(artifact_path).name),
                        "start_treatment": case.start_treatment,
@@ -725,6 +738,8 @@ def _initializer_stable_identity(request: dict, actual_initializer: dict) -> dic
     """Return refinement-relevant initializer identity, excluding transient audit data."""
     profile_seed = actual_initializer.get("profile_seed", {})
     return {"requested_mode": request.get("initializer"), "requested_seed": request.get("seed"),
+            "requested_control_projection": request.get("profile_control_projection", "direct_gradient"),
+            "actual_control_projection": profile_seed.get("control_projection_used"),
             "actual_profile_used": profile_seed.get("used"),
             "fallback_category": profile_seed.get("fallback"),
             "used": actual_initializer.get("used"),
@@ -933,6 +948,7 @@ def run_matrix(args) -> dict:
                         speed_domain_margin_mps=getattr(args, "speed_domain_margin_mps", 0.0),
                         matched_reference=getattr(args, "matched_reference", False),
                         seed_profile=getattr(args, "seed_profile", "none"),
+                        profile_control_projection=getattr(args, "profile_control_projection", "direct_gradient"),
                         strict_profile_seed=getattr(args, "strict_profile_seed", False),
                         profile_step=getattr(args, "profile_step", 2.0),
                         maximum_profile_iterations=getattr(args, "maximum_profile_iterations", 200),
@@ -1001,6 +1017,8 @@ def main(argv=None):
                         help="compute optional analytic-path fixed capability references (.5/.25 convergence)")
     parser.add_argument("--seed-profile", choices=("none", "energy-nlp"), default="none",
                         help="optional fixed-path energy NLP initializer; default preserves old seed")
+    parser.add_argument("--profile-control-projection", choices=("direct_gradient", "bounded_energy_l1"),
+                        default="direct_gradient", help="energy-NLP profile acceleration-control projection")
     parser.add_argument("--strict-profile-seed", action="store_true",
                         help="fail the worker rather than use the explicit old seed on profile failure")
     parser.add_argument("--wall-cap-s", type=float, default=300.0)

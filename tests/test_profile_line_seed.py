@@ -37,6 +37,69 @@ class ProfileLineSeedTest(unittest.TestCase):
         self.assertFalse(accepted)
         self.assertIn("variable-bound-violation", reason)
 
+    def test_control_projection_selector_rejects_unknown_methods(self):
+        with self.assertRaisesRegex(ValueError, "control_projection"):
+            seeds.build_profile_line_seed(None, None, None, np.array([0., 1.]),
+                                          SimpleNamespace(control_count=2), None,
+                                          control_projection="clipped")
+
+    def test_bounded_projection_preserves_energy_and_uses_hs_controls(self):
+        track = SimpleNamespace(is_closed=True)
+        spline = SimpleNamespace(control_count=2)
+        settings = SimpleNamespace(start_speed=0., minimum_speed=.5, tolerance=1e-6)
+        mesh = np.array([0., 1., 2.])
+        surface = SimpleNamespace(acceleration_min=np.array([-2.]), acceleration_max=np.array([2.]),
+                                  speed=np.array([.5, 20.]))
+        trajectory = SimpleNamespace(
+            to_path=lambda stations: object(),
+            station_map=SimpleNamespace(to_path=lambda stations: np.asarray(stations)),
+            evaluate=lambda stations: SimpleNamespace(metric=np.ones_like(np.asarray(stations))),
+        )
+        profile = SimpleNamespace(converged=True, status="ok", diagnostics={}, iterations=1,
+                                  lap_time=2., distance=np.array([0., 2.]), speed=np.array([2., 2.]))
+        bounded = np.zeros(5)
+        projection_report = {"available": True, "maximum_hs_energy_defect": 0.}
+        with patch.object(seeds, "_reference_curve", return_value=SimpleNamespace(source_station=mesh)), \
+             patch.object(seeds, "OffsetTrajectory", return_value=trajectory), \
+             patch.object(seeds, "fixed_path_energy_profile", return_value=profile), \
+             patch("simplified_vehicle_models.solvers.energy_seed_projection.project_energy_seed_controls",
+                   return_value=(bounded, projection_report)) as projector, \
+             patch.object(seeds, "_within_bounds", return_value=(True, None)):
+            seed, diagnostics = seeds.build_profile_line_seed(
+                track, object(), surface, mesh, spline, settings, control_projection="bounded_energy_l1")
+        self.assertIsNotNone(seed)
+        np.testing.assert_allclose(seed[2:5], [2., 2., 2.])
+        np.testing.assert_allclose(seed[5:], bounded)
+        self.assertEqual(diagnostics["projection_method"], "bounded_energy_l1")
+        self.assertEqual(diagnostics["nested_control_projection_diagnostics"], projection_report)
+        self.assertEqual(diagnostics["maximum_hs_energy_defect"], 0.)
+        self.assertFalse(diagnostics["solver_feasibility_claimed"])
+        np.testing.assert_allclose(diagnostics["midpoint_energy_minimum"], 4.0)
+        self.assertFalse(diagnostics["midpoint_capability_checked"])
+        self.assertTrue(projector.call_args.kwargs["settings"].periodic_endpoint)
+
+    def test_bounded_projection_failure_does_not_fall_back(self):
+        track = SimpleNamespace(is_closed=False)
+        spline = SimpleNamespace(control_count=2)
+        settings = SimpleNamespace(start_speed=0., minimum_speed=.5, tolerance=1e-6)
+        mesh = np.array([0., 1.])
+        trajectory = SimpleNamespace(to_path=lambda stations: object(),
+                                     station_map=SimpleNamespace(to_path=lambda stations: np.asarray(stations)),
+                                     evaluate=lambda stations: SimpleNamespace(metric=np.ones_like(np.asarray(stations))))
+        profile = SimpleNamespace(converged=True, status="ok", diagnostics={}, iterations=1,
+                                  distance=mesh, speed=np.array([2., 2.]))
+        with patch.object(seeds, "_reference_curve", return_value=SimpleNamespace(source_station=mesh)), \
+             patch.object(seeds, "OffsetTrajectory", return_value=trajectory), \
+             patch.object(seeds, "fixed_path_energy_profile", return_value=profile), \
+             patch("simplified_vehicle_models.solvers.energy_seed_projection.project_energy_seed_controls",
+                   return_value=(None, {"reason": "infeasible"})):
+            seed, diagnostics = seeds.build_profile_line_seed(
+                track, object(), SimpleNamespace(acceleration_min=np.array([-1.]), acceleration_max=np.array([1.])),
+                mesh, spline, settings, control_projection="bounded_energy_l1")
+        self.assertIsNone(seed)
+        self.assertEqual(diagnostics["reason"], "bounded-control-projection-failed")
+        self.assertEqual(diagnostics["nested_control_projection_diagnostics"]["reason"], "infeasible")
+
     def test_failed_profile_returns_explicit_unavailable_reason(self):
         track = SimpleNamespace(is_closed=False)
         spline = SimpleNamespace(control_count=2)

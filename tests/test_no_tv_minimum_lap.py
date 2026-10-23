@@ -120,6 +120,22 @@ class NoTvMinimumLapHarnessTest(unittest.TestCase):
             surface=Path("surface.npz"), matched_reference=True)
         self.assertTrue(request["matched_reference"])
 
+    def test_profile_control_projection_is_opt_in_and_part_of_identity(self):
+        case = harness.default_cases()["acceleration"]
+        base = dict(mesh_spacing_m=5.0, basis_spacing_m=35.0, maximum_iterations=7,
+                    wall_cap_s=3.0, seed_name="centerline", formulation=Path("form.xml"),
+                    surface=Path("surface.npz"), seed_profile="energy-nlp")
+        direct = harness.build_attempt(case, **base)
+        bounded = harness.build_attempt(case, **base, profile_control_projection="bounded_energy_l1")
+        self.assertEqual(direct["profile_control_projection"], "direct_gradient")
+        self.assertEqual(direct["initializer"]["profile_control_projection"], "direct_gradient")
+        self.assertEqual(bounded["initializer"]["profile_control_projection"], "bounded_energy_l1")
+        left = {"request": direct, "actual_initializer": {"stable_identity":
+                harness._initializer_stable_identity(direct, {"profile_seed": {"used": False}})}}
+        right = {"request": bounded, "actual_initializer": {"stable_identity":
+                 harness._initializer_stable_identity(bounded, {"profile_seed": {"used": False}})}}
+        self.assertFalse(harness._same_refinement_conditions(left, right))
+
     def test_energy_profile_seed_is_opt_in_and_serialized(self):
         request = harness.build_attempt(harness.default_cases()["acceleration"],
             mesh_spacing_m=5.0, basis_spacing_m=35.0, maximum_iterations=7,

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import math
+import time
 
 import numpy as np
 
@@ -109,6 +110,7 @@ class SplineSolution:
     off_site_stations: FloatArray | None = None
     off_site_elements: FloatArray | None = None
     off_site_fractions: FloatArray | None = None
+    stage_timings: dict[str, float] = field(default_factory=dict)
 
 
 def _reference_curve(track):
@@ -1031,7 +1033,7 @@ def initial_guess(track, corridor, surface, mesh, spline, settings: QssSettings,
 
 def _spline_failure_diagnostics(*, status, iter_count, total_iterations, objective,
                                 constraint_violation, bound_violation, stats, built,
-                                settings) -> dict[str, object]:
+                                settings, stage_timings=None) -> dict[str, object]:
     """Serialize only solver-state facts needed to diagnose strict rejection."""
     diagnostics: dict[str, object] = {
         "return_status": str(status),
@@ -1055,6 +1057,8 @@ def _spline_failure_diagnostics(*, status, iter_count, total_iterations, objecti
         "off_site_elements": np.array(built.get("off_site_elements", []), copy=True).tolist(),
         "off_site_fractions": np.array(built.get("off_site_fractions", []), copy=True).tolist(),
     }
+    if stage_timings is not None:
+        diagnostics["stage_timings"] = dict(stage_timings)
     iterations = stats.get("iterations") if isinstance(stats, dict) else None
     if isinstance(iterations, dict) and "inf_du" in iterations:
         values = np.asarray(iterations["inf_du"], dtype=float).ravel()
@@ -1065,7 +1069,8 @@ def _spline_failure_diagnostics(*, status, iter_count, total_iterations, objecti
 
 def _raise_spline_solver_failure(*, status, values, constraints, objective,
                                  constraint_violation, bound_violation, iter_count,
-                                 total_iterations, stats, result, built, settings):
+                                 total_iterations, stats, result, built, settings,
+                                 stage_timings=None):
     """Run the unchanged strict gate and decorate a rejection with raw evidence."""
     try:
         _validate_solver_result(
@@ -1077,6 +1082,7 @@ def _raise_spline_solver_failure(*, status, values, constraints, objective,
             status=status, iter_count=iter_count, total_iterations=total_iterations,
             objective=objective, constraint_violation=constraint_violation,
             bound_violation=bound_violation, stats=stats, built=built, settings=settings,
+            stage_timings=stage_timings,
         )
         raise SplineSolveError(
             str(error), diagnostics, failed_values=values,
@@ -1094,12 +1100,21 @@ def solve_spline_line(track, corridor, surface, mesh, spline,
     status other than ``Solve_Succeeded``, a non-finite value, or a constraint
     violation above ``settings.tolerance`` raises ``RuntimeError``.
     """
+    total_started = time.perf_counter()
+    timings = {name: 0.0 for name in (
+        "build_seconds", "initialization_seconds", "symbolic_scaling_seconds",
+        "solver_construction_seconds", "solver_execution_seconds",
+        "postprocess_seconds", "total_seconds",
+    )}
+    build_started = time.perf_counter()
     import casadi as ca
 
     built = build_spline_ocp(
         track, corridor, surface, mesh, spline, settings, speed_cap=speed_cap,
         constraint_stations=constraint_stations,
     )
+    timings["build_seconds"] = time.perf_counter() - build_started
+    initialization_started = time.perf_counter()
     count = built["count"]
     control_count = built["control_count"]
     size = int(built["nlp"]["x"].numel())
@@ -1113,7 +1128,9 @@ def solve_spline_line(track, corridor, surface, mesh, spline,
     if not np.all(np.isfinite(vector)):
         raise ValueError("seed must contain only finite values")
     vector = np.clip(vector, built["x_lower"], built["x_upper"])
+    timings["initialization_seconds"] = time.perf_counter() - initialization_started
 
+    scaling_started = time.perf_counter()
     center, scale = _decision_scaling(control_count, built["mesh"].size)
     original_x = built["nlp"]["x"]
     scaled_x = ca.MX.sym("spline_scaled_x", size)
@@ -1128,6 +1145,7 @@ def solve_spline_line(track, corridor, surface, mesh, spline,
 
     tolerances = _tolerance_schedule(settings)
     scaled_seed = (vector - center) / scale
+    timings["symbolic_scaling_seconds"] = time.perf_counter() - scaling_started
     lam_x = lam_g = None
     total_iterations = 0
     iter_count = 0
@@ -1165,7 +1183,9 @@ def solve_spline_line(track, corridor, surface, mesh, spline,
                 "ipopt.warm_start_mult_bound_push": 1.0e-8,
                 "ipopt.warm_start_slack_bound_push": 1.0e-8,
             })
+        construction_started = time.perf_counter()
         solver = ca.nlpsol("qss_spline_line", "ipopt", scaled_nlp, options)
+        timings["solver_construction_seconds"] += time.perf_counter() - construction_started
         arguments = {
             "x0": scaled_seed,
             "lbx": lower,
@@ -1175,7 +1195,9 @@ def solve_spline_line(track, corridor, surface, mesh, spline,
         }
         if lam_x is not None:
             arguments.update({"lam_x0": lam_x, "lam_g0": lam_g})
+        execution_started = time.perf_counter()
         result = solver(**arguments)
+        timings["solver_execution_seconds"] += time.perf_counter() - execution_started
         stats = solver.stats()
         status = str(stats["return_status"])
         iter_count = int(stats["iter_count"])
@@ -1197,13 +1219,16 @@ def solve_spline_line(track, corridor, surface, mesh, spline,
     bound_violation = float(np.max(np.maximum(
         np.maximum(built["x_lower"] - values, 0.0), values - built["x_upper"],
     )))
+    timings["total_seconds"] = time.perf_counter() - total_started
     _raise_spline_solver_failure(
         status=status, values=values, constraints=constraints, objective=objective,
         constraint_violation=violation, bound_violation=bound_violation,
         iter_count=iter_count, total_iterations=total_iterations, stats=stats,
         result=result or {}, built=built, settings=settings,
+        stage_timings=dict(timings),
     )
     violation = max(violation, bound_violation)
+    postprocess_started = time.perf_counter()
     blocks = unpack(values, count, control_count)
     trajectory = OffsetTrajectory(built["reference"], spline, blocks["coefficients"])
     evaluated = trajectory.evaluate(built["mesh"])
@@ -1239,4 +1264,7 @@ def solve_spline_line(track, corridor, surface, mesh, spline,
         off_site_stations=np.array(built["off_site_stations"], dtype=float, copy=True),
         off_site_elements=np.array(built["off_site_elements"], dtype=int, copy=True),
         off_site_fractions=np.array(built["off_site_fractions"], dtype=float, copy=True),
+        stage_timings={**timings,
+                       "postprocess_seconds": time.perf_counter() - postprocess_started,
+                       "total_seconds": time.perf_counter() - total_started},
     )

@@ -74,7 +74,8 @@ def _within_bounds(seed: np.ndarray, surface, spline, mesh: np.ndarray, settings
 
 def build_profile_line_seed(track, corridor, surface, mesh, spline, settings, *,
                             profile_step: float = 2., maximum_profile_iterations: int = 200,
-                            maximum_profile_seconds: float = 30.) -> tuple[np.ndarray | None, dict[str, Any]]:
+                            maximum_profile_seconds: float = 30.,
+                             control_projection: str = "direct_gradient") -> tuple[np.ndarray | None, dict[str, Any]]:
     """Return an optional exact-centreline energy-profile projection seed.
 
     A nonconverged profile, unsupported chart, invalid analytic geometry, or
@@ -82,6 +83,8 @@ def build_profile_line_seed(track, corridor, surface, mesh, spline, settings, *,
     reason.  No clipping or implicit fallback is performed here.
     """
     started = time.monotonic()
+    if control_projection not in {"direct_gradient", "bounded_energy_l1"}:
+        raise ValueError("control_projection must be direct_gradient or bounded_energy_l1")
     try:
         if not math.isfinite(profile_step) or profile_step <= 0.0:
             raise ValueError("profile_step must be finite and positive")
@@ -109,6 +112,44 @@ def build_profile_line_seed(track, corridor, surface, mesh, spline, settings, *,
         metric = np.asarray(node_geometry.metric, dtype=float)
         mid_acceleration = _hs_midpoint_acceleration(energy, acceleration, metric, midpoint_metric,
                                                       np.asarray(mesh, dtype=float))
+        mesh_array = np.asarray(mesh, dtype=float)
+        projection_diagnostics = None
+        if control_projection == "bounded_energy_l1":
+            from simplified_vehicle_models.solvers.energy_seed_projection import (
+                EnergySeedProjectionSettings, project_energy_seed_controls,
+            )
+            projected, projection_diagnostics = project_energy_seed_controls(
+                energy, np.asarray(mesh, dtype=float), metric, midpoint_metric,
+                acceleration, mid_acceleration,
+                float(np.min(surface.acceleration_min)), float(np.max(surface.acceleration_max)),
+                settings=EnergySeedProjectionSettings(periodic_endpoint=bool(track.is_closed)),
+            )
+            if projected is None:
+                return None, _diagnostics(
+                    "bounded-control-projection-failed", boundary=boundary,
+                    control_projection=control_projection,
+                    projection_method="bounded_energy_l1",
+                    nested_control_projection_diagnostics=projection_diagnostics,
+                    energy_unchanged=True, source_global_acceleration_bounds=[
+                        float(np.min(surface.acceleration_min)), float(np.max(surface.acceleration_max))],
+                    elapsed_seconds=time.monotonic() - started)
+            acceleration = projected[:energy.size]
+            mid_acceleration = projected[energy.size:]
+            # Recompute the physical Hermite--Simpson midpoint state from fixed W
+            # and the projected nodal controls; the independent midpoint value
+            # is a seed guess only, not a consistency identity after projection.
+            midpoint_energy = (0.5 * (energy[:-1] + energy[1:])
+                               + np.diff(mesh_array) / 8.0 *
+                               (2.0 * metric[:-1] * acceleration[:-1]
+                                - 2.0 * metric[1:] * acceleration[1:]))
+        else:
+            midpoint_energy = (0.5 * (energy[:-1] + energy[1:]) + np.diff(mesh_array) / 8.0 *
+                               (2.0 * metric[:-1] * acceleration[:-1]
+                                - 2.0 * metric[1:] * acceleration[1:]))
+        hs_residual = (np.diff(energy) - np.diff(mesh_array) / 6.0 *
+                       (2.0 * metric[:-1] * acceleration[:-1]
+                        + 8.0 * midpoint_metric * mid_acceleration
+                        + 2.0 * metric[1:] * acceleration[1:]))
         seed = np.concatenate([coefficients, np.sqrt(energy), acceleration, mid_acceleration])
         valid, reason = _within_bounds(seed, surface, spline, np.asarray(mesh, dtype=float), settings)
         if not valid:
@@ -116,6 +157,18 @@ def build_profile_line_seed(track, corridor, surface, mesh, spline, settings, *,
                 profile_status=profile.status, elapsed_seconds=time.monotonic() - started)
         return seed, {"kind": "energy-nlp-profile-line-seed", "available": True,
                       "reason": None, "projection_only": True, "boundary": boundary,
+                      "control_projection": control_projection,
+                      "projection_method": control_projection,
+                      "nested_control_projection_diagnostics": projection_diagnostics,
+                      "energy_unchanged": True, "solver_feasibility_claimed": False,
+                      "maximum_hs_energy_defect": float(np.max(np.abs(hs_residual))),
+                      "midpoint_energy_minimum": float(np.min(midpoint_energy)),
+                      "midpoint_energy_positive": bool(np.all(np.isfinite(midpoint_energy)) and np.all(midpoint_energy > 0.0)),
+                      "midpoint_capability_checked": False,
+                      "node_capability_checked": False,
+                      "independent_diagnostics_only": True,
+                      "source_global_acceleration_bounds": [float(np.min(surface.acceleration_min)),
+                                                             float(np.max(surface.acceleration_max))],
                       "profile_status": profile.status, "profile_iterations": profile.iterations,
                       "profile_lap_time": profile.lap_time, "elapsed_seconds": time.monotonic() - started,
                       "node_path_station_m": node_ell.tolist(),

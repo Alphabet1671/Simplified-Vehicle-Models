@@ -1,6 +1,7 @@
 """Round-trip and fail-closed tests for serialized analytic trajectories."""
 from __future__ import annotations
 
+import copy
 import json
 import tempfile
 import unittest
@@ -18,7 +19,9 @@ from tools.run.solve_minimum_time_line import _write_trajectory_metadata
 from simplified_vehicle_models.solvers.qss_spline_ocp import (
     _SplineStateEvaluator, TIME_QUADRATURE_NAME, _time_quadrature_metadata,
 )
-from simplified_vehicle_models.solvers.forward_driver import PreviewDriver, DriverObservation
+from simplified_vehicle_models.solvers.forward_driver import (
+    PreviewDriver, DriverObservation, SpeedPlan,
+)
 
 
 class TrajectoryArtifactTest(unittest.TestCase):
@@ -64,6 +67,12 @@ class TrajectoryArtifactTest(unittest.TestCase):
             self.assertFalse(loaded.accepted)
             self.assertFalse(loaded.physical_validated)
             self.assertGreater(loaded.physical_time, 0.0)
+            from simplified_vehicle_models.solvers.qss_spline_ocp import physical_time_quadrature
+            self.assertAlmostEqual(
+                loaded.physical_time,
+                physical_time_quadrature(solution.trajectory, evaluator, solution.distance),
+                places=12,
+            )
             self.assertFalse(loaded.trajectory.coefficients.flags.writeable)
             with self.assertRaises(TypeError):
                 loaded.metadata["is_closed"] = not closed
@@ -77,6 +86,9 @@ class TrajectoryArtifactTest(unittest.TestCase):
             np.testing.assert_allclose(got["speed"], want_s["speed"], atol=1e-12)
             np.testing.assert_allclose(got["acceleration"], want_s["acceleration"], atol=1e-12)
             driver = ExactTrajectoryDriverReference(loaded)
+            reference_speed_plan = SpeedPlan(
+                driver.distance, driver.speed, driver.curvature, is_closed=closed)
+            distinct_acceleration_witness = False
             for d in np.linspace(0., driver.length, 9, endpoint=not closed):
                 path_station = (solution.trajectory.station_map.path_end if d == driver.length
                                 else d + solution.trajectory.station_map.path_start)
@@ -85,13 +97,22 @@ class TrajectoryArtifactTest(unittest.TestCase):
                 actual = driver.sample(d)
                 self.assertAlmostEqual(actual[0], exp["speed"], places=12)
                 self.assertAlmostEqual(actual[2], exp["acceleration"], places=12)
+                if 0.0 < d < driver.length and not np.isclose(
+                        actual[2], reference_speed_plan.sample(d)[2], atol=1e-4):
+                    distinct_acceleration_witness = True
+            self.assertTrue(distinct_acceleration_witness)
             # PreviewDriver consumes the exact bridge as a plan-like signal; this
             # CPU-only call verifies feedforward comes from physical evaluator a.
             preview = PreviewDriver(driver, 2.5, .6, 2.0, 2000.0, preview_seconds=0.0)
-            obs = DriverObservation(0.0, 0.0, 0.0, float(driver.speed[0]), 0.0, 0.0)
+            probe_distance = float(driver.distance[len(driver.distance) // 2])
+            target_speed, _, exact_feedforward = driver.sample(probe_distance)
+            obs = DriverObservation(probe_distance, 0.0, 0.0, target_speed, 0.0, 0.0)
             command = preview.command(obs)
-            expected_throttle = np.clip(float(driver.sample(0.)[2]) / 6., 0., 1.)
+            expected_throttle = np.clip(exact_feedforward / 6., 0., 1.)
+            expected_brake = np.clip(-exact_feedforward / 6., 0., 1.)
             self.assertAlmostEqual(command.throttle, expected_throttle, places=12)
+            self.assertAlmostEqual(command.brake_force / preview.maximum_brake_force,
+                                   expected_brake, places=12)
             if not closed:
                 with self.assertRaises(ValueError):
                     driver.sample(-1.)
@@ -107,6 +128,37 @@ class TrajectoryArtifactTest(unittest.TestCase):
 
     def test_closed_roundtrip(self):
         self.roundtrip(True)
+
+    def test_rejects_malformed_artifacts_table_driven(self):
+        solution, _ = self.make_solution()
+        with tempfile.TemporaryDirectory() as td:
+            original = Path(td) / "original.npz"
+            _write_trajectory_metadata(original, solution)
+            with np.load(original, allow_pickle=False) as archive:
+                pristine = {key: np.array(archive[key], copy=True) for key in archive.files}
+
+            cases = (
+                ("source_xy", "stored map", lambda data, meta: data["reference_north"].__setitem__(10, data["reference_north"][10] + .1)),
+                ("control_grid", "control grid", lambda data, meta: data["control_station"].__setitem__(2, data["control_station"][2] + .1)),
+                ("bad_node_length", "state mesh shapes", lambda data, meta: data.__setitem__("node_speed", data["node_speed"][:-1])),
+                ("nonfinite_source", "finite one-dimensional", lambda data, meta: data["reference_north"].__setitem__(4, np.nan)),
+                ("nonincreasing_source", "source reference grid", lambda data, meta: data["source_reference_station"].__setitem__(4, data["source_reference_station"][3])),
+                ("nonfinite_map", "finite one-dimensional", lambda data, meta: data["path_station"].__setitem__(3, np.inf)),
+                ("node_coverage", "state mesh must cover", lambda data, meta: data["node_station"].__setitem__(0, data["node_station"][0] + .1)),
+                ("missing_state", "state representation", lambda data, meta: meta.pop("state_representation")),
+                ("missing_time", "time quadrature", lambda data, meta: meta.pop("time_quadrature")),
+                ("missing_time_metadata", "time quadrature metadata", lambda data, meta: meta.pop("time_quadrature_metadata")),
+            )
+            bad = Path(td) / "bad.npz"
+            for name, message, mutate in cases:
+                with self.subTest(case=name):
+                    data = {key: np.array(value, copy=True) for key, value in pristine.items()}
+                    metadata = json.loads(str(data["metadata"].item()))
+                    mutate(data, metadata)
+                    data["metadata"] = np.array(json.dumps(metadata))
+                    np.savez_compressed(bad, **data)
+                    with self.assertRaisesRegex(ValueError, message):
+                        load_trajectory_artifact(bad)
 
     def test_rejects_tampered_map_and_unknown_representations(self):
         solution, _ = self.make_solution()
@@ -127,6 +179,12 @@ class TrajectoryArtifactTest(unittest.TestCase):
             np.savez_compressed(bad, **data)
             with self.assertRaisesRegex(ValueError, "state representation"):
                 load_trajectory_artifact(bad)
+            meta["schema_version"] = True
+            data["metadata"] = np.array(json.dumps(meta))
+            np.savez_compressed(bad, **data)
+            with self.assertRaisesRegex(ValueError, "schema"):
+                load_trajectory_artifact(bad)
+            meta["schema_version"] = 1
             meta["state_representation"] = "energy_hs_v1"
             meta["time_quadrature"] = "unknown"
             data["metadata"] = np.array(json.dumps(meta))

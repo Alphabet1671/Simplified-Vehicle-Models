@@ -150,7 +150,8 @@ def load_trajectory_artifact(path) -> LoadedTrajectory:
         if isinstance(exc, ValueError) and str(exc).startswith("trajectory artifact"):
             raise
         raise ValueError(f"invalid trajectory artifact: {exc}") from exc
-    if metadata.get("schema_version") != _SCHEMA:
+    schema_version = metadata.get("schema_version")
+    if isinstance(schema_version, bool) or not isinstance(schema_version, int) or schema_version != _SCHEMA:
         raise ValueError("unknown trajectory artifact schema")
     state_repr = metadata.get("state_representation")
     if state_repr != "energy_hs_v1":
@@ -193,7 +194,7 @@ def load_trajectory_artifact(path) -> LoadedTrajectory:
     if metadata["reference_degree"] != (5 if s.size >= 6 else 3):
         raise ValueError("reference degree does not match source grid")
     spacing = metadata.get("offset_control_spacing_m")
-    if not isinstance(spacing, (int, float)) or not np.isfinite(spacing) or spacing <= 0:
+    if isinstance(spacing, bool) or not isinstance(spacing, (int, float)) or not np.isfinite(spacing) or spacing <= 0:
         raise ValueError("invalid offset control spacing")
     spline = OffsetSpline(track, float(spacing))
     if not np.allclose(cs, spline.control_distance, rtol=0, atol=1e-9):

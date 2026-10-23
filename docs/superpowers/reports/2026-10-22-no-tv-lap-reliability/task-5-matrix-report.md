@@ -86,7 +86,12 @@ only. The reported signed-cap-300 skidpad candidate near `21.5696 s` also has fa
 live/dense checks and remains candidate only.
 
 Strict aggregate is always `incomplete` unless independently supplied mesh and basis
-refinement, matched baseline, and matched exact-trajectory replay exist. The harness
+refinement, matched baseline, and matched exact-trajectory replay exist. In addition,
+there is currently **no approved curated, source-hashed geometry/state convergence
+policy or supporting data**. The six `--convergence-criteria-json` budgets are
+persisted as nonqualifying user diagnostics only: even arbitrarily large budgets
+cannot set strict geometry/state convergence or make an edge/study accepted. The
+established 0.5% reference-time and 1% replay limits are unchanged. The harness
 does not provide a braking-feasible no-TV baseline or standing-start launch
 accounting, so neither real event acceptance nor convergence from absent rungs is
 claimed.

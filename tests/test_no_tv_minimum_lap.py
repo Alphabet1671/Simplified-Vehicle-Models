@@ -577,6 +577,7 @@ class NoTvMinimumLapHarnessTest(unittest.TestCase):
                                cases="acceleration", mesh_spacings=[5.0, 2.5], basis_spacings=[35.0],
                                seeds=["centerline"], maximum_iterations=1, wall_cap_s=1.0,
                                base_commit=None)
+        args.baseline_label = "historical-label"
         snapshots = iter([{"input": "initial"}, {"input": "initial"}, {"input": "initial"},
                           {"input": "changed"}, {"input": "changed"}, {"input": "changed"}])
         captured_requests = []
@@ -595,6 +596,11 @@ class NoTvMinimumLapHarnessTest(unittest.TestCase):
         self.assertTrue(manifest["results"][0]["source_data_unchanged"])
         self.assertTrue(manifest["results"][1]["source_data_unchanged"])
         self.assertFalse(manifest["source_data_unchanged"])
+        self.assertEqual(manifest["base_commit"], manifest["git_head"])
+        self.assertIsNone(manifest["requested_base_commit"])
+        self.assertEqual(manifest["baseline_label"], "historical-label")
+        self.assertEqual(manifest["provenance_initial"]["git_head"], manifest["git_head"])
+        self.assertIn("provenance_afterfinal", manifest)
         self.assertEqual(manifest["aggregate"]["mesh_refinement"], [])
 
     def test_mocked_solver_status_failure_cannot_be_accepted(self):
@@ -644,6 +650,42 @@ class NoTvMinimumLapHarnessTest(unittest.TestCase):
         self.assertEqual(resolve_base_commit(Path("."), None, git=git), "head")
         with self.assertRaisesRegex(ValueError, "actual current HEAD"):
             resolve_base_commit(Path("."), "historical", git=git)
+
+    def test_stable_initializer_identity_ignores_seed_bytes_and_elapsed_diagnostics(self):
+        request = {"settings": {}, "initializer": {"seed": "centerline", "seed_profile": "energy-nlp"},
+                   "convergence_criteria": None, "source_hashes": {"input": "a"},
+                   "provenance": {"git_head": "a", "runtime": {"casadi": "3.8.1"}}}
+        stable = {"requested_mode": request["initializer"], "actual_profile_used": True,
+                  "fallback_category": None, "used": "energy-nlp-profile",
+                  "implementation_runtime": request["provenance"]}
+        left = {"request": request, "source_hashes_after": {"input": "a"},
+                "provenance_after": request["provenance"], "surface_representation": "signed",
+                "actual_initializer": {"stable_identity": stable, "seed_sha256": "a",
+                                        "profile_seed": {"diagnostics": {"elapsed_s": 1.}}}}
+        right = {**left, "request": dict(request), "actual_initializer": {
+            "stable_identity": dict(stable), "seed_sha256": "different-vector-length-and-bytes",
+            "profile_seed": {"diagnostics": {"elapsed_s": 99.}}}}
+        self.assertTrue(harness._same_refinement_conditions(left, right))
+        right["actual_initializer"]["stable_identity"]["fallback_category"] = "explicit-old-seed"
+        self.assertFalse(harness._same_refinement_conditions(left, right))
+        right["actual_initializer"]["stable_identity"] = dict(stable)
+        right["request"]["initializer"] = {"seed": "low_amplitude_offset"}
+        self.assertFalse(harness._same_refinement_conditions(left, right))
+        right["request"]["initializer"] = dict(request["initializer"])
+        right["request"]["initializer"]["profile_options"] = {"profile_step_m": 3.0}
+        self.assertFalse(harness._same_refinement_conditions(left, right))
+
+    def test_user_metric_budgets_are_diagnostic_and_never_strict_evidence(self):
+        metrics = {"rms_xy_m": 1., "rms_metric": 1., "rms_offset_m": 1., "length_relative": 1.,
+                   "rms_speed_mps": 1., "rms_curvature_per_m": 1.}
+        comparison = {"left": {"mesh_m": 5., "basis_m": 35., "attempt_id": "a"},
+                      "right": {"mesh_m": 2.5, "basis_m": 35., "attempt_id": "b"},
+                      "reference_qualified": True, "time_relative_difference": 0.,
+                      "geometry_state_convergence": None, "convergence_criteria": {name: 1e99 for name in metrics},
+                      **metrics}
+        self.assertTrue(harness._criteria_qualified(metrics, comparison["convergence_criteria"]))
+        self.assertIsNone(comparison["geometry_state_convergence"])
+        self.assertIsNone(harness._qualified_edge([comparison], kind="mesh_refinement"))
 
 
 if __name__ == "__main__":

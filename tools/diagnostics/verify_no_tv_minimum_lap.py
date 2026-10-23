@@ -499,8 +499,11 @@ def _attempt_worker(request_path: str, result_path: str, artifact_path: str) -> 
         actual_initializer = {"requested": request["initializer"], "used": "energy-nlp-profile" if not use_old_seed else request["seed"],
                               "profile_seed": result["profile_seed"],
                               "seed_sha256": hashlib.sha256(np.asarray(seed, dtype=float).tobytes()).hexdigest()}
+        # Audit includes the exact vector digest, but refinement identity excludes
+        # mesh/basis-derived bytes and elapsed profile diagnostics.
+        actual_initializer["stable_identity"] = _initializer_stable_identity(request, actual_initializer)
         actual_initializer["fingerprint"] = hashlib.sha256(
-            json.dumps(_json_safe(actual_initializer), sort_keys=True).encode("utf-8")).hexdigest()
+            json.dumps(_json_safe(actual_initializer["stable_identity"]), sort_keys=True).encode("utf-8")).hexdigest()
         result["actual_initializer"] = actual_initializer
         solution = solve_spline_line(track, corridor, surface, mesh, spline, settings, seed=seed)
         source_grid = np.linspace(float(solution.distance[0]), float(solution.distance[-1]), 256)
@@ -670,11 +673,34 @@ def _attempt_sources_unchanged(row: dict) -> bool:
             and request.get("provenance") == row.get("provenance_after"))
 
 
+def _initializer_stable_identity(request: dict, actual_initializer: dict) -> dict:
+    """Return refinement-relevant initializer identity, excluding transient audit data."""
+    profile_seed = actual_initializer.get("profile_seed", {})
+    return {"requested_mode": request.get("initializer"), "requested_seed": request.get("seed"),
+            "actual_profile_used": profile_seed.get("used"),
+            "fallback_category": profile_seed.get("fallback"),
+            "used": actual_initializer.get("used"),
+            "implementation_runtime": request.get("provenance", {})}
+
+
 def _same_refinement_conditions(left: dict, right: dict) -> bool:
-    """Forbid seed/settings/source changes from masquerading as refinement."""
+    """Forbid policy/settings/source changes from masquerading as refinement.
+
+    Exact seed bytes and timing diagnostics stay in artifacts for audit but are
+    intentionally absent from the stable identity: both vary with mesh/basis.
+    """
     a, b = left["request"], right["request"]
-    return (a.get("settings") == b.get("settings") and a.get("initializer") == b.get("initializer")
-            and left.get("actual_initializer", {}).get("fingerprint") == right.get("actual_initializer", {}).get("fingerprint")
+    left_identity = left.get("actual_initializer", {}).get("stable_identity")
+    right_identity = right.get("actual_initializer", {}).get("stable_identity")
+    # Older diagnostic fixtures have no resolved actual identity and therefore
+    # stay eligible only for diagnostic refinement collection, never strict
+    # acceptance (which independently requires unavailable geometry/state policy).
+    legacy_fingerprint_matches = (left.get("actual_initializer", {}).get("fingerprint")
+                                  == right.get("actual_initializer", {}).get("fingerprint"))
+    identity_matches = ((left_identity is None and right_identity is None and legacy_fingerprint_matches)
+                        or (left_identity is not None and left_identity == right_identity))
+    return (a.get("settings") == b.get("settings") and a.get("seed") == b.get("seed")
+            and a.get("initializer") == b.get("initializer") and identity_matches
             and a.get("provenance") == b.get("provenance")
             and a.get("convergence_criteria") == b.get("convergence_criteria")
             and _attempt_sources_unchanged(left) and _attempt_sources_unchanged(right)
@@ -694,7 +720,13 @@ def _comparison(case: str, left: dict, right: dict, output: Path, *, kind: str) 
             "time_relative_difference": _relative_difference(float(left["objective_s"]), float(right["objective_s"]))
             if left.get("objective_s") is not None and right.get("objective_s") is not None else None,
             **metrics, "convergence_criteria": left["request"].get("convergence_criteria"),
-            "geometry_state_convergence": _criteria_qualified(metrics, left["request"].get("convergence_criteria"))}
+            # User-supplied budgets are visible diagnostics only.  No approved,
+            # source-hashed geometry/state convergence policy exists yet, so they
+            # cannot become strict evidence regardless of their magnitudes.
+            "metric_diagnostic_within_user_budget": _criteria_qualified(
+                metrics, left["request"].get("convergence_criteria")),
+            "metric_diagnostic_nonqualifying": left["request"].get("convergence_criteria") is not None,
+            "geometry_state_convergence": None}
 
 
 def _reference_qualified(row: dict) -> bool:
@@ -718,7 +750,9 @@ def _qualified_edge(comparisons: list[dict], *, kind: str) -> dict | None:
         if (comparison.get("reference_qualified") is True and preregistered
                 and comparison.get("time_relative_difference") is not None
                 and comparison["time_relative_difference"] <= REFERENCE_TIME_CONVERGENCE_RELATIVE
-                and _criteria_qualified(comparison, comparison.get("convergence_criteria"))):
+                # Strict geometry/state convergence is deliberately unavailable
+                # until a curated, source-hashed policy and data are approved.
+                and comparison.get("geometry_state_convergence") is True):
             return {"left_attempt": left.get("attempt_id"), "right_attempt": right.get("attempt_id"),
                     "time_relative_difference": comparison["time_relative_difference"],
                     "maximum_relative_time": REFERENCE_TIME_CONVERGENCE_RELATIVE,
@@ -820,7 +854,12 @@ def run_matrix(args) -> dict:
     selected = [cases[name] for name in requested_names]
     form, surface = Path(args.formulation).resolve(), Path(args.surface).resolve()
     hashes_before = source_hashes(*(case.track for case in selected), form, surface)
-    manifest = {"purpose": "bounded Task5 no-TV reliability matrix; candidate evidence only", "base_commit": args.base_commit,
+    manifest = {"purpose": "bounded Task5 no-TV reliability matrix; candidate evidence only",
+                # Retain the legacy name, but make it an accurate resolved identity.
+                "base_commit": actual_base_commit, "git_head": actual_provenance["git_head"],
+                "requested_base_commit": args.base_commit,
+                "baseline_label": getattr(args, "baseline_label", None),
+                "provenance_initial": actual_provenance,
                 "cases": [asdict(item) for item in selected], "mesh_spacings_m": args.mesh_spacings,
                 "basis_spacings_m": args.basis_spacings, "source_hashes_before": hashes_before,
                 "surface": str(surface), "surface_representation": load_surface_dispatch(surface)[1], "results": []}
@@ -868,7 +907,9 @@ def run_matrix(args) -> dict:
                     manifest["results"].append(result)
                     _write_json_new_or_replace(output / "matrix.json", manifest)
     manifest["source_hashes_after"] = source_hashes(*(case.track for case in selected), form, surface)
-    manifest["source_data_unchanged"] = manifest["source_hashes_before"] == manifest["source_hashes_after"]
+    manifest["provenance_afterfinal"] = runtime_provenance(repo)
+    manifest["source_data_unchanged"] = (manifest["source_hashes_before"] == manifest["source_hashes_after"]
+                                         and manifest["provenance_initial"] == manifest["provenance_afterfinal"])
     # Artifact paths stay relative to their case directory (attempt/solution.npz).
     # A bounded subset may yield per-case diagnostics, but never a whole-study
     # green result: aggregate against the complete preregistered case matrix.

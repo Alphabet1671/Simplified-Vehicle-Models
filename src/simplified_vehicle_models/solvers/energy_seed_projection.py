@@ -7,6 +7,7 @@ It is deliberately a small LP utility, not an OCP feasibility check.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from numbers import Real
 from typing import Any
 
 import numpy as np
@@ -38,13 +39,20 @@ def _as_finite_vector(value: object, *, name: str, size: int | None = None,
     return values
 
 
+def _positive_finite_setting(value: object, *, name: str) -> float:
+    if isinstance(value, (bool, np.bool_)) or not isinstance(value, Real):
+        raise ValueError(f"settings.{name} must be a finite positive real")
+    converted = float(value)
+    if not np.isfinite(converted) or converted <= 0.0:
+        raise ValueError(f"settings.{name} must be a finite positive real")
+    return converted
+
+
 def _validate_settings(settings: EnergySeedProjectionSettings) -> None:
     if not isinstance(settings, EnergySeedProjectionSettings):
         raise TypeError("settings must be an EnergySeedProjectionSettings instance")
-    if (not np.isfinite(settings.minimum_spacing) or settings.minimum_spacing <= 0.0):
-        raise ValueError("settings.minimum_spacing must be finite and positive")
-    if (not np.isfinite(settings.equality_tolerance) or settings.equality_tolerance <= 0.0):
-        raise ValueError("settings.equality_tolerance must be finite and positive")
+    _positive_finite_setting(settings.minimum_spacing, name="minimum_spacing")
+    _positive_finite_setting(settings.equality_tolerance, name="equality_tolerance")
     if not isinstance(settings.periodic_endpoint, (bool, np.bool_)):
         raise TypeError("settings.periodic_endpoint must be boolean")
 

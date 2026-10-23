@@ -311,6 +311,12 @@ def _write_trajectory_metadata(path: Path, solution) -> None:
     metadata = json.dumps({
         "schema_version": 1,
         "state_representation": str(getattr(solution, "state_representation", "legacy_speed_hs_v1")),
+        # Missing control metadata identifies old artifacts as their established
+        # physical-acceleration quadratic representation; it is never inferred
+        # as the opt-in metric-weighted rate representation.
+        "control_representation": str(getattr(
+            solution, "control_representation", "quadratic_acceleration_v1",
+        )),
         "reference_interpolant": "scipy.make_interp_spline",
         "reference_degree": 5 if reference_station.size >= 6 else 3,
         "is_closed": bool(trajectory.reference.is_closed),

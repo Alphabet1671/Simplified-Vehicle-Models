@@ -115,6 +115,14 @@ class SplineHessianSettingsTest(unittest.TestCase):
             solve_line(None, None, None, None,
                        QssSettings(hessian_approximation="limited-memory"))
 
+    def test_control_representation_default_and_invalid_value(self) -> None:
+        from simplified_vehicle_models.solvers.qss_line_ocp import QssSettings, _validate_inputs
+        self.assertEqual(QssSettings().control_representation,
+                         "quadratic_acceleration_v1")
+        with self.assertRaisesRegex(ValueError, "control_representation"):
+            _validate_inputs(None, None, None, None,
+                             QssSettings(control_representation="unknown-rate-form"))
+
 
 @unittest.skipUnless(CASADI, "CasADi is not installed")
 class SplineTranscriptionTest(unittest.TestCase):
@@ -695,6 +703,54 @@ class SplineTranscriptionTest(unittest.TestCase):
         self.assertLess(constraints[quarter_indices[0]], -0.9)
         self.assertGreaterEqual(constraints[quarter_indices[1]], -1.e-9)
 
+    def test_energy_rate_offsite_capability_uses_metric_weighted_ratio(self) -> None:
+        """Off-site capability consumes F(s)/(2G(s)), not raw a interpolation."""
+        import casadi as ca
+        from simplified_vehicle_models.solvers.qss_line_ocp import QssSettings
+        from simplified_vehicle_models.solvers.qss_spline_ocp import build_spline_ocp
+        from simplified_vehicle_models.tracks.line_trajectory import OffsetTrajectory
+
+        track = self._track()
+        mesh = np.array([0.0, track.lap_length / 2.0, track.lap_length])
+        settings = QssSettings(
+            control_representation="quadratic_energy_rate_over_metric_v1",
+            off_collocation_fractions=(0.25,),
+        )
+        corridor = Corridor(track.distance, np.full(track.distance.size, -3.0),
+                            np.full(track.distance.size, 3.0), "test", True)
+        built = build_spline_ocp(
+            track, corridor, _surface(), mesh,
+            OffsetSpline(track, control_spacing=20.0), settings,
+        )
+        controls, nodes = built["control_count"], mesh.size
+        values = np.zeros(controls + 3 * nodes - 1)
+        coefficients = np.linspace(-.15, .15, controls)
+        values[:controls] = coefficients
+        values[controls:controls + nodes] = 10.0
+        node_acceleration = np.array([1.0, 1.5, 1.0])
+        midpoint_acceleration = np.array([2.0, .5])
+        values[controls + nodes:controls + 2 * nodes] = node_acceleration
+        values[controls + 2 * nodes:] = midpoint_acceleration
+        constraints = np.asarray(ca.Function(
+            "energy_rate_offsite_ratio", [built["nlp"]["x"]], [built["nlp"]["g"]],
+        )(values), dtype=float).ravel()
+        trajectory = OffsetTrajectory(built["reference"], built["spline"], coefficients)
+        stations = np.array([mesh[0], mesh[1], .5 * (mesh[0] + mesh[1]),
+                             .25 * mesh[1]])
+        metric = np.asarray(trajectory.evaluate(stations).metric, dtype=float)
+        x = .25
+        f = (2*x*(x - .5) * 2 * node_acceleration[1] * metric[1]
+             + 4*x*(1 - x) * 2 * midpoint_acceleration[0] * metric[2]
+             + 2*(x - .5)*(x - 1) * 2 * node_acceleration[0] * metric[0])
+        actual = f / (2 * metric[3])
+        expected = 3.0 - actual
+        row = built["off_site_acceleration_upper_indices"][0]
+        self.assertAlmostEqual(constraints[row], expected, delta=2.e-11)
+        raw = (2*x*(x - .5) * node_acceleration[1]
+               + 4*x*(1 - x) * midpoint_acceleration[0]
+               + 2*(x - .5)*(x - 1) * node_acceleration[0])
+        self.assertGreater(abs(actual - raw), 1.e-5)
+
     def test_midpoint_speed_has_a_minimum_speed_lower_bound(self) -> None:
         import casadi as ca
 
@@ -918,6 +974,68 @@ class SplineTranscriptionTest(unittest.TestCase):
             ))))
         self.assertLess(residuals[1], residuals[0] / 2.0)
         self.assertLess(residuals[2], residuals[1] / 2.0)
+
+    def test_energy_rate_control_is_exact_with_variable_metric(self) -> None:
+        """The opt-in rate form interpolates F=2aG, not raw site a."""
+        from types import SimpleNamespace
+        from simplified_vehicle_models.solvers.qss_spline_ocp import _SplineStateEvaluator
+
+        class VariableMetricTrajectory:
+            def evaluate(self, station):
+                s = np.asarray(station, dtype=float)
+                return SimpleNamespace(metric=1.2 + .1 * s)
+
+        trajectory = VariableMetricTrajectory()
+        mesh = np.array([0.0, 2.0])
+        # F(s)=1+2s-.5s²; W_s=F and W(0)=100 exactly satisfy HS.
+        f = lambda s: 1.0 + 2.0*s - .5*s**2
+        energy = lambda s: 100.0 + s + s**2 - s**3 / 6.0
+        metric = lambda s: 1.2 + .1*s
+        acceleration = f(mesh) / (2.0 * metric(mesh))
+        midpoint_acceleration = f(np.array([1.0])) / (2.0 * metric(np.array([1.0])))
+        evaluator = _SplineStateEvaluator(
+            trajectory, mesh, np.sqrt(energy(mesh)), acceleration,
+            midpoint_acceleration,
+            control_representation="quadratic_energy_rate_over_metric_v1",
+        )
+        stations = np.linspace(0.0, 2.0, 31)
+        state = evaluator.evaluate(stations)
+        np.testing.assert_allclose(state["energy"], energy(stations), atol=2.e-12)
+        np.testing.assert_allclose(state["energy_rate"], f(stations), atol=2.e-12)
+        np.testing.assert_allclose(state["energy_rate_control"], f(stations), atol=2.e-12)
+        np.testing.assert_allclose(state["acceleration"], f(stations) / (2.0 * metric(stations)), atol=2.e-12)
+        np.testing.assert_allclose(state["speed_rate"], state["rhs_speed_rate"], atol=2.e-12)
+        # Site values are still physical acceleration variables, including x=1/2.
+        np.testing.assert_allclose(state["acceleration"][[0, 15, -1]],
+                                   np.r_[acceleration[0], midpoint_acceleration, acceleration[1]],
+                                   atol=2.e-12)
+
+    def test_energy_rate_constant_metric_matches_legacy_control(self) -> None:
+        """On a constant metric the new F form exactly reproduces legacy a."""
+        from types import SimpleNamespace
+        from simplified_vehicle_models.solvers.qss_spline_ocp import _SplineStateEvaluator
+
+        class ConstantMetricTrajectory:
+            def evaluate(self, station):
+                return SimpleNamespace(metric=np.full(np.asarray(station).shape, 1.7))
+
+        trajectory = ConstantMetricTrajectory()
+        mesh = np.array([0.0, 2.0])
+        acceleration = np.array([1.0, 3.0])
+        midpoint_acceleration = np.array([2.5])
+        energy = lambda s: 100.0 + 3.4*s + 3.4*s**2 - 17.0*s**3 / 30.0
+        legacy = _SplineStateEvaluator(trajectory, mesh, np.sqrt(energy(mesh)),
+                                       acceleration, midpoint_acceleration)
+        rate = _SplineStateEvaluator(
+            trajectory, mesh, np.sqrt(energy(mesh)), acceleration,
+            midpoint_acceleration,
+            control_representation="quadratic_energy_rate_over_metric_v1",
+        )
+        stations = np.linspace(0.0, 2.0, 31)
+        for field in ("energy", "energy_rate", "acceleration", "speed_rate",
+                      "rhs_speed_rate"):
+            np.testing.assert_allclose(rate.evaluate(stations)[field],
+                                       legacy.evaluate(stations)[field], atol=2.e-12)
 
     def test_energy_bernstein_floor_rejects_interior_braking_dip(self) -> None:
         """The energy cubic's Bernstein coefficients protect all x in [0, 1]."""

@@ -116,6 +116,8 @@ class LineRefinementTest(unittest.TestCase):
         self.assertTrue(report["projection_only"])
         self.assertFalse(report["solver_feasibility_claimed"])
         self.assertFalse(report["capability_checked"])
+        self.assertEqual(report["control_representation"],
+                         "quadratic_acceleration_v1")
 
     def test_projection_transfers_offset_to_different_basis(self):
         from simplified_vehicle_models.tracks.line_trajectory import OffsetTrajectory, ReferenceCurve

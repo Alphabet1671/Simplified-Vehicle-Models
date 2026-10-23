@@ -14,6 +14,10 @@ from simplified_vehicle_models.core.types import FloatArray
 
 
 HESSIAN_APPROXIMATIONS = ("exact", "limited-memory")
+CONTROL_REPRESENTATIONS = (
+    "quadratic_acceleration_v1",
+    "quadratic_energy_rate_over_metric_v1",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,6 +41,9 @@ class QssSettings:
     # per-node solver rejects a non-default selection rather than silently
     # changing its established exact-Hessian behavior.
     hessian_approximation: str = "exact"
+    # Preserve the established acceleration-quadratic transcription by default.
+    # The opt-in rate form represents F = W_s and reports a = F / (2 G).
+    control_representation: str = "quadratic_acceleration_v1"
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,6 +83,12 @@ def _validate_inputs(track, corridor, surface, mesh, settings):
         raise ValueError(
             "hessian_approximation must be one of "
             f"{', '.join(HESSIAN_APPROXIMATIONS)}"
+        )
+    if (not isinstance(settings.control_representation, str)
+            or settings.control_representation not in CONTROL_REPRESENTATIONS):
+        raise ValueError(
+            "control_representation must be one of "
+            f"{', '.join(CONTROL_REPRESENTATIONS)}"
         )
     if not math.isfinite(settings.start_speed) or settings.start_speed < 0.0:
         raise ValueError("start_speed must be finite and nonnegative")

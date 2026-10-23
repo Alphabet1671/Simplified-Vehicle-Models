@@ -77,6 +77,8 @@ class SplineSolution:
     state_representation: str = "energy_hs_v1"
     time_quadrature: str = TIME_QUADRATURE_NAME
     time_quadrature_metadata: dict[str, object] = field(default_factory=_time_quadrature_metadata)
+    # Explicitly labels the stored controls; omitted metadata on old artifacts is legacy.
+    control_representation: str = "quadratic_acceleration_v1"
 
 
 def _reference_curve(track):
@@ -157,12 +159,19 @@ class _SplineStateEvaluator:
     """Immutable dense evaluator for the ``energy_hs_v1`` representation."""
     state_representation = "energy_hs_v1"
 
-    def __init__(self, trajectory, mesh, speed, acceleration, midpoint_acceleration):
+    def __init__(self, trajectory, mesh, speed, acceleration, midpoint_acceleration,
+                 *, control_representation="quadratic_acceleration_v1"):
         self.trajectory = trajectory
         self.mesh = np.array(mesh, dtype=float, copy=True); self.mesh.setflags(write=False)
         self.speed = np.array(speed, dtype=float, copy=True); self.speed.setflags(write=False)
         self.acceleration = np.array(acceleration, dtype=float, copy=True); self.acceleration.setflags(write=False)
         self.midpoint_acceleration = np.array(midpoint_acceleration, dtype=float, copy=True); self.midpoint_acceleration.setflags(write=False)
+        self.metric_nodes = np.array(trajectory.evaluate(self.mesh).metric, dtype=float, copy=True); self.metric_nodes.setflags(write=False)
+        self.metric_midpoints = np.array(trajectory.evaluate(0.5 * (self.mesh[:-1] + self.mesh[1:])).metric, dtype=float, copy=True); self.metric_midpoints.setflags(write=False)
+        if control_representation not in ("quadratic_acceleration_v1",
+                                          "quadratic_energy_rate_over_metric_v1"):
+            raise ValueError("unknown control representation")
+        self.control_representation = control_representation
 
     def evaluate(self, station):
         s = np.asarray(station, dtype=float); scalar = s.ndim == 0; flat = np.atleast_1d(s)
@@ -174,9 +183,8 @@ class _SplineStateEvaluator:
         width = self.mesh[i + 1] - self.mesh[i]
         geometry = self.trajectory.evaluate(flat)
         g = np.asarray(geometry.metric)
-        metric_nodes = np.asarray(self.trajectory.evaluate(self.mesh).metric)
-        f0 = 2.0 * self.acceleration[i] * metric_nodes[i]
-        f1 = 2.0 * self.acceleration[i + 1] * metric_nodes[i + 1]
+        f0 = 2.0 * self.acceleration[i] * self.metric_nodes[i]
+        f1 = 2.0 * self.acceleration[i + 1] * self.metric_nodes[i + 1]
         w0, w1 = self.speed[i] ** 2, self.speed[i + 1] ** 2
         w = ((2*x**3 - 3*x**2 + 1)*w0
              + (x**3 - 2*x**2 + x)*width*f0
@@ -190,12 +198,24 @@ class _SplineStateEvaluator:
             raise ValueError("energy_hs_v1 reconstructed nonpositive kinetic energy")
         v = np.sqrt(w)
         dv = w_s / (2.0 * v)
-        a = (2*(x-.5)*(x-1)*self.acceleration[i]
-             + 4*x*(1-x)*self.midpoint_acceleration[i]
-             + 2*x*(x-.5)*self.acceleration[i+1])
+        control = (2*(x-.5)*(x-1)*self.acceleration[i]
+                   + 4*x*(1-x)*self.midpoint_acceleration[i]
+                   + 2*x*(x-.5)*self.acceleration[i+1])
+        if self.control_representation == "quadratic_energy_rate_over_metric_v1":
+            # Physical site variables a are unchanged.  The rate form makes
+            # F=W_s quadratic by interpolating F=2*a*G at each site.
+            f_mid = 2.0 * self.midpoint_acceleration[i] * self.metric_midpoints[i]
+            f = (2*x*(x - 0.5) * f1
+                 + 4*x*(1 - x) * f_mid
+                 + 2*(x - 0.5)*(x - 1) * f0)
+            a = f / (2.0 * g)
+        else:
+            a = control
+            f = 2.0 * a * g
         rhs = a * g / v
         result = {"speed": v, "acceleration": a, "speed_rate": dv,
-                  "rhs_speed_rate": rhs, "energy": w, "energy_rate": w_s}
+                  "rhs_speed_rate": rhs, "energy": w, "energy_rate": w_s,
+                  "energy_rate_control": f}
         return {key: float(np.asarray(value)[0]) if scalar else value
                 for key, value in result.items()}
 
@@ -497,13 +517,23 @@ def build_spline_ocp(track, corridor, surface, mesh, spline, settings: QssSettin
         add(1.0 - centreline_curvature * offset, fold_guard, math.inf)
         return acceleration_lower_index, acceleration_upper_index
 
+    rate_control = settings.control_representation == "quadratic_energy_rate_over_metric_v1"
+
+    def energy_rate(site_acceleration, metric):
+        """Return F=W_s at a physical acceleration site."""
+        return 2.0 * site_acceleration * metric
+
+    def physical_acceleration(control, metric):
+        """Recover physical a from a quadratic F only in the rate form."""
+        return control / (2.0 * metric) if rate_control else control
+
     def hermite_energy(index, coordinate):
         """Cubic kinetic energy ``W=v²`` at an interior element coordinate."""
         h = float(widths[index])
         x = float(coordinate)
         metric0, metric1 = node_geometry[index][4], node_geometry[index + 1][4]
-        f0 = 2.0 * acceleration[index] * metric0
-        f1 = 2.0 * acceleration[index + 1] * metric1
+        f0 = energy_rate(acceleration[index], metric0)
+        f1 = energy_rate(acceleration[index + 1], metric1)
         return ((2*x**3 - 3*x**2 + 1) * speed[index] ** 2
                 + (x**3 - 2*x**2 + x) * h * f0
                 + (-2*x**3 + 3*x**2) * speed[index + 1] ** 2
@@ -513,9 +543,13 @@ def build_spline_ocp(track, corridor, surface, mesh, spline, settings: QssSettin
         """Safe optimizer expression; a separate W floor rejects invalid W."""
         return ca.sqrt(ca.fmax(energy, np.finfo(float).tiny))
 
-    def quadratic_acceleration(index, coordinate):
-        """Existing node/midpoint/node Lagrange control at an interior site."""
+    def quadratic_control(index, coordinate):
+        """Node/midpoint/node Lagrange polynomial for a (legacy) or F."""
         x = float(coordinate)
+        if rate_control:
+            return (2*x*(x - 0.5) * energy_rate(acceleration[index + 1], node_geometry[index + 1][4])
+                    + 4*x*(1 - x) * energy_rate(mid_acceleration[index], mid_geometry[index][4])
+                    + 2*(x - 0.5)*(x - 1) * energy_rate(acceleration[index], node_geometry[index][4]))
         return (2*x*(x - 0.5) * acceleration[index + 1]
                 + 4*x*(1 - x) * mid_acceleration[index]
                 + 2*(x - 0.5)*(x - 1) * acceleration[index])
@@ -536,12 +570,12 @@ def build_spline_ocp(track, corridor, surface, mesh, spline, settings: QssSettin
         node1 = node_geometry[index + 1]
         middle = mid_geometry[index]
         metric0, metric1, metric_mid = node0[4], node1[4], middle[4]
-        f0 = 2.0 * acceleration[index] * metric0
-        f1 = 2.0 * acceleration[index + 1] * metric1
+        f0 = energy_rate(acceleration[index], metric0)
+        f1 = energy_rate(acceleration[index + 1], metric1)
         midpoint_energy = (0.5 * (speed[index] ** 2 + speed[index + 1] ** 2)
                            + h / 8.0 * (f0 - f1))
         midpoint_speed = energy_speed(midpoint_energy)
-        f_mid = 2.0 * mid_acceleration[index] * metric_mid
+        f_mid = energy_rate(mid_acceleration[index], metric_mid)
         # Simpson is exact for a straight-line quadratic acceleration control:
         # W_s = 2 a G is quadratic and W itself is cubic.
         # Normalize this m²/s² row by a fixed 10 m/s reference speed for NLP
@@ -549,16 +583,18 @@ def build_spline_ocp(track, corridor, surface, mesh, spline, settings: QssSettin
         # physical energy residual or provide a speed-uniform error bound.
         add((speed[index + 1] ** 2 - speed[index] ** 2
              - h / 6.0 * (f0 + 4.0 * f_mid + f1)) / 10.0, 0.0, 0.0)
-        # The quadratic control is globally boxed through its Bernstein
-        # coefficients.  Node and midpoint values alone permit an interior
-        # excursion; b1 is the middle Bernstein coefficient.
-        bernstein_middle = 2.0 * mid_acceleration[index] - 0.5 * (
-            acceleration[index] + acceleration[index + 1]
-        )
-        bernstein_middle_indices.append(add(
-            bernstein_middle, float(np.min(surface.acceleration_min)),
-            float(np.max(surface.acceleration_max)),
-        ))
+        if not rate_control:
+            # Only the legacy quadratic acceleration control has an acceleration
+            # Bernstein guard. In rate mode F/(2G) is not quadratic, so this
+            # would be a false continuous-acceleration certificate; dense
+            # independent validation remains the physical evidence.
+            bernstein_middle = 2.0 * mid_acceleration[index] - 0.5 * (
+                acceleration[index] + acceleration[index + 1]
+            )
+            bernstein_middle_indices.append(add(
+                bernstein_middle, float(np.min(surface.acceleration_min)),
+                float(np.max(surface.acceleration_max)),
+            ))
         # Bernstein coefficients of the cubic W enforce a sufficient global
         # physical speed floor over this element, not merely at the midpoint.
         minimum_energy = float(settings.minimum_speed) ** 2
@@ -590,19 +626,19 @@ def build_spline_ocp(track, corridor, surface, mesh, spline, settings: QssSettin
                 float(corridor_upper[index + 1]))
         acceleration_indices = limits(
             n_nodes[index], node0[1], node0[2], node0[3], speed[index],
-            acceleration[index], float(k0_nodes[index]),
+            physical_acceleration(acceleration[index], metric0), float(k0_nodes[index]),
         )
         node_acceleration_lower_indices.append(acceleration_indices[0])
         node_acceleration_upper_indices.append(acceleration_indices[1])
         acceleration_indices = limits(
             n_mids[index], middle[1], middle[2], middle[3], midpoint_speed,
-            mid_acceleration[index], float(k0_mids[index]),
+            physical_acceleration(mid_acceleration[index], metric_mid), float(k0_mids[index]),
         )
         midpoint_acceleration_lower_indices.append(acceleration_indices[0])
         midpoint_acceleration_upper_indices.append(acceleration_indices[1])
         acceleration_indices = limits(
             n_nodes[index + 1], node1[1], node1[2], node1[3],
-            speed[index + 1], acceleration[index + 1],
+            speed[index + 1], physical_acceleration(acceleration[index + 1], metric1),
             float(k0_nodes[index + 1]),
         )
         node_acceleration_lower_indices.append(acceleration_indices[0])
@@ -610,7 +646,8 @@ def build_spline_ocp(track, corridor, surface, mesh, spline, settings: QssSettin
         for local in range(fractions.size):
             site = index * fractions.size + local
             off_speed = energy_speed(hermite_energy(index, fractions[local]))
-            off_acceleration = quadratic_acceleration(index, fractions[local])
+            off_control = quadratic_control(index, fractions[local])
+            off_acceleration = physical_acceleration(off_control, off_geometry[site][4])
             # These are feasibility rows only: retain the single HS speed
             # defect above rather than enforcing additional polynomial dynamics.
             add(off_speed - float(settings.minimum_speed), 0.0, math.inf)
@@ -992,6 +1029,7 @@ def solve_spline_line(track, corridor, surface, mesh, spline,
     evaluator = _SplineStateEvaluator(
         trajectory, built["mesh"], blocks["speed"], blocks["acceleration"],
         blocks["mid_acceleration"],
+        control_representation=settings.control_representation,
     )
     physical_time = physical_time_quadrature(trajectory, evaluator, built["mesh"])
     return SplineSolution(
@@ -1013,5 +1051,7 @@ def solve_spline_line(track, corridor, surface, mesh, spline,
         time_quadrature_metadata=_time_quadrature_metadata() | {
             "panel_count": int(built["time_quadrature_panel_count"]),
             "site_count": int(built["time_quadrature_site_count"]),
+            "control_representation": settings.control_representation,
         },
+        control_representation=settings.control_representation,
     )

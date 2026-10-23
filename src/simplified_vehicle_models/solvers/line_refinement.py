@@ -11,6 +11,9 @@ import numpy as np
 
 
 _ENERGY_REPRESENTATION = "energy_hs_v1"
+_CONTROL_REPRESENTATIONS = {
+    "quadratic_acceleration_v1", "quadratic_energy_rate_over_metric_v1",
+}
 
 
 def _finite_increasing_mesh(mesh: object, *, name: str, minimum_spacing: float) -> np.ndarray:
@@ -134,6 +137,15 @@ def project_energy_seed(
         raise ValueError("minimum_spacing must be finite and positive")
     evaluator = getattr(solution, "state_evaluator", None)
     representation = getattr(solution, "state_representation", None)
+    control_representation = getattr(solution, "control_representation", None)
+    if control_representation is None:
+        # Artifacts predating explicit control metadata are legacy by contract.
+        control_representation = "quadratic_acceleration_v1"
+    if control_representation not in _CONTROL_REPRESENTATIONS:
+        raise ValueError("project_energy_seed requires a known control representation")
+    evaluator_control = getattr(evaluator, "control_representation", control_representation)
+    if evaluator_control != control_representation:
+        raise ValueError("state evaluator and solution control representations differ")
     if representation != _ENERGY_REPRESENTATION and getattr(evaluator, "state_representation", None) != _ENERGY_REPRESENTATION:
         raise ValueError("project_energy_seed requires energy_hs_v1 representation")
     if evaluator is None or not callable(getattr(evaluator, "evaluate", None)):
@@ -193,5 +205,6 @@ def project_energy_seed(
         "maximum_hs_energy_defect": float(np.max(np.abs(defect))) if defect.size else 0.0,
         "maximum_offset_projection_error": float(np.max(np.abs(offset_error))),
         "source_representation": _ENERGY_REPRESENTATION,
+        "control_representation": control_representation,
     }
     return seed, diagnostics

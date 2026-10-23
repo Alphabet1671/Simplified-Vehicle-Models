@@ -195,6 +195,67 @@ class ReplayTests(unittest.TestCase):
         self.assertAlmostEqual(ev.metrics["time_difference_absolute_seconds"], abs(expected_time_delta))
         self.assertAlmostEqual(ev.metrics["time_difference_signed_relative"], expected_time_delta / loaded.physical_time)
 
+    def test_weighted_speed_rms_diagnostics_use_native_grids_and_preserve_legacy(self):
+        from simplified_vehicle_models.solvers.trajectory_artifact import ExactTrajectoryDriverReference
+        loaded = self.make_loaded()
+        endpoint = ExactTrajectoryDriverReference(loaded).length
+        vehicle = SimpleNamespace(steering_maximum_angle=.5, steering_maximum_rate=1.,
+                                  maximum_pedal_force=100., wheelbase=2.)
+        class Plant:
+            state_names = ("s", "n", "heading_error", "v_x", "v_y")
+            def __init__(self, *a): pass
+            def initial_state(self, speed): return np.zeros(5)
+        class Driver:
+            def __init__(self, *a, **kw): pass
+
+        def run(times, progress=None):
+            times = np.asarray(times, dtype=float)
+            progress = endpoint * times / 2 if progress is None else np.asarray(progress, dtype=float)
+            speed = np.array([ExactTrajectoryDriverReference(loaded).sample(float(d))[0]
+                              for d in progress]) + np.sqrt(times)
+            result = SimpleNamespace(time=times, state=np.array([
+                progress, np.zeros(times.size), np.zeros(times.size), speed,
+                np.zeros(times.size)]), lap_completed=False)
+            return replay_exact_trajectory(loaded, vehicle, plant_factory=Plant,
+                driver_factory=Driver, forward_solver=lambda *a, **k: result)
+
+        ev_a, report_a = run([0., .1, 2.])
+        ev_b, report_b = run([0., 1., 2.])
+        for ev, report, expected_legacy in ((ev_a, report_a, np.sqrt(np.mean([0., .1, 2.]))),
+                                             (ev_b, report_b, np.sqrt(np.mean([0., 1., 2.])))):
+            m = ev.metrics
+            self.assertAlmostEqual(m["rms_speed_error_mps"], expected_legacy)
+            self.assertEqual(m["speed_error_rms_sample_weighting"],
+                             "uniform_returned_output_samples_not_time_or_distance")
+            self.assertAlmostEqual(m["time_weighted_rms_speed_error_mps"], 1.)
+            self.assertAlmostEqual(m["distance_weighted_rms_speed_error_mps"], 1.)
+            self.assertIsNone(m["distance_weighted_rms_unavailable_reason"])
+            self.assertEqual(m["weighted_rms_quadrature"],
+                             "native_grid_trapezoid_of_squared_speed_error_diagnostic_only")
+            self.assertFalse(report["accepted"])
+            self.assertFalse(report["physically_validated"])
+            self.assertFalse(report["event_qualified"])
+            self.assertFalse(report["numerically_validated"])
+            self.assertFalse(report["U3_qualified"])
+            with self.assertRaises(TypeError):
+                m["rms_speed_error_mps"] = 0.
+            json.dumps({"report": report, "metrics": dict(m)}, allow_nan=False)
+        self.assertNotAlmostEqual(ev_a.metrics["rms_speed_error_mps"],
+                                  ev_b.metrics["rms_speed_error_mps"])
+        for times, progress in (([0.], [0.]), ([0., 1., 2.], [0., 0., endpoint]),
+                                ([0., 1., 2.], [0., endpoint, 0.])):
+            ev, report = run(times, progress)
+            m = ev.metrics
+            self.assertIsNone(m["distance_weighted_rms_speed_error_mps"])
+            self.assertEqual(m["distance_weighted_rms_unavailable_reason"],
+                "insufficient_progress_samples" if len(times) < 2 else "nonincreasing_progress")
+            if len(times) < 2:
+                self.assertIsNone(m["time_weighted_rms_speed_error_mps"])
+            else:
+                self.assertIsNotNone(m["time_weighted_rms_speed_error_mps"])
+            self.assertFalse(report["accepted"])
+            json.dumps({"report": report, "metrics": dict(m)}, allow_nan=False)
+
     def test_closed_path_periodicity_excludes_progress_and_soc(self):
         helper = artifact_tests.TrajectoryArtifactTest()
         solution, _ = helper.make_solution(True)

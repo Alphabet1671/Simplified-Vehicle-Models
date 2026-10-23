@@ -403,7 +403,19 @@ def replay_exact_trajectory(loaded_or_path, vehicle, *, settings=None, plant_fac
             time_error_rel = float(time_error_abs / physical_time)
             signed_time_error_rel = float(signed_time_error / physical_time)
         solver_message = getattr(result, "message", None)
+        time_weighted_rms = (float(np.sqrt(np.sum(.5 * (error[1:]**2 + error[:-1]**2) * np.diff(t)) / (t[-1] - t[0])))
+                              if t.size > 1 else None)
+        progress_differences = np.diff(s)
+        distance_available = s.size > 1 and np.all(progress_differences > 0)
+        distance_weighted_rms = (float(np.sqrt(np.sum(.5 * (error[1:]**2 + error[:-1]**2) * progress_differences) / (s[-1] - s[0])))
+                                 if distance_available else None)
         metrics = {"max_abs_speed_error_mps": float(np.max(np.abs(error))), "rms_speed_error_mps": float(np.sqrt(np.mean(error**2))),
+            "speed_error_rms_sample_weighting": "uniform_returned_output_samples_not_time_or_distance",
+            "time_weighted_rms_speed_error_mps": time_weighted_rms,
+            "distance_weighted_rms_speed_error_mps": distance_weighted_rms,
+            "distance_weighted_rms_unavailable_reason": (None if distance_available else
+                "insufficient_progress_samples" if s.size < 2 else "nonincreasing_progress"),
+            "weighted_rms_quadrature": "native_grid_trapezoid_of_squared_speed_error_diagnostic_only",
             "max_abs_lateral_error_m": max_lateral, "max_abs_heading_error_rad": float(np.max(np.abs(herr))),
             "maximum_spatial_step_m": maximum_spatial_step,
             "diagnostic_tracking_within_existing_gate": tracking_gate,

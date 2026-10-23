@@ -44,7 +44,12 @@ def _finite(value, name, *, positive=False, nonnegative=False):
 
 
 class PhysicalLongitudinalMapper:
-    """Callable opt-in mapper suitable for ``solve_forward(command_mapper=...)``."""
+    """Callable opt-in mapper suitable for ``solve_forward(command_mapper=...)``.
+
+    Query counters include every valid Newton/rejected-trial callback, not
+    accepted integration steps. A failed callback increments ``failed_queries``;
+    it may also have reached a counted callback before a later-stage rejection.
+    """
 
     _required = ("s", "n", "heading_error", "v_x", "v_y", "yaw_rate",
                  "omega_fl", "omega_fr", "omega_rl", "omega_rr", "soc", "steering")
@@ -146,22 +151,35 @@ class PhysicalLongitudinalMapper:
                                     settings=ActuatorInversionSettings(
                                         torque_tolerance_nm=self.settings.torque_tolerance_nm,
                                         root_method=self.settings.root_method))
+            throttle = _finite(result.throttle, "inverter throttle", nonnegative=True)
+            brake_request = _finite(result.brake_force, "inverter brake force", nonnegative=True)
+            maximum_brake = _finite(self.vehicle.maximum_pedal_force, "maximum pedal force", positive=True)
+            if (throttle > 1. or brake_request > maximum_brake or throttle * brake_request > 1.e-12):
+                raise ValueError("actuator inverse returned an out-of-range or overlapping command")
+            torque_error = _finite(result.torque_error_nm, "actuator torque error")
+            if type(result.saturated) is not bool:
+                raise ValueError("actuator saturation flag must be boolean")
+            if (isinstance(result.evaluations, (bool, np.bool_))
+                    or not isinstance(result.evaluations, (int, np.integer))
+                    or result.evaluations < 0):
+                raise ValueError("actuator evaluations must be a nonnegative integer")
             self._counts["callback_queries"] += 1
             if not bool(eq.is_feasible):
                 self._counts["infeasible_quasi_steady_demands"] += 1
             self._counts["actuator_saturations"] += int(bool(result.saturated))
             self._counts["max_abs_actuator_torque_error_nm"] = max(
-                self._counts["max_abs_actuator_torque_error_nm"], abs(float(result.torque_error_nm)))
+                self._counts["max_abs_actuator_torque_error_nm"], abs(torque_error))
             self._counts["max_abs_requested_torque_nm"] = max(
                 self._counts["max_abs_requested_torque_nm"], abs(torque))
-            self._counts["actuator_evaluations_total"] += int(result.evaluations)
+            self._counts["actuator_evaluations_total"] += result.evaluations
             margin = float(observation.wheel_speed_margin)
             if math.isnan(margin) or margin == -math.inf:
                 raise ValueError("wheel_speed_margin must not be NaN or negative infinity")
             governor = min(max(margin / self.brake_governor_margin, 0.), 1.)
-            brake = float(result.brake_force) * governor
-            self._counts["brake_governor_limited_queries"] += int(governor < 1. and brake > 0.)
-            return DriverCommand(float(result.throttle) if brake == 0. else 0., brake, req[2])
+            brake = brake_request * governor
+            self._counts["brake_governor_limited_queries"] += int(
+                governor < 1. and brake_request > 0.)
+            return DriverCommand(throttle if brake_request == 0. else 0., brake, req[2])
         except Exception:
             self._counts["failed_queries"] += 1
             raise

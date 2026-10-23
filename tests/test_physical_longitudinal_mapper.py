@@ -20,6 +20,7 @@ def fake_vehicle(regen=False):
         controller=SimpleNamespace(regen_enabled=regen),
         wheel_inertia=0.2,
         steering_maximum_rate=0.7,
+        maximum_pedal_force=1000.,
         tire=object(), total_mass=500., wheelbase=2.5, track_width=1.5,
         cg_height=.3, front_mass_fraction=.5,
         lateral_load_transfer_distribution=.5, brake_bias=.6,
@@ -98,6 +99,47 @@ class PhysicalLongitudinalMapperTests(unittest.TestCase):
         self.assertEqual(cmd.steering_rate, .12)
         self.assertEqual(inverter.last[0].tolist(), [30., 31., 32., 33.])
         self.assertEqual(mapper.snapshot_diagnostics()["brake_governor_limited_queries"], 0)
+
+    def test_governor_counts_reduced_brake_even_when_fully_released(self):
+        def brake_inverse(*args, **kwargs):
+            return SimpleNamespace(throttle=0., brake_force=100., torque_error_nm=0.,
+                                   saturated=False, evaluations=1)
+        with mock.patch("simplified_vehicle_models.formulations.point_mass.point_mass_view_of_planar", return_value=object()), mock.patch(
+                "simplified_vehicle_models.tires.unitire_simple.loaded_radius", return_value=np.ones(4) * .3):
+            mapper = PhysicalLongitudinalMapper(
+                self.vehicle, SimpleNamespace(sample=lambda s: (10., 0., 0.)), state_names=NAMES,
+                settings=PhysicalMapperSettings(include_wheel_inertia=False),
+                equilibrium_evaluator=equilibrium, actuator_inverter=brake_inverse)
+            for margin in (0., .425, .85):
+                obs = DriverObservation(3., .1, .02, 10., .1, .04, .3, margin)
+                command = mapper(0., self.state, obs, self.request)
+                if margin == 0.:
+                    self.assertEqual(command.brake_force, 0.)
+                elif margin == .425:
+                    self.assertEqual(command.brake_force, 50.)
+                else:
+                    self.assertEqual(command.brake_force, 100.)
+        self.assertEqual(mapper.snapshot_diagnostics()["brake_governor_limited_queries"], 2)
+
+    def test_rejects_malformed_inverter_results(self):
+        bad_results = (
+            SimpleNamespace(throttle=float("nan"), brake_force=0., torque_error_nm=0., saturated=False, evaluations=1),
+            SimpleNamespace(throttle=.2, brake_force=10., torque_error_nm=0., saturated=False, evaluations=1),
+            SimpleNamespace(throttle=0., brake_force=0., torque_error_nm=float("inf"), saturated=False, evaluations=1),
+            SimpleNamespace(throttle=0., brake_force=0., torque_error_nm=0., saturated=1, evaluations=1),
+            SimpleNamespace(throttle=0., brake_force=0., torque_error_nm=0., saturated=False, evaluations=True),
+        )
+        for result in bad_results:
+            with self.subTest(result=result), mock.patch(
+                    "simplified_vehicle_models.formulations.point_mass.point_mass_view_of_planar", return_value=object()), mock.patch(
+                    "simplified_vehicle_models.tires.unitire_simple.loaded_radius", return_value=np.ones(4) * .3):
+                mapper = PhysicalLongitudinalMapper(
+                    self.vehicle, SimpleNamespace(sample=lambda s: (10., 0., 0.)), state_names=NAMES,
+                    settings=PhysicalMapperSettings(include_wheel_inertia=False),
+                    equilibrium_evaluator=equilibrium,
+                    actuator_inverter=lambda *a, **k: result)
+                with self.assertRaises(ValueError):
+                    mapper(0., self.state, self.observation, self.request)
 
     def test_compiled_iem24_real_drag_hold_actuator_closure(self):
         from simplified_vehicle_models.compiler.compile import compile_formulation

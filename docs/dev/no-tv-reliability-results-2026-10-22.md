@@ -25,6 +25,22 @@ or a declaration that the implementation goal is complete.
   provenance are persisted. CLI geometry/state budgets are **diagnostic only**;
   no approved policy can turn them into strict acceptance.
 
+## Failure diagnostic contract
+
+A strict spline solver rejection now raises `SplineSolveError`, a compatible
+`RuntimeError` subclass. Its `diagnostics` dictionary reports return status,
+per-stage and total iterations, objective, physical maximum constraint and
+bound violations, plus scaled dual infeasibility when IPOPT supplied it. Raw
+last-iterate decision, constraint, and available dual arrays are immutable
+copies; this is failure evidence, not an accepted `SplineSolution`.
+
+The no-TV worker records this dictionary as `failure_diagnostics` and, when
+raw arrays exist, writes the exclusive `failed_iterate.npz` as
+`failed_artifact`. It deliberately does not set `artifact`, invoke validation,
+or feed that file to candidate/refinement comparison. The result remains
+`accepted: false`, `solver_succeeded: false`, and `validation_status:
+solver_failed`. Generic legacy `RuntimeError` behavior is unchanged.
+
 ## Actual measured cases
 
 The following entries are local, ignored `runs/no_tv_reliability/` artifacts,

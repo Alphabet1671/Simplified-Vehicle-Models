@@ -335,6 +335,75 @@ class NoTvMinimumLapHarnessTest(unittest.TestCase):
         self.assertEqual(evidence["candidate"]["profiles"][0]["status"], "converged")
         self.assertEqual(evidence["candidate"]["profiles"][1]["status"], "exception")
 
+    def test_worker_persists_spline_failure_diagnostics_without_solution_artifact(self):
+        from simplified_vehicle_models.solvers.qss_spline_ocp import SplineSolveError
+        class FakeSpline:
+            control_count = 2
+            control_distance = np.array([0., 1.])
+        request = harness.build_attempt(harness.default_cases()["acceleration"], mesh_spacing_m=5.,
+            basis_spacing_m=35., maximum_iterations=1, wall_cap_s=3., seed_name="centerline",
+            formulation=Path("form.xml"), surface=Path("surface.npz"))
+        diagnostics = {"return_status": "Maximum_Iterations_Exceeded", "iter_count": 1,
+                       "total_iterations": 1, "objective_value": 9.,
+                       "physical_max_constraint_violation": .25,
+                       "physical_max_bound_violation": .5, "layout": {"decision_size": 3}}
+        error = SplineSolveError("quasi-steady line solver failed: Maximum_Iterations_Exceeded",
+                                 diagnostics, failed_values=np.array([1., 2., 3.]),
+                                 constraint_values=np.array([.25]), dual_g=np.array([.5]))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); request_path = root / "request.json"; result_path = root / "result.json"
+            request_path.write_text(json.dumps(harness._json_safe(request)), encoding="utf-8")
+            with patch.object(harness, "make_track_view", return_value=object()), \
+                 patch.object(harness, "corridor_from_track", return_value=object()), \
+                 patch.object(harness, "compile_formulation", return_value=SimpleNamespace(model=object())), \
+                 patch.object(harness, "point_mass_view_of_planar", return_value=object()), \
+                 patch.object(harness, "load_surface_dispatch", return_value=(SimpleNamespace(provenance_hash="ok"), "fixture")), \
+                 patch.object(harness, "capability_hash", return_value="ok"), \
+                 patch.object(harness, "build_mesh", return_value=np.array([0., 1.])), \
+                 patch.object(harness, "OffsetSpline", return_value=FakeSpline()), \
+                 patch.object(harness, "initial_guess", return_value=np.zeros(7)), \
+                 patch.object(harness, "_seed_domain_report", return_value={}), \
+                 patch.object(harness, "solve_spline_line", side_effect=error), \
+                 patch.object(harness, "validate_line", side_effect=AssertionError("failed iterate must not validate")):
+                harness._attempt_worker(str(request_path), str(result_path), str(root / "solution.npz"))
+            result = json.loads(result_path.read_text())
+            self.assertFalse(result["accepted"]); self.assertFalse(result["solver_succeeded"])
+            self.assertNotIn("artifact", result)
+            self.assertEqual(result["failure_diagnostics"]["total_iterations"], 1)
+            self.assertEqual(result["failure_diagnostics"]["physical_max_constraint_violation"], .25)
+            self.assertTrue((root / result["failed_artifact"]).is_file())
+            with np.load(root / result["failed_artifact"], allow_pickle=False) as saved:
+                np.testing.assert_array_equal(saved["failed_values"], [1., 2., 3.])
+                self.assertIn("constraint_values", saved); self.assertIn("dual_g", saved)
+
+    def test_generic_runtime_error_keeps_legacy_failure_shape(self):
+        class FakeSpline:
+            control_count = 2
+            control_distance = np.array([0., 1.])
+        request = harness.build_attempt(harness.default_cases()["acceleration"], mesh_spacing_m=5.,
+            basis_spacing_m=35., maximum_iterations=1, wall_cap_s=3., seed_name="centerline",
+            formulation=Path("form.xml"), surface=Path("surface.npz"))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); request_path = root / "request.json"; result_path = root / "result.json"
+            request_path.write_text(json.dumps(harness._json_safe(request)), encoding="utf-8")
+            with patch.object(harness, "make_track_view", return_value=object()), \
+                 patch.object(harness, "corridor_from_track", return_value=object()), \
+                 patch.object(harness, "compile_formulation", return_value=SimpleNamespace(model=object())), \
+                 patch.object(harness, "point_mass_view_of_planar", return_value=object()), \
+                 patch.object(harness, "load_surface_dispatch", return_value=(SimpleNamespace(provenance_hash="ok"), "fixture")), \
+                 patch.object(harness, "capability_hash", return_value="ok"), \
+                 patch.object(harness, "build_mesh", return_value=np.array([0., 1.])), \
+                 patch.object(harness, "OffsetSpline", return_value=FakeSpline()), \
+                 patch.object(harness, "initial_guess", return_value=np.zeros(7)), \
+                 patch.object(harness, "_seed_domain_report", return_value={}), \
+                 patch.object(harness, "solve_spline_line", side_effect=RuntimeError("legacy failure")):
+                harness._attempt_worker(str(request_path), str(result_path), str(root / "solution.npz"))
+            result = json.loads(result_path.read_text())
+        self.assertEqual(result["error_type"], "RuntimeError")
+        self.assertFalse(result["accepted"]); self.assertFalse(result["solver_succeeded"])
+        self.assertNotIn("failure_diagnostics", result)
+        self.assertNotIn("failed_artifact", result)
+
     def test_json_serialization_converts_nonfinite_diagnostics_to_null(self):
         with tempfile.TemporaryDirectory() as directory:
             destination = Path(directory) / "result.json"
@@ -418,6 +487,16 @@ class NoTvMinimumLapHarnessTest(unittest.TestCase):
             xml.write_text('<model><source ref="missing.xml" /></model>', encoding="utf-8")
             with self.assertRaisesRegex(FileNotFoundError, "dependency"):
                 harness.source_hashes(xml)
+
+    def test_failed_artifact_never_enters_refinement_candidates(self):
+        row = {"request": {"case": {"name": "acceleration"}},
+               "failed_artifact": "failed_iterate.npz", "status": "Maximum_Iterations_Exceeded",
+               "solver_succeeded": False, "accepted": False}
+        with tempfile.TemporaryDirectory() as directory:
+            report = harness.aggregate([row], Path(directory), expected_cases=("acceleration",))
+        self.assertEqual(report["candidate_diagnostics"], [])
+        self.assertEqual(report["mesh_refinement"], [])
+        self.assertFalse(report["case_status"]["acceleration"]["accepted"])
 
     def test_aggregate_separates_unqualified_candidates_from_refinement(self):
         with tempfile.TemporaryDirectory() as directory:

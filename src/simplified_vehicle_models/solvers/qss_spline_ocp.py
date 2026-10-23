@@ -20,6 +20,33 @@ import math
 
 import numpy as np
 
+
+class SplineSolveError(RuntimeError):
+    """Strict spline-OCP rejection with immutable raw solver diagnostics.
+
+    This is intentionally a :class:`RuntimeError` subclass so existing callers
+    retain their failure behavior while diagnostic-aware callers can persist the
+    solver's last iterate without treating it as a solution.
+    """
+
+    def __init__(self, message: str, diagnostics: dict[str, object], *,
+                 failed_values=None, constraint_values=None, dual_x=None,
+                 dual_g=None):
+        super().__init__(message)
+        self.diagnostics = dict(diagnostics)
+        self.failed_values = self._immutable_array(failed_values)
+        self.constraint_values = self._immutable_array(constraint_values)
+        self.dual_x = self._immutable_array(dual_x)
+        self.dual_g = self._immutable_array(dual_g)
+
+    @staticmethod
+    def _immutable_array(values):
+        if values is None:
+            return None
+        copied = np.array(values, dtype=float, copy=True)
+        copied.setflags(write=False)
+        return copied
+
 from simplified_vehicle_models.core.types import FloatArray
 from simplified_vehicle_models.tracks.line_trajectory import OffsetTrajectory, ReferenceCurve
 from simplified_vehicle_models.tracks.types import PathCoordinates
@@ -943,6 +970,55 @@ def initial_guess(track, corridor, surface, mesh, spline, settings: QssSettings,
     ])
 
 
+def _spline_failure_diagnostics(*, status, iter_count, total_iterations, objective,
+                                constraint_violation, bound_violation, stats, built,
+                                settings) -> dict[str, object]:
+    """Serialize only solver-state facts needed to diagnose strict rejection."""
+    diagnostics: dict[str, object] = {
+        "return_status": str(status),
+        "iter_count": int(iter_count),
+        "total_iterations": int(total_iterations),
+        "objective_value": float(objective),
+        "physical_max_constraint_violation": float(constraint_violation),
+        "physical_max_bound_violation": float(bound_violation),
+        "layout": {"control_count": int(built["control_count"]),
+                   "node_count": int(built["mesh"].size),
+                   "decision_size": int(built["nlp"]["x"].numel())},
+        "control_representation": settings.control_representation,
+        "state_representation": "energy_hs_v1",
+        "dual_coordinates": "scaled_decision",
+        "time_quadrature": TIME_QUADRATURE_NAME,
+    }
+    iterations = stats.get("iterations") if isinstance(stats, dict) else None
+    if isinstance(iterations, dict) and "inf_du" in iterations:
+        values = np.asarray(iterations["inf_du"], dtype=float).ravel()
+        if values.size:
+            diagnostics["scaled_dual_infeasibility"] = float(values[-1])
+    return diagnostics
+
+
+def _raise_spline_solver_failure(*, status, values, constraints, objective,
+                                 constraint_violation, bound_violation, iter_count,
+                                 total_iterations, stats, result, built, settings):
+    """Run the unchanged strict gate and decorate a rejection with raw evidence."""
+    try:
+        _validate_solver_result(
+            status, values, constraints, objective, constraint_violation,
+            settings.tolerance, built["x_lower"], built["x_upper"],
+        )
+    except RuntimeError as error:
+        diagnostics = _spline_failure_diagnostics(
+            status=status, iter_count=iter_count, total_iterations=total_iterations,
+            objective=objective, constraint_violation=constraint_violation,
+            bound_violation=bound_violation, stats=stats, built=built, settings=settings,
+        )
+        raise SplineSolveError(
+            str(error), diagnostics, failed_values=values,
+            constraint_values=constraints, dual_x=result.get("lam_x"),
+            dual_g=result.get("lam_g"),
+        ) from error
+
+
 def solve_spline_line(track, corridor, surface, mesh, spline,
                       settings: QssSettings, *, seed: FloatArray | None = None,
                       speed_cap=None) -> SplineSolution:
@@ -987,6 +1063,14 @@ def solve_spline_line(track, corridor, surface, mesh, spline,
     scaled_seed = (vector - center) / scale
     lam_x = lam_g = None
     total_iterations = 0
+    iter_count = 0
+    result = None
+    stats: dict[str, object] = {}
+    values = np.array(vector, dtype=float, copy=True)
+    constraints = np.full_like(built["g_lower"], np.nan, dtype=float)
+    objective = float("nan")
+    violation = float("nan")
+    status = "Maximum_Iterations_Exceeded"
     for stage, tolerance in enumerate(tolerances):
         remaining_iterations = settings.maximum_iterations - total_iterations
         if remaining_iterations <= 0:
@@ -1027,7 +1111,8 @@ def solve_spline_line(track, corridor, surface, mesh, spline,
         result = solver(**arguments)
         stats = solver.stats()
         status = str(stats["return_status"])
-        total_iterations += int(stats["iter_count"])
+        iter_count = int(stats["iter_count"])
+        total_iterations += iter_count
         values = center + scale * np.asarray(result["x"], dtype=float).ravel()
         constraints = np.asarray(result["g"], dtype=float).ravel()
         violation = float(np.max(np.maximum(
@@ -1042,13 +1127,16 @@ def solve_spline_line(track, corridor, surface, mesh, spline,
             lam_x = np.asarray(result["lam_x"], dtype=float).ravel()
             lam_g = np.asarray(result["lam_g"], dtype=float).ravel()
 
-    _validate_solver_result(
-        status, values, constraints, objective, violation, settings.tolerance,
-        built["x_lower"], built["x_upper"],
-    )
-    violation = max(violation, float(np.max(np.maximum(
+    bound_violation = float(np.max(np.maximum(
         np.maximum(built["x_lower"] - values, 0.0), values - built["x_upper"],
-    ))))
+    )))
+    _raise_spline_solver_failure(
+        status=status, values=values, constraints=constraints, objective=objective,
+        constraint_violation=violation, bound_violation=bound_violation,
+        iter_count=iter_count, total_iterations=total_iterations, stats=stats,
+        result=result or {}, built=built, settings=settings,
+    )
+    violation = max(violation, bound_violation)
     blocks = unpack(values, count, control_count)
     trajectory = OffsetTrajectory(built["reference"], spline, blocks["coefficients"])
     evaluated = trajectory.evaluate(built["mesh"])

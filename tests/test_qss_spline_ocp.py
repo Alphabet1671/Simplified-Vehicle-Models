@@ -2,6 +2,7 @@
 
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 import tempfile
 import unittest
 
@@ -96,6 +97,36 @@ class SplineGeometryTest(unittest.TestCase):
                 centreline, np.full(positions.size, 1.0 / 40.0), atol=1.0e-12,
             )
             np.testing.assert_allclose(rate_track, np.zeros(positions.size), atol=1.0e-9)
+
+
+class SplineFailureDiagnosticsTest(unittest.TestCase):
+    def test_strict_failure_keeps_immutable_raw_iterate_and_metrics(self) -> None:
+        from simplified_vehicle_models.solvers.qss_spline_ocp import _raise_spline_solver_failure, SplineSolveError
+        built = {"control_count": 2, "mesh": np.array([0., 1.]),
+                 "nlp": {"x": SimpleNamespace(numel=lambda: 5)},
+                 "x_lower": np.zeros(5), "x_upper": np.ones(5)}
+        result = {"lam_x": np.arange(5.), "lam_g": np.arange(2.)}
+        with self.assertRaises(SplineSolveError) as caught:
+            _raise_spline_solver_failure(
+                status="Maximum_Iterations_Exceeded", values=np.arange(5.),
+                constraints=np.array([.25, .5]), objective=3.5,
+                constraint_violation=.125, bound_violation=3., iter_count=7,
+                total_iterations=11, stats={"iterations": {"inf_du": [4., .25]}},
+                result=result, built=built, settings=SimpleNamespace(tolerance=1e-6,
+                control_representation="quadratic_acceleration_v1"),
+            )
+        error = caught.exception
+        self.assertIsInstance(error, RuntimeError)
+        self.assertEqual(error.diagnostics["return_status"], "Maximum_Iterations_Exceeded")
+        self.assertEqual(error.diagnostics["iter_count"], 7)
+        self.assertEqual(error.diagnostics["total_iterations"], 11)
+        self.assertEqual(error.diagnostics["physical_max_constraint_violation"], .125)
+        self.assertEqual(error.diagnostics["physical_max_bound_violation"], 3.)
+        self.assertEqual(error.diagnostics["scaled_dual_infeasibility"], .25)
+        self.assertFalse(error.failed_values.flags.writeable)
+        self.assertFalse(error.dual_g.flags.writeable)
+        result["lam_g"][0] = 99.
+        self.assertEqual(error.dual_g[0], 0.)
 
 
 class SplineHessianSettingsTest(unittest.TestCase):

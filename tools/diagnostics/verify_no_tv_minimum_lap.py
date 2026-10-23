@@ -598,6 +598,31 @@ def _attempt_worker(request_path: str, result_path: str, artifact_path: str) -> 
                        "start_treatment": case.start_treatment,
                        "candidate_only_reason": case.candidate_only_reason,
                        "reference": reference, "replay": reference["replay"]})
+    except RuntimeError as error:
+        # ``SplineSolveError`` remains a RuntimeError for legacy callers. Its
+        # raw iterate is diagnostic-only and never becomes a solution artifact.
+        diagnostics = getattr(error, "diagnostics", None)
+        failed_values = getattr(error, "failed_values", None)
+        constraint_values = getattr(error, "constraint_values", None)
+        if isinstance(diagnostics, dict):
+            result["failure_diagnostics"] = diagnostics
+            if failed_values is not None or constraint_values is not None:
+                failed_artifact = Path(artifact_path).with_name("failed_iterate.npz")
+                payload = {"metadata": np.array(json.dumps(_json_safe(diagnostics), sort_keys=True))}
+                if failed_values is not None:
+                    payload["failed_values"] = np.asarray(failed_values, dtype=float)
+                if constraint_values is not None:
+                    payload["constraint_values"] = np.asarray(constraint_values, dtype=float)
+                for name in ("dual_x", "dual_g"):
+                    value = getattr(error, name, None)
+                    if value is not None:
+                        payload[name] = np.asarray(value, dtype=float)
+                np.savez_compressed(failed_artifact, **payload)
+                result["failed_artifact"] = str(failed_artifact.name)
+            result["status"] = diagnostics.get("return_status", "solver_failed")
+        result.update({"error_type": type(error).__name__, "error": str(error),
+                       "traceback": traceback.format_exc(), "solver_succeeded": False,
+                       "accepted": False, "validation_status": "solver_failed"})
     except Exception as error:
         result.update({"error_type": type(error).__name__, "error": str(error),
                        "traceback": traceback.format_exc(), "solver_succeeded": False,

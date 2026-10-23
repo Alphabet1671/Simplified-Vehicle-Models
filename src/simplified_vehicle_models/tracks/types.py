@@ -21,9 +21,10 @@ class PathCoordinates:
     a lap.
 
     An open path (``is_closed`` false) has a start and an end. Its last node is
-    the end of the course and is not a repeat of the first node. Outside the
-    course, ``evaluate_path`` continues the path as a straight line along the
-    end tangents.
+    normally not a repeat of the first node; an explicit full-course cut view
+    may retain the repeated XY endpoint while preserving a periodic source fit.
+    Outside the course, ``evaluate_path`` continues the path as a straight line
+    along the end tangents.
     """
 
     distance: FloatArray
@@ -77,8 +78,18 @@ class TrackProfile:
     half_width_right: FloatArray | None = None
     half_width_left: FloatArray | None = None
     width_provenance: str | None = None
+    # Explicit source-curve boundary condition; independent of course topology.
+    source_reference_interpolation_periodic: bool | None = None
 
     def __post_init__(self) -> None:
+        fit_periodic = self.source_reference_interpolation_periodic
+        if fit_periodic is not None and not isinstance(fit_periodic, (bool, np.bool_)):
+            raise TypeError("source_reference_interpolation_periodic must be bool or None")
+        if fit_periodic is not None:
+            fit_periodic = bool(fit_periodic)
+            object.__setattr__(self, "source_reference_interpolation_periodic", fit_periodic)
+            if self.is_closed and not fit_periodic:
+                raise ValueError("closed track cannot declare a nonperiodic source reference")
         left, right = self.half_width_left, self.half_width_right
         if (left is None) != (right is None):
             raise ValueError("both half widths are required together")

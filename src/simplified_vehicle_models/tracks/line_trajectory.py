@@ -104,6 +104,13 @@ class ReferenceCurve:
             raise ValueError("path coordinates must be finite with increasing station")
         self.source_station = _immutable(s)
         self.is_closed = bool(getattr(coordinates, "is_closed", getattr(track, "is_closed", False)))
+        metadata = getattr(track, "source_reference_interpolation_periodic", None)
+        if metadata is not None and not isinstance(metadata, (bool, np.bool_)):
+            raise TypeError("source_reference_interpolation_periodic must be bool or None")
+        if interpolation_periodic is not None and metadata is not None and bool(interpolation_periodic) != bool(metadata):
+            raise ValueError("interpolation_periodic conflicts with source reference metadata")
+        if interpolation_periodic is None and metadata is not None:
+            interpolation_periodic = bool(metadata)
         if interpolation_periodic is not None and not bool(interpolation_periodic) and self.is_closed:
             raise ValueError("closed reference cannot use a nonperiodic source interpolation")
         self._interpolation_periodic = (self.is_closed if interpolation_periodic is None

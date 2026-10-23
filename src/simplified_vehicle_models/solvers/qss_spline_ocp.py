@@ -127,8 +127,10 @@ def _reference_curve(track):
         coordinates.heading, coordinates.curvature, bool(track.is_closed),
     )
     from types import SimpleNamespace
-    return ReferenceCurve(SimpleNamespace(path_coordinates=normalized,
-                                          is_closed=bool(track.is_closed)))
+    kwargs = {"path_coordinates": normalized, "is_closed": bool(track.is_closed)}
+    if hasattr(track, "source_reference_interpolation_periodic"):
+        kwargs["source_reference_interpolation_periodic"] = track.source_reference_interpolation_periodic
+    return ReferenceCurve(SimpleNamespace(**kwargs))
 
 
 def _curvature_pair(track, positions):

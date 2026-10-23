@@ -831,6 +831,7 @@ def run_matrix(args) -> dict:
         for mesh in args.mesh_spacings:
             for basis in args.basis_spacings:
                 for seed in args.seeds:
+                    attempt_provenance = runtime_provenance(repo)
                     request = build_attempt(case, mesh_spacing_m=mesh, basis_spacing_m=basis,
                         maximum_iterations=args.maximum_iterations, wall_cap_s=args.wall_cap_s,
                         seed_name=seed, formulation=form, surface=surface,
@@ -846,7 +847,7 @@ def run_matrix(args) -> dict:
                         maximum_profile_iterations=getattr(args, "maximum_profile_iterations", 200),
                         maximum_profile_seconds=getattr(args, "maximum_profile_seconds", 30.0),
                         convergence_criteria=getattr(args, "convergence_criteria", None),
-                        provenance=actual_provenance)
+                        provenance=attempt_provenance)
                     # Each spawned solve owns a fresh input snapshot. Do not reuse
                     # the matrix-start hashes: sources can change between attempts.
                     request["source_hashes"] = source_hashes(case.track, form, surface)

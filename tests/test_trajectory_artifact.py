@@ -1,0 +1,163 @@
+"""Round-trip and fail-closed tests for serialized analytic trajectories."""
+from __future__ import annotations
+
+import json
+import tempfile
+import unittest
+from pathlib import Path
+from types import SimpleNamespace
+
+import numpy as np
+
+from simplified_vehicle_models.solvers.trajectory_artifact import (
+    ExactTrajectoryDriverReference, load_trajectory_artifact,
+)
+from simplified_vehicle_models.tracks.line_trajectory import ReferenceCurve, OffsetTrajectory
+from simplified_vehicle_models.tracks.offset_spline import OffsetSpline
+from tools.run.solve_minimum_time_line import _write_trajectory_metadata
+from simplified_vehicle_models.solvers.qss_spline_ocp import (
+    _SplineStateEvaluator, TIME_QUADRATURE_NAME, _time_quadrature_metadata,
+)
+from simplified_vehicle_models.solvers.forward_driver import PreviewDriver, DriverObservation
+
+
+class TrajectoryArtifactTest(unittest.TestCase):
+    def make_solution(self, closed=False, control="quadratic_acceleration_v1"):
+        n = 41
+        s = np.linspace(0., 400., n)
+        angle = np.linspace(0, 2*np.pi, n)
+        north = 100*np.cos(angle)
+        east = 100*np.sin(angle)
+        if not closed:
+            north = s * 0.7
+            east = 20*np.sin(s/80.)
+        else:
+            north[-1], east[-1] = north[0], east[0]
+        track = SimpleNamespace(path_coordinates=SimpleNamespace(distance=s, x_north=north,
+                            y_east=east, is_closed=closed), lap_length=400., is_closed=closed)
+        reference = ReferenceCurve(track)
+        spline = OffsetSpline(track, 35.)
+        coeff = 2*np.sin(np.linspace(0, 2*np.pi, spline.control_count, endpoint=not closed))
+        if closed:
+            coeff[-1] = coeff[0]
+        trajectory = OffsetTrajectory(reference, spline, coeff)
+        mesh = np.linspace(s[0], s[-1], 21)
+        speed = 12 + 2*np.sin(np.linspace(0, np.pi, mesh.size))
+        acc = np.linspace(-1.5, 1.5, mesh.size)
+        mid = np.linspace(2., -2., mesh.size-1)
+        evaluator = _SplineStateEvaluator(trajectory, mesh, speed, acc, mid,
+                                          control_representation=control)
+        solution = SimpleNamespace(trajectory=trajectory, midpoint_acceleration=mid,
+            coefficients=coeff, distance=mesh, speed=speed, acceleration=acc,
+            state_representation="energy_hs_v1", control_representation=control,
+            time_quadrature=TIME_QUADRATURE_NAME,
+            time_quadrature_metadata=_time_quadrature_metadata())
+        return solution, evaluator
+
+    def roundtrip(self, closed=False, control="quadratic_acceleration_v1"):
+        solution, evaluator = self.make_solution(closed, control)
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td)/"trajectory.npz"
+            _write_trajectory_metadata(path, solution)
+            loaded = load_trajectory_artifact(path)
+            self.assertEqual(loaded.source_sha256, __import__('hashlib').sha256(path.read_bytes()).hexdigest())
+            self.assertFalse(loaded.accepted)
+            self.assertFalse(loaded.physical_validated)
+            self.assertGreater(loaded.physical_time, 0.0)
+            self.assertFalse(loaded.trajectory.coefficients.flags.writeable)
+            with self.assertRaises(TypeError):
+                loaded.metadata["is_closed"] = not closed
+            queries = np.linspace(solution.trajectory.reference.start,
+                                  solution.trajectory.reference.end, 13)
+            got = loaded.evaluate_reference(queries)
+            want_g = solution.trajectory.evaluate(queries)
+            want_s = evaluator.evaluate(queries)
+            np.testing.assert_allclose(got["north"], want_g.north, atol=1e-12)
+            np.testing.assert_allclose(got["east"], want_g.east, atol=1e-12)
+            np.testing.assert_allclose(got["speed"], want_s["speed"], atol=1e-12)
+            np.testing.assert_allclose(got["acceleration"], want_s["acceleration"], atol=1e-12)
+            driver = ExactTrajectoryDriverReference(loaded)
+            for d in np.linspace(0., driver.length, 9, endpoint=not closed):
+                path_station = (solution.trajectory.station_map.path_end if d == driver.length
+                                else d + solution.trajectory.station_map.path_start)
+                src = solution.trajectory.station_map.to_reference(path_station)
+                exp = evaluator.evaluate(src)
+                actual = driver.sample(d)
+                self.assertAlmostEqual(actual[0], exp["speed"], places=12)
+                self.assertAlmostEqual(actual[2], exp["acceleration"], places=12)
+            # PreviewDriver consumes the exact bridge as a plan-like signal; this
+            # CPU-only call verifies feedforward comes from physical evaluator a.
+            preview = PreviewDriver(driver, 2.5, .6, 2.0, 2000.0, preview_seconds=0.0)
+            obs = DriverObservation(0.0, 0.0, 0.0, float(driver.speed[0]), 0.0, 0.0)
+            command = preview.command(obs)
+            expected_throttle = np.clip(float(driver.sample(0.)[2]) / 6., 0., 1.)
+            self.assertAlmostEqual(command.throttle, expected_throttle, places=12)
+            if not closed:
+                with self.assertRaises(ValueError):
+                    driver.sample(-1.)
+            else:
+                end_expected = evaluator.evaluate(solution.trajectory.reference.end)["acceleration"]
+                self.assertAlmostEqual(driver.sample(driver.length)[2], end_expected, places=12)
+                np.testing.assert_allclose(driver.sample(driver.length + 1.), driver.sample(1.), atol=1e-10)
+
+    def test_open_roundtrip_both_control_representations(self):
+        for control in ("quadratic_acceleration_v1", "quadratic_energy_rate_over_metric_v1"):
+            with self.subTest(control=control):
+                self.roundtrip(False, control)
+
+    def test_closed_roundtrip(self):
+        self.roundtrip(True)
+
+    def test_rejects_tampered_map_and_unknown_representations(self):
+        solution, _ = self.make_solution()
+        with tempfile.TemporaryDirectory() as td:
+            original = Path(td)/"original.npz"
+            _write_trajectory_metadata(original, solution)
+            with np.load(original, allow_pickle=False) as z:
+                data = {k: np.array(z[k], copy=True) for k in z.files}
+            data["path_station"][2] += .01
+            bad = Path(td)/"bad.npz"
+            np.savez_compressed(bad, **data)
+            with self.assertRaisesRegex(ValueError, "stored path map"):
+                load_trajectory_artifact(bad)
+            data["path_station"] = np.array(np.load(original)["path_station"])
+            meta = json.loads(str(data["metadata"].item()))
+            meta["state_representation"] = "mystery"
+            data["metadata"] = np.array(json.dumps(meta))
+            np.savez_compressed(bad, **data)
+            with self.assertRaisesRegex(ValueError, "state representation"):
+                load_trajectory_artifact(bad)
+            meta["state_representation"] = "energy_hs_v1"
+            meta["time_quadrature"] = "unknown"
+            data["metadata"] = np.array(json.dumps(meta))
+            np.savez_compressed(bad, **data)
+            with self.assertRaisesRegex(ValueError, "time quadrature"):
+                load_trajectory_artifact(bad)
+            meta["time_quadrature"] = TIME_QUADRATURE_NAME
+            meta.pop("control_representation", None)
+            data["metadata"] = np.array(json.dumps(meta))
+            np.savez_compressed(bad, **data)
+            legacy = load_trajectory_artifact(bad)
+            self.assertEqual(legacy.control_repr, "quadratic_acceleration_v1")
+            meta["control_representation"] = "quadratic_acceleration_v1"
+            data["metadata"] = np.array(json.dumps(meta))
+            data["coefficients"][0] += 0.5
+            np.savez_compressed(bad, **data)
+            with self.assertRaisesRegex(ValueError, "stored path map"):
+                load_trajectory_artifact(bad)
+            data["coefficients"][0] -= 0.5
+            meta["control_representation"] = "unknown_control"
+            data["metadata"] = np.array(json.dumps(meta))
+            np.savez_compressed(bad, **data)
+            with self.assertRaisesRegex(ValueError, "control representation"):
+                load_trajectory_artifact(bad)
+            meta["control_representation"] = "quadratic_acceleration_v1"
+            data["metadata"] = np.array(json.dumps(meta))
+            data["node_speed"][3] = np.nan
+            np.savez_compressed(bad, **data)
+            with self.assertRaisesRegex(ValueError, "finite one-dimensional"):
+                load_trajectory_artifact(bad)
+
+
+if __name__ == "__main__":
+    unittest.main()

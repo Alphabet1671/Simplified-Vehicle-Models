@@ -328,6 +328,18 @@ def solve_constraint_exchange(track, corridor, surface, mesh, spline, settings, 
             dense = dense_value is True and validation.get("sampling_converged") is True
             model = validation.get("model_feasible") is True
             round_record["validation"] = copy.deepcopy(validation)
+            if maximum_new_sites_per_round is not None:
+                # Validator evidence can legitimately carry nonfinite residuals;
+                # keep its failure semantics, but make opt-in reports strict-JSON-safe.
+                for diagnostic in round_record["validation"].get("diagnostics", ()):
+                    if not isinstance(diagnostic, dict):
+                        continue
+                    nonfinite = [key for key, value in diagnostic.items()
+                                 if isinstance(value, (float, np.floating)) and not math.isfinite(float(value))]
+                    for key in nonfinite:
+                        diagnostic[key] = None
+                    if nonfinite:
+                        diagnostic["nonfinite_fields"] = nonfinite
             round_record["status"] = "validated" if gate and dense and model else "validation_incomplete"
             if gate and dense and model and time.monotonic()-start < maximum_wall_seconds:
                 # Local checks do not establish mesh/basis, matched baseline, or replay gates.
@@ -405,34 +417,37 @@ def solve_constraint_exchange(track, corridor, surface, mesh, spline, settings, 
             # then one search maximum per (mesh element, diagnostic family).
             priority = []
             for station, name in sorted(set(validator_records), key=lambda x: (x[0], x[1])):
-                if not already_enforced(station): priority.append((station, "validator:" + name, math.inf))
+                if not already_enforced(station): priority.append((0, station, "validator:" + name, None,
+                                                                   "validator_violation_magnitude_unavailable"))
             best_family = {}
             for station, name, severity in peak_records:
                 element = max(0, min(len(mesh_arr)-2, int(np.searchsorted(mesh_arr, station, side="right")-1)))
                 key = (element, name)
                 if key not in best_family or (severity, -station) > (best_family[key][1], -best_family[key][0]):
                     best_family[key] = (station, severity)
-            priority.extend((station, "search:" + name, severity) for (element, name), (station, severity) in sorted(best_family.items()) if not already_enforced(station))
-            priority.sort(key=lambda x: (0 if x[1].startswith("validator:") else 1, -x[2], x[0], x[1]))
+            priority.extend((1, station, "search:" + name, severity, None)
+                            for (element, name), (station, severity) in sorted(best_family.items())
+                            if not already_enforced(station))
+            priority.sort(key=lambda x: (x[0], -x[3] if x[3] is not None else 0., x[1], x[2]))
             ranked = list(priority)
             for station in sorted(set(map(float, raw_search))):
-                if math.isfinite(station) and mesh_arr[0] < station < mesh_arr[-1] and not already_enforced(station) and all(abs(station-x[0]) > 1e-12 for x in ranked):
-                    ranked.append((station, "search:other", 0.))
+                if math.isfinite(station) and mesh_arr[0] < station < mesh_arr[-1] and not already_enforced(station) and all(abs(station-x[1]) > 1e-12 for x in ranked):
+                    ranked.append((2, station, "search:other", 0., None))
             for station in _validator_refinement_stations(validation, mesh_arr):
-                if not already_enforced(station) and all(abs(station-x[0]) > 1e-12 for x in ranked):
-                    ranked.append((station, "validator:refinement", 0.))
+                if not already_enforced(station) and all(abs(station-x[1]) > 1e-12 for x in ranked):
+                    ranked.append((3, station, "validator:refinement", 0., None))
             # Multiple failed families can identify the same physical station;
             # count/select unique stations so the per-round budget is literal.
             unique_ranked = []
             for candidate in ranked:
-                if all(abs(candidate[0]-existing[0]) > 1e-12 for existing in unique_ranked):
+                if all(abs(candidate[1]-existing[1]) > 1e-12 for existing in unique_ranked):
                     unique_ranked.append(candidate)
             ranked = unique_ranked
             available = maximum_sites - len(old)
             if available <= 0: raise _ExchangeFailure("maximum_sites")
             budget = available if maximum_new_sites_per_round is None else min(int(maximum_new_sites_per_round), available)
             selected = ranked[:budget]
-            added = sorted(set(x[0] for x in selected))
+            added = sorted(set(x[1] for x in selected))
             if not added: raise _ExchangeFailure("no_new_stations")
             unselected = ranked[budget:]
             retained = sorted(set(old+added)); report["constraint_stations"] = retained
@@ -441,8 +456,11 @@ def solve_constraint_exchange(track, corridor, surface, mesh, spline, settings, 
             if maximum_new_sites_per_round is not None:
                 record["unselected_stations_count"] = len(unselected)
                 record["truncated_additions"] = bool(unselected)
-                record["planned_additions"] = [{"station": s, "source": source, "normalized_severity": severity}
-                                                for s, source, severity in selected]
+                record["planned_additions"] = [
+                    {"station": candidate[1], "source": candidate[2],
+                     "normalized_severity": candidate[3],
+                     **({"severity_unavailable_reason": candidate[4]} if candidate[4] else {})}
+                    for candidate in selected]
                 record["addition_budget"] = budget
             report["rounds"][-1]["status"] = "exchange_sites_added"
             if index+1 >= maximum_rounds:

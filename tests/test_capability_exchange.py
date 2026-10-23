@@ -434,6 +434,28 @@ class ResidualSearchTests(unittest.TestCase):
         self.assertAlmostEqual(planned[0]["normalized_severity"], 5.)
         self.assertEqual(report["constraint_stations"], [.2])
 
+    def test_optin_validator_priority_metadata_is_strict_json_safe(self):
+        import json
+        from simplified_vehicle_models.solvers.capability_exchange import solve_constraint_exchange
+        solution = SimpleNamespace(status="Solve_Succeeded", distance=np.array([0., 1.]),
+            trajectory=self.solution.trajectory, state_evaluator=self.solution.state_evaluator,
+            coefficients=np.zeros(1), speed=np.ones(2), acceleration=np.zeros(2), midpoint_acceleration=np.zeros(1))
+        for violation in ("missing", float("nan"), float("inf")):
+            diagnostics = [{"name": "corridor", "passed": False, "worst_station": .25}]
+            if violation != "missing": diagnostics[0]["maximum_violation"] = violation
+            snapshots = []
+            _, report = solve_constraint_exchange(None, self.corridor, Surface(), np.array([0., 1.]), None, None,
+                solver=lambda *a, **k: solution,
+                validator=lambda *a, **k: {"checks": {}, "diagnostics": diagnostics},
+                maximum_new_sites_per_round=1, maximum_rounds=1, on_round=snapshots.append)
+            with self.subTest(violation=violation):
+                json.dumps(report, allow_nan=False)
+                for snapshot in snapshots: json.dumps(snapshot, allow_nan=False)
+                planned = report["rounds"][0]["planned_additions"][0]
+                self.assertEqual(planned["station"], .25)
+                self.assertIsNone(planned["normalized_severity"])
+                self.assertEqual(planned["severity_unavailable_reason"], "validator_violation_magnitude_unavailable")
+
     def test_optin_budget_validates_and_default_remains_none(self):
         from simplified_vehicle_models.solvers.capability_exchange import solve_constraint_exchange
         import inspect

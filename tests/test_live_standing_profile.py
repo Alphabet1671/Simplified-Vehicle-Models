@@ -1,13 +1,13 @@
+import json
 import math
+import time
 import unittest
 from unittest.mock import patch
 
 import numpy as np
 
-from simplified_vehicle_models.solvers.live_standing_profile import LiveStandingSettings, solve_live_standing_profile
-from simplified_vehicle_models.tracks.line_trajectory import OffsetTrajectory, ReferenceCurve
-from simplified_vehicle_models.tracks.offset_spline import OffsetSpline
-from simplified_vehicle_models.tracks.types import PathCoordinates, TrackProfile
+from simplified_vehicle_models.solvers.live_standing_profile import LiveStandingSettings, _LiveSurface, solve_live_standing_profile
+from simplified_vehicle_models.tracks.types import PathCoordinates
 
 
 class Ref:
@@ -49,7 +49,7 @@ class LiveStandingProfileTests(unittest.TestCase):
             self.assertAlmostEqual(profile.distance[-1], 75.3)
             self.assertTrue(report["same_physics_all_speeds"])
             self.assertFalse(report["chart_queried"])
-            self.assertFalse(report["no_transition_join"] is False)
+            self.assertTrue(report["no_transition_join"])
             self.assertFalse(report["physical_qualified"])
             self.assertFalse(report["all_accepted"])
             self.assertFalse(report["accepted"])
@@ -57,6 +57,26 @@ class LiveStandingProfileTests(unittest.TestCase):
             self.assertFalse(report["U3_qualified"])
             np.testing.assert_allclose(np.diff(profile.elapsed_time),
                 2*np.diff(profile.distance)/(profile.speed[:-1]+profile.speed[1:]))
+
+    def test_invalid_source_path_coverage_and_unclosed_inputs_fail_json_safely(self):
+        class BadSource(Trajectory):
+            class Ref:
+                is_closed = False
+                source_station = np.array([0., float("nan")])
+            reference = Ref()
+        for trajectory in (BadSource(), type("Closed", (Trajectory,), {
+                "reference": type("ClosedRef", (), {"is_closed": True, "source_station": np.array([0., 1.])})()})()):
+            profile, report = solve_live_standing_profile(object(), trajectory)
+            self.assertIsNone(profile)
+            self.assertIn("error", report)
+            json.dumps(report, allow_nan=False)
+
+        class WrongCoverage(Trajectory):
+            station_map = type("Map", (), {"path_start": 0., "path_end": 70.,
+                "to_reference": lambda self, x: np.asarray(x, dtype=float)})()
+        profile, report = solve_live_standing_profile(object(), WrongCoverage())
+        self.assertIsNone(profile)
+        self.assertIn("cover exact full map length", report["error"]["message"] )
 
     def test_invalid_callbacks_budget_and_unconverged_never_return_candidate(self):
         for limits, cap, settings in (
@@ -70,6 +90,50 @@ class LiveStandingProfileTests(unittest.TestCase):
             self.assertIsNone(profile)
             self.assertFalse(report["all_accepted"])
             self.assertIn("error", report)
+
+    def test_exact_query_budget_allows_nth_call_and_rejects_n_plus_one(self):
+        # Directly exercise backend accounting independent of the sweep's cache pattern.
+        settings = LiveStandingSettings(maximum_queries=2)
+        surface = _LiveSurface(object(), settings, lambda *a: (-1., 1.), lambda *a: 20., time.monotonic())
+        self.assertEqual(surface.domain_speed(0.), 20.)
+        self.assertEqual(surface.limits(1., 0.), (-1., 1.))
+        self.assertEqual(surface.query_count, 2)
+        with self.assertRaisesRegex(RuntimeError, "query budget"):
+            surface.domain_speed(.1)
+        self.assertEqual(surface.query_count, 2)
+
+    def test_cached_limit_and_cap_still_check_wall_deadline(self):
+        settings = LiveStandingSettings(maximum_queries=10, maximum_wall_seconds=1.)
+        clock = [0.]
+        def now(): return clock[0]
+        surface = _LiveSurface(object(), settings, lambda *a: (-1., 1.), lambda *a: 20., 0.)
+        with patch("simplified_vehicle_models.solvers.live_standing_profile.time.monotonic", now):
+            self.assertEqual(surface.domain_speed(0.), 20.)
+            self.assertEqual(surface.limits(1., 0.), (-1., 1.))
+            clock[0] = 2.
+            with self.assertRaises(TimeoutError):
+                surface.domain_speed(0.)
+            with self.assertRaises(TimeoutError):
+                surface.limits(1., 0.)
+
+    def test_callback_values_must_be_real_nonboolean_scalars(self):
+        for bad in (True, "2", np.array(2.), np.float64(float("nan"))):
+            settings = LiveStandingSettings(maximum_queries=20)
+            surface = _LiveSurface(object(), settings, lambda *a: (bad, 2.), lambda *a: 20., time.monotonic())
+            with self.assertRaises(ValueError):
+                surface.limits(1., 0.)
+        for bad in (True, "20", np.array(20.), float("inf")):
+            settings = LiveStandingSettings(maximum_queries=20)
+            surface = _LiveSurface(object(), settings, lambda *a: (-1., 1.), lambda *a: bad, time.monotonic())
+            with self.assertRaises(ValueError):
+                surface.domain_speed(0.)
+
+    def test_false_callback_override_is_rejected_not_replaced_by_default(self):
+        profile, report = solve_live_standing_profile(object(), Trajectory(),
+            limit_evaluator=False, speed_cap_evaluator=constant_cap)
+        self.assertIsNone(profile)
+        self.assertEqual(report["error"]["type"], "TypeError")
+        json.dumps(report, allow_nan=False)
 
     def test_query_cache_exact_and_curvature_specific_caps(self):
         calls = {"limit": [], "cap": []}
@@ -97,18 +161,18 @@ class LiveStandingProfileTests(unittest.TestCase):
                 s = np.asarray(source, dtype=float)
                 return PathCoordinates(s, s, np.zeros_like(s), np.zeros_like(s), np.zeros_like(s), False, s)
             def evaluate(self, source):
-                k = np.where(np.asarray(source) >= 10., .2, 0.)
+                k = np.where(np.asarray(source) >= 10., -.2, 0.)
                 return type("Geometry", (), {"curvature": k})()
         queried = []
         def limits(vehicle, speed, curvature):
             queried.append((speed, curvature))
             return (-2., 4.)
-        def cap(vehicle, curvature): return 100. if curvature < .1 else 4.
+        def cap(vehicle, curvature): return 100. if curvature == 0. else 4.
         profile, report = solve_live_standing_profile(object(), Curved(),
             settings=LiveStandingSettings(step=1.), limit_evaluator=limits, speed_cap_evaluator=cap)
         self.assertIsNotNone(profile, report)
-        self.assertTrue(any(k < 0 for _, k in queried) is False) # signed curvature values are preserved
-        self.assertTrue(any(k == .2 for _, k in queried))
+        self.assertTrue(any(k < 0 for _, k in queried)) # signed curvature values are preserved
+        self.assertTrue(any(k == -.2 for _, k in queried))
         self.assertLess(profile.speed[np.searchsorted(profile.distance, 9.)], math.sqrt(2*4*9.))
         self.assertFalse(report["physical_qualified"])
 

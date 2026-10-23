@@ -54,58 +54,62 @@ class _LiveSurface:
         self.limit_cache = {}
         self.cap_cache = {}
 
-    def _check(self):
+    def _check_wall(self):
         if time.monotonic() - self.started > self.settings.maximum_wall_seconds:
             raise TimeoutError("live standing profile wall-time budget exhausted")
-        if self.query_count >= self.settings.maximum_queries:
-            raise RuntimeError("live standing profile query budget exhausted")
+
+    def ensure_wall_budget(self):
+        self._check_wall()
 
     def _query(self, cache, key, callback, *args):
-        if time.monotonic() - self.started > self.settings.maximum_wall_seconds:
-            raise TimeoutError("live standing profile wall-time budget exhausted")
+        self._check_wall()
         if key in cache:
             self.cache_hits += 1
             return cache[key]
         if self.query_count >= self.settings.maximum_queries:
             raise RuntimeError("live standing profile query budget exhausted")
-        self._check()
         self.query_count += 1
         try:
             value = callback(*args)
         finally:
-            if time.monotonic() - self.started > self.settings.maximum_wall_seconds:
-                raise TimeoutError("live standing profile wall-time budget exhausted")
-        self._check()
+            self._check_wall()
+        return value
+
+    @staticmethod
+    def _real(value, name):
+        if isinstance(value, (bool, np.bool_)) or not isinstance(value, numbers.Real):
+            raise ValueError(f"{name} must be a real non-boolean number")
+        value = float(value)
+        if not math.isfinite(value):
+            raise ValueError(f"{name} must be finite")
         return value
 
     def domain_speed(self, curvature):
-        k = float(curvature)
-        if not math.isfinite(k):
-            raise ValueError("curvature must be finite")
-        if k not in self.cap_cache:
-            result = self._query(self.cap_cache, k, self._cap_callback, self.vehicle, k)
-            value = float(result)
-            if not math.isfinite(value) or value <= 0:
-                raise ValueError("live speed cap must be finite and positive")
-            self.cap_cache[k] = value
-        return self.cap_cache[k]
+        k = self._real(curvature, "curvature")
+        value = self._real(self._query(self.cap_cache, k, self._cap_callback, self.vehicle, k),
+                           "live speed cap")
+        if value <= 0:
+            raise ValueError("live speed cap must be positive")
+        self.cap_cache[k] = value
+        return value
 
     def limits(self, speed, curvature):
-        v, k = float(speed), float(curvature)
-        if not math.isfinite(v) or v < 0 or not math.isfinite(k):
-            raise ValueError("live limits require finite nonnegative speed and finite curvature")
+        v = self._real(speed, "speed")
+        k = self._real(curvature, "curvature")
+        if v < 0:
+            raise ValueError("live limits require nonnegative speed")
         key = (v, k)
-        if key not in self.limit_cache:
-            answer = self._query(self.limit_cache, key, self._limit_callback, self.vehicle, v, k)
-            if len(answer) != 2:
-                raise ValueError("live limit callback must return (amin, amax)")
-            amin, amax = float(answer[0]), float(answer[1])
-            if not math.isfinite(amin) or not math.isfinite(amax) or amin > amax:
-                raise ValueError("live acceleration limits must be finite and ordered")
-            if v > self.domain_speed(k):
-                raise ValueError("live limit query exceeds same-curvature speed cap")
-            self.limit_cache[key] = (amin, amax)
-        return self.limit_cache[key]
+        answer = self._query(self.limit_cache, key, self._limit_callback, self.vehicle, v, k)
+        if not isinstance(answer, (tuple, list)) or len(answer) != 2:
+            raise ValueError("live limit callback must return two real values")
+        amin = self._real(answer[0], "minimum acceleration")
+        amax = self._real(answer[1], "maximum acceleration")
+        if amin > amax:
+            raise ValueError("live acceleration limits must be ordered")
+        if v > self.domain_speed(k):
+            raise ValueError("live limit query exceeds same-curvature speed cap")
+        self.limit_cache[key] = (amin, amax)
+        return amin, amax
 
 
 def _original_limits(vehicle, speed, curvature):
@@ -177,6 +181,7 @@ def solve_live_standing_profile(vehicle, trajectory, *, settings=None,
         profile = capability_profile(fullpath, surface, boundary="standing", step=settings.step,
                                      tolerance=settings.tolerance, maximum_iterations=settings.maximum_iterations,
                                      rest_limits=surface.limits, trajectory=trajectory)
+        surface.ensure_wall_budget()
         change = float(profile.max_change)
         report.update({"iterations": int(profile.iterations),
                        "max_change": change if math.isfinite(change) else None,

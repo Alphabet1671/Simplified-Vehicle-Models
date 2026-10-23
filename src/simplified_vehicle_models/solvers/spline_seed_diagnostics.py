@@ -92,8 +92,11 @@ def inspect_spline_seed(built, seed, *, maximum_reported_rows=32) -> dict:
         gl, gu = np.asarray(built["g_lower"], dtype=float), np.asarray(built["g_upper"], dtype=float)
         if xl.shape != (nx,) or xu.shape != (nx,) or gl.shape != (ng,) or gu.shape != (ng,):
             raise ValueError("bound vector shapes must match NLP dimensions")
-        if np.any(np.isnan(xl)) or np.any(np.isnan(xu)) or np.any(np.isnan(gl)) or np.any(np.isnan(gu)) or np.any(xl > xu) or np.any(gl > gu):
-            raise ValueError("bounds must be non-NaN and ordered")
+        if (np.any(np.isnan(xl)) or np.any(np.isnan(xu)) or np.any(np.isnan(gl)) or np.any(np.isnan(gu))
+                or np.any(xl > xu) or np.any(gl > gu)
+                or np.any(np.isposinf(xl)) or np.any(np.isneginf(xu))
+                or np.any(np.isposinf(gl)) or np.any(np.isneginf(gu))):
+            raise ValueError("bounds must be non-NaN, ordered, and unbounded only outward")
 
         # Local function names are unique; this does not call an NLP solver.
         suffix = str(id(result))
@@ -135,16 +138,25 @@ def inspect_spline_seed(built, seed, *, maximum_reported_rows=32) -> dict:
         result["bound_rows_reported"] = len(brows)
         result["bound_rows_truncated"] = len(bindices) > len(brows)
         result["worst_bound_rows"] = brows
-        result["coordinate_failure_rows"] = [i for i in bindices if i >= controls]
+        result["coordinate_failure_rows"] = bindices
         cindices, crows = rows(violation, gl, gu, lower_v, upper_v)
         result["constraint_rows_reported"] = len(crows)
         result["constraint_rows_truncated"] = len(cindices) > len(crows)
         result["worst_constraint_rows"] = crows
 
+        family_keys = (
+            "node_acceleration_lower_indices", "node_acceleration_upper_indices",
+            "midpoint_acceleration_lower_indices", "midpoint_acceleration_upper_indices",
+            "bernstein_middle_indices", "off_site_acceleration_lower_indices",
+            "off_site_acceleration_upper_indices", "node_domain_speed_indices",
+            "midpoint_domain_speed_indices", "off_site_domain_speed_indices",
+            "off_site_corridor_indices", "off_site_speed_cap_indices",
+        )
         named = set()
-        for key, raw_indices in built.items():
-            if not key.endswith("_indices"):
+        for key in family_keys:
+            if key not in built:
                 continue
+            raw_indices = built[key]
             values = np.asarray(raw_indices)
             if values.ndim != 1 or values.dtype.kind not in "iu":
                 raise ValueError(f"{key} must be a one-dimensional integer index array")

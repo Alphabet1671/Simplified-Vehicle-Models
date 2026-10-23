@@ -37,7 +37,7 @@ class SplineSeedDiagnosticsTest(unittest.TestCase):
                 "g_lower": np.array([0., -np.inf, -1.]),
                 "g_upper": np.array([np.inf, 2., 1.]), "count": 1,
                 "control_count": 1, "mesh": np.array([0., 1.]),
-                "node_family_indices": np.array([0, 2])}
+                "node_acceleration_lower_indices": np.array([0, 2])}
 
     def test_exact_seed_families_ties_caps_and_readonly(self):
         built = self.synthetic()
@@ -52,15 +52,19 @@ class SplineSeedDiagnosticsTest(unittest.TestCase):
         self.assertEqual(report["maximum_constraint_violation"], 1.)
         self.assertEqual(report["worst_constraint_rows"][0]["index"], 0)
         self.assertTrue(report["constraint_rows_truncated"])
-        self.assertEqual(report["constraint_family_maxima"]["node_family"], 1.)
+        self.assertEqual(report["constraint_family_maxima"]["node_acceleration_lower"], 1.)
         self.assertEqual(report["unclassified_constraint_maximum"], 0.)
         self.assertFalse(report["accepted"])
         json.dumps(report, allow_nan=False)
 
     def test_one_sided_inf_and_nonfinite_paths(self):
         built = self.synthetic()
+        built["x_lower"][5] = 1.
         report = inspect_spline_seed(built, np.zeros(6))
-        row = report["worst_constraint_rows"]
+        self.assertTrue(report["worst_constraint_rows"] == [])
+        self.assertIsNone(report["worst_bound_rows"][0]["upper"])
+        self.assertTrue(report["worst_bound_rows"][0]["upper_unbounded"])
+        self.assertEqual(report["coordinate_failure_rows"], [5])
         self.assertEqual(report["constraint_row_count"], 3)
         self.assertTrue(report["evaluation_complete"])
         self.assertFalse(report["policy_approved"])
@@ -72,8 +76,14 @@ class SplineSeedDiagnosticsTest(unittest.TestCase):
         self.assertFalse(inspect_spline_seed(built, np.zeros(6), maximum_reported_rows=False)["evaluation_complete"])
         broken = dict(built); broken["g_lower"] = np.array([np.nan, 0., 0.])
         self.assertFalse(inspect_spline_seed(broken, np.zeros(6))["evaluation_complete"])
-        broken = dict(built); broken["bad_indices"] = np.array([99])
+        broken = dict(built); broken["g_lower"] = np.array([np.inf, -np.inf, -1.])
         self.assertFalse(inspect_spline_seed(broken, np.zeros(6))["evaluation_complete"])
+        broken = dict(built); broken["x_lower"] = np.array([np.inf, -np.inf, -np.inf, -np.inf, -np.inf, -np.inf])
+        self.assertFalse(inspect_spline_seed(broken, np.zeros(6))["evaluation_complete"])
+        broken = dict(built); broken["node_acceleration_lower_indices"] = np.array([99])
+        self.assertFalse(inspect_spline_seed(broken, np.zeros(6))["evaluation_complete"])
+        unrelated = dict(built); unrelated["unrelated_indices"] = np.array([99])
+        self.assertTrue(inspect_spline_seed(unrelated, np.zeros(6))["evaluation_complete"])
         nonfinite = dict(built); nonfinite["nlp"] = dict(built["nlp"])
         nonfinite["nlp"]["g"] = ca.vertcat(ca.sqrt(-1), built["nlp"]["g"][1:])
         bad = inspect_spline_seed(nonfinite, np.zeros(6))
@@ -90,7 +100,9 @@ class SplineSeedDiagnosticsTest(unittest.TestCase):
             spline = OffsetSpline(track, control_spacing=20.)
             mesh = build_mesh(track, 20.)
             built = build_spline_ocp(track, corridor, _surface(), mesh, spline,
-                                     QssSettings(start_speed=10.))
+                                     QssSettings(start_speed=10.),
+                                     constraint_stations=[mesh[0] + .37 * (mesh[1] - mesh[0]),
+                                                          mesh[0] + .61 * (mesh[1] - mesh[0])])
             seed = np.zeros(int(built["nlp"]["x"].numel()))
             controls, nodes = built["control_count"], mesh.size
             seed[controls:controls + nodes] = 10.
@@ -107,11 +119,25 @@ class SplineSeedDiagnosticsTest(unittest.TestCase):
                                           np.maximum(independent_g - built["g_upper"], 0.)))
             self.assertEqual(report["objective_value"], independent_f)
             self.assertAlmostEqual(report["maximum_constraint_violation"], float(expected.max()))
+            self.assertTrue(report["evaluation_complete"], report["error"])
+            self.assertIsNone(report["error"])
+            self.assertIsNotNone(report["unclassified_constraint_maximum"])
+            self.assertIn("node_acceleration_lower", report["constraint_family_maxima"])
+            lower_ids = built["node_acceleration_lower_indices"]
+            family_expected = np.maximum.reduce((
+                np.maximum(built["g_lower"][lower_ids] - independent_g[lower_ids], 0.),
+                np.maximum(independent_g[lower_ids] - built["g_upper"][lower_ids], 0.),
+            ))
+            self.assertEqual(report["constraint_family_maxima"]["node_acceleration_lower"],
+                             float(family_expected.max()))
+            # Ragged element-to-site metadata ends in `_indices` but is not a
+            # scalar NLP-row family and must not break evaluation.
+            self.assertIsInstance(built["off_site_element_indices"], tuple)
             seed[0] = built["x_upper"][0] + 1.
             violated = inspect_spline_seed(built, seed)
             self.assertGreater(violated["maximum_bound_violation"], 0.)
             self.assertEqual(seed[0], built["x_upper"][0] + 1.)
-            self.assertEqual(seed[0], built["x_upper"][0] + 1.)
+            self.assertIn(0, violated["coordinate_failure_rows"])
             self.assertNotIn("lap_time", report)
             self.assertFalse(report["built_problem_source_identity_verified"])
 

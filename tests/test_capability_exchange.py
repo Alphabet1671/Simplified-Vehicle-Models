@@ -129,6 +129,22 @@ class ResidualSearchTests(unittest.TestCase):
         self.assertEqual(snapshots[-1]["status"], "maximum_rounds")
         self.assertEqual(snapshots[-1]["rounds"][-1]["status"], "maximum_rounds")
 
+    def test_soft_wall_overrun_after_validator_blocks_local_solution(self):
+        from unittest.mock import patch
+        from simplified_vehicle_models.solvers.capability_exchange import solve_constraint_exchange
+        solution = SimpleNamespace(status="Solve_Succeeded")
+        times = iter([0., 0., 2., 2.])
+        with patch("simplified_vehicle_models.solvers.capability_exchange.time.monotonic", side_effect=lambda: next(times)):
+            result, report = solve_constraint_exchange(None, self.corridor, Surface(), np.array([0., 1.]), None, None,
+                solver=lambda *a, **k: solution,
+                validator=lambda *a, **k: {"checks": {"geometry_consistency": True, "dense_feasibility": True},
+                                           "sampling_converged": True, "model_feasible": True},
+                maximum_wall_seconds=1.)
+        self.assertIsNone(result)
+        self.assertFalse(report["accepted"])
+        self.assertFalse(report["validated_solution_available"])
+        self.assertEqual(report["status"], "wall_budget_exhausted")
+
     def test_validator_missing_evidence_cannot_be_passed(self):
         from simplified_vehicle_models.solvers.capability_exchange import solve_constraint_exchange
         sol = SimpleNamespace(status="Solve_Succeeded")
@@ -137,6 +153,127 @@ class ResidualSearchTests(unittest.TestCase):
             maximum_rounds=1)
         self.assertFalse(report["accepted"])
         self.assertEqual(report["status"], "search_failed")
+
+    def test_exchange_failures_never_return_last_solver_iterate(self):
+        from simplified_vehicle_models.solvers.capability_exchange import solve_constraint_exchange
+        snapshots = []
+        iterate = SimpleNamespace(status="Not_Succeeded")
+        result, report = solve_constraint_exchange(None, self.corridor, Surface(), np.array([0., 1.]),
+            None, None, solver=lambda *a, **k: iterate, validator=lambda *a, **k: self.fail("validator must not run"),
+            on_round=snapshots.append)
+        self.assertIsNone(result)
+        self.assertEqual(report["status"], "solver_failed")
+        self.assertFalse(report["validated_solution_available"])
+        self.assertEqual(snapshots[-1]["status"], "solver_failed")
+
+    def test_validator_and_solver_exceptions_return_none_with_finalized_callback(self):
+        from simplified_vehicle_models.solvers.capability_exchange import solve_constraint_exchange
+        solution = SimpleNamespace(status="Solve_Succeeded")
+        for solver, validator, expected in (
+            (lambda *a, **k: (_ for _ in ()).throw(RuntimeError("solver boom")), lambda *a, **k: {}, "solver_exception"),
+            (lambda *a, **k: solution, lambda *a, **k: (_ for _ in ()).throw(RuntimeError("validator boom")), "validator_exception"),
+        ):
+            snapshots = []
+            result, report = solve_constraint_exchange(None, self.corridor, Surface(), np.array([0., 1.]), None, None,
+                solver=solver, validator=validator, on_round=snapshots.append)
+            self.assertIsNone(result)
+            self.assertEqual(report["status"], expected)
+            self.assertEqual(snapshots[-1]["status"], expected)
+            self.assertEqual(snapshots[-1]["rounds"][-1]["status"], expected)
+
+    def test_exchange_unions_independent_validator_violation_station(self):
+        from simplified_vehicle_models.solvers.capability_exchange import solve_constraint_exchange
+        calls = []
+        solution = SimpleNamespace(status="Solve_Succeeded", distance=np.array([0., 1.]),
+                                   trajectory=self.solution.trajectory, state_evaluator=self.solution.state_evaluator,
+                                   coefficients=np.zeros(1), speed=np.ones(2), acceleration=np.zeros(2),
+                                   midpoint_acceleration=np.zeros(1))
+        def solver(*args, **kwargs):
+            calls.append(kwargs["constraint_stations"])
+            solution.trajectory.evaluate = lambda s: SimpleNamespace(
+                offset=.34+.1*np.exp(-((np.asarray(s, dtype=float)-(.437 if len(calls)==1 else .637))/.025)**2),
+                curvature=np.zeros_like(np.asarray(s, dtype=float)), reference_curvature=np.zeros_like(np.asarray(s, dtype=float)),
+                fold_factor=np.ones_like(np.asarray(s, dtype=float)))
+            return solution
+        validation = {"checks": {"geometry_consistency": False, "dense_feasibility": False},
+                      "sampling_converged": False, "model_feasible": None,
+                      "diagnostics": [{"name": "acceleration_min", "passed": False,
+                                       "worst_station": .2424253, "refinement_stations": [.2424253]}]}
+        _, report = solve_constraint_exchange(None, self.corridor, Surface(), np.array([0., 1.]), None, None,
+            solver=solver, validator=lambda *a, **k: validation, maximum_rounds=2)
+        self.assertEqual(report["status"], "maximum_rounds")
+        self.assertTrue(any(abs(s-.2424253) < 1e-12 for s in calls[1]))
+
+    def test_validator_model_gate_requires_true_live_model(self):
+        from simplified_vehicle_models.solvers.capability_exchange import solve_constraint_exchange
+        solution = SimpleNamespace(status="Solve_Succeeded")
+        result, report = solve_constraint_exchange(None, self.corridor, Surface(), np.array([0., 1.]), None, None,
+            solver=lambda *a, **k: solution,
+            validator=lambda *a, **k: {"checks": {"geometry_consistency": True, "dense_feasibility": True},
+                                       "sampling_converged": True, "model_feasible": None},
+            maximum_rounds=1)
+        self.assertIsNone(result)
+        self.assertFalse(report["accepted"])
+        self.assertFalse(report["validated_solution_available"])
+
+    def test_exchange_rejects_array_sites_and_initial_overflow(self):
+        from simplified_vehicle_models.solvers.capability_exchange import solve_constraint_exchange
+        with self.assertRaises(ValueError):
+            solve_constraint_exchange(None, self.corridor, Surface(), np.array([0., 1.]), None, None,
+                                      constraint_stations=np.array([.2, np.nan]))
+        with self.assertRaises(ValueError):
+            solve_constraint_exchange(None, self.corridor, Surface(), np.array([0., 1.]), None, None,
+                                      constraint_stations=np.array([.2, .3]), maximum_sites=1)
+
+    def test_detects_multiple_peaks_across_knot_partition(self):
+        self.solution.trajectory.evaluate = lambda s: SimpleNamespace(
+            offset=.2+.2*np.exp(-((np.asarray(s, dtype=float)-.3)/.035)**2)+.2*np.exp(-((np.asarray(s, dtype=float)-.7)/.035)**2),
+            curvature=np.zeros_like(np.asarray(s, dtype=float)), reference_curvature=np.zeros_like(np.asarray(s, dtype=float)),
+            fold_factor=np.ones_like(np.asarray(s, dtype=float)))
+        self.corridor.distance = np.array([0., .5, 1.])
+        self.corridor.minimum = np.full(3, -1.)
+        self.corridor.maximum = np.full(3, .3)
+        result = locate_physical_residuals(self.solution, self.corridor, Surface())
+        peaks = [p["station"] for p in result["peaks"] if p["name"] == "corridor_max"]
+        self.assertTrue(result["completed"])
+        self.assertTrue(any(abs(x-.3) < .02 for x in peaks))
+        self.assertTrue(any(abs(x-.7) < .02 for x in peaks))
+        self.assertEqual(result["partition_count"], 2)
+
+    def test_invalid_speed_does_not_query_clipped_limits(self):
+        class OutOfDomainEvaluator:
+            def evaluate(self, station):
+                s = np.asarray(station, dtype=float)
+                return {"speed": np.full_like(s, 30.), "acceleration": np.zeros_like(s)}
+        class NoClipSurface(Surface):
+            def __init__(self): self.limit_queries = 0
+            def limits(self, v, k):
+                self.limit_queries += 1
+                raise AssertionError("limits called for out-of-domain speed")
+        self.solution.state_evaluator = OutOfDomainEvaluator()
+        surface = NoClipSurface()
+        result = locate_physical_residuals(self.solution, self.corridor, surface)
+        self.assertFalse(result["completed"])
+        self.assertEqual(result["stop"], "capability_queries_unresolved")
+        self.assertEqual(surface.limit_queries, 0)
+
+    def test_nonfinite_capability_limits_fail_closed(self):
+        class BadLimits(Surface):
+            def limits(self, v, k): return (float("nan"), 1.)
+        result = locate_physical_residuals(self.solution, self.corridor, BadLimits())
+        self.assertFalse(result["completed"])
+        self.assertIn("capability_queries_unresolved", result["stop"])
+
+    def test_nonfinite_geometry_fails_closed(self):
+        class NonfiniteTrajectory(Trajectory):
+            def evaluate(self, station):
+                s = np.asarray(station, dtype=float)
+                return SimpleNamespace(offset=np.full_like(s, np.nan), curvature=np.zeros_like(s),
+                                       reference_curvature=np.zeros_like(s), fold_factor=np.ones_like(s))
+        self.solution.trajectory = NonfiniteTrajectory()
+        result = locate_physical_residuals(self.solution, self.corridor, Surface())
+        self.assertFalse(result["completed"])
+        self.assertTrue(any("nonfinite" in x["reason"] for x in result["unresolved_domains"]))
 
     def test_peak_limit_is_explicit_partial_result(self):
         self.solution.trajectory.evaluate = lambda s: SimpleNamespace(

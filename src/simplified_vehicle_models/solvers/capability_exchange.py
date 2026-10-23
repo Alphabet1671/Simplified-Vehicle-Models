@@ -43,6 +43,13 @@ def _strict_surface(surface):
         callable(getattr(surface, name, None)) for name in ("domain_speed", "limits")
     ) or not all(hasattr(surface, name) for name in ("speed_floor", "curvature", "u")):
         raise TypeError("only SignedTransientCapability signed chart is supported")
+    for name in ("curvature", "u"):
+        axis = np.asarray(getattr(surface, name), dtype=float)
+        if axis.ndim != 1 or axis.size < 2 or not np.all(np.isfinite(axis)) or np.any(np.diff(axis) <= 0):
+            raise ValueError(f"surface {name} axis must be finite and strictly increasing")
+    floor = float(surface.speed_floor)
+    if not math.isfinite(floor) or floor <= 0:
+        raise ValueError("surface speed_floor must be finite and positive")
 
 
 def _corridor_value(corridor, station, field):
@@ -52,6 +59,8 @@ def _corridor_value(corridor, station, field):
         station = (station-axis[0]) % (axis[-1]-axis[0]) + axis[0]
     if station < axis[0] or station > axis[-1]:
         raise ValueError("corridor query outside physical domain")
+    if axis.ndim != 1 or values.shape != axis.shape or axis.size < 2 or not np.all(np.isfinite(axis)) or not np.all(np.isfinite(values)) or np.any(np.diff(axis) <= 0):
+        raise ValueError("corridor arrays must be finite and strictly increasing")
     return float(np.interp(station, axis, values))
 
 
@@ -72,6 +81,9 @@ def locate_physical_residuals(solution, corridor, surface, *, settings=None) -> 
     knots = [mesh, np.asarray(trajectory.reference.source_station, dtype=float),
              np.asarray(trajectory.spline.control_distance, dtype=float),
              np.asarray(corridor.distance, dtype=float)]
+    for axis in knots:
+        if axis.ndim != 1 or not np.all(np.isfinite(axis)) or np.any(np.diff(axis) <= 0):
+            raise ValueError("partition axes must be finite and strictly increasing")
     partitions = np.unique(np.concatenate([x[(x >= left) & (x <= right)] for x in knots] + [[left, right]]))
     min_width = float(np.min(np.diff(partitions))) if len(partitions) > 1 else right-left
     tol = min(cfg.station_tolerance, max(np.finfo(float).eps * max(1., right-left), min_width * 1e-6))
@@ -95,6 +107,14 @@ def locate_physical_residuals(solution, corridor, surface, *, settings=None) -> 
                                 float(geo.curvature), float(geo.offset))
             cache[s] = (geo, v, a, k, offset)
         geo, v, a, k, offset = cache[s]
+        try:
+            reference_curvature = float(trajectory.reference.evaluate(s).curvature)
+        except (AttributeError, TypeError, ValueError, OverflowError):
+            reference_curvature = math.nan
+        if not all(math.isfinite(x) for x in (v, a, k, offset)) or (name == "fold_guard" and not math.isfinite(reference_curvature)):
+            unresolved.append({"station": s, "reason": "nonfinite trajectory or state query"})
+            completed = False
+            return math.nan
         if name == "capability_domain":
             curves = np.asarray(surface.curvature, dtype=float)
             if k < curves[0] or k > curves[-1]:
@@ -113,11 +133,19 @@ def locate_physical_residuals(solution, corridor, surface, *, settings=None) -> 
             if not (surface.speed_floor <= v <= float(surface.domain_speed(k))):
                 unresolved.append({"station": float(s), "reason": "acceleration unevaluable outside capability chart"})
                 return -math.inf
-            lo, hi = surface.limits(v, k)
+            try:
+                lo, hi = map(float, surface.limits(v, k))
+            except (AttributeError, TypeError, ValueError, OverflowError) as exc:
+                unresolved.append({"station": s, "reason": f"capability limit query failed: {exc}"})
+                completed = False
+                return math.nan
+            if not (math.isfinite(lo) and math.isfinite(hi) and lo <= hi):
+                unresolved.append({"station": s, "reason": "nonfinite or inconsistent capability limits"})
+                completed = False
+                return math.nan
             return float(a-hi if name == "acceleration_max" else lo-a)
         if name == "corridor_max": return offset-_corridor_value(corridor, s, "maximum")
         if name == "corridor_min": return _corridor_value(corridor, s, "minimum")-offset
-        reference_curvature = float(trajectory.reference.evaluate(s).curvature)
         return float(-(1.0-reference_curvature*offset))
 
     class _Budget(Exception): pass
@@ -126,9 +154,13 @@ def locate_physical_residuals(solution, corridor, surface, *, settings=None) -> 
         for name in names:
             try:
                 ys = [residual(name, float(x)) for x in xs]
-                candidates = [(float(xs[i]), float(ys[i])) for i in range(len(xs))]
+                if not np.all(np.isfinite(ys)):
+                    completed = False
+                    unresolved.append({"station": float(xs[int(np.flatnonzero(~np.isfinite(ys))[0])]),
+                                       "reason": "nonfinite residual query"})
+                candidates = [(float(xs[i]), float(ys[i])) for i in range(len(xs)) if math.isfinite(float(ys[i]))]
                 for i in range(1, len(xs)-1):
-                    if ys[i] >= ys[i-1] and ys[i] >= ys[i+1] and (ys[i] > ys[i-1] or ys[i] > ys[i+1]):
+                    if all(math.isfinite(float(y)) for y in ys[i-1:i+2]) and ys[i] >= ys[i-1] and ys[i] >= ys[i+1] and (ys[i] > ys[i-1] or ys[i] > ys[i+1]):
                         result = minimize_scalar(lambda x: -residual(name, x), bounds=(xs[i-1], xs[i+1]), method="bounded",
                                                  options={"xatol": tol, "maxiter": cfg.maximum_evaluations})
                         candidates.append((float(result.x), float(-result.fun)))
@@ -157,12 +189,33 @@ def locate_physical_residuals(solution, corridor, surface, *, settings=None) -> 
         else: unique.append(p)
     sites = sorted({p["station"] for p in unique if left < p["station"] < right})
     unresolved_curvature = any("curvature outside" in item["reason"] for item in unresolved)
-    if unresolved_curvature:
+    unresolved_nonfinite = any("nonfinite trajectory" in item["reason"] for item in unresolved)
+    unresolved_queries = any("query failed" in item["reason"] or "inconsistent" in item["reason"] for item in unresolved)
+    unresolved_state = any("trajectory or state" in item["reason"] for item in unresolved)
+    if unresolved_curvature or unresolved_nonfinite or unresolved_queries or unresolved_state:
         completed = False
     return {"method": "empirical_partitioned_residual_search_v1", "continuous_certificate": False,
-            "completed": completed, "stop": ("curvature_domain_unresolved" if unresolved_curvature else "capability_queries_unresolved" if unresolved_speed else "peak_budget_exhausted" if peak_budget_exhausted else "complete" if completed else "evaluation_budget_exhausted"),
+            "completed": completed, "stop": ("nonfinite_query_unresolved" if unresolved_nonfinite or unresolved_state else "curvature_domain_unresolved" if unresolved_curvature else "capability_queries_unresolved" if unresolved_speed or unresolved_queries else "peak_budget_exhausted" if peak_budget_exhausted else "complete" if completed else "evaluation_budget_exhausted"),
             "evaluations": evaluations, "partition_count": len(partitions)-1, "peaks": unique,
             "constraint_stations": sites, "unresolved_domains": unresolved}
+
+
+def _validator_refinement_stations(validation, mesh):
+    """Return finite interior stations from failed physical diagnostics only."""
+    excluded = {"derivative_uncertainty", "implied_acceleration_derivative_uncertainty",
+                "dynamics_defect_upper_bound", "implied_acceleration_upper_bound"}
+    stations = []
+    for diagnostic in validation.get("diagnostics", ()):
+        if not isinstance(diagnostic, dict) or diagnostic.get("passed") is not False or diagnostic.get("name") in excluded:
+            continue
+        for value in [diagnostic.get("worst_station"), *diagnostic.get("refinement_stations", ())]:
+            if value is None or isinstance(value, (bool, np.bool_)):
+                continue
+            try: station = float(value)
+            except (TypeError, ValueError): continue
+            if math.isfinite(station) and mesh[0] < station < mesh[-1]:
+                stations.append(station)
+    return sorted(set(stations))
 
 
 class _ExchangeFailure(Exception):
@@ -184,40 +237,64 @@ def solve_constraint_exchange(track, corridor, surface, mesh, spline, settings, 
     validator = validator or validate_line
     if isinstance(maximum_rounds, bool) or not isinstance(maximum_rounds, (int, np.integer)) or maximum_rounds < 1: raise ValueError("maximum_rounds must be positive integer")
     if isinstance(maximum_sites, bool) or not isinstance(maximum_sites, (int, np.integer)) or maximum_sites < 0: raise ValueError("maximum_sites must be nonnegative integer")
-    if not math.isfinite(float(maximum_wall_seconds)) or maximum_wall_seconds <= 0: raise ValueError("maximum_wall_seconds must be positive")
-    retained = sorted(set(float(x) for x in (constraint_stations or ())))
-    report = {"accepted": False, "status": "running", "rounds": [], "constraint_stations": retained,
+    if isinstance(maximum_wall_seconds, (bool, np.bool_)) or not isinstance(maximum_wall_seconds, (int, float, np.number)) or not math.isfinite(float(maximum_wall_seconds)) or maximum_wall_seconds <= 0: raise ValueError("maximum_wall_seconds must be positive")
+    mesh = np.asarray(mesh, dtype=float)
+    if mesh.ndim != 1 or mesh.size < 2 or not np.all(np.isfinite(mesh)) or np.any(np.diff(mesh) <= 0):
+        raise ValueError("mesh must be finite and strictly increasing")
+    if constraint_stations is None:
+        retained = []
+    else:
+        requested = np.asarray(constraint_stations, dtype=float)
+        if requested.ndim != 1 or not np.all(np.isfinite(requested)) or np.any(requested <= mesh[0]) or np.any(requested >= mesh[-1]):
+            raise ValueError("constraint_stations must be finite interior mesh-domain stations")
+        retained = sorted(set(map(float, requested)))
+    if len(retained) > maximum_sites:
+        raise ValueError("initial constraint_stations exceed maximum_sites")
+    report = {"accepted": False, "validated_solution_available": False, "status": "running", "rounds": [], "constraint_stations": retained,
               "hard_deadline_enforced": False, "continuous_certificate": False}
     start = time.monotonic(); current_seed = seed; solution = None
     def finish(status):
         report["status"] = status
+        if report["rounds"] and report["rounds"][-1]["status"] not in ("solver_failed", "solver_exception", "validator_exception"):
+            report["rounds"][-1]["status"] = status
         if on_round is not None: on_round(copy.deepcopy(report))
-        return solution, report
+        return (solution if status == "locally_validated" and report["validated_solution_available"] else None), report
     def notify():
         if on_round is not None: on_round(copy.deepcopy(report))
     try:
         for index in range(int(maximum_rounds)):
             if time.monotonic()-start >= maximum_wall_seconds: raise _ExchangeFailure("wall_budget_exhausted")
+            round_record = {"round": index+1, "validation": None, "search": None, "status": "solving"}
+            report["rounds"].append(round_record)
             try:
                 solution = solver(track, corridor, surface, mesh, spline, settings, seed=current_seed,
                                   constraint_stations=retained)
             except SplineSolveError as exc:
+                round_record["status"] = "solver_failed"
                 report["solver_failure"] = {"message": str(exc), "diagnostics": copy.deepcopy(exc.diagnostics)}
                 raise _ExchangeFailure("solver_failed")
-            except Exception as exc: raise _ExchangeFailure("solver_exception", str(exc))
+            except Exception as exc:
+                round_record["status"] = "solver_exception"
+                raise _ExchangeFailure("solver_exception", str(exc))
+            if time.monotonic()-start >= maximum_wall_seconds:
+                raise _ExchangeFailure("wall_budget_exhausted")
             if getattr(solution, "status", None) != "Solve_Succeeded": raise _ExchangeFailure("solver_failed")
+            round_record["status"] = "solved"
             try: validation = validator(solution, corridor, surface, settings, vehicle=vehicle, maximum_refinements=6)
-            except Exception as exc: raise _ExchangeFailure("validator_exception", str(exc))
+            except Exception as exc:
+                round_record["status"] = "validator_exception"
+                raise _ExchangeFailure("validator_exception", str(exc))
+            if time.monotonic()-start >= maximum_wall_seconds:
+                raise _ExchangeFailure("wall_budget_exhausted")
             checks = validation.get("checks", {})
             gate_value = checks.get("geometry_consistency", validation.get("geometry_consistency"))
             dense_value = checks.get("dense_feasibility", validation.get("dense_feasibility"))
             gate = gate_value is True
             dense = dense_value is True and validation.get("sampling_converged") is True
             model = validation.get("model_feasible") is True
-            round_record = {"round": index+1, "validation": copy.deepcopy(validation), "search": None,
-                            "status": "validated" if gate and dense and model else "validation_incomplete"}
-            report["rounds"].append(round_record)
-            if gate and dense and model:
+            round_record["validation"] = copy.deepcopy(validation)
+            round_record["status"] = "validated" if gate and dense and model else "validation_incomplete"
+            if gate and dense and model and time.monotonic()-start < maximum_wall_seconds:
                 # Local checks do not establish mesh/basis, matched baseline, or replay gates.
                 round_record["status"] = "locally_validated_missing_strict_gates"
                 report["validated_solution_available"] = True
@@ -226,12 +303,15 @@ def solve_constraint_exchange(track, corridor, surface, mesh, spline, settings, 
             if time.monotonic()-start >= maximum_wall_seconds: raise _ExchangeFailure("wall_budget_exhausted")
             try: search = locate_physical_residuals(solution, corridor, surface, settings=search_settings)
             except Exception as exc: raise _ExchangeFailure("search_failed", str(exc))
+            if time.monotonic()-start >= maximum_wall_seconds:
+                raise _ExchangeFailure("wall_budget_exhausted")
             round_record["search"] = search
             if not search["completed"]: raise _ExchangeFailure("search_incomplete")
             mesh_arr = np.asarray(mesh, dtype=float)
             old = list(retained)
+            candidate_sites = sorted(set(search["constraint_stations"] + _validator_refinement_stations(validation, mesh_arr)))
             added = []
-            for s in search["constraint_stations"]:
+            for s in candidate_sites:
                 local = min(np.diff(mesh_arr)[max(0, min(len(mesh_arr)-2, int(np.searchsorted(mesh_arr, s, side="right")-1)))] * 1e-8, 1e-8)
                 if min(abs(np.asarray([*mesh_arr, *((mesh_arr[:-1]+mesh_arr[1:])/2), *old])-s), default=math.inf) > local:
                     added.append(float(s))

@@ -256,13 +256,108 @@ class ResidualSearchTests(unittest.TestCase):
         self.assertFalse(result["completed"])
         self.assertEqual(result["stop"], "capability_queries_unresolved")
         self.assertEqual(surface.limit_queries, 0)
+        self.assertFalse(result["search_exhausted"])
+        self.assertFalse(result["fatal_reasons"])
+        self.assertTrue(result["physical_domain_unresolved"])
+        self.assertTrue(result["progress_stations_available"])
+        self.assertTrue(result["constraint_stations"])
+
+    def test_speed_below_floor_is_known_partial_domain_progress(self):
+        class BelowFloorEvaluator:
+            def evaluate(self, station):
+                s = np.asarray(station, dtype=float)
+                return {"speed": np.full_like(s, .5), "acceleration": np.zeros_like(s)}
+        class NoBelowFloorLimits(Surface):
+            def __init__(self): self.queries = []
+            def limits(self, v, k):
+                self.queries.append((v, k))
+                if v < self.speed_floor: raise AssertionError("limits called below speed floor")
+                return (-2., 2.)
+        self.solution.state_evaluator = BelowFloorEvaluator()
+        surface = NoBelowFloorLimits()
+        result = locate_physical_residuals(self.solution, self.corridor, surface)
+        self.assertFalse(result["completed"])
+        self.assertEqual(result["stop"], "capability_queries_unresolved")
+        self.assertFalse(result["fatal_reasons"])
+        self.assertTrue(result["physical_domain_unresolved"])
+        self.assertTrue(result["constraint_stations"])
+        self.assertFalse(any(v < surface.speed_floor for v, _ in surface.queries))
+
+    def test_partial_domain_progress_exchanges_then_strict_local_gates_hold(self):
+        from simplified_vehicle_models.solvers.capability_exchange import solve_constraint_exchange
+        class OutOfDomainEvaluator:
+            def evaluate(self, station):
+                s = np.asarray(station, dtype=float)
+                speed = 10. + 20.*np.exp(-((s-.37)/.025)**2)
+                return {"speed": speed, "acceleration": np.zeros_like(s)}
+        class DomainSurface(Surface):
+            def domain_speed(self, k): return 20.
+            def limits(self, v, k):
+                if v > 20.: raise AssertionError("out-of-domain limits query")
+                return (-2., 2.)
+        calls, snapshots = [], []
+        solution = SimpleNamespace(status="Solve_Succeeded", distance=np.array([0., 1.]),
+            trajectory=self.solution.trajectory, state_evaluator=OutOfDomainEvaluator(), coefficients=np.array([2.]),
+            speed=np.array([30., 30.]), acceleration=np.zeros(2), midpoint_acceleration=np.zeros(1))
+        def solver(*args, **kwargs):
+            calls.append((list(kwargs["constraint_stations"]), kwargs["seed"]))
+            return solution
+        def validator(*args, **kwargs):
+            if len(calls) > 1:
+                return {"checks": {"geometry_consistency": True, "dense_feasibility": True},
+                        "sampling_converged": True, "model_feasible": True}
+            return {"checks": {"geometry_consistency": False, "dense_feasibility": False},
+                    "sampling_converged": False, "model_feasible": None,
+                    "diagnostics": [{"name": "speed", "passed": False, "worst_station": .25}]}
+        _, report = solve_constraint_exchange(None, self.corridor, DomainSurface(), np.array([0., 1.]),
+            None, None, solver=solver, validator=validator, maximum_rounds=2, on_round=snapshots.append)
+        self.assertEqual(len(calls), 2)
+        self.assertIn(.25, calls[1][0])
+        self.assertEqual(calls[1][1].shape, (6,))
+        self.assertFalse(report["accepted"])
+        self.assertEqual(report["status"], "locally_validated")
+        self.assertTrue(report["validated_solution_available"])
+        self.assertFalse(report["accepted"])
+        self.assertTrue(snapshots[0]["rounds"][0]["search_progress_only"])
+        self.assertFalse(snapshots[0]["rounds"][0]["search_complete"])
+
+    def test_domain_progress_does_not_mask_evaluation_budget(self):
+        from simplified_vehicle_models.solvers.capability_exchange import solve_constraint_exchange
+        class OutOfDomainEvaluator:
+            def evaluate(self, station):
+                s = np.asarray(station, dtype=float)
+                return {"speed": np.full_like(s, 30.), "acceleration": np.zeros_like(s)}
+        calls = []
+        solution = SimpleNamespace(status="Solve_Succeeded", distance=np.array([0., 1.]),
+            trajectory=self.solution.trajectory, state_evaluator=OutOfDomainEvaluator())
+        _, report = solve_constraint_exchange(None, self.corridor, Surface(), np.array([0., 1.]), None, None,
+            solver=lambda *a, **k: (calls.append(1) or solution),
+            validator=lambda *a, **k: {"checks": {}, "diagnostics": [{"name": "x", "passed": False, "worst_station": .25}]},
+            search_settings=ResidualSearchSettings(maximum_evaluations=5), maximum_rounds=2)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(report["status"], "search_incomplete")
+        self.assertEqual(report["rounds"][0]["search"]["stop"], "evaluation_budget_exhausted")
+
+    def test_domain_progress_does_not_mask_capability_query_failure(self):
+        class MixedEvaluator:
+            def evaluate(self, station):
+                s = np.asarray(station, dtype=float)
+                return {"speed": 10. + 20.*np.exp(-((s-.37)/.025)**2), "acceleration": np.zeros_like(s)}
+        class BrokenLimits(Surface):
+            def limits(self, v, k): raise ValueError("unknown capability query failure")
+        self.solution.state_evaluator = MixedEvaluator()
+        result = locate_physical_residuals(self.solution, self.corridor, BrokenLimits())
+        self.assertFalse(result["completed"])
+        self.assertTrue(result["physical_domain_unresolved"])
+        self.assertTrue(result["fatal_reasons"])
+        self.assertEqual(result["stop"], "capability_queries_unresolved")
 
     def test_nonfinite_capability_limits_fail_closed(self):
         class BadLimits(Surface):
             def limits(self, v, k): return (float("nan"), 1.)
         result = locate_physical_residuals(self.solution, self.corridor, BadLimits())
         self.assertFalse(result["completed"])
-        self.assertIn("capability_queries_unresolved", result["stop"])
+        self.assertEqual(result["stop"], "nonfinite_query_unresolved")
 
     def test_nonfinite_geometry_fails_closed(self):
         class NonfiniteTrajectory(Trajectory):

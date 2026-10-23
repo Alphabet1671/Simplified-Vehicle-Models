@@ -121,8 +121,13 @@ def locate_physical_residuals(solution, corridor, surface, *, settings=None) -> 
                 completed = False
                 unresolved.append({"station": float(s), "reason": "curvature outside capability chart"})
                 return float(max(curves[0]-k, k-curves[-1], 0.0))
-            if v < surface.speed_floor or v > float(surface.domain_speed(k)):
-                return float(max(surface.speed_floor-v, v-float(surface.domain_speed(k))))
+            domain_speed = float(surface.domain_speed(k))
+            if v < surface.speed_floor or v > domain_speed:
+                unresolved.append({"station": float(s), "reason": "speed outside physical capability domain",
+                                  "speed": v, "speed_floor": float(surface.speed_floor),
+                                  "domain_speed": domain_speed})
+                completed = False
+                return float(max(surface.speed_floor-v, v-domain_speed))
             return 0.0
         if name == "speed_floor": return float(surface.speed_floor-v)
         if name in ("acceleration_max", "acceleration_min"):
@@ -154,9 +159,9 @@ def locate_physical_residuals(solution, corridor, surface, *, settings=None) -> 
         for name in names:
             try:
                 ys = [residual(name, float(x)) for x in xs]
-                if not np.all(np.isfinite(ys)):
+                if np.any(np.isnan(ys)):
                     completed = False
-                    unresolved.append({"station": float(xs[int(np.flatnonzero(~np.isfinite(ys))[0])]),
+                    unresolved.append({"station": float(xs[int(np.flatnonzero(np.isnan(ys))[0])]),
                                        "reason": "nonfinite residual query"})
                 candidates = [(float(xs[i]), float(ys[i])) for i in range(len(xs)) if math.isfinite(float(ys[i]))]
                 for i in range(1, len(xs)-1):
@@ -179,7 +184,8 @@ def locate_physical_residuals(solution, corridor, surface, *, settings=None) -> 
     # Unsupported speed queries do not invoke chart limits and cannot establish
     # complete acceleration feasibility, though their stations remain useful.
     unresolved_speed = any("acceleration unevaluable" in item["reason"] for item in unresolved)
-    if unresolved_speed:
+    unresolved_physical_speed = any("speed outside physical capability domain" in item["reason"] for item in unresolved)
+    if unresolved_speed or unresolved_physical_speed:
         completed = False
     peaks.sort(key=lambda p: (p["station"], p["name"]))
     unique = []
@@ -192,10 +198,32 @@ def locate_physical_residuals(solution, corridor, surface, *, settings=None) -> 
     unresolved_nonfinite = any("nonfinite trajectory" in item["reason"] for item in unresolved)
     unresolved_queries = any("query failed" in item["reason"] or "inconsistent" in item["reason"] for item in unresolved)
     unresolved_state = any("trajectory or state" in item["reason"] for item in unresolved)
-    if unresolved_curvature or unresolved_nonfinite or unresolved_queries or unresolved_state:
+    unresolved_residual = any(item["reason"] == "nonfinite residual query" for item in unresolved)
+    unresolved_limit_query = any("capability limit query failed" in item["reason"] for item in unresolved)
+    unresolved_unsupported = any("unevaluable" in item["reason"] for item in unresolved)
+    unsupported_without_domain_violation = any(
+        "unevaluable" in item["reason"] and not any(
+            violation.get("reason") == "speed outside physical capability domain"
+            and abs(float(violation["station"])-float(item["station"])) <= tol
+            for violation in unresolved)
+        for item in unresolved)
+    if unresolved_curvature or unresolved_nonfinite or unresolved_queries or unresolved_state or unresolved_residual:
         completed = False
+    evaluation_budget_exhausted = evaluations >= cfg.maximum_evaluations and not completed
+    stop = ("nonfinite_query_unresolved" if unresolved_nonfinite or unresolved_state or unresolved_residual and not unresolved_limit_query else
+            "curvature_domain_unresolved" if unresolved_curvature else
+            "evaluation_budget_exhausted" if evaluation_budget_exhausted else
+            "peak_budget_exhausted" if peak_budget_exhausted else
+            "capability_queries_unresolved" if unresolved_speed or unresolved_physical_speed or unresolved_queries or unresolved_unsupported or unresolved_limit_query else
+            "complete" if completed else "evaluation_budget_exhausted")
+    fatal_reasons = (unresolved_nonfinite or unresolved_state or unresolved_residual or unresolved_curvature
+                     or unresolved_queries or evaluation_budget_exhausted or peak_budget_exhausted
+                     or unsupported_without_domain_violation)
     return {"method": "empirical_partitioned_residual_search_v1", "continuous_certificate": False,
-            "completed": completed, "stop": ("nonfinite_query_unresolved" if unresolved_nonfinite or unresolved_state else "curvature_domain_unresolved" if unresolved_curvature else "capability_queries_unresolved" if unresolved_speed or unresolved_queries else "peak_budget_exhausted" if peak_budget_exhausted else "complete" if completed else "evaluation_budget_exhausted"),
+            "completed": completed, "stop": stop, "search_exhausted": evaluation_budget_exhausted or peak_budget_exhausted,
+            "fatal_reasons": bool(fatal_reasons),
+            "physical_domain_unresolved": unresolved_physical_speed or unresolved_speed,
+            "progress_stations_available": bool(sites),
             "evaluations": evaluations, "partition_count": len(partitions)-1, "peaks": unique,
             "constraint_stations": sites, "unresolved_domains": unresolved}
 
@@ -306,7 +334,14 @@ def solve_constraint_exchange(track, corridor, surface, mesh, spline, settings, 
             if time.monotonic()-start >= maximum_wall_seconds:
                 raise _ExchangeFailure("wall_budget_exhausted")
             round_record["search"] = search
-            if not search["completed"]: raise _ExchangeFailure("search_incomplete")
+            partial_domain_progress = (not search["completed"] and search.get("stop") == "capability_queries_unresolved"
+                                       and search.get("physical_domain_unresolved") is True
+                                       and not search.get("search_exhausted", False)
+                                       and not search.get("fatal_reasons", True))
+            if not search["completed"] and not partial_domain_progress:
+                raise _ExchangeFailure("search_incomplete")
+            round_record["search_complete"] = bool(search["completed"])
+            round_record["search_progress_only"] = bool(partial_domain_progress)
             mesh_arr = np.asarray(mesh, dtype=float)
             old = list(retained)
             candidate_sites = sorted(set(search["constraint_stations"] + _validator_refinement_stations(validation, mesh_arr)))

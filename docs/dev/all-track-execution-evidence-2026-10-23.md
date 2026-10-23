@@ -85,3 +85,21 @@ runs/no_tv_reliability/runtime_install_20261023/venv/bin/python -m unittest \\
 This is the original invocation with its explicit 15 modules; it uses the fresh-venv interpreter without an inferred `PYTHONPATH`. The result is captured in `.superpowers/sdd/2026-10-23-all-track-virtual-driver/reviewed-feature-verification.log`. Verify source hashes against the recorded run provenance before comparing outputs. Do not substitute debug-layout runs, change the source revision/representation, or reuse outputs as if a different validation policy applied.
 
 No numerical/runtime changes, new thresholds, research claims, or “all finished” declaration are introduced by this evidence summary. The full adaptive plan and its original release gates remain in [the implementation plan](../superpowers/plans/2026-10-23-all-track-virtual-driver.md) and [the research roadmap](virtual-driver-all-track-research-roadmap.md).
+
+## Dated follow-up — 2026-10-23 (current review at `d3d5de6`)
+
+This addendum updates the evidence status without rewriting the baseline above. Reviewed partial implementation now includes Task 2b (`a0f33e6`), Task 2c priority additions (`8468787`) and strict-JSON follow-up (`e8eb027`, `6ce81c0ce`, `56b4441`), and Task 6c replay API strict-JSON fix (`d32ea2d`), integrated at `d3d5de6`. These are scoped components, not completed roadmap tasks. The focused current regression log records **192 tests passing in 21.033 s** (`.superpowers/sdd/2026-10-23-all-track-virtual-driver/final-current-regression.log`). The prior **174-test** result remains the separately dated baseline above, not a substitute for this run. The explicit 16-module sequence to reproduce/verify is the prior command in this document plus `tests.test_trajectory_forward_replay`:
+
+```sh
+runs/no_tv_reliability/runtime_install_20261023/venv/bin/python -m unittest \\
+  tests.test_convergence_policy tests.test_no_tv_runtime tests.test_trajectory_artifact \\
+  tests.test_standing_event tests.test_standing_launch tests.test_profile_line_seed \\
+  tests.test_spline_stage_timing tests.test_no_tv_minimum_lap tests.test_capability_exchange \\
+  tests.test_qss_constraint_stations tests.test_line_validation tests.test_adaptive_line \\
+  tests.test_line_refinement tests.test_fixed_path_energy_nlp tests.test_repository_layout \\
+  tests.test_trajectory_forward_replay -q
+```
+
+The actual valid strict-JSON replay report (`runs/no_tv_reliability/skidpad_replay_evidence_api_jsonfixed_20261023/report.json`) completed, but `accepted`, `physically_validated`, `event_qualified`, `numerically_validated`, and `U3_qualified` are all false. It reports 1.8129238 s (8.3285%) time difference, maximum speed error 1.99716 m/s, RMS speed error 1.09610 m/s, lateral error 0.150435 m, midpoint checks complete, and 144 endpoint-hold reference queries. Periodic-state delta is `null` for this rolling/open run. Endpoint extension is consumer reference hold only; no physical trajectory state was clipped. The earlier malformed API report with 631 invalid fields is excluded, not evidence of a valid run. This valid API run supersedes the baseline's “only actual full-plant result” wording: a valid API replay was actually tested, still without qualification.
+
+Latest FSC priority JSON-fixed report is failed: five rounds stopped at the 156-site cap, geometry/live checks true, dense corridor violation about `1.85e-5` m, acceleration max about `0.000744` and min about `0.001995` m/s², sampling convergence false. The separate prescribed-centreline control passed strict checks 47/51 (0.99597), then two rounds reached 250 sites/cap; minimum-acceleration violation remained `5.394e-6` versus `1e-6`. Neither is accepted. Finer SKIDPAD dense failures/non-convergence, MIS failures, and ~14 ms standing-start join-policy variation remain. Roadmap checkboxes, Task 5a policy HOLD/assumptions, and release boundaries are unchanged; no physical-readiness or all-repository-green claim, source XML/CSV/cache writes, merge, or push is made.

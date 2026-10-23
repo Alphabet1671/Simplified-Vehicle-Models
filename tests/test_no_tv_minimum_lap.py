@@ -19,17 +19,65 @@ class NoTvMinimumLapHarnessTest(unittest.TestCase):
         self.assertEqual(cases["mis_cut_open"].start_treatment, "open_rolling_10")
         self.assertEqual(cases["acceleration"].start_treatment, "open_rolling_10")
         self.assertIn("NOTstandingstart", cases["acceleration"].candidate_only_reason)
+        self.assertEqual(harness.build_attempt(cases["mis_cut_open"], mesh_spacing_m=5.0,
+            basis_spacing_m=35.0, maximum_iterations=1, wall_cap_s=3.0, seed_name="centerline",
+            formulation=Path("form.xml"), surface=Path("surface.npz"))["source_geometry_contract"],
+            harness.SOURCE_GEOMETRY_CONTRACT)
+        self.assertEqual(harness.build_attempt(cases["mis_closed"], mesh_spacing_m=5.0,
+            basis_spacing_m=35.0, maximum_iterations=1, wall_cap_s=3.0, seed_name="centerline",
+            formulation=Path("form.xml"), surface=Path("surface.npz"))["source_geometry_contract"],
+            harness.NATIVE_GEOMETRY_CONTRACT)
 
-    def test_full_cut_open_view_retains_mis_geometry_and_width_samples(self):
+    def test_full_cut_open_view_preserves_mis_and_fsc_source_geometry(self):
         cases = harness.default_cases()
-        closed = harness.make_track_view(cases["mis_closed"])
-        opened = harness.make_track_view(cases["mis_cut_open"])
-        self.assertTrue(closed.is_closed)
-        self.assertFalse(opened.is_closed)
-        np.testing.assert_array_equal(closed.distance, opened.distance)
-        np.testing.assert_array_equal(closed.curvature, opened.curvature)
-        np.testing.assert_array_equal(closed.half_width_left, opened.half_width_left)
-        np.testing.assert_array_equal(closed.half_width_right, opened.half_width_right)
+        from simplified_vehicle_models.tracks.line_trajectory import ReferenceCurve
+        for closed_name, open_name in (("mis_closed", "mis_cut_open"),
+                                       ("fsc_closed", "fsc_cut_open")):
+            with self.subTest(track=open_name):
+                closed = harness.make_track_view(cases[closed_name])
+                opened = harness.make_track_view(cases[open_name])
+                self.assertTrue(closed.is_closed)
+                self.assertFalse(opened.is_closed)
+                np.testing.assert_array_equal(closed.distance, opened.distance)
+                np.testing.assert_array_equal(closed.curvature, opened.curvature)
+                np.testing.assert_array_equal(closed.half_width_left, opened.half_width_left)
+                np.testing.assert_array_equal(closed.half_width_right, opened.half_width_right)
+                self.assertTrue(opened.source_reference_interpolation_periodic)
+                closed_curve, open_curve = ReferenceCurve(closed), ReferenceCurve(opened)
+                dense = np.linspace(0.0, closed.lap_length, 1001)
+                for name in ("north", "east", "north_s", "east_s", "north_ss", "east_ss",
+                             "north_sss", "east_sss", "metric", "metric_s", "curvature", "curvature_s"):
+                    np.testing.assert_allclose(getattr(open_curve.evaluate(dense), name),
+                                               getattr(closed_curve.evaluate(dense), name), rtol=0.0, atol=1e-12)
+                with self.assertRaisesRegex(ValueError, "outside the open interval"):
+                    open_curve.evaluate(-1e-6)
+                with self.assertRaisesRegex(ValueError, "outside the open interval"):
+                    open_curve.evaluate(opened.lap_length + 1e-6)
+
+    def test_worker_rejects_missing_or_mismatched_cut_geometry_contract_before_setup(self):
+        case = harness.default_cases()["fsc_cut_open"]
+        base = harness.build_attempt(case, mesh_spacing_m=5.0, basis_spacing_m=35.0,
+            maximum_iterations=1, wall_cap_s=3.0, seed_name="centerline",
+            formulation=Path("form.xml"), surface=Path("surface.npz"))
+        for contract in (None, harness.NATIVE_GEOMETRY_CONTRACT, "unknown_contract"):
+            request = dict(base)
+            if contract is None:
+                request.pop("source_geometry_contract")
+            else:
+                request["source_geometry_contract"] = contract
+            with tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                request_path, result_path = root / "request.json", root / "result.json"
+                request_path.write_text(json.dumps(harness._json_safe(request)), encoding="utf-8")
+                with patch.object(harness, "make_track_view", side_effect=AssertionError("geometry setup must not run")), \
+                     patch.object(harness, "compile_formulation", side_effect=AssertionError("compile must not run")):
+                    harness._attempt_worker(str(request_path), str(result_path), str(root / "solution.npz"))
+                result = json.loads(result_path.read_text())
+            self.assertEqual(result["status"], "geometry_contract_mismatch")
+            self.assertFalse(result["accepted"])
+            self.assertEqual(result["validation_status"], "solver_failed")
+            self.assertEqual(result["error_type"], "GeometryContractMismatch")
+            self.assertNotIn("artifact", result)
 
     def test_attempt_records_only_preregistered_rungs_and_no_tv(self):
         request = harness.build_attempt(harness.default_cases()["acceleration"],
@@ -800,6 +848,10 @@ class NoTvMinimumLapHarnessTest(unittest.TestCase):
         self.assertFalse(harness._same_refinement_conditions(left, right))
         right["request"]["initializer"] = dict(request["initializer"])
         right["request"]["initializer"]["profile_options"] = {"profile_step_m": 3.0}
+        self.assertFalse(harness._same_refinement_conditions(left, right))
+        right["request"]["initializer"] = dict(request["initializer"])
+        left["request"]["source_geometry_contract"] = harness.SOURCE_GEOMETRY_CONTRACT
+        right["request"]["source_geometry_contract"] = harness.NATIVE_GEOMETRY_CONTRACT
         self.assertFalse(harness._same_refinement_conditions(left, right))
 
     def test_user_metric_budgets_are_diagnostic_and_never_strict_evidence(self):

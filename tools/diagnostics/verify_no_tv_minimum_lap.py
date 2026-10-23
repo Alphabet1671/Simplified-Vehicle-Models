@@ -45,6 +45,10 @@ from simplified_vehicle_models.solvers.profile_line_seed import build_profile_li
 from simplified_vehicle_models.tracks.corridor import corridor_from_track
 from simplified_vehicle_models.tracks.offset_spline import OffsetSpline
 from simplified_vehicle_models.tracks.profile import load_track
+from simplified_vehicle_models.tracks.boundary_view import cut_open_track
+
+SOURCE_GEOMETRY_CONTRACT = "periodic_source_fit_open_domain_v1"
+NATIVE_GEOMETRY_CONTRACT = "native_topology_reference_v1"
 
 DEFAULT_MESH_SPACINGS = (5.0, 2.5, 1.25)
 DIAGNOSTIC_MESH_SPACING = 0.625
@@ -171,7 +175,7 @@ def make_track_view(case: MatrixCase):
     if case.topology == "closed":
         return track_view(original, is_closed=True)
     if case.topology == "full_cut_open":
-        return track_view(original, is_closed=False)
+        return cut_open_track(original)
     if case.topology == "open":
         return track_view(original, is_closed=False)
     raise ValueError(f"unknown topology {case.topology!r}")
@@ -284,7 +288,10 @@ def build_attempt(case: MatrixCase, *, mesh_spacing_m: float, basis_spacing_m: f
                             control_representation=control_representation,
                             speed_domain_margin_mps=float(speed_domain_margin_mps))
     return {
-        "case": asdict(case), "mesh_spacing_m": float(mesh_spacing_m),
+        "case": asdict(case),
+        "source_geometry_contract": (SOURCE_GEOMETRY_CONTRACT if case.topology == "full_cut_open"
+                                      else NATIVE_GEOMETRY_CONTRACT),
+        "mesh_spacing_m": float(mesh_spacing_m),
         "basis_spacing_m": float(basis_spacing_m), "seed": seed_name,
         "wall_cap_s": float(wall_cap_s), "settings": asdict(settings),
         "dense_maximum_refinements": _validate_dense_maximum_refinements(dense_maximum_refinements),
@@ -458,7 +465,28 @@ def _attempt_worker(request_path: str, result_path: str, artifact_path: str) -> 
               "validation_status": "solver_failed", "wall_seconds": None}
     try:
         case = MatrixCase(**request["case"])
+        expected_contract = (SOURCE_GEOMETRY_CONTRACT if case.topology == "full_cut_open"
+                             else NATIVE_GEOMETRY_CONTRACT)
+        supplied_contract = request.get(
+            "source_geometry_contract",
+            NATIVE_GEOMETRY_CONTRACT if case.topology != "full_cut_open" else None)
+        result["source_geometry_contract"] = supplied_contract
+        if supplied_contract != expected_contract:
+            result.update({"status": "geometry_contract_mismatch", "accepted": False,
+                           "validation_status": "solver_failed", "solver_succeeded": False,
+                           "error_type": "GeometryContractMismatch",
+                           "error": f"expected {expected_contract!r}, received {supplied_contract!r}"})
+            return
         track = make_track_view(case)
+        if all(hasattr(track, attribute) for attribute in
+               ("source_reference_interpolation_periodic", "distance", "lap_length")):
+            result["source_geometry"] = {
+                "topology": case.topology,
+                "source_reference_interpolation_periodic": track.source_reference_interpolation_periodic,
+                "source_station_start_m": float(track.distance[0]),
+                "source_station_end_m": float(track.distance[-1]),
+                "lap_length_m": float(track.lap_length),
+            }
         corridor = corridor_from_track(track, margin=0.1, half_width=case.fallback_half_width_m)
         vehicle = point_mass_view_of_planar(compile_formulation(request["formulation"]).model)
         surface, representation = load_surface_dispatch(Path(request["surface"]))
@@ -772,7 +800,9 @@ def _same_refinement_conditions(left: dict, right: dict) -> bool:
                                   == right.get("actual_initializer", {}).get("fingerprint"))
     identity_matches = ((left_identity is None and right_identity is None and legacy_fingerprint_matches)
                         or (left_identity is not None and left_identity == right_identity))
-    return (a.get("settings") == b.get("settings") and a.get("seed") == b.get("seed")
+    return (a.get("source_geometry_contract", NATIVE_GEOMETRY_CONTRACT)
+            == b.get("source_geometry_contract", NATIVE_GEOMETRY_CONTRACT)
+            and a.get("settings") == b.get("settings") and a.get("seed") == b.get("seed")
             and a.get("initializer") == b.get("initializer") and identity_matches
             and a.get("provenance") == b.get("provenance")
             and a.get("convergence_criteria") == b.get("convergence_criteria")

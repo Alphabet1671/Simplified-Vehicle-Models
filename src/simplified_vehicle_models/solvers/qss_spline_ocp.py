@@ -986,7 +986,11 @@ def _spline_failure_diagnostics(*, status, iter_count, total_iterations, objecti
                    "decision_size": int(built["nlp"]["x"].numel())},
         "control_representation": settings.control_representation,
         "state_representation": "energy_hs_v1",
-        "dual_coordinates": "scaled_decision",
+        # IPOPT receives affine-scaled x but the constraint residual g is not
+        # rescaled.  These labels prevent a failed iterate from implying a
+        # common physical coordinate system for both multiplier vectors.
+        "dual_x_coordinates": "scaled_decision",
+        "dual_g_coordinates": "unscaled_constraint_residuals",
         "time_quadrature": TIME_QUADRATURE_NAME,
     }
     iterations = stats.get("iterations") if isinstance(stats, dict) else None

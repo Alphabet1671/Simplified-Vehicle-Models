@@ -346,7 +346,9 @@ class NoTvMinimumLapHarnessTest(unittest.TestCase):
         diagnostics = {"return_status": "Maximum_Iterations_Exceeded", "iter_count": 1,
                        "total_iterations": 1, "objective_value": 9.,
                        "physical_max_constraint_violation": .25,
-                       "physical_max_bound_violation": .5, "layout": {"decision_size": 3}}
+                       "physical_max_bound_violation": .5, "layout": {"decision_size": 3},
+                       "dual_x_coordinates": "scaled_decision",
+                       "dual_g_coordinates": "unscaled_constraint_residuals"}
         error = SplineSolveError("quasi-steady line solver failed: Maximum_Iterations_Exceeded",
                                  diagnostics, failed_values=np.array([1., 2., 3.]),
                                  constraint_values=np.array([.25]), dual_g=np.array([.5]))
@@ -375,6 +377,10 @@ class NoTvMinimumLapHarnessTest(unittest.TestCase):
             with np.load(root / result["failed_artifact"], allow_pickle=False) as saved:
                 np.testing.assert_array_equal(saved["failed_values"], [1., 2., 3.])
                 self.assertIn("constraint_values", saved); self.assertIn("dual_g", saved)
+                metadata = json.loads(str(saved["metadata"]))
+                self.assertEqual(metadata["dual_x_coordinates"], "scaled_decision")
+                self.assertEqual(metadata["dual_g_coordinates"], "unscaled_constraint_residuals")
+                self.assertNotIn("dual_coordinates", metadata)
 
     def test_generic_runtime_error_keeps_legacy_failure_shape(self):
         class FakeSpline:

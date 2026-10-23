@@ -123,6 +123,9 @@ class SplineFailureDiagnosticsTest(unittest.TestCase):
         self.assertEqual(error.diagnostics["physical_max_constraint_violation"], .125)
         self.assertEqual(error.diagnostics["physical_max_bound_violation"], 3.)
         self.assertEqual(error.diagnostics["scaled_dual_infeasibility"], .25)
+        self.assertEqual(error.diagnostics["dual_x_coordinates"], "scaled_decision")
+        self.assertEqual(error.diagnostics["dual_g_coordinates"], "unscaled_constraint_residuals")
+        self.assertNotIn("dual_coordinates", error.diagnostics)
         self.assertFalse(error.failed_values.flags.writeable)
         self.assertFalse(error.dual_g.flags.writeable)
         result["lam_g"][0] = 99.

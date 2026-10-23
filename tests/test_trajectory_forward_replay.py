@@ -303,6 +303,55 @@ class ReplayTests(unittest.TestCase):
         self.assertNotIn("command_mapper", legacy_kwargs[0])
         self.assertEqual(legacy_report["longitudinal_command_mapping"]["mode"], "legacy_acceleration_fraction")
 
+    def test_mapper_snapshot_failure_preserves_forward_error_and_evidence_is_deeply_frozen(self):
+        from unittest.mock import patch
+        from simplified_vehicle_models.solvers.physical_longitudinal_mapper import PhysicalMapperSettings
+        from simplified_vehicle_models.solvers.trajectory_artifact import ExactTrajectoryDriverReference
+
+        loaded = self.make_loaded()
+        endpoint = ExactTrajectoryDriverReference(loaded).length
+        vehicle = SimpleNamespace(steering_maximum_angle=.5, steering_maximum_rate=1.,
+                                  maximum_pedal_force=100., wheelbase=2.)
+        names = ("s", "n", "heading_error", "v_x", "v_y", "yaw_rate",
+                 "omega_fl", "omega_fr", "omega_rl", "omega_rr", "soc", "steering")
+        class Plant:
+            state_names = names
+            def __init__(self, v, plan): pass
+            def initial_state(self, speed): return np.zeros(len(names))
+        class Driver:
+            speed_gain = 2.
+            brake_governor_margin = .85
+            def __init__(self, *a, **kw): pass
+        class FakeMapper:
+            def __init__(self, *a, **kw): self.diag = {"accepted": False, "nested": {"items": [1, 2]}}
+            def snapshot_diagnostics(self): raise RuntimeError("BADSNAP")
+        with patch("simplified_vehicle_models.solvers.trajectory_forward_replay.PhysicalLongitudinalMapper", FakeMapper):
+            _, report = replay_exact_trajectory(loaded, vehicle, plant_factory=Plant,
+                driver_factory=Driver, physical_mapper_settings=PhysicalMapperSettings(),
+                forward_solver=lambda *a, **k: (_ for _ in ()).throw(RuntimeError("SOLVERFAILED")))
+        self.assertEqual(report["phase"], "forward")
+        self.assertIn("SOLVERFAILED", report["error"])
+        self.assertIn("BADSNAP", report["longitudinal_command_mapping"]["diagnostics_error"])
+        self.assertIsNone(report["longitudinal_command_mapping"]["diagnostics"])
+        json.dumps(report, allow_nan=False)
+
+        result = SimpleNamespace(time=np.array([0., 1.]), state=np.array([
+            [0., endpoint], [0., 0.], [0., 0.], [12., 12.], [0., 0.]]),
+            lap_completed=True)
+        class ShortPlant:
+            state_names = ("s", "n", "heading_error", "v_x", "v_y")
+            def __init__(self, v, plan): pass
+            def initial_state(self, speed): return np.zeros(5)
+        evidence, returned = replay_exact_trajectory(loaded, vehicle,
+            plant_factory=ShortPlant, driver_factory=lambda *a, **k: object(),
+            forward_solver=lambda *a, **k: result)
+        with self.assertRaises(TypeError): evidence.report["longitudinal_command_mapping"]["mode"] = "changed"
+        with self.assertRaises(TypeError): evidence.metrics["max_abs_speed_error_mps"] = 99.
+        self.assertIsInstance(evidence.report["longitudinal_command_mapping"], type(evidence.report))
+        returned["longitudinal_command_mapping"]["mode"] = "mutated-return"
+        self.assertEqual(evidence.report["longitudinal_command_mapping"]["mode"], "legacy_acceleration_fraction")
+        json.dumps(returned, allow_nan=False)
+
     def test_physical_mapper_bad_type_and_gain_mismatch_fail_closed(self):
         from simplified_vehicle_models.solvers.physical_longitudinal_mapper import PhysicalMapperSettings
         loaded = self.make_loaded()

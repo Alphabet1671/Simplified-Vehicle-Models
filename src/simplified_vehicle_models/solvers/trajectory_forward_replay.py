@@ -97,6 +97,24 @@ def _readonly(value):
     return result
 
 
+def _deep_freeze(value):
+    """Recursively copy and freeze evidence metadata containers."""
+    if isinstance(value, dict):
+        return MappingProxyType({key: _deep_freeze(item) for key, item in value.items()})
+    if isinstance(value, (tuple, list)):
+        return tuple(_deep_freeze(item) for item in value)
+    return value
+
+
+def _snapshot_mapper_diagnostics(mapper, mapping_report):
+    """Capture diagnostics best-effort without hiding the primary replay result."""
+    try:
+        mapping_report["diagnostics"] = _json_native(mapper.snapshot_diagnostics())
+    except Exception as exc:
+        mapping_report["diagnostics"] = None
+        mapping_report["diagnostics_error"] = f"{type(exc).__name__}: {exc}"
+
+
 def _json_native(value, nonfinite_fields=None, path=""):
     """Convert report scalars recursively to strict-JSON-safe Python values."""
     if isinstance(value, np.generic):
@@ -194,7 +212,7 @@ def replay_exact_trajectory(loaded_or_path, vehicle, *, settings=None, plant_fac
         remaining = settings.maximum_wall_seconds - (perf_counter() - start)
         if remaining <= 0:
             if mapper is not None:
-                report["longitudinal_command_mapping"]["diagnostics"] = _json_native(mapper.snapshot_diagnostics())
+                _snapshot_mapper_diagnostics(mapper, report["longitudinal_command_mapping"])
             report.update(phase="wall_budget_before_forward", wall_overrun=True,
                           elapsed_wall_seconds=perf_counter() - start)
             return None, _json_native(report)
@@ -208,10 +226,10 @@ def replay_exact_trajectory(loaded_or_path, vehicle, *, settings=None, plant_fac
             result = forward_solver(plant, driver, state0, **forward_kwargs)
         except Exception:
             if mapper is not None:
-                report["longitudinal_command_mapping"]["diagnostics"] = _json_native(mapper.snapshot_diagnostics())
+                _snapshot_mapper_diagnostics(mapper, report["longitudinal_command_mapping"])
             raise
         if mapper is not None:
-            report["longitudinal_command_mapping"]["diagnostics"] = _json_native(mapper.snapshot_diagnostics())
+            _snapshot_mapper_diagnostics(mapper, report["longitudinal_command_mapping"])
         t = np.asarray(result.time, dtype=float)
         y = np.asarray(result.state, dtype=float)
         names = tuple(plant.state_names)
@@ -296,11 +314,11 @@ def replay_exact_trajectory(loaded_or_path, vehicle, *, settings=None, plant_fac
         report["nonfinite_metadata_fields"] = nonfinite_fields
         report = _json_native(report)
         evidence = ForwardReplayEvidence(_readonly(t), _readonly(y), _readonly(target),
-                                         MappingProxyType(metrics), MappingProxyType(report.copy()))
+                                         _deep_freeze(metrics), _deep_freeze(report))
         return evidence, report
     except Exception as exc:
         if mapper is not None:
-            report["longitudinal_command_mapping"]["diagnostics"] = _json_native(mapper.snapshot_diagnostics())
+            _snapshot_mapper_diagnostics(mapper, report["longitudinal_command_mapping"])
         report.update(phase=report.get("phase", "setup"), error=f"{type(exc).__name__}: {exc}",
                       elapsed_wall_seconds=perf_counter()-start)
         return evidence, _json_native(report)

@@ -52,15 +52,52 @@ class StandingLaunchTest(unittest.TestCase):
         self.assertAlmostEqual(seen[-1], .0205)
 
     def test_validation_and_finish_first(self):
-        with self.assertRaises(ValueError): LaunchSettings(transition_speed=True)
+        for bad in (True, np.bool_(False), np.nan, np.inf, -np.inf, "1", 1 + 0j):
+            with self.subTest(value=bad), self.assertRaises(ValueError):
+                LaunchSettings(transition_speed=bad)
+        for bad in (True, np.nan, np.inf, "0.5", 0.5 + 0j):
+            with self.subTest(floor=bad), self.assertRaises(ValueError):
+                integrate_standing_launch(None, FakeTrajectory(), capability_speed_floor=bad,
+                    settings=LaunchSettings(transition_speed=2.), acceleration_limit=lambda *_: 1.)
         with self.assertRaises(ValueError): integrate_standing_launch(None, FakeTrajectory(),
             settings=LaunchSettings(transition_speed=.5))
         with self.assertRaises(RuntimeError): integrate_standing_launch(None, FakeTrajectory(end=.1),
             settings=LaunchSettings(transition_speed=2.), acceleration_limit=lambda *_: 1.)
         with self.assertRaises(RuntimeError): integrate_standing_launch(None, FakeTrajectory(),
             settings=LaunchSettings(transition_speed=2., maximum_time=.1), acceleration_limit=lambda *_: 1.)
-        with self.assertRaises(RuntimeError): integrate_standing_launch(None, FakeTrajectory(),
-            settings=LaunchSettings(transition_speed=2.), acceleration_limit=lambda *_: 0.)
+        for bad in (0., -1., np.nan, np.inf, -np.inf):
+            with self.subTest(acceleration=bad), self.assertRaises(RuntimeError):
+                integrate_standing_launch(None, FakeTrajectory(), settings=LaunchSettings(transition_speed=2.),
+                    acceleration_limit=lambda *_, value=bad: value)
+        for bad in (np.nan, np.inf, -np.inf):
+            with self.subTest(curvature=bad), self.assertRaises(RuntimeError):
+                integrate_standing_launch(None, FakeTrajectory(curvature_fn=lambda _s, value=bad: value),
+                    settings=LaunchSettings(transition_speed=2.), acceleration_limit=lambda *_: 1.)
+
+    def test_default_original_acceleration_backend_queries_v0_through_station_map(self):
+        from unittest.mock import patch
+        trajectory = FakeTrajectory(end=40., curvature_fn=lambda s: 0.03 + s * .001, ratio=2.)
+        calls = []
+        def backend(vehicle, speed, curvature):
+            calls.append((vehicle, speed, curvature))
+            return 2.
+        vehicle = object()
+        with patch("simplified_vehicle_models.formulations.point_mass.maximum_acceleration_limit", backend):
+            result = integrate_standing_launch(vehicle, trajectory, settings=LaunchSettings(transition_speed=2.))
+        self.assertIs(calls[0][0], vehicle)
+        self.assertEqual(calls[0][1], 0.)
+        self.assertAlmostEqual(calls[0][2], .03)
+        self.assertAlmostEqual(result.transition_reference_station, .5)
+
+    def test_launch_result_rejects_malformed_arrays(self):
+        from simplified_vehicle_models.solvers.standing_launch import LaunchResult
+        kwargs = dict(time=np.array([0., np.nan]), path_distance=np.array([0., 1.]),
+            reference_station=np.array([0., 1.]), speed=np.array([0., 1.]),
+            acceleration=np.array([1., 1.]), transition_time=1., transition_distance=1.,
+            transition_reference_station=1., transition_speed=1., original_path_length=2.,
+            remaining_path_length=1.)
+        with self.assertRaises(ValueError):
+            LaunchResult(**kwargs)
 
 
 if __name__ == "__main__":

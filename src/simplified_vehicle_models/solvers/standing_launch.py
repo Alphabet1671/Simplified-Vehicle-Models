@@ -24,8 +24,9 @@ class LaunchSettings:
     def __post_init__(self):
         for name in ("transition_speed", "maximum_time", "maximum_step", "relative_tolerance", "absolute_tolerance"):
             value = getattr(self, name)
-            if isinstance(value, (bool, np.bool_)) or not isinstance(value, (int, float, np.number)) or not math.isfinite(float(value)) or float(value) <= 0:
-                raise ValueError(f"{name} must be finite and positive")
+            if (isinstance(value, (bool, np.bool_)) or not isinstance(value, (int, float, np.number))
+                    or not math.isfinite(float(value)) or float(value) <= 0):
+                raise ValueError(f"{name} must be a finite positive real number")
             object.__setattr__(self, name, float(value))
 
 
@@ -47,10 +48,18 @@ class LaunchResult:
     event_qualified: bool = False
 
     def __post_init__(self):
+        arrays = []
         for name in ("time", "path_distance", "reference_station", "speed", "acceleration"):
             arr = np.array(getattr(self, name), dtype=float, copy=True)
+            if arr.ndim != 1 or not np.all(np.isfinite(arr)):
+                raise ValueError(f"{name} must be a finite one-dimensional array")
+            arrays.append(arr)
             arr.setflags(write=False)
             object.__setattr__(self, name, arr)
+        if not arrays[0].size or any(a.shape != arrays[0].shape for a in arrays[1:]):
+            raise ValueError("launch result arrays must be nonempty and have matching shapes")
+        if np.any(np.diff(arrays[0]) <= 0) or np.any(np.diff(arrays[1]) < 0) or np.any(arrays[3] < 0):
+            raise ValueError("launch time must increase and distance/speed must be nondecreasing/nonnegative")
         object.__setattr__(self, "diagnostics", MappingProxyType(dict(self.diagnostics)))
 
 
@@ -69,7 +78,7 @@ def integrate_standing_launch(vehicle, trajectory, *, settings=None, capability_
     curvature) -> acceleration``.  Otherwise the original point-mass positive
     acceleration limit is queried at every RHS evaluation.
     """
-    settings = settings or LaunchSettings()
+    settings = LaunchSettings() if settings is None else settings
     if not isinstance(settings, LaunchSettings):
         raise TypeError("settings must be LaunchSettings")
     floor = _positive(capability_speed_floor, "capability_speed_floor")
@@ -83,6 +92,8 @@ def integrate_standing_launch(vehicle, trajectory, *, settings=None, capability_
     if not math.isfinite(length) or length <= 0:
         raise ValueError("trajectory path must have positive finite length")
     start_ref = float(station_map.to_reference(lo))
+    if not math.isfinite(start_ref):
+        raise ValueError("trajectory start reference station must be finite")
     curvature_fn = getattr(trajectory, "evaluate", None)
     if not callable(curvature_fn):
         raise ValueError("trajectory must provide analytic evaluate(reference_station)")

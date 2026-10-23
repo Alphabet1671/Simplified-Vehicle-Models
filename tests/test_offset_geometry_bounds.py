@@ -173,15 +173,20 @@ class OffsetGeometryBoundsTests(unittest.TestCase):
 
     def test_exact_total_panel_budget_and_depth_failure(self):
         t=self.trajectory
-        interval=(1.25,1.25)
-        exact=bound_offset_geometry(t,interval,maximum_panels=1)
-        self.assertEqual(exact.panel_count,1)
+        interval=(.25,.75)
+        width=Fraction(1,100)
+        unconstrained=bound_offset_geometry(t,interval,maximum_panels=256,
+                                            maximum_panel_curvature_width=width)
+        self.assertGreater(unconstrained.panel_count,1)
+        exact=bound_offset_geometry(t,interval,maximum_panels=unconstrained.panel_count,
+                                    maximum_panel_curvature_width=width)
+        self.assertEqual(exact.panel_count,unconstrained.panel_count)
+        with self.assertRaisesRegex(RuntimeError,"panel budget"):
+            bound_offset_geometry(t,interval,maximum_panels=unconstrained.panel_count-1,
+                                  maximum_panel_curvature_width=width)
         with self.assertRaises(RuntimeError):
-            bound_offset_geometry(t,(.25,4.75),maximum_panels=20,
-                                  maximum_panel_curvature_width=Fraction(1,10**6))
-        with self.assertRaises(RuntimeError):
-            bound_offset_geometry(t,(.25,4.75),maximum_depth=0,
-                                  maximum_panel_curvature_width=Fraction(1,10**6))
+            bound_offset_geometry(t,interval,maximum_depth=0,
+                                  maximum_panel_curvature_width=width)
 
     def test_sources_and_stored_offset_coefficients_are_unchanged(self):
         t=self.trajectory

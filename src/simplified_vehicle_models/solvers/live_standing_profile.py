@@ -18,7 +18,7 @@ from simplified_vehicle_models.formulations.point_mass import (
     maximum_deceleration_limit,
     maximum_vehicle_speed,
 )
-from simplified_vehicle_models.solvers.capability_profile import capability_profile
+from simplified_vehicle_models.solvers.capability_profile import capability_profile, _guard_station_input
 
 
 @dataclass(frozen=True, slots=True)
@@ -146,7 +146,8 @@ def _json_error(error):
 
 
 def solve_live_standing_profile(vehicle, trajectory, *, settings=None,
-                                limit_evaluator=None, speed_cap_evaluator=None):
+                                limit_evaluator=None, speed_cap_evaluator=None,
+                                curvature_guard_stations=None):
     """Return ``(profile_or_none, JSON-safe report)`` for one exact open path."""
     settings = LiveStandingSettings() if settings is None else settings
     report = {
@@ -171,6 +172,12 @@ def solve_live_standing_profile(vehicle, trajectory, *, settings=None,
     start = time.monotonic()
     surface = None
     try:
+        guard_stations = _guard_station_input(curvature_guard_stations)
+        if guard_stations and settings.segment_curvature_sampling != "trajectory_five_fractions":
+            raise ValueError("curvature_guard_stations require segment_curvature_sampling='trajectory_five_fractions'")
+        if guard_stations:
+            report.update({"curvature_guard_stations": list(guard_stations),
+                           "curvature_guard_station_count": len(guard_stations)})
         if not isinstance(settings, LiveStandingSettings):
             raise TypeError("settings must be LiveStandingSettings")
         reference = getattr(trajectory, "reference", None)
@@ -205,6 +212,8 @@ def solve_live_standing_profile(vehicle, trajectory, *, settings=None,
         profile_kwargs = {}
         if settings.segment_curvature_sampling != "node_average":
             profile_kwargs["segment_curvature_sampling"] = settings.segment_curvature_sampling
+        if guard_stations:
+            profile_kwargs["curvature_guard_stations"] = guard_stations
         profile = capability_profile(fullpath, surface, boundary="standing", step=settings.step,
                                      tolerance=settings.tolerance, maximum_iterations=settings.maximum_iterations,
                                      rest_limits=surface.limits, trajectory=trajectory,
@@ -248,7 +257,11 @@ def solve_live_standing_profile(vehicle, trajectory, *, settings=None,
             report.update({"segment_curvature_sampling": settings.segment_curvature_sampling,
                            "curvature_samples_per_segment": 6,
                            "geometry_query_stations_kind": "physical_fraction_via_computational_station_map_inverse",
-                           "continuous_feasibility_certified": False})
+                           "continuous_feasibility_certified": False,
+             **({"curvature_guard_stations": list(guard_stations),
+                 "curvature_guard_station_count": len(guard_stations),
+                 "additional_curvature_samples_per_segment": list(profile.diagnostics.get("additional_curvature_samples_per_segment", ())),
+                 "total_curvature_samples_per_segment": list(profile.diagnostics.get("total_curvature_samples_per_segment", ()))} if guard_stations else {})})
         report.update({"phase": "complete", "status": "converged", "all_accepted": False,
                        "profile_returned": True, "path_length": float(distance[-1]), "lap_time": float(profile.lap_time),
                        "sample_count": int(profile.distance.size), "accepted": False})

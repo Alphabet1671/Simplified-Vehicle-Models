@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
+import numbers
 from types import MappingProxyType
 from typing import Callable
 
@@ -36,6 +37,30 @@ class CapabilityProfile:
                 value.setflags(write=False)
                 object.__setattr__(self, name, value)
         object.__setattr__(self, "diagnostics", MappingProxyType(dict(self.diagnostics or {})))
+
+
+_MAX_CURVATURE_GUARD_STATIONS = 4096
+
+
+def _guard_station_input(value):
+    if value is None:
+        return None
+    if not isinstance(value, (tuple, list, np.ndarray)):
+        raise ValueError("curvature_guard_stations must be a one-dimensional finite real sequence")
+    raw = np.asarray(value, dtype=object)
+    if raw.ndim != 1 or raw.size > _MAX_CURVATURE_GUARD_STATIONS:
+        raise ValueError("curvature_guard_stations must be one-dimensional and contain at most 4096 stations")
+    vals = []
+    for item in raw:
+        if isinstance(item, (bool, np.bool_)) or not isinstance(item, numbers.Real):
+            raise ValueError("curvature_guard_stations must contain finite real non-boolean values")
+        converted = float(item)
+        if not math.isfinite(converted):
+            raise ValueError("curvature_guard_stations must contain finite values")
+        if isinstance(item, numbers.Rational) and item != converted:
+            raise ValueError("curvature_guard_stations must be exactly representable as float64")
+        vals.append(converted)
+    return tuple(float(x) for x in np.unique(np.asarray(vals, dtype=np.float64))) or None
 
 
 def _finite_positive(value, name: str) -> float:
@@ -383,13 +408,17 @@ def capability_profile(path, surface, *, boundary: str = "flying", start_speed=N
                        maximum_iterations: int = 200, rest_limits: Callable | None = None,
                        trajectory=None, transition_method: str = "legacy_fixed_point",
                         segment_limit_sampling: str = "midpoint",
-                        segment_curvature_sampling: str = "node_average") -> CapabilityProfile:
+                        segment_curvature_sampling: str = "node_average",
+                        curvature_guard_stations=None) -> CapabilityProfile:
     """Solve a bounded forward/backward energy profile on exact path arclength.
 
     ``rest_limits(speed, curvature)`` is an explicit original-physics low-speed
     extension returning ``(minimum_acceleration, maximum_acceleration)``.  It is
     required for standing starts below a table's demonstrated speed floor.
     """
+    guard_stations = _guard_station_input(curvature_guard_stations)
+    if guard_stations and segment_curvature_sampling != "trajectory_five_fractions":
+        raise ValueError("curvature_guard_stations require segment_curvature_sampling='trajectory_five_fractions'")
     step = _finite_positive(step, "step")
     tolerance = _finite_positive(tolerance, "tolerance")
     if isinstance(maximum_iterations, bool) or not isinstance(maximum_iterations, (int, np.integer)) or maximum_iterations < 1:
@@ -428,13 +457,18 @@ def capability_profile(path, surface, *, boundary: str = "flying", start_speed=N
         evaluate = getattr(trajectory, "evaluate", None)
         if not callable(inverse) or not callable(evaluate):
             raise ValueError("trajectory_five_fractions requires station_map.to_reference and trajectory.evaluate")
+        if guard_stations is not None and (guard_stations[0] < distance[0] or guard_stations[-1] > distance[-1]):
+            raise ValueError("curvature guard station outside full physical path domain")
         sample_rows = []
+        guard_counts = []
         wall_guard = geometry_wall_guard
         if callable(wall_guard):
             wall_guard()
         for i, ds_i in enumerate(segment):
-            physical = np.asarray((distance[i], distance[i] + .25*ds_i, distance[i] + .5*ds_i,
-                                   distance[i] + .75*ds_i, distance[i+1]), dtype=float)
+            base_physical = np.asarray((distance[i], distance[i] + .25*ds_i, distance[i] + .5*ds_i,
+                                        distance[i] + .75*ds_i, distance[i+1]), dtype=float)
+            extras = tuple(x for x in (guard_stations or ()) if distance[i] <= x <= distance[i+1])
+            physical = (np.unique(np.r_[base_physical, extras]) if extras else base_physical)
             try:
                 mapped = np.asarray(inverse(physical), dtype=float)
             except (TypeError, ValueError) as error:
@@ -447,9 +481,12 @@ def capability_profile(path, surface, *, boundary: str = "flying", start_speed=N
             values = evaluate(mapped)
             sampled = np.asarray(getattr(values, "curvature", None), dtype=float)
             if sampled.shape != physical.shape or not np.all(np.isfinite(sampled)):
-                raise ValueError("trajectory did not return finite curvature at every segment fraction")
+                raise ValueError("trajectory did not return finite curvature at every segment station")
+            additional = int(physical.size - base_physical.size)
+            guard_counts.append(additional)
             sample_rows.append(tuple(float(k) for k in np.r_[sampled, .5*(curvature[i]+curvature[i+1])]))
         curvature_samples = tuple(sample_rows)
+        total_counts = tuple(6 + n for n in guard_counts)
         if callable(wall_guard):
             wall_guard()
     if boundary == "flying":
@@ -538,6 +575,7 @@ def capability_profile(path, surface, *, boundary: str = "flying", start_speed=N
             if curvature_samples is not None:
                 details.update({"segment_curvature_sampling": segment_curvature_sampling,
                                 "curvature_samples_per_segment": 6,
+                                **({"curvature_guard_stations": guard_stations, "additional_curvature_samples_per_segment": tuple(guard_counts), "total_curvature_samples_per_segment": total_counts} if guard_stations else {}),
                                 "geometry_query_stations_kind": "physical_fraction_via_computational_station_map_inverse",
                                 "continuous_feasibility_certified": False})
         return CapabilityProfile(distance, speed, np.full(distance.shape, np.nan), math.nan,
@@ -643,7 +681,7 @@ def capability_profile(path, surface, *, boundary: str = "flying", start_speed=N
                                **({"transition_method": transition_method,
                                   "root_assumption": "sampled_non_decreasing_energy_residual_not_continuous_certificate",
                                        "segment_limit_sampling": segment_limit_sampling,
-                                        **({"segment_curvature_sampling": segment_curvature_sampling, "curvature_samples_per_segment": 6, "geometry_query_stations_kind": "physical_fraction_via_computational_station_map_inverse", "continuous_feasibility_certified": False} if curvature_samples is not None else {})}
+                                        **({"segment_curvature_sampling": segment_curvature_sampling, "curvature_samples_per_segment": 6, **({"curvature_guard_stations": guard_stations, "additional_curvature_samples_per_segment": tuple(guard_counts), "total_curvature_samples_per_segment": total_counts} if guard_stations else {}), "geometry_query_stations_kind": "physical_fraction_via_computational_station_map_inverse", "continuous_feasibility_certified": False} if curvature_samples is not None else {})}
                                   if transition_method == "bracketed_energy" else {})})
 
 

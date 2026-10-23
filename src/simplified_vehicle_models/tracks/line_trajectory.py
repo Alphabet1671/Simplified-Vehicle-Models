@@ -89,7 +89,9 @@ class TrajectoryEvaluation:
 class ReferenceCurve:
     """Quintic (or short-fixture cubic) XY interpolation of a track centerline."""
 
-    def __init__(self, track: object) -> None:
+    def __init__(self, track: object, *, interpolation_periodic: bool | None = None) -> None:
+        if interpolation_periodic is not None and not isinstance(interpolation_periodic, (bool, np.bool_)):
+            raise TypeError("interpolation_periodic must be bool or None")
         coordinates = getattr(track, "path_coordinates", None)
         if coordinates is None:
             raise ValueError("ReferenceCurve requires TrackProfile.path_coordinates")
@@ -102,12 +104,18 @@ class ReferenceCurve:
             raise ValueError("path coordinates must be finite with increasing station")
         self.source_station = _immutable(s)
         self.is_closed = bool(getattr(coordinates, "is_closed", getattr(track, "is_closed", False)))
+        if interpolation_periodic is not None and not bool(interpolation_periodic) and self.is_closed:
+            raise ValueError("closed reference cannot use a nonperiodic source interpolation")
+        self.interpolation_periodic = (self.is_closed if interpolation_periodic is None
+                                       else bool(interpolation_periodic))
         self.start = float(s[0])
         self.end = float(s[-1])
         if self.end <= self.start:
             raise ValueError("reference must have positive source length")
-        if self.is_closed:
-            # Source data often has round-off at the explicitly repeated seam.
+        if self.interpolation_periodic:
+            # Periodic source fits require a repeated seam, whether or not the
+            # query domain itself is closed. Source round-off is normalized only
+            # in the fit copy; caller-owned physical coordinates are untouched.
             # Validate it tightly, then set the terminal fit value exactly equal
             # because SciPy's periodic condition requires bitwise consistency.
             if not np.allclose((x[-1], y[-1]), (x[0], y[0]), rtol=0.0, atol=1e-8):
@@ -116,7 +124,7 @@ class ReferenceCurve:
             x[-1], y[-1] = x[0], y[0]
         from scipy.interpolate import make_interp_spline  # lazy optional dependency
         degree = 5 if s.size >= 6 else 3
-        boundary = "periodic" if self.is_closed else None
+        boundary = "periodic" if self.interpolation_periodic else None
         try:
             self._x = make_interp_spline(s, x, k=degree, bc_type=boundary)
             self._y = make_interp_spline(s, y, k=degree, bc_type=boundary)
@@ -141,6 +149,8 @@ class ReferenceCurve:
             "curvature_max_vs_source": None,
             "source_curvature_valid": bool(source_curvature_valid),
             "heading_source_available": bool(hasattr(coordinates, "heading")),
+            "source_interpolation_periodic": self.interpolation_periodic,
+            "source_boundary_condition": "periodic" if self.interpolation_periodic else "not-a-knot",
         }
         if source_curvature_valid:
             curvature_error = fitted_k - stored_k

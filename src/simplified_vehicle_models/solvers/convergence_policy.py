@@ -116,9 +116,11 @@ def _source_fingerprint(reference: Any) -> str | None:
     if north.shape != station.shape or east.shape != station.shape or not np.all(np.isfinite(north)) or not np.all(np.isfinite(east)):
         return None
     digest = hashlib.sha256()
-    digest.update(b"reference-source-v1\\0")
+    digest.update(b"reference-source-v2\\0")
     digest.update(frame.encode("ascii"))
     digest.update(b"\\0closed=" + (b"1" if bool(getattr(reference, "is_closed", False)) else b"0"))
+    digest.update(b"\\0interpolation_periodic=" +
+                  (b"1" if bool(getattr(reference, "interpolation_periodic", False)) else b"0"))
     for array in (station, north, east):
         digest.update(np.asarray(array, dtype="<f8").tobytes(order="C"))
     return digest.hexdigest()

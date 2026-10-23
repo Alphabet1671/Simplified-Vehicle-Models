@@ -30,7 +30,7 @@ def trajectory(straight=False):
 
 class CurvatureGuardProposalTest(unittest.TestCase):
     def assert_all_qualification_flags_false(self, result):
-        for key in ("all_accepted", "continuous_extrema_certified",
+        for key in ("accepted", "all_accepted", "continuous_extrema_certified",
                     "physical_feasibility_certified", "global_minimum_proven",
                     "joint_line_optimized", "event_qualified", "U3_qualified",
                     "policy_approved"):
@@ -75,7 +75,7 @@ class CurvatureGuardProposalTest(unittest.TestCase):
     def test_candidate_budget_and_source_mutation(self):
         t = trajectory(True)
         lo, hi = t.station_map.path_start, t.station_map.path_end
-        retained = np.linspace(lo, hi, 5)
+        retained = np.linspace(lo, hi, 5)[1:-1]
         exact = CurvatureProposalSettings(maximum_candidates=5)
         result = propose_curvature_guards(t, [(lo, hi)], retained_stations=retained, settings=exact)
         self.assertTrue(result["completed"])
@@ -97,6 +97,25 @@ class CurvatureGuardProposalTest(unittest.TestCase):
             changed = propose_curvature_guards(t, [(lo, hi)])
         self.assertFalse(changed["completed"])
         self.assertEqual(changed["reason"], "source_fingerprint_mismatch")
+
+    def test_deadline_after_mapping_skips_geometry_evaluation(self):
+        t = trajectory(True)
+        lo, hi = t.station_map.path_start, t.station_map.path_end
+        evaluate = t.evaluate
+        t.evaluate = unittest.mock.Mock(wraps=evaluate)
+        clock = [0.0]
+        def monotonic():
+            clock[0] += 0.6
+            return clock[0]
+        with patch.object(proposals, "_monotonic", side_effect=monotonic):
+            with patch.object(t.station_map, "to_reference", wraps=t.station_map.to_reference) as mapped:
+                result = propose_curvature_guards(t, [(lo, hi)],
+                    settings=CurvatureProposalSettings(maximum_wall_seconds=1.0))
+        self.assertFalse(result["completed"])
+        self.assertEqual(result["reason"], "wall_budget_exceeded")
+        self.assertEqual(mapped.call_count, 1)
+        t.evaluate.assert_not_called()
+        self.assert_all_qualification_flags_false(result)
 
     def test_bad_inputs_and_optimizer_failure_are_reports(self):
         t = trajectory(True)

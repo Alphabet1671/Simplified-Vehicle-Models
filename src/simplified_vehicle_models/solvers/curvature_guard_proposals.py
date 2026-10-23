@@ -87,7 +87,7 @@ def propose_curvature_guards(trajectory: OffsetTrajectory, physical_intervals: A
     report: dict[str, Any] = {
         "status": "not_proven", "reason": "input_error", "completed": False,
         "finite_public_eval_not_certified": True,
-        "all_accepted": False, "continuous_extrema_certified": False,
+        "accepted": False, "all_accepted": False, "continuous_extrema_certified": False,
         "physical_feasibility_certified": False, "global_minimum_proven": False,
         "joint_line_optimized": False, "event_qualified": False,
         "U3_qualified": False, "policy_approved": False,
@@ -166,6 +166,8 @@ def propose_curvature_guards(trajectory: OffsetTrajectory, physical_intervals: A
                 raise RuntimeError("evaluation_budget_exceeded")
             report["evaluations"] += 1
             source = float(sm.to_reference(float(ell)))
+            if _monotonic() - start >= cfg.maximum_wall_seconds:
+                raise RuntimeError("wall_budget_exceeded")
             if not math.isfinite(source) or source < trajectory.reference.start or source > trajectory.reference.end:
                 raise RuntimeError("source_station_outside_reference_domain")
             result = trajectory.evaluate(source)

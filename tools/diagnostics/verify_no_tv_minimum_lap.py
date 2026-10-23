@@ -549,6 +549,9 @@ def _attempt_worker(request_path: str, result_path: str, artifact_path: str) -> 
                                   solution, "control_representation",
                                   settings.control_representation,
                               )),
+                              speed_domain_margin_mps=np.array(
+                                  settings.speed_domain_margin_mps,
+                              ),
                               time_quadrature=np.array(solution.time_quadrature),
                               time_metadata=np.array(json.dumps(solution.time_quadrature_metadata, sort_keys=True)))
         # Persist exact reference/map metadata separately with the established
@@ -587,6 +590,7 @@ def _attempt_worker(request_path: str, result_path: str, artifact_path: str) -> 
                            solution, "control_representation",
                            settings.control_representation,
                        ),
+                       "speed_domain_margin_mps": settings.speed_domain_margin_mps,
                        "time_quadrature": solution.time_quadrature,
                        "time_metadata": solution.time_quadrature_metadata,
                        "trajectory_metadata_artifact": str(trajectory_metadata.name),

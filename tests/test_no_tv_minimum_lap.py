@@ -262,10 +262,12 @@ class NoTvMinimumLapHarnessTest(unittest.TestCase):
             self.assertEqual(captured["refinements"], 6)
             self.assertEqual(result["control_representation"],
                              "quadratic_energy_rate_over_metric_v1")
+            self.assertEqual(result["speed_domain_margin_mps"], .125)
             with np.load(root / "solution.npz", allow_pickle=False) as artifact:
                 self.assertEqual(str(artifact["state_representation"]), "energy_hs_v1")
                 self.assertEqual(str(artifact["control_representation"]),
                                  "quadratic_energy_rate_over_metric_v1")
+                self.assertEqual(float(artifact["speed_domain_margin_mps"]), .125)
                 self.assertEqual(str(artifact["time_quadrature"]), "fixture_quadrature")
                 np.testing.assert_array_equal(artifact["control_station_m"], [0.0, 1.0])
             self.assertTrue((root / result["trajectory_metadata_artifact"]).is_file())

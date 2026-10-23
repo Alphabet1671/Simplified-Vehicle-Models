@@ -125,7 +125,8 @@ class ReferenceGeometryBoundsTests(unittest.TestCase):
             with self.assertRaises((TypeError, ValueError)):
                 bound_reference_geometry(ref, (.25, 4.75), **kw)
         with self.assertRaises(RuntimeError):
-            bound_reference_geometry(ref, (0., 5.), maximum_panels=1)
+            bound_reference_geometry(ref, (0., 5.), maximum_panels=1,
+                                     maximum_panel_curvature_width=Fraction(1, 10**12))
         with self.assertRaises((TypeError, ValueError)):
             bound_reference_geometry(ref, (Fraction(1, 3), Fraction(2, 3)))
         out = bound_reference_geometry(ref, (.25, 4.75))

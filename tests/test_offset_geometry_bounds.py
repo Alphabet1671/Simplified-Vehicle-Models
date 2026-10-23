@@ -94,7 +94,17 @@ class OffsetGeometryBoundsTests(unittest.TestCase):
         self.assertNotEqual(out.curvature_interval, (Fraction(0), Fraction(0)))
         refined=bound_offset_geometry(t,(.5,4.5),maximum_panel_curvature_width=Fraction(1,2))
         self.assertLessEqual(refined.max_accepted_panel_curvature_width,Fraction(1,2))
-        self.assertGreater(refined.panel_count,out.panel_count)
+        self.assertGreaterEqual(refined.panel_count, out.panel_count)
+        for sf in (.5, 1.25, 2.5, 3.75, 4.5):
+            n, fold, metric2, knum = oracle_at(t, sf)
+            self.assertLessEqual(refined.offset_interval[0], n)
+            self.assertGreaterEqual(refined.offset_interval[1], n)
+            self.assertLessEqual(refined.fold_interval[0], fold)
+            self.assertGreaterEqual(refined.fold_interval[1], fold)
+            self.assertLessEqual(refined.metric_interval[0]**2, metric2)
+            self.assertGreaterEqual(refined.metric_interval[1]**2, metric2)
+            self.assertLessEqual(refined.curvature_interval[0]**2*metric2**3, knum*knum)
+            self.assertGreaterEqual(refined.curvature_interval[1]**2*metric2**3, knum*knum)
         # The global range remains a union of accepted panels, not a claimed physical pass.
         # Public floating evaluator is a falsification cross-check only, not proof.
         dense=np.linspace(.5,4.5,101)

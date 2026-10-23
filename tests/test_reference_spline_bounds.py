@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from fractions import Fraction
+import math
 import unittest
 
 import numpy as np
@@ -25,6 +26,36 @@ def basis(i, p, u, knots, left_endpoint=False):
     a = Fraction(0) if knots[i+p] == knots[i] else (u-Fraction.from_float(float(knots[i])))/(Fraction.from_float(float(knots[i+p]))-Fraction.from_float(float(knots[i])))
     b = Fraction(0) if knots[i+p+1] == knots[i+1] else (Fraction.from_float(float(knots[i+p+1]))-u)/(Fraction.from_float(float(knots[i+p+1]))-Fraction.from_float(float(knots[i+1])))
     return a*basis(i,p-1,u,knots,left_endpoint)+b*basis(i+1,p-1,u,knots,left_endpoint)
+
+
+def solve_exact(matrix, rhs):
+    """Fraction Gaussian elimination, independent of the production Taylor transform."""
+    rows = [list(row) + [value] for row, value in zip(matrix, rhs)]
+    n = len(rhs)
+    for col in range(n):
+        pivot = next(r for r in range(col, n) if rows[r][col])
+        rows[col], rows[pivot] = rows[pivot], rows[col]
+        scale = rows[col][col]
+        rows[col] = [v/scale for v in rows[col]]
+        for r in range(n):
+            if r != col:
+                factor = rows[r][col]
+                rows[r] = [a-factor*b for a, b in zip(rows[r], rows[col])]
+    return [rows[i][-1] for i in range(n)]
+
+
+def oracle_bernstein_controls(spline, order, left, right):
+    """Recover the exact degree-q controls from q+1 independent Cox values."""
+    q = spline.k-order
+    nodes = [Fraction(j, q) for j in range(q+1)]
+    values = [oracle(spline, left+(right-left)*x, order) for x in nodes]
+    matrix = []
+    for x in nodes:
+        row = []
+        for j in range(q+1):
+            row.append(Fraction(math.comb(q, j))*x**j*(1-x)**(q-j))
+        matrix.append(row)
+    return solve_exact(matrix, values)
 
 
 def oracle(spline, u, order):
@@ -53,6 +84,39 @@ class ReferenceSplineBoundsTests(unittest.TestCase):
                     exact = oracle(spline, q, order)
                     self.assertEqual(interval, (exact, exact))
 
+    def test_one_panel_hull_equals_independent_exact_bernstein_oracle(self):
+        # Both fitted coordinate splines are quintics.  A single query panel
+        # lies inside their sole source span; recover controls from exact Cox
+        # values via a Bernstein Vandermonde solve, not Taylor coefficients.
+        left, right = Fraction(1, 8), Fraction(7, 8)
+        out = bound_reference_derivatives(self.reference, (float(left), float(right)))
+        for spline, bounds in ((self.reference._x, out.north_derivatives),
+                               (self.reference._y, out.east_derivatives)):
+            for order, interval in enumerate(bounds):
+                controls = oracle_bernstein_controls(spline, order, left, right)
+                self.assertEqual(interval, (min(controls), max(controls)))
+                for j in range(17):
+                    x = Fraction(j, 16)
+                    value = oracle(spline, left+(right-left)*x, order)
+                    self.assertLessEqual(interval[0], value)
+                    self.assertGreaterEqual(interval[1], value)
+
+    def test_panel_bernstein_hull_is_narrower_than_interval_deboor(self):
+        from simplified_vehicle_models.solvers.reference_spline_bounds import _deboor, _derivatives, _validate_spline
+        interval = (Fraction(1, 8), Fraction(1, 4))
+        out = bound_reference_derivatives(self.reference, tuple(map(float, interval)))
+        for spline, bounds in ((self.reference._x, out.north_derivatives),
+                               (self.reference._y, out.east_derivatives)):
+            t, c, p = _validate_spline(spline, self.reference.start, self.reference.end)
+            chain = _derivatives(t, c, p)
+            for order, new in enumerate(bounds):
+                data = chain[order]
+                original_span = next(i for i in range(p, len(c)) if t[i] <= sum(interval)/2 < t[i+1])
+                old = _deboor(data, *interval, original_span-order)
+                self.assertLessEqual(old[0], new[0])
+                self.assertGreaterEqual(old[1], new[1])
+                self.assertLess(new[1]-new[0], old[1]-old[0])
+
     def test_wide_interval_encloses_exact_rational_probes(self):
         out = bound_reference_derivatives(self.reference, (.25, 4.75))
         for q in [Fraction(i, 16) for i in range(4, 77)]:
@@ -64,6 +128,26 @@ class ReferenceSplineBoundsTests(unittest.TestCase):
         self.assertTrue(out.exact_arithmetic)
         self.assertFalse(out.whole_trajectory_certified)
         self.assertEqual(out.span_count, 1)  # six-point not-a-knot fit is one polynomial span
+
+    def test_quintic_nonuniform_multispan_and_one_sided_knot_panels(self):
+        s = np.array([0., .4, 1.1, 1.8, 2.9, 4.2, 5.1, 6.7, 8.])
+        ref = ReferenceCurve(track(s, np.cos(.31*s), np.sin(.47*s)))
+        before = tuple((spline.t.copy(), spline.c.copy()) for spline in (ref._x, ref._y))
+        breaks = sorted({Fraction.from_float(float(v)) for v in ref._x.t
+                         if Fraction.from_float(float(v)) > 0 and Fraction.from_float(float(v)) < 8})
+        for knot in breaks:
+            left, right = knot-Fraction(1, 2**20), knot+Fraction(1, 2**20)
+            out = bound_reference_derivatives(ref, (float(left), float(right)))
+            for spline, bounds in ((ref._x, out.north_derivatives), (ref._y, out.east_derivatives)):
+                for j in range(17):
+                    q = left+(right-left)*Fraction(j, 16)
+                    for order, interval in enumerate(bounds):
+                        value = oracle(spline, q, order)
+                        self.assertLessEqual(interval[0], value)
+                        self.assertGreaterEqual(interval[1], value)
+        for spline, (knots, coeffs) in zip((ref._x, ref._y), before):
+            np.testing.assert_array_equal(spline.t, knots)
+            np.testing.assert_array_equal(spline.c, coeffs)
 
     def test_degree_three_short_fit_and_exact_domain_end(self):
         s = np.array([0., 1., 2., 3.])

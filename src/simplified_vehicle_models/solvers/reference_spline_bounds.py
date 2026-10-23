@@ -55,20 +55,22 @@ def _validate_spline(spline: object, start: float, end: float) -> tuple[list[Fra
 
 
 def _derivatives(t: list[Fraction], c: list[Fraction], p: int):
+    """Return exact derivative splines through the degree-zero derivative."""
     result = []
-    for _ in range(4):
+    while True:
         result.append((t, c, p))
         if p == 0:
             break
         next_c = []
         for i in range(len(c)-1):
             denominator = t[i+p+1] - t[i+1]
-            if denominator <= 0:
-                raise ValueError("unsupported zero derivative denominator")
-            next_c.append(Fraction(p)*(c[i+1]-c[i])/denominator)
+            if denominator < 0:
+                raise ValueError("unsupported negative derivative denominator")
+            # The derivative coefficient on a zero-width support is inactive
+            # on every positive knot span; the standard spline convention is 0.
+            next_c.append(Fraction(0) if denominator == 0 else
+                          Fraction(p)*(c[i+1]-c[i])/denominator)
         t, c, p = t[1:-1], next_c, p-1
-    if len(result) != 4:
-        raise ValueError("unsupported derivative order")
     return result
 
 
@@ -104,6 +106,21 @@ def _deboor(data, lo: Fraction, hi: Fraction, span: int) -> Interval:
     return d[p]
 
 
+def _bernstein_panel(derivatives, derivative_order: int, left: Fraction,
+                     right: Fraction, original_span: int) -> Interval:
+    """Bound one polynomial restriction by its exact Bernstein control hull."""
+    _, _, p = derivatives[derivative_order]
+    width = right-left
+    power = []
+    for order in range(p+1):
+        data = derivatives[derivative_order+order]
+        value = _deboor(data, left, left, original_span-derivative_order-order)[0]
+        power.append(value * width**order / math.factorial(order))
+    controls = [sum(Fraction(math.comb(j, m), math.comb(p, m))*power[m]
+                    for m in range(j+1)) for j in range(p+1)]
+    return min(controls), max(controls)
+
+
 def _coordinate(spline: BSpline, start: float, end: float, lo: Fraction, hi: Fraction,
                 cuts: list[Fraction], span_count: int) -> tuple[Interval, ...]:
     t, c, p = _validate_spline(spline, start, end)
@@ -115,14 +132,11 @@ def _coordinate(spline: BSpline, start: float, end: float, lo: Fraction, hi: Fra
         left, right = max(a, lo), min(b, hi)
         if left > right:
             continue
-        # Locate the unique positive original knot span containing this panel.
         midpoint = (a+b)/2
         original_span = next(i for i in range(p, len(c)) if t[i] <= midpoint < t[i+1])
-        for order, data in enumerate(derivatives):
-            dt, dc, dp = data
-            # Derivative knot vector is trimmed; same geometric span index shifts by order.
-            idx = original_span-order
-            value = _deboor(data, left, right, idx)
+        for order, data in enumerate(derivatives[:4]):
+            value = (_deboor(data, left, right, original_span-order) if left == right
+                     else _bernstein_panel(derivatives, order, left, right, original_span))
             if accum[order][0] is None:
                 accum[order] = [value[0], value[1]]
             else:

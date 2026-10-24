@@ -972,19 +972,28 @@ def _attempt_ladder_worker(request_path: str, result_path: str, artifact_path: s
     attempts_root = root / "attempts"
     attempts_root.mkdir(exist_ok=False)
     stage_path = root / "stage.json"
-    stage_state = {"stage": "setup", "solve_completed": False, "events": [], "current_attempt": None}
+    stage_state = {"stage": "setup", "solve_completed": False,
+                   "ladder_solve_completed": False, "any_rung_solve_completed": False,
+                   "events": [], "current_attempt": None}
     records = []
 
     def publish_stage(index, stage):
+        now = time.monotonic()
+        if stage_state["events"] and "ended_monotonic" not in stage_state["events"][-1]:
+            stage_state["events"][-1]["ended_monotonic"] = now
         stage_state["current_attempt"] = index
         stage_state["stage"] = stage
-        stage_state["events"].append({"attempt": index, "stage": stage, "monotonic": time.monotonic()})
+        stage_state["events"].append({"attempt": index, "stage": stage,
+                                       "started_monotonic": now,
+                                       "soft_budget_s": request.get("stage_budgets_s", {}).get(stage)})
         temp = stage_path.with_name("stage.json.tmp")
         temp.write_text(json.dumps(stage_state, sort_keys=True), encoding="utf-8")
         temp.replace(stage_path)
 
     result = {"status": "ladder_incomplete", "accepted": False, "solver_succeeded": False,
-              "solve_completed": False, "evidence_complete": False, "numerically_validated": False,
+              "solve_completed": False, "ladder_solve_completed": False,
+              "any_rung_solve_completed": False,
+              "evidence_complete": False, "numerically_validated": False,
               "worker_kind": "no_tv_spline_ladder_v1", "attempts": records}
     publish_stage(None, "setup")
     try:
@@ -1020,7 +1029,7 @@ def _attempt_ladder_worker(request_path: str, result_path: str, artifact_path: s
                 rung_result_path.write_text(json.dumps(child, sort_keys=True), encoding="utf-8")
             else:
                 def relay_stage(name, solved):
-                    stage_state["solve_completed"] = bool(stage_state["solve_completed"] or solved)
+                    stage_state["any_rung_solve_completed"] = bool(stage_state["any_rung_solve_completed"] or solved)
                     publish_stage(index, name)
                 _attempt_worker(str(rung_request_path), str(rung_result_path), str(rung_artifact_path),
                                 stage_callback=relay_stage)
@@ -1034,9 +1043,10 @@ def _attempt_ladder_worker(request_path: str, result_path: str, artifact_path: s
             except (OSError, ValueError):
                 rung_stage = {}
             solved = bool(rung_stage.get("solve_completed") or child.get("solve_completed") or child.get("solver_succeeded"))
-            stage_state["solve_completed"] = bool(stage_state["solve_completed"] or solved)
+            stage_state["any_rung_solve_completed"] = bool(stage_state["any_rung_solve_completed"] or solved)
             record = {"index": index, "spacing_m": rung["mesh_spacing_m"], "status": child.get("status"),
-                      "solve_completed": solved, "result": f"attempts/{rung_dir.name}/result.json",
+                      "solve_completed": solved, "wall_seconds": child.get("wall_seconds"),
+                      "result": f"attempts/{rung_dir.name}/result.json",
                       "stage": f"attempts/{rung_dir.name}/stage.json",
                       "artifact": f"attempts/{rung_dir.name}/solution.npz" if rung_artifact_path.exists() else None,
                       "checks": child.get("checks", {}), "numerically_validated": child.get("numerically_validated") is True}
@@ -1050,6 +1060,7 @@ def _attempt_ladder_worker(request_path: str, result_path: str, artifact_path: s
             publish_stage(index, "validate" if rung_stage.get("stage") in {"validate", "complete"} else rung_stage.get("stage", "failed"))
             if child.get("error") or not child.get("solver_succeeded"):
                 result.update({"status": "ladder_attempt_failed", "failed_attempt": index,
+                               "any_rung_solve_completed": bool(stage_state["any_rung_solve_completed"]),
                                "error": child.get("error"), "error_type": child.get("error_type")})
                 break
         else:
@@ -1058,6 +1069,8 @@ def _attempt_ladder_worker(request_path: str, result_path: str, artifact_path: s
             # The shared worker does not possess public mesh/basis/reference gates; never promote diagnostic solves.
             result.update({"status": "success" if all_solved else "ladder_incomplete",
                            "solver_succeeded": all_solved, "solve_completed": all_solved,
+                           "ladder_solve_completed": all_solved,
+                           "any_rung_solve_completed": bool(stage_state["any_rung_solve_completed"]),
                            "numerically_validated": False, "evidence_complete": False,
                            "checks": {"all_rungs_solved": all_solved,
                                       "all_rungs_numerically_validated": all_numeric,
@@ -1065,12 +1078,21 @@ def _attempt_ladder_worker(request_path: str, result_path: str, artifact_path: s
                                       "matched_baseline": None},
                            "validation_status": "unqualified_solved" if all_solved else "solver_failed"})
         result["attempts"] = records
+        result.setdefault("any_rung_solve_completed", bool(stage_state["any_rung_solve_completed"]))
+        result.setdefault("ladder_solve_completed", False)
+        result["solve_completed"] = bool(result["ladder_solve_completed"])
+        stage_state["any_rung_solve_completed"] = bool(result["any_rung_solve_completed"])
+        stage_state["ladder_solve_completed"] = bool(result["ladder_solve_completed"])
+        stage_state["solve_completed"] = bool(result["ladder_solve_completed"])
         publish_stage(records[-1]["index"] if records else None, "complete" if result["solver_succeeded"] else "failed")
     except BaseException as error:
         result.update({"status": "worker_exception", "error_type": type(error).__name__, "error": str(error),
-                       "accepted": False, "solver_succeeded": False, "numerically_validated": False})
+                       "accepted": False, "solver_succeeded": False, "numerically_validated": False,
+                       "any_rung_solve_completed": bool(stage_state["any_rung_solve_completed"]),
+                       "ladder_solve_completed": False, "solve_completed": False})
         publish_stage(records[-1]["index"] if records else None, "failed")
-    result["wall_seconds"] = sum(float(r.get("wall_seconds", 0.0) or 0.0) for r in records)
+    result["solve_wall_seconds_sum"] = sum(float(r.get("wall_seconds", 0.0) or 0.0) for r in records)
+    result["wall_seconds"] = result["solve_wall_seconds_sum"]
     Path(result_path).write_text(json.dumps(result, sort_keys=True, allow_nan=False), encoding="utf-8")
 
 

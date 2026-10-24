@@ -49,6 +49,19 @@ def _stall_stage(request_path, result_path, artifact_path):
     time.sleep(10)
 
 
+def _stall_ladder_after_partial(request_path, result_path, artifact_path):
+    root = Path(request_path).parent
+    (root / "stage.json").write_text(json.dumps({
+        "stage": "solve", "solve_completed": False,
+        "ladder_solve_completed": False, "any_rung_solve_completed": True,
+        "current_attempt": 1,
+    }))
+    partial = root / "attempts" / "rung-0"
+    partial.mkdir(parents=True)
+    (partial / "result.json").write_text(json.dumps({"solve_completed": True, "accepted": False}))
+    time.sleep(10)
+
+
 def _success_late(request_path, result_path, artifact_path):
     Path(result_path).write_text(json.dumps({"status": "success", "accepted": True, "solver_succeeded": True}))
     time.sleep(10)
@@ -242,6 +255,18 @@ class MinimumTimeRunTests(unittest.TestCase):
         route.assert_called_once_with(args)
         compat.assert_not_called()
 
+    def test_cli_fixture_generator_is_fresh_and_loadable(self):
+        from tools.diagnostics.generate_minimum_time_cli_fixture import build_fixture
+        from simplified_vehicle_models.tracks.profile import load_track
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "fixture"
+            generated = build_fixture(output)
+            self.assertEqual(generated["geometry_parameters"], {"radius_m": 10.0, "segments": 32})
+            self.assertFalse(generated["chart_is_physical_validation"])
+            self.assertTrue(load_track(output / "tiny_track.xml").is_closed)
+            with self.assertRaises(FileExistsError):
+                build_fixture(output)
+
     def test_public_ladder_envelope_composes_three_single_rung_requests(self):
         from tools.run.solve_minimum_time_line import build_shared_spline_ladder_request
         from tools.diagnostics.verify_no_tv_minimum_lap import MatrixCase, _validate_request_options
@@ -314,6 +339,85 @@ class MinimumTimeRunTests(unittest.TestCase):
             self.assertFalse(result["accepted"])
             self.assertFalse(result["numerically_validated"])
             self.assertTrue(all((root / "attempts" / f"rung-{i}" / "result.json").is_file() for i in range(3)))
+
+    def test_ladder_partial_solve_never_means_ladder_completed(self):
+        from tools.diagnostics import verify_no_tv_minimum_lap as harness
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            requests = [{"worker_kind": "no_tv_spline_v1", "request_envelope_version": 1,
+                         "mesh_spacing_m": spacing, "mesh_spacings_m": [spacing],
+                         "case": {}, "source_geometry_contract": "native_topology_reference_v1"}
+                        for spacing in (5.0, 2.0)]
+            outer = {"worker_kind": "no_tv_spline_ladder_v1", "request_envelope_version": 2,
+                     "wall_cap_s": 20.0, "mesh_spacings_m": [5.0, 2.0],
+                     "case": {}, "source_hashes": {}, "provenance": {}, "rung_requests": requests}
+            request_path, result_path = root / "request.json", root / "result.json"
+            request_path.write_text(json.dumps(outer))
+            def run_rung(rung_path, rung_result, rung_artifact, stage_callback=None):
+                rung = json.loads(Path(rung_path).read_text())
+                solved = rung["mesh_spacing_m"] == 5.0
+                stage_callback("solve", solved)
+                result = {"status": "Solve_Succeeded" if solved else "solver_failed",
+                          "solver_succeeded": solved,
+                          "solve_completed": solved,
+                          "wall_seconds": 0.25}
+                Path(rung_result).write_text(json.dumps(result))
+            with mock.patch.object(harness, "_validate_request_options"), \
+                 mock.patch.object(harness, "MatrixCase", return_value=type("Case", (), {"topology": "closed"})()), \
+                 mock.patch.object(harness, "_attempt_worker", side_effect=run_rung):
+                harness._attempt_ladder_worker(str(request_path), str(result_path), str(root / "solution.npz"))
+            result = json.loads(result_path.read_text())
+            stage = json.loads((root / "stage.json").read_text())
+            self.assertEqual(len(result["attempts"]), 2)
+            self.assertTrue(result["any_rung_solve_completed"])
+            self.assertFalse(result["ladder_solve_completed"])
+            self.assertFalse(result["solve_completed"])
+            self.assertTrue(stage["any_rung_solve_completed"])
+            self.assertFalse(stage["solve_completed"])
+            self.assertFalse(result["accepted"])
+            self.assertEqual(result["solve_wall_seconds_sum"], 0.5)
+            self.assertTrue(all("started_monotonic" in event and "ended_monotonic" in event
+                                for event in stage["events"][:-1]))
+
+    def test_ladder_timeout_after_rung_solve_retains_partial_but_not_full_completion(self):
+        from tools.diagnostics import verify_no_tv_minimum_lap as harness
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            marker = root / "stage.json"
+            marker.write_text(json.dumps({"stage": "solve", "solve_completed": False,
+                                          "any_rung_solve_completed": True,
+                                          "ladder_solve_completed": False}))
+            proc = _FakeProcess(alive=False)
+            proc.exitcode = None
+            with mock.patch.object(supervisor, "_worker", _stall_ladder_after_partial):
+                result = supervisor.run_request({"wall_cap_s": 0.6, "worker_kind": "no_tv_spline_ladder_v1"},
+                                                str(root / "attempt"))
+            self.assertEqual(result["status"], "wall_timeout")
+            self.assertFalse(result["solve_completed"])
+            self.assertFalse(result["ladder_solve_completed"])
+            self.assertFalse(result["accepted"])
+
+    def test_default_solver_and_controller_routes_remain_compat(self):
+        from types import SimpleNamespace
+        from tools.run import solve_minimum_time_line as runner
+        with mock.patch.object(runner, "build_policy", return_value=object()), \
+             mock.patch.object(runner, "build_replay", return_value=object()):
+            self._check_compat_routes(runner, SimpleNamespace)
+
+    def _check_compat_routes(self, runner, SimpleNamespace):
+        for args in (
+            SimpleNamespace(control_mode="ideal", solver=None, legacy_solver=False),
+            SimpleNamespace(control_mode="allocation", solver="spline", legacy_solver=False,
+                            control_policy="registered"),
+            SimpleNamespace(control_mode="closed_loop", solver="spline", legacy_solver=False,
+                            replay_adapter="registered"),
+        ):
+            with self.subTest(args=args), \
+                 mock.patch.object(runner, "_run_public_shared_spline") as shared, \
+                 mock.patch.object(runner, "_run_compat", return_value={"route": "compat"}) as compat:
+                self.assertEqual(runner.run(args), {"route": "compat"})
+                shared.assert_not_called()
+                compat.assert_called_once_with(args)
 
     def test_standard_request_adapter_roundtrips_effective_configuration(self):
         from tools.run.solve_minimum_time_line import build_shared_spline_request

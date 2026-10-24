@@ -228,9 +228,14 @@ def run_request(request: dict, output_directory: str) -> dict:
 
     stage = _read_stage(root)
     solve_completed = bool(stage.get("solve_completed"))
+    any_rung_solve_completed = bool(stage.get("any_rung_solve_completed", solve_completed))
+    ladder_solve_completed = bool(stage.get("ladder_solve_completed", solve_completed))
     if status is not None:
         result = {"status": status, "accepted": False, "solver_succeeded": False,
-                  "solve_completed": solve_completed, "evidence_complete": False,
+                  "solve_completed": ladder_solve_completed,
+                  "ladder_solve_completed": ladder_solve_completed,
+                  "any_rung_solve_completed": any_rung_solve_completed,
+                  "evidence_complete": False,
                   "stage": stage.get("stage", "setup"), "termination": cleanup_status,
                   "error_type": "TimeoutError" if status == "wall_timeout" else status,
                   "wall_cap_s": cap}
@@ -280,7 +285,12 @@ def run_request(request: dict, output_directory: str) -> dict:
             _write_new(result_path, result)
         except (FileExistsError, OSError):
             pass
-    result["solve_completed"] = bool(result.get("solve_completed") or solve_completed)
+    if request.get("worker_kind") == "no_tv_spline_ladder_v1":
+        result.setdefault("ladder_solve_completed", ladder_solve_completed)
+        result.setdefault("any_rung_solve_completed", any_rung_solve_completed)
+        result["solve_completed"] = bool(result.get("ladder_solve_completed"))
+    else:
+        result["solve_completed"] = bool(result.get("solve_completed") or solve_completed)
     if cleanup_errors:
         result["cleanup_errors"] = cleanup_errors
         if status is None:

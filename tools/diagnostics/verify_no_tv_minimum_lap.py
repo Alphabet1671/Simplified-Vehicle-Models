@@ -279,16 +279,49 @@ def _validate_request_options(request: dict) -> None:
         "initializer", "convergence_criteria", "provenance", "no_torque_vectoring",
         "mode_switches", "controller_globals", "source_hashes", "stage_budgets_s",
         "cancel_marker_path", "runtime_provenance", "execution_identity", "request_source",
+        "rung_requests",
     }
     unknown = set(request) - allowed_fields
     if unknown:
         raise ValueError(f"unknown worker request fields: {sorted(unknown)}")
     kind = request.get("worker_kind", "no_tv_spline_v1")
-    if type(kind) is not str or kind != "no_tv_spline_v1":
+    if type(kind) is not str or kind not in {"no_tv_spline_v1", "no_tv_spline_ladder_v1"}:
         raise ValueError(f"unsupported worker_kind {kind!r}")
     envelope_version = request.get("request_envelope_version", 0)
-    if type(envelope_version) is not int or envelope_version not in (0, 1):
+    if type(envelope_version) is not int or envelope_version not in (0, 1, 2):
         raise ValueError("unsupported request_envelope_version")
+    if kind == "no_tv_spline_ladder_v1":
+        required_outer = {"wall_cap_s", "mesh_spacings_m", "rung_requests", "case", "source_hashes", "provenance"}
+        if envelope_version != 2 or not required_outer.issubset(request):
+            raise ValueError("ladder request requires envelope version 2 and complete outer fields")
+        spacings = request["mesh_spacings_m"]
+        rungs = request["rung_requests"]
+        if (not isinstance(spacings, list) or len(spacings) < 2
+                or any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or v <= 0 for v in spacings)
+                or any(a <= b for a, b in zip(spacings, spacings[1:]))):
+            raise ValueError("ladder mesh_spacings_m must be strictly decreasing positive finite values")
+        if not isinstance(rungs, list) or len(rungs) != len(spacings):
+            raise ValueError("ladder rung_requests must match every declared mesh spacing")
+        baseline_identity = None
+        for spacing, rung in zip(spacings, rungs):
+            if not isinstance(rung, dict) or rung.get("worker_kind") != "no_tv_spline_v1" or rung.get("request_envelope_version") != 1:
+                raise ValueError("ladder members must use the strict single-rung v1 envelope")
+            _validate_request_options(rung)
+            if rung.get("mesh_spacing_m") != spacing or rung.get("mesh_spacings_m") != [spacing]:
+                raise ValueError("ladder member effective spacing mismatch")
+            if rung.get("case") != request["case"] or rung.get("source_hashes") != request["source_hashes"]:
+                raise ValueError("ladder members must share outer case and source hashes")
+            identity = {key: value for key, value in rung.items()
+                        if key not in {"mesh_spacing_m", "mesh_spacings_m", "mesh_rung_status"}}
+            if baseline_identity is None:
+                baseline_identity = identity
+            elif identity != baseline_identity:
+                raise ValueError("ladder rungs must share all effective settings, corridor, seed and provenance")
+        return
+    if envelope_version == 2:
+        raise ValueError("envelope version 2 is reserved for fixed ladder worker requests")
+    if kind != "no_tv_spline_v1":
+        raise ValueError(f"unsupported worker_kind {kind!r}")
     envelope_fields = {"mesh_spacings_m", "corridor", "start_treatment", "start_speed_mps",
                        "route_scope", "execution_identity", "runtime_provenance"}
     if envelope_version == 0 and envelope_fields.intersection(request):
@@ -396,7 +429,7 @@ def build_attempt(case: MatrixCase, *, mesh_spacing_m: float, basis_spacing_m: f
     """Build a fully serializable solve request; this has no solver side effects."""
     allowed_meshes = DEFAULT_MESH_SPACINGS + ((DIAGNOSTIC_MESH_SPACING,) if diagnostic_rungs else ())
     allowed_basis = diagnostic_rungs or basis_spacing_m in DEFAULT_BASIS_SPACINGS
-    if mesh_spacing_m not in allowed_meshes or not allowed_basis:
+    if (not diagnostic_rungs and (mesh_spacing_m not in allowed_meshes or not allowed_basis)):
         raise ValueError("mesh and basis values must be preregistered Task 5 rungs; diagnostic values require --diagnostic-rungs")
     if not math.isfinite(float(basis_spacing_m)) or float(basis_spacing_m) <= 0.0:
         raise ValueError("basis spacing must be finite and positive")
@@ -620,8 +653,8 @@ def _fixed_path_profile_evidence(solution, case: MatrixCase, surface) -> dict:
         return unavailable
 
 
-def _attempt_worker(request_path: str, result_path: str, artifact_path: str) -> None:
-    """Spawn-safe worker entry. All communication is filesystem based."""
+def _attempt_worker(request_path: str, result_path: str, artifact_path: str, stage_callback=None) -> None:
+    """Spawn-safe strict single-rung worker entry. Filesystem is the interface."""
     request = json.loads(Path(request_path).read_text(encoding="utf-8"))
     stage_path = Path(request_path).with_name("stage.json")
     stage_state = {"stage": "setup", "events": [], "solve_completed": False}
@@ -634,6 +667,8 @@ def _attempt_worker(request_path: str, result_path: str, artifact_path: str) -> 
                  "soft_budget_s": request.get("stage_budgets_s", {}).get(name)}
         stage_state["stage"] = name
         stage_state["events"].append(event)
+        if stage_callback is not None:
+            stage_callback(name, bool(stage_state.get("solve_completed")))
         temporary = stage_path.with_name("stage.json.tmp")
         temporary.write_text(json.dumps(stage_state, sort_keys=True), encoding="utf-8")
         temporary.replace(stage_path)
@@ -927,6 +962,116 @@ def _attempt_worker(request_path: str, result_path: str, artifact_path: str) -> 
             temporary.write_text(json.dumps(stage_state, sort_keys=True), encoding="utf-8")
             temporary.replace(stage_path)
         _write_json_new_or_replace(Path(result_path), result, initial=True)
+
+
+def _attempt_ladder_worker(request_path: str, result_path: str, artifact_path: str) -> None:
+    """Run all fixed single-rung requests sequentially in this spawned child."""
+    request = json.loads(Path(request_path).read_text(encoding="utf-8"))
+    _validate_request_options(request)
+    root = Path(request_path).parent
+    attempts_root = root / "attempts"
+    attempts_root.mkdir(exist_ok=False)
+    stage_path = root / "stage.json"
+    stage_state = {"stage": "setup", "solve_completed": False, "events": [], "current_attempt": None}
+    records = []
+
+    def publish_stage(index, stage):
+        stage_state["current_attempt"] = index
+        stage_state["stage"] = stage
+        stage_state["events"].append({"attempt": index, "stage": stage, "monotonic": time.monotonic()})
+        temp = stage_path.with_name("stage.json.tmp")
+        temp.write_text(json.dumps(stage_state, sort_keys=True), encoding="utf-8")
+        temp.replace(stage_path)
+
+    result = {"status": "ladder_incomplete", "accepted": False, "solver_succeeded": False,
+              "solve_completed": False, "evidence_complete": False, "numerically_validated": False,
+              "worker_kind": "no_tv_spline_ladder_v1", "attempts": records}
+    publish_stage(None, "setup")
+    try:
+        for index, rung in enumerate(request["rung_requests"]):
+            rung_dir = attempts_root / f"rung-{index}"
+            rung_dir.mkdir(exist_ok=False)
+            rung_request = dict(rung)
+            rung_request.pop("wall_cap_s", None)
+            rung_request["wall_cap_s"] = request["wall_cap_s"]
+            rung_request_path = rung_dir / "request.json"
+            rung_result_path = rung_dir / "result.json"
+            rung_artifact_path = rung_dir / "solution.npz"
+            rung_request_path.write_text(json.dumps(rung_request, sort_keys=True, allow_nan=False), encoding="utf-8")
+            index_path = root / "attempt_index.json"
+            index_tmp = index_path.with_name("attempt_index.json.tmp")
+            index_tmp.write_text(json.dumps({"attempts": records, "current_attempt": index,
+                                             "current_stage": "setup"}, sort_keys=True), encoding="utf-8")
+            index_tmp.replace(index_path)
+            publish_stage(index, "setup")
+            try:
+                inner_request = json.loads(rung_request_path.read_text(encoding="utf-8"))
+                if (inner_request.get("worker_kind") != "no_tv_spline_v1"
+                        or inner_request.get("request_envelope_version") != 1):
+                    raise ValueError("ladder member must be strict single-rung v1")
+                _validate_request_options(inner_request)
+                case = MatrixCase(**inner_request["case"])
+                expected_contract = (SOURCE_GEOMETRY_CONTRACT if case.topology == "full_cut_open" else NATIVE_GEOMETRY_CONTRACT)
+                if inner_request.get("source_geometry_contract") != expected_contract:
+                    raise ValueError("ladder rung geometry contract mismatch")
+            except Exception as error:
+                child = {"status": "worker_exception", "accepted": False,
+                         "error_type": type(error).__name__, "error": str(error), "solver_succeeded": False}
+                rung_result_path.write_text(json.dumps(child, sort_keys=True), encoding="utf-8")
+            else:
+                def relay_stage(name, solved):
+                    stage_state["solve_completed"] = bool(stage_state["solve_completed"] or solved)
+                    publish_stage(index, name)
+                _attempt_worker(str(rung_request_path), str(rung_result_path), str(rung_artifact_path),
+                                stage_callback=relay_stage)
+            try:
+                child = json.loads(rung_result_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError) as error:
+                child = {"status": "worker_result_error", "accepted": False,
+                         "error_type": type(error).__name__, "error": str(error)}
+            try:
+                rung_stage = json.loads((rung_dir / "stage.json").read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                rung_stage = {}
+            solved = bool(rung_stage.get("solve_completed") or child.get("solve_completed") or child.get("solver_succeeded"))
+            stage_state["solve_completed"] = bool(stage_state["solve_completed"] or solved)
+            record = {"index": index, "spacing_m": rung["mesh_spacing_m"], "status": child.get("status"),
+                      "solve_completed": solved, "result": f"attempts/{rung_dir.name}/result.json",
+                      "stage": f"attempts/{rung_dir.name}/stage.json",
+                      "artifact": f"attempts/{rung_dir.name}/solution.npz" if rung_artifact_path.exists() else None,
+                      "checks": child.get("checks", {}), "numerically_validated": child.get("numerically_validated") is True}
+            records.append(record)
+            index_path = root / "attempt_index.json"
+            index_tmp = index_path.with_name("attempt_index.json.tmp")
+            index_tmp.write_text(json.dumps({"attempts": records, "current_attempt": index,
+                                             "current_stage": rung_stage.get("stage", "unknown")},
+                                            sort_keys=True), encoding="utf-8")
+            index_tmp.replace(index_path)
+            publish_stage(index, "validate" if rung_stage.get("stage") in {"validate", "complete"} else rung_stage.get("stage", "failed"))
+            if child.get("error") or not child.get("solver_succeeded"):
+                result.update({"status": "ladder_attempt_failed", "failed_attempt": index,
+                               "error": child.get("error"), "error_type": child.get("error_type")})
+                break
+        else:
+            all_solved = len(records) == len(request["rung_requests"]) and all(item["solve_completed"] for item in records)
+            all_numeric = all_solved and all(item["numerically_validated"] for item in records)
+            # The shared worker does not possess public mesh/basis/reference gates; never promote diagnostic solves.
+            result.update({"status": "success" if all_solved else "ladder_incomplete",
+                           "solver_succeeded": all_solved, "solve_completed": all_solved,
+                           "numerically_validated": False, "evidence_complete": False,
+                           "checks": {"all_rungs_solved": all_solved,
+                                      "all_rungs_numerically_validated": all_numeric,
+                                      "mesh_convergence": None, "basis_convergence": None,
+                                      "matched_baseline": None},
+                           "validation_status": "unqualified_solved" if all_solved else "solver_failed"})
+        result["attempts"] = records
+        publish_stage(records[-1]["index"] if records else None, "complete" if result["solver_succeeded"] else "failed")
+    except BaseException as error:
+        result.update({"status": "worker_exception", "error_type": type(error).__name__, "error": str(error),
+                       "accepted": False, "solver_succeeded": False, "numerically_validated": False})
+        publish_stage(records[-1]["index"] if records else None, "failed")
+    result["wall_seconds"] = sum(float(r.get("wall_seconds", 0.0) or 0.0) for r in records)
+    Path(result_path).write_text(json.dumps(result, sort_keys=True, allow_nan=False), encoding="utf-8")
 
 
 def run_bounded_worker(request: dict, output: Path) -> dict:

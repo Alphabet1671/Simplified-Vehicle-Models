@@ -751,19 +751,95 @@ def _solve_correction(track, corridor, surface, mesh, spline, settings,
 
 
 def run(args) -> dict:
+    mode = _validate_control_args(args)
+    solver = _resolve_solver(args)
+    if mode == "ideal" and solver == "spline":
+        if float(getattr(args, "path_smoothing", 0.0)) != 0.0:
+            raise ValueError("smoothing is not permitted for a spline trajectory export")
+        spacing = getattr(args, "offset_spacing", None)
+        if spacing is not None and (isinstance(spacing, bool) or not np.isfinite(spacing) or spacing <= 0):
+            raise ValueError("offset spacing must be finite and positive")
+        return _run_public_shared_spline(args)
     return _run_compat(args)
+
+
+def _run_public_shared_spline(args) -> dict:
+    """Route explicit public ideal+spline through the shared fixed worker."""
+    from tools.diagnostics.verify_no_tv_minimum_lap import MatrixCase
+    track_path = Path(args.track).resolve()
+    if float(getattr(args, "path_smoothing", 0.0)) != 0.0:
+        raise ValueError("smoothing is not permitted for a spline trajectory export")
+    _validate_output_paths(track_path, Path(args.output).resolve(), reject_existing=True)
+    track = load_track(track_path)
+    half_width = getattr(args, "half_width", None)
+    _validate_track_for_line_pipeline(track, half_width)
+    treatment = "closed_flying" if track.is_closed else "open_rolling_10"
+    start_speed = 0.0 if track.is_closed else 0.5
+    case = MatrixCase(track_path.stem, track_path, "closed" if track.is_closed else "open",
+                      treatment, start_speed, half_width,
+                      None if track.is_closed else "rolling open-track diagnostic; not a standing-start event")
+    spacings = _parse_spacings(getattr(args, "spacings", (5.0, 2.0, 1.0)))
+    request = build_shared_spline_ladder_request(
+        case, source=track_path, formulation=Path(args.formulation).resolve(),
+        surface=Path(args.surface).resolve(), spacings=spacings,
+        margin=float(args.margin), half_width=half_width,
+        basis_spacing=float(DEFAULT_SPLINE_CONTROL_SPACING if getattr(args, "offset_spacing", None) is None
+                            else getattr(args, "offset_spacing")),
+        wall_cap_s=float(getattr(args, "wall_cap_s", 900.0)),
+    )
+    from simplified_vehicle_models.solvers.minimum_time_run import run_request
+    result = run_request(request, str(Path(args.output).resolve()))
+    summary = {"track": str(track_path), "solver": "spline", "control_mode": "ideal",
+               "mesh_spacings_m": list(spacings), "basis_spacing_m": request["basis_spacing_m"],
+               "start_treatment": treatment, "start_speed_mps": start_speed,
+               "accepted": False, "numerically_validated": False,
+               "validation_status": result.get("validation_status", "unqualified_solved"),
+               "shared_worker_result": result,
+               "checks": result.get("checks", {}),
+               "stages": result.get("attempts", []),
+               "track_source_hashes": request["source_hashes"],
+               "runtime_provenance": request["runtime_provenance"]}
+    Path(args.output).mkdir(parents=True, exist_ok=True)
+    summary_path = Path(args.output) / "summary.json"
+    if not summary_path.exists():
+        summary_path.write_text(json.dumps(_json_safe(summary), indent=2, sort_keys=True, allow_nan=False) + "\n")
+    return summary
 
 
 def build_shared_spline_request(case, *, source: Path, formulation: Path, surface: Path,
                                 spacings, margin: float, half_width: float | None,
                                 basis_spacing: float, wall_cap_s: float) -> dict:
+    """Compatibility single-rung adapter; preserve its strict v1 contract."""
+    if len(spacings) != 1:
+        raise ValueError("adapter requires exactly one explicit diagnostic mesh rung")
+    return _build_shared_spline_ladder_request(
+        case, source=source, formulation=formulation, surface=surface, spacings=spacings,
+        margin=margin, half_width=half_width, basis_spacing=basis_spacing, wall_cap_s=wall_cap_s,
+        _single_rung=True,
+    )
+
+
+def build_shared_spline_ladder_request(case, *, source: Path, formulation: Path, surface: Path,
+                                       spacings, margin: float, half_width: float | None,
+                                       basis_spacing: float, wall_cap_s: float) -> dict:
+    """Compose fixed strict single-rung requests into public ladder envelope v2."""
+    return _build_shared_spline_ladder_request(
+        case, source=source, formulation=formulation, surface=surface, spacings=spacings,
+        margin=margin, half_width=half_width, basis_spacing=basis_spacing, wall_cap_s=wall_cap_s,
+    )
+
+
+def _build_shared_spline_ladder_request(case, *, source: Path, formulation: Path, surface: Path,
+                                        spacings, margin: float, half_width: float | None,
+                                        basis_spacing: float, wall_cap_s: float,
+                                        _single_rung: bool = False) -> dict:
     """Serialize public effective choices into the fixed harness worker schema."""
     from tools.diagnostics.verify_no_tv_minimum_lap import build_attempt, source_hashes
 
     if Path(source).resolve() != Path(case.track).resolve():
         raise ValueError("source must identify the serialized case track")
-    if len(spacings) != 1:
-        raise ValueError("adapter requires exactly one explicit diagnostic mesh rung")
+    if len(spacings) == 0 or any(a <= b for a, b in zip(spacings, spacings[1:])):
+        raise ValueError("public ladder requires strictly decreasing mesh spacings")
     if case.start_treatment not in {"closed_flying", "open_rolling_10"}:
         raise ValueError("unsupported start treatment")
     if case.topology == "closed":
@@ -784,31 +860,45 @@ def build_shared_spline_request(case, *, source: Path, formulation: Path, surfac
     from tools.diagnostics.no_tv_provenance import runtime_provenance
     provenance = runtime_provenance(Path(__file__).resolve().parents[2])
     input_hashes = source_hashes(source, formulation, surface)
-    request = build_attempt(
-        case, mesh_spacing_m=float(spacings[-1]), basis_spacing_m=float(basis_spacing),
-        maximum_iterations=3000, wall_cap_s=float(wall_cap_s), seed_name="centerline",
-        formulation=formulation, surface=surface, diagnostic_rungs=True,
-        provenance=provenance,
-    )
-    request["case"]["track"] = str(request["case"]["track"])
-    request.update({
-        "worker_kind": "no_tv_spline_v1",
-        "request_source": "public_minimum_time_line",
-        "request_envelope_version": 1,
-        "mesh_spacings_m": [float(spacing) for spacing in spacings],
-        "corridor": {"margin_m": float(margin), "half_width_m": half_width},
-        "start_treatment": case.start_treatment,
-        "start_speed_mps": float(case.start_speed_mps),
-        "route_scope": "single_fine_rung_diagnostic",
+    rungs = []
+    for spacing in spacings:
+        rung = build_attempt(
+            case, mesh_spacing_m=float(spacing), basis_spacing_m=float(basis_spacing),
+            maximum_iterations=3000, wall_cap_s=float(wall_cap_s), seed_name="centerline",
+            formulation=formulation, surface=surface, diagnostic_rungs=True,
+            provenance=provenance,
+        )
+        rung["case"]["track"] = str(rung["case"]["track"])
+        rung.update({
+            "worker_kind": "no_tv_spline_v1", "request_source": "public_minimum_time_line",
+            "request_envelope_version": 1, "mesh_spacings_m": [float(spacing)],
+            "corridor": {"margin_m": float(margin), "half_width_m": half_width},
+            "start_treatment": case.start_treatment,
+            "start_speed_mps": float(case.start_speed_mps),
+            "route_scope": "single_fine_rung_diagnostic",
+            "execution_identity": {
+                "corridor": {"margin_m": float(margin), "half_width_m": half_width},
+                "start_treatment": case.start_treatment,
+                "start_speed_mps": float(case.start_speed_mps),
+            },
+            "source_hashes": input_hashes,
+            "runtime_provenance": provenance["runtime"],
+        })
+        rungs.append(rung)
+    if _single_rung:
+        return rungs[0]
+    outer = dict(rungs[-1])
+    outer.update({
+        "worker_kind": "no_tv_spline_ladder_v1", "request_envelope_version": 2,
+        "request_source": "public_minimum_time_line", "mesh_spacings_m": [float(s) for s in spacings],
+        "rung_requests": rungs, "route_scope": ("single_fine_rung_diagnostic" if len(spacings) == 1 else "public_multi_rung_diagnostic"),
         "execution_identity": {
             "corridor": {"margin_m": float(margin), "half_width_m": half_width},
             "start_treatment": case.start_treatment,
             "start_speed_mps": float(case.start_speed_mps),
         },
-        "source_hashes": input_hashes,
-        "runtime_provenance": provenance["runtime"],
     })
-    return request
+    return outer
 
 
 def _run_compat(args) -> dict:
@@ -1370,6 +1460,10 @@ def main(argv: list[str] | None = None) -> int:
         "--offset-spacing", type=float, default=None,
         help="control-point spacing for a reduced linear offset basis, or the "
              "offset-spline control spacing for --solver spline",
+    )
+    parser.add_argument(
+        "--wall-cap-s", type=float, default=900.0,
+        help="one total hard wall cap for setup, every rung, validation and export",
     )
     parser.add_argument(
         "--path-smoothing", type=float, default=0.0,

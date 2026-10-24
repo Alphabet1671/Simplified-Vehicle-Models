@@ -34,10 +34,15 @@ def _write_new(path: Path, value):
 
 
 def _worker(request_path: str, result_path: str, artifact_path: str):
-    """Fixed spawn target; private module replacement is a test-only seam."""
+    """Fixed spawn target; dispatch only to repository-owned worker kinds."""
     try:
-        from tools.diagnostics.verify_no_tv_minimum_lap import _attempt_worker
-        _attempt_worker(request_path, result_path, artifact_path)
+        request = json.loads(Path(request_path).read_text(encoding="utf-8"))
+        if request.get("worker_kind") == "no_tv_spline_ladder_v1":
+            from tools.diagnostics.verify_no_tv_minimum_lap import _attempt_ladder_worker
+            _attempt_ladder_worker(request_path, result_path, artifact_path)
+        else:
+            from tools.diagnostics.verify_no_tv_minimum_lap import _attempt_worker
+            _attempt_worker(request_path, result_path, artifact_path)
     except BaseException as error:
         try:
             _write_new(Path(result_path), {"status": "worker_exception", "accepted": False,
@@ -56,6 +61,11 @@ def _inventory(root: Path):
         stage = {}
     complete = stage.get("stage") == "complete"
     for path in sorted(root.iterdir()):
+        if path.is_dir() and path.name == "attempts":
+            for attempt_root in sorted(path.iterdir()):
+                child_manifest = _inventory(attempt_root)
+                entries.append({"path": f"attempts/{attempt_root.name}", "status": "attempt_directory",
+                                "artifacts": child_manifest["artifacts"]})
         if path.is_file() and path.name != "artifacts.json":
             try:
                 data = path.read_bytes()

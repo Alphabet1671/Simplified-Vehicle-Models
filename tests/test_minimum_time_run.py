@@ -230,6 +230,91 @@ class MinimumTimeRunTests(unittest.TestCase):
             shared.assert_called_once()
             self.assertFalse(result["accepted"])
 
+    def test_explicit_ideal_spline_selects_shared_public_route(self):
+        from types import SimpleNamespace
+        from tools.run import solve_minimum_time_line as runner
+        args = SimpleNamespace(control_mode="ideal", solver="spline", legacy_solver=False,
+                               path_smoothing=0.0, offset_spacing=None)
+        expected = {"accepted": False, "numerically_validated": False}
+        with mock.patch.object(runner, "_run_public_shared_spline", return_value=expected) as route, \
+             mock.patch.object(runner, "_run_compat") as compat:
+            self.assertIs(runner.run(args), expected)
+        route.assert_called_once_with(args)
+        compat.assert_not_called()
+
+    def test_public_ladder_envelope_composes_three_single_rung_requests(self):
+        from tools.run.solve_minimum_time_line import build_shared_spline_ladder_request
+        from tools.diagnostics.verify_no_tv_minimum_lap import MatrixCase, _validate_request_options
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, formulation, surface = root / "track.xml", root / "formulation.xml", root / "surface.npz"
+            source.write_text('<model schema-version="1.0" type="track-model"><data ref="geometry.csv" /></model>')
+            (root / "geometry.csv").write_text("distance,north,east\\n0,0,0\\n10,10,0\\n")
+            formulation.write_text("<formulation/>")
+            surface.write_bytes(b"fixture")
+            case = MatrixCase("tiny", source, "closed", "closed_flying", 0.0, None)
+            request = build_shared_spline_ladder_request(
+                case, source=source, formulation=formulation, surface=surface,
+                spacings=(5.0, 2.0, 1.0), margin=0.1, half_width=None,
+                basis_spacing=10.0, wall_cap_s=30.0,
+            )
+            self.assertEqual(request["worker_kind"], "no_tv_spline_ladder_v1")
+            self.assertEqual(request["request_envelope_version"], 2)
+            self.assertEqual(request["mesh_spacings_m"], [5.0, 2.0, 1.0])
+            self.assertEqual([r["mesh_spacing_m"] for r in request["rung_requests"]], [5.0, 2.0, 1.0])
+            self.assertTrue(all(r["request_envelope_version"] == 1 for r in request["rung_requests"]))
+            _validate_request_options(request)
+            for rung in request["rung_requests"]:
+                _validate_request_options(rung)
+            invalid_nested = json.loads(json.dumps(request))
+            invalid_nested["rung_requests"][1]["worker_kind"] = "no_tv_spline_ladder_v1"
+            with self.assertRaises(ValueError):
+                _validate_request_options(invalid_nested)
+            invalid_policy = json.loads(json.dumps(request))
+            invalid_policy["rung_requests"][1]["settings"]["tolerance"] *= 2
+            with self.assertRaises(ValueError):
+                _validate_request_options(invalid_policy)
+            with self.assertRaises(ValueError):
+                _validate_request_options(dict(request, worker_kind="no_tv_spline_v1"))
+
+    def test_ladder_fixed_dispatch_retains_each_rung_in_one_worker(self):
+        from tools.diagnostics import verify_no_tv_minimum_lap as harness
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            requests = [
+                {"worker_kind": "no_tv_spline_v1", "request_envelope_version": 1,
+                 "mesh_spacing_m": spacing, "mesh_spacings_m": [spacing],
+                 "case": {}, "source_geometry_contract": "native_topology_reference_v1"}
+                for spacing in (5.0, 2.0, 1.0)
+            ]
+            request = {"worker_kind": "no_tv_spline_ladder_v1", "request_envelope_version": 2,
+                       "wall_cap_s": 20.0, "mesh_spacings_m": [5.0, 2.0, 1.0],
+                       "case": {}, "source_hashes": {}, "provenance": {},
+                       "rung_requests": requests}
+            request_path, result_path, artifact_path = root / "request.json", root / "result.json", root / "solution.npz"
+            request_path.write_text(json.dumps(request))
+            calls = []
+            def run_rung(rung_path, rung_result, rung_artifact, stage_callback=None):
+                rung = json.loads(Path(rung_path).read_text())
+                calls.append(rung["mesh_spacing_m"])
+                stage_callback("solve", False)
+                output = Path(rung_result)
+                output.write_text(json.dumps({"status": "success", "accepted": False,
+                                              "solver_succeeded": True, "numerically_validated": True,
+                                              "solve_completed": True, "wall_seconds": 0.01,
+                                              "checks": {"numeric": True}, "artifact": Path(rung_artifact).name}))
+                Path(rung_artifact).write_bytes(f"rung-{rung['mesh_spacing_m']}".encode())
+            with mock.patch.object(harness, "_validate_request_options"), \
+                 mock.patch.object(harness, "MatrixCase", return_value=type("Case", (), {"topology": "closed"})()), \
+                 mock.patch.object(harness, "_attempt_worker", side_effect=run_rung):
+                harness._attempt_ladder_worker(str(request_path), str(result_path), str(artifact_path))
+            result = json.loads(result_path.read_text())
+            self.assertEqual(calls, [5.0, 2.0, 1.0])
+            self.assertEqual([a["spacing_m"] for a in result["attempts"]], [5.0, 2.0, 1.0])
+            self.assertFalse(result["accepted"])
+            self.assertFalse(result["numerically_validated"])
+            self.assertTrue(all((root / "attempts" / f"rung-{i}" / "result.json").is_file() for i in range(3)))
+
     def test_standard_request_adapter_roundtrips_effective_configuration(self):
         from tools.run.solve_minimum_time_line import build_shared_spline_request
         from tools.diagnostics.verify_no_tv_minimum_lap import MatrixCase

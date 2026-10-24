@@ -58,12 +58,13 @@ class ConstraintStationTest(unittest.TestCase):
         self.assertEqual(np.count_nonzero(explicit["off_site_elements"] == 0),
                          np.count_nonzero(default["off_site_elements"] == 0))
         fractions = np.asarray(QssSettings().off_collocation_fractions)
-        expected = (self.mesh[:-1, None] + np.diff(self.mesh)[:, None] * fractions).ravel()
+        expected = np.sort(np.r_[
+            (self.mesh[:-1, None] + np.diff(self.mesh)[:, None] * fractions).ravel(),
+            self.corridor.distance[(self.corridor.distance > self.mesh[0])
+                                   & (self.corridor.distance < self.mesh[-1])],
+        ])
         np.testing.assert_array_equal(default["off_site_stations"], expected)
-        np.testing.assert_allclose(
-            default["off_site_fractions"],
-            np.tile(fractions, self.mesh.size - 1), rtol=0., atol=2e-15,
-        )
+        self.assertEqual(default["off_site_fractions"].size, expected.size)
 
     def test_validation_and_canonicalization(self):
         for stations in ([np.nan], [-1.], [self.mesh[-1]], [0.], 18.):
@@ -77,6 +78,28 @@ class ConstraintStationTest(unittest.TestCase):
         self.assertEqual(canonical["off_site_stations"].size, default["off_site_stations"].size + 1)
         self.assertTrue(np.all(np.diff(canonical["off_site_stations"]) > 0.))
 
+    def test_source_breakpoint_union_deduplicates_canonical_sites_and_endpoints(self):
+        from simplified_vehicle_models.solvers.qss_spline_ocp import build_spline_ocp
+        base = corridor_from_track(self.track)
+        # The source grid is a loader invariant. Arrange guards at canonical
+        # exclusion classes, then verify they do not generate duplicate rows.
+        fractions = np.asarray(QssSettings().off_collocation_fractions)
+        guards = [self.mesh[1], .5 * (self.mesh[1] + self.mesh[2]), 18., 18.]
+        corridor = type(base)(base.distance, np.zeros_like(base.minimum),
+                              np.zeros_like(base.maximum), base.provenance, False)
+        baseline = build_spline_ocp(self.track, corridor, _surface(), self.mesh, self.spline,
+                                    QssSettings(start_speed=10.))
+        built = build_spline_ocp(self.track, corridor, _surface(), self.mesh, self.spline,
+                                 QssSettings(start_speed=10.), constraint_stations=guards)
+        for endpoint in self.mesh[[0, -1]]:
+            self.assertNotIn(endpoint, built["proposed_constraint_stations"])
+        for excluded in guards[:2]:
+            self.assertNotIn(excluded, built["effective_constraint_sites"])
+        self.assertEqual(built["off_site_stations"].size,
+                         baseline["off_site_stations"].size + 1)
+        np.testing.assert_array_equal(built["effective_constraint_sites"],
+                                      built["off_site_stations"])
+
     def test_default_metadata_preserves_legacy_sites_on_mixed_scale_mesh(self):
         from simplified_vehicle_models.solvers.qss_spline_ocp import _canonical_constraint_sites
         mesh = np.array([0., 1e-8, 1e8])
@@ -86,6 +109,63 @@ class ConstraintStationTest(unittest.TestCase):
         np.testing.assert_array_equal(stations, expected)
         np.testing.assert_array_equal(elements, np.repeat(np.arange(2), 3))
         np.testing.assert_array_equal(local, np.tile(fractions, 2))
+
+    def test_source_width_breakpoint_adds_actual_corridor_row(self):
+        import casadi as ca
+        from simplified_vehicle_models.solvers.qss_spline_ocp import build_spline_ocp
+
+        # The source knot is deliberately chosen away from every old site.
+        base = corridor_from_track(self.track)
+        knot = int(np.argmin(np.abs(base.distance - 17.0)))
+        station = float(base.distance[knot])
+        old = np.sort(np.r_[self.mesh, .5 * (self.mesh[:-1] + self.mesh[1:]),
+                            (self.mesh[:-1, None] + np.diff(self.mesh)[:, None]
+                             * np.asarray(QssSettings().off_collocation_fractions)).ravel()])
+        self.assertGreater(np.min(np.abs(old - station)), 1e-6)
+        wide = type(base)(base.distance, np.full_like(base.minimum, -3.0),
+                          np.full_like(base.maximum, 3.0), base.provenance, False)
+        minimum, maximum = wide.minimum.copy(), wide.maximum.copy()
+        minimum[knot], maximum[knot] = -0.2, 0.3
+        corridor = type(base)(base.distance, minimum, maximum, base.provenance, False)
+        settings = QssSettings(start_speed=10.)
+        request = [23.0]
+        before = list(request)
+        legacy = build_spline_ocp(self.track, wide, _surface(), self.mesh, self.spline,
+                                  settings, constraint_stations=request)
+        built = build_spline_ocp(self.track, corridor, _surface(), self.mesh,
+                                 self.spline, settings, constraint_stations=request)
+        self.assertEqual(request, before)
+        np.testing.assert_array_equal(
+            built["proposed_constraint_stations"],
+            np.sort(np.r_[request, base.distance[
+                (base.distance > 0.) & (base.distance < self.mesh[-1])]]),
+        )
+        np.testing.assert_array_equal(built["effective_constraint_sites"],
+                                      built["off_site_stations"])
+        self.assertIn(station, built["off_site_stations"])
+
+        # One constant spline candidate passes all old indexed corridor rows,
+        # but fails the actual indexed row at the newly enforced narrow pinch.
+        candidate = np.zeros(built["nlp"]["x"].numel())
+        candidate[:built["control_count"]] = 0.5
+        controls, nodes = built["control_count"], self.mesh.size
+        candidate[controls:controls + nodes] = 10.
+        candidate[controls + nodes:controls + 2 * nodes] = 0.
+        candidate[controls + 2 * nodes:] = 0.
+        old_g = np.asarray(ca.Function("legacy_corridor_g", [legacy["nlp"]["x"]],
+                                       [legacy["nlp"]["g"]])(candidate)).ravel()
+        new_g = np.asarray(ca.Function("pinch_corridor_g", [built["nlp"]["x"]],
+                                       [built["nlp"]["g"]])(candidate)).ravel()
+        self.assertTrue(np.all(old_g[legacy["off_site_corridor_indices"]]
+                               >= legacy["g_lower"][legacy["off_site_corridor_indices"]]))
+        self.assertTrue(np.all(old_g[legacy["off_site_corridor_indices"]]
+                               <= legacy["g_upper"][legacy["off_site_corridor_indices"]]))
+        site = int(np.flatnonzero(built["off_site_stations"] == station)[0])
+        row = int(built["off_site_corridor_indices"][site])
+        self.assertEqual(built["g_lower"][row], minimum[knot])
+        self.assertEqual(built["g_upper"][row], maximum[knot])
+        self.assertAlmostEqual(new_g[row], 0.5, places=10)
+        self.assertGreater(new_g[row], built["g_upper"][row])
 
     def test_offsite_rows_use_actual_station_and_physical_acceleration(self):
         import casadi as ca

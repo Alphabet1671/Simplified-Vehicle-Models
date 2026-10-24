@@ -438,8 +438,24 @@ def build_spline_ocp(track, corridor, surface, mesh, spline, settings: QssSettin
     midpoints = 0.5 * (mesh[:-1] + mesh[1:])
     widths = np.diff(mesh)
     fractions = np.asarray(settings.off_collocation_fractions, dtype=float)
+    # Physical corridor widths are piecewise linear on their source distance
+    # grid. Enforce every interior source knot as a candidate site so a narrow
+    # width breakpoint cannot be skipped by the legacy collocation lattice.
+    # Keep the caller-owned request untouched; the canonicalizer remains the
+    # sole authority on node/midpoint/fraction deduplication and retention.
+    requested_sites = np.asarray([] if constraint_stations is None
+                                 else constraint_stations, dtype=float)
+    # Validate caller guards independently before adding trusted source knots;
+    # otherwise a caller-supplied endpoint could be hidden by canonical
+    # exclusion against a simultaneously proposed source endpoint.
+    _canonical_constraint_sites(mesh, fractions, constraint_stations)
+    source_breakpoints = np.asarray(corridor.distance, dtype=float)
+    interior_breakpoints = source_breakpoints[
+        (source_breakpoints > mesh[0]) & (source_breakpoints < mesh[-1])
+    ]
+    proposed_sites = np.sort(np.r_[requested_sites, interior_breakpoints])
     off_sites, off_elements, off_fractions, off_by_element = _canonical_constraint_sites(
-        mesh, fractions, constraint_stations,
+        mesh, fractions, proposed_sites,
     )
 
     node_values, node_first, node_second = spline.basis(mesh)
@@ -818,6 +834,8 @@ def build_spline_ocp(track, corridor, surface, mesh, spline, settings: QssSettin
         "g_upper": np.asarray(upper, dtype=float),
         "mesh": mesh,
         "off_site_stations": np.array(off_sites, dtype=float, copy=True),
+        "proposed_constraint_stations": np.array(proposed_sites, dtype=float, copy=True),
+        "effective_constraint_sites": np.array(off_sites, dtype=float, copy=True),
         "off_site_elements": np.array(off_elements, dtype=int, copy=True),
         "off_site_fractions": np.array(off_fractions, dtype=float, copy=True),
         "off_site_element_indices": tuple(np.array(indices, dtype=int, copy=True)

@@ -369,7 +369,7 @@ class RunnerOrchestrationTest(unittest.TestCase):
 
             args = SimpleNamespace(track=source, output=root, margin=.1)
             with self.assertRaisesRegex(ValueError, "overwrite source track asset"):
-                runner.run(args)
+                runner._run_compat_pipeline(args)
             self.assertEqual(geometry.read_bytes(), geometry_bytes)
 
             generated_names = (
@@ -469,7 +469,7 @@ class RunnerOrchestrationTest(unittest.TestCase):
                 patch.object(runner, "load_capability_surface") as load_surface,
             ):
                 with self.assertRaisesRegex(ValueError, "corridor or half_width"):
-                    runner.run(args)
+                    runner._run_compat_pipeline(args)
             solve_lap.assert_not_called()
             solve_line.assert_not_called()
             solve_ladder.assert_not_called()
@@ -500,7 +500,7 @@ class RunnerOrchestrationTest(unittest.TestCase):
                 patch.object(runner, "load_capability_surface") as load_surface,
             ):
                 with self.assertRaisesRegex(ValueError, "corridor or half_width"):
-                    runner.run(args)
+                    runner._run_compat_pipeline(args)
             solve_lap.assert_not_called()
             solve_line.assert_not_called()
             solve_ladder.assert_not_called()
@@ -541,7 +541,7 @@ class RunnerOrchestrationTest(unittest.TestCase):
                 patch.object(runner, "solve_lap", side_effect=RuntimeError("stop")) as solve_lap,
             ):
                 with self.assertRaisesRegex(RuntimeError, "stop"):
-                    runner.run(args)
+                    runner._run_compat_pipeline(args)
             build_corridor.assert_called_once_with(track, margin=.1, half_width=2.0)
             solve_lap.assert_called_once()
             self.assertIs(solve_lap.call_args.args[2], LapMode.STANDING_START)
@@ -567,7 +567,7 @@ class RunnerOrchestrationTest(unittest.TestCase):
                 for bad in ("5", "5,5", "1,2"):
                     with self.subTest(spacings=bad):
                         with self.assertRaises(ValueError):
-                            runner.run(SimpleNamespace(
+                            runner._run_compat_pipeline(SimpleNamespace(
                                 track=source, output=output, margin=.1,
                                 half_width=None, spacings=bad,
                             ))
@@ -655,7 +655,7 @@ class RunnerOrchestrationTest(unittest.TestCase):
                 patch.object(runner, "check_free_line_not_slower", return_value=True) as free_gate,
                 patch.object(runner, "check_replay_agreement", return_value=True) as replay_gate,
             ):
-                summary = runner.run(args)
+                summary = runner._run_compat_pipeline(args)
             zero_gate.assert_called_once_with(open_loop=10.5, ocp=10.4, tolerance=0.01)
             free_gate.assert_called_once_with(centreline=10.5, free=10.3, tolerance=0.002)
             replay_gate.assert_called_once_with(ocp=10.3, replay=10.3, tolerance=0.01)
@@ -723,7 +723,7 @@ class RunnerOrchestrationTest(unittest.TestCase):
                 patch.object(runner, "check_mesh_convergence", return_value=True),
                 patch.object(runner, "check_replay_agreement", return_value=True),
             ):
-                summary = runner.run(args)
+                summary = runner._run_compat_pipeline(args)
 
             solve_zero_corridor.assert_called_once()
             zero_corridor_arg = solve_zero_corridor.call_args.args[1]

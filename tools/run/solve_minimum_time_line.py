@@ -763,47 +763,86 @@ def run(args) -> dict:
     return _run_compat(args)
 
 
-def _run_public_shared_spline(args) -> dict:
-    """Route explicit public ideal+spline through the shared fixed worker."""
+def _public_spline_worker_request(args) -> dict:
+    """Load the real track and derive all effective request data inside worker."""
     from tools.diagnostics.verify_no_tv_minimum_lap import MatrixCase
     track_path = Path(args.track).resolve()
-    if float(getattr(args, "path_smoothing", 0.0)) != 0.0:
-        raise ValueError("smoothing is not permitted for a spline trajectory export")
-    _validate_output_paths(track_path, Path(args.output).resolve(), reject_existing=True)
+    _validate_output_paths(track_path, Path(args.output).resolve(), reject_existing=False)
     track = load_track(track_path)
-    half_width = getattr(args, "half_width", None)
+    half_width = args.half_width
     _validate_track_for_line_pipeline(track, half_width)
     treatment = "closed_flying" if track.is_closed else "open_rolling_10"
     start_speed = 0.0 if track.is_closed else 0.5
     case = MatrixCase(track_path.stem, track_path, "closed" if track.is_closed else "open",
                       treatment, start_speed, half_width,
                       None if track.is_closed else "rolling open-track diagnostic; not a standing-start event")
-    spacings = _parse_spacings(getattr(args, "spacings", (5.0, 2.0, 1.0)))
-    request = build_shared_spline_ladder_request(
+    spacings = _parse_spacings(args.spacings)
+    return build_shared_spline_ladder_request(
         case, source=track_path, formulation=Path(args.formulation).resolve(),
         surface=Path(args.surface).resolve(), spacings=spacings,
-        margin=float(args.margin), half_width=half_width,
-        basis_spacing=float(DEFAULT_SPLINE_CONTROL_SPACING if getattr(args, "offset_spacing", None) is None
-                            else getattr(args, "offset_spacing")),
-        wall_cap_s=float(getattr(args, "wall_cap_s", 900.0)),
+        margin=args.margin, half_width=half_width, basis_spacing=args.offset_spacing,
+        wall_cap_s=args.wall_cap_s,
     )
+
+
+def _run_public_shared_spline(args) -> dict:
+    """Submit only compact caller options; heavy setup/finalization is supervised."""
     from simplified_vehicle_models.solvers.minimum_time_run import run_request
-    result = run_request(request, str(Path(args.output).resolve()))
-    summary = {"track": str(track_path), "solver": "spline", "control_mode": "ideal",
-               "mesh_spacings_m": list(spacings), "basis_spacing_m": request["basis_spacing_m"],
-               "start_treatment": treatment, "start_speed_mps": start_speed,
-               "accepted": False, "numerically_validated": False,
-               "validation_status": result.get("validation_status", "unqualified_solved"),
-               "shared_worker_result": result,
-               "checks": result.get("checks", {}),
-               "stages": result.get("attempts", []),
-               "track_source_hashes": request["source_hashes"],
-               "runtime_provenance": request["runtime_provenance"]}
-    Path(args.output).mkdir(parents=True, exist_ok=True)
-    summary_path = Path(args.output) / "summary.json"
-    if not summary_path.exists():
-        summary_path.write_text(json.dumps(_json_safe(summary), indent=2, sort_keys=True, allow_nan=False) + "\n")
-    return summary
+    output = Path(args.output).resolve()
+    raw = {"worker_kind": "public_spline_setup_v1", "wall_cap_s": float(args.wall_cap_s),
+           "track": str(Path(args.track).resolve()), "formulation": str(Path(args.formulation).resolve()),
+           "surface": str(Path(args.surface).resolve()), "output": str(output),
+           "margin": float(args.margin), "half_width": args.half_width,
+           "spacings": list(_parse_spacings(args.spacings)),
+           "offset_spacing": float(DEFAULT_SPLINE_CONTROL_SPACING if args.offset_spacing is None else args.offset_spacing),
+           "path_smoothing": float(args.path_smoothing)}
+    result = run_request(raw, str(output / ".supervision"))
+    return result.get("public_summary", result)
+
+
+def _prepare_public_spline_request_in_worker(request, request_path, result_path, artifact_path):
+    """Fixed dispatch adapter: build all input identity then run same ladder child."""
+    from simplified_vehicle_models.solvers.minimum_time_run import _write_new
+    from tools.diagnostics.verify_no_tv_minimum_lap import _attempt_ladder_worker
+    root = Path(request_path).parent
+    try:
+        stage = root / "stage.json"
+        stage.write_text(json.dumps({"stage": "setup", "solve_completed": False}))
+        args = argparse.Namespace(**{k: request[k] for k in
+            ("track", "formulation", "surface", "output", "margin", "half_width", "spacings", "offset_spacing", "path_smoothing", "wall_cap_s")})
+        if float(request["path_smoothing"]) != 0.0:
+            raise ValueError("smoothing is not permitted for a spline trajectory export")
+        _validate_output_paths(Path(request["track"]), Path(request["output"]), reject_existing=True)
+        ladder = _public_spline_worker_request(args)
+        ladder["worker_kind"] = "no_tv_spline_ladder_v1"
+        ladder["wall_cap_s"] = request["wall_cap_s"]
+        request_path_obj = Path(request_path)
+        prepared_path = request_path_obj.with_name("prepared_ladder_request.json")
+        prepared_path.write_text(json.dumps(ladder, sort_keys=True, allow_nan=False))
+        inner_result = request_path_obj.with_name("ladder_result.json")
+        _attempt_ladder_worker(str(prepared_path), str(inner_result), artifact_path)
+        child = json.loads(inner_result.read_text())
+        summary = {"track": request["track"], "solver": "spline", "control_mode": "ideal",
+            "mesh_spacings_m": request["spacings"], "accepted": False, "numerically_validated": False,
+            "validation_status": child.get("validation_status", "unqualified_solved"),
+            "shared_worker_result": dict(child), "track_source_hashes": ladder["source_hashes"],
+            "runtime_provenance": ladder["runtime_provenance"]}
+        stage.write_text(json.dumps({"stage": "export", "solve_completed": bool(child.get("solve_completed")),
+                                     "ladder_solve_completed": bool(child.get("ladder_solve_completed")),
+                                     "any_rung_solve_completed": bool(child.get("any_rung_solve_completed"))}))
+        summary_path = Path(request["output"]) / "summary.json"
+        if summary_path.exists() or summary_path.is_symlink():
+            raise FileExistsError(f"public summary already exists: {summary_path}")
+        summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True, allow_nan=False) + "\n")
+        child["public_summary"] = summary
+        Path(result_path).write_text(json.dumps(child, sort_keys=True, allow_nan=False))
+    except BaseException as error:
+        try:
+            _write_new(Path(result_path), {"status": "worker_exception", "accepted": False,
+                "solve_completed": False, "evidence_complete": False,
+                "error_type": type(error).__name__, "error": str(error)})
+        except FileExistsError:
+            pass
 
 
 def build_shared_spline_request(case, *, source: Path, formulation: Path, surface: Path,
@@ -901,7 +940,49 @@ def _build_shared_spline_ladder_request(case, *, source: Path, formulation: Path
     return outer
 
 
+def _compat_worker_entry(request, request_path, result_path, artifact_path):
+    """Fixed compatibility route; executes the preserved implementation in child."""
+    from simplified_vehicle_models.solvers.minimum_time_run import _write_new
+    try:
+        config = request["config"]
+        allowed = {"track", "output", "formulation", "surface", "solver", "control_mode", "margin",
+                   "half_width", "offset_spacing", "path_smoothing", "spacings", "wall_cap_s",
+                   "control_policy", "replay_adapter", "legacy_solver", "compare_control_modes"}
+        if set(config) - allowed or not {"track", "output", "formulation", "surface"}.issubset(config):
+            raise ValueError("compatibility request has unknown or missing options")
+        for key in ("track", "output", "formulation", "surface"):
+            config[key] = Path(config[key])
+        args = argparse.Namespace(**config, _inside_compat_worker=True)
+        result = _run_compat_pipeline(args)
+        Path(result_path).write_text(json.dumps(_json_safe(result), sort_keys=True, allow_nan=False))
+    except BaseException as error:
+        try:
+            _write_new(Path(result_path), {"status": "worker_exception", "accepted": False,
+                "solve_completed": False, "evidence_complete": False,
+                "error_type": type(error).__name__, "error": str(error)})
+        except FileExistsError:
+            pass
+
+
 def _run_compat(args) -> dict:
+    output = args.output.resolve()
+    if not getattr(args, "_inside_compat_worker", False):
+        # Preserve cheap historical option guards before creating supervised work.
+        _validate_control_args(args)
+        spacings_value = getattr(args, "spacings", (5.0, 2.0, 1.0))
+        _parse_spacings(spacings_value)
+        if float(getattr(args, "path_smoothing", 0.0)) != 0 and _resolve_solver(args) == "spline":
+            raise ValueError("smoothing is not permitted for a spline trajectory export")
+        from simplified_vehicle_models.solvers.minimum_time_run import run_request
+        config = {key: str(value.resolve()) if isinstance(value, Path) else value
+                  for key, value in vars(args).items() if key not in {"func", "_inside_compat_worker"}}
+        raw = {"worker_kind": "compat_line_v1", "wall_cap_s": float(getattr(args, "wall_cap_s", 900.0)),
+               "output": str(output), "config": config}
+        return run_request(raw, str(output / ".supervision"))
+    return _run_compat_pipeline(args)
+
+
+def _run_compat_pipeline(args) -> dict:
     output = args.output.resolve()
     # Controller/output configuration is validated before loading a track,
     # solver work, cache writes, or output-directory creation.
@@ -1509,6 +1590,10 @@ def main(argv: list[str] | None = None) -> int:
         summary = run(args)
     except Exception as exc:
         print(f"minimum-time-line pipeline failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
+    if summary.get("status") in {"worker_exception", "worker_malformed_result", "worker_exit_failure",
+                                  "worker_no_result", "supervisor_error", "worker_start_failure",
+                                  "resource_limit", "cancelled", "wall_timeout"}:
         return 2
     return 0 if summary.get("accepted") is True and summary.get("numerically_validated") is True else 1
 

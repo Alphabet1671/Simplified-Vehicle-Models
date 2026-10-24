@@ -4,28 +4,66 @@ The child entry point is deliberately fixed; requests cannot select Python code.
 """
 from __future__ import annotations
 
-import hashlib
 import json
+import hashlib
 import math
 import multiprocessing as mp
 from pathlib import Path
 import time
 
 
-def _safe(value):
+MAX_REQUEST_BYTES = 1024 * 1024
+MAX_CONTROL_BYTES = 256 * 1024
+MAX_RESULT_BYTES = 1024 * 1024
+MAX_DEPTH = 32
+MAX_ITEMS = 100_000
+MAX_PATH_CHARS = 4096
+
+
+def _safe(value, depth=0, counter=None):
+    if counter is None:
+        counter = [0, 0]
+    counter[0] += 1
+    if depth > MAX_DEPTH or counter[0] > MAX_ITEMS:
+        raise ValueError("request exceeds depth/item resource limit")
     if value is None or isinstance(value, (str, bool, int)):
+        if isinstance(value, str):
+            if len(value) > MAX_REQUEST_BYTES:
+                raise ValueError("request exceeds byte resource limit")
+            counter[1] += len(value.encode("utf-8"))
+            if counter[1] > MAX_REQUEST_BYTES:
+                raise ValueError("request exceeds byte resource limit")
+        elif isinstance(value, int):
+            approx = (value.bit_length() + 2) // 3
+            counter[1] += approx
+            if counter[1] > MAX_REQUEST_BYTES or approx > MAX_REQUEST_BYTES:
+                raise ValueError("request integer exceeds byte resource limit")
         return value
     if isinstance(value, float):
         if not math.isfinite(value):
             raise ValueError("request values must be finite")
         return value
     if isinstance(value, list):
-        return [_safe(v) for v in value]
+        return [_safe(v, depth + 1, counter) for v in value]
     if isinstance(value, tuple):
-        return [_safe(v) for v in value]
+        return [_safe(v, depth + 1, counter) for v in value]
     if isinstance(value, dict) and all(isinstance(k, str) for k in value):
-        return {k: _safe(v) for k, v in value.items()}
+        if any(len(k) > MAX_PATH_CHARS for k in value):
+            raise ValueError("request key exceeds resource limit")
+        for key in value:
+            counter[1] += len(key.encode("utf-8"))
+        if counter[1] > MAX_REQUEST_BYTES:
+            raise ValueError("request exceeds byte resource limit")
+        return {k: _safe(v, depth + 1, counter) for k, v in value.items()}
     raise TypeError("request must contain only JSON-safe values")
+
+
+def _bounded_json(path: Path, limit: int):
+    with path.open("rb") as stream:
+        data = stream.read(limit + 1)
+    if len(data) > limit:
+        raise ValueError(f"control file exceeds {limit}-byte resource limit")
+    return json.loads(data.decode("utf-8"))
 
 
 def _write_new(path: Path, value):
@@ -36,8 +74,14 @@ def _write_new(path: Path, value):
 def _worker(request_path: str, result_path: str, artifact_path: str):
     """Fixed spawn target; dispatch only to repository-owned worker kinds."""
     try:
-        request = json.loads(Path(request_path).read_text(encoding="utf-8"))
-        if request.get("worker_kind") == "no_tv_spline_ladder_v1":
+        request = _bounded_json(Path(request_path), MAX_REQUEST_BYTES)
+        if request.get("worker_kind") == "public_spline_setup_v1":
+            from tools.run.solve_minimum_time_line import _prepare_public_spline_request_in_worker
+            _prepare_public_spline_request_in_worker(request, request_path, result_path, artifact_path)
+        elif request.get("worker_kind") == "compat_line_v1":
+            from tools.run.solve_minimum_time_line import _compat_worker_entry
+            _compat_worker_entry(request, request_path, result_path, artifact_path)
+        elif request.get("worker_kind") == "no_tv_spline_ladder_v1":
             from tools.diagnostics.verify_no_tv_minimum_lap import _attempt_ladder_worker
             _attempt_ladder_worker(request_path, result_path, artifact_path)
         else:
@@ -54,40 +98,38 @@ def _worker(request_path: str, result_path: str, artifact_path: str):
 
 
 def _inventory(root: Path):
-    entries = []
+    """Read worker digest index; absent index yields bounded known-name references."""
     try:
-        stage = json.loads((root / "stage.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        stage = {}
-    complete = stage.get("stage") == "complete"
-    for path in sorted(root.iterdir()):
-        if path.is_dir() and path.name == "attempts":
-            for attempt_root in sorted(path.iterdir()):
-                child_manifest = _inventory(attempt_root)
-                entries.append({"path": f"attempts/{attempt_root.name}", "status": "attempt_directory",
-                                "artifacts": child_manifest["artifacts"]})
-        if path.is_file() and path.name != "artifacts.json":
+        manifest = _bounded_json(root / "artifacts.json", MAX_CONTROL_BYTES)
+        if (not isinstance(manifest, dict) or not isinstance(manifest.get("artifacts"), list)
+                or len(manifest["artifacts"]) > 256):
+            raise ValueError("invalid artifact digest index")
+        for item in manifest["artifacts"]:
+            if not isinstance(item, dict) or not isinstance(item.get("path"), str):
+                raise ValueError("invalid artifact entry")
+            rel = Path(item["path"])
+            if rel.is_absolute() or ".." in rel.parts or len(item["path"]) > MAX_PATH_CHARS:
+                raise ValueError("unsafe artifact reference")
+        manifest["evidence_complete"] = False
+        return manifest
+    except (OSError, ValueError, UnicodeError, RecursionError):
+        known = []
+        for name in ("request.json", "stage.json", "result.json", "solution.npz", "timeout_result.json",
+                     "cancel_result.json", "supervisor_result.json", "attempt_index.json", "prepared_ladder_request.json"):
             try:
-                data = path.read_bytes()
+                if (root / name).is_file():
+                    known.append({"path": name, "status": "unknown_or_partial", "sha256": None})
             except OSError:
-                entries.append({"path": path.name, "status": "unreadable"})
                 continue
-            status = "complete" if complete and path.name in ("result.json", "solution.npz", "trajectory_metadata.npz") else "unknown_or_partial"
-            entries.append({"path": path.name, "status": status, "size_bytes": len(data),
-                            "sha256": hashlib.sha256(data).hexdigest()})
-    manifest = {"artifacts": entries, "evidence_complete": False}
-    try:
-        _write_new(root / "artifacts.json", manifest)
-    except FileExistsError:
-        pass
-    return manifest
+        return {"artifacts": known[:32], "evidence_complete": False,
+                "digest_index_status": "unavailable_or_oversize"}
 
 
 def _read_stage(root: Path):
     try:
-        value = json.loads((root / "stage.json").read_text(encoding="utf-8"))
+        value = _bounded_json(root / "stage.json", MAX_CONTROL_BYTES)
         return value if isinstance(value, dict) else {}
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError, UnicodeError):
         return {}
 
 
@@ -101,6 +143,10 @@ def _persist_result(root: Path, result: dict) -> dict:
                   "solve_completed": bool(result.get("solve_completed")), "evidence_complete": False}
     manifest = _inventory(root)
     result["artifacts"] = manifest["artifacts"]
+    try:
+        _write_new(root / "artifacts.json", manifest)
+    except (FileExistsError, OSError):
+        pass
     return result
 
 
@@ -160,11 +206,40 @@ def run_request(request: dict, output_directory: str) -> dict:
     if not isinstance(request, dict):
         raise TypeError("request must be a dict")
     request = _safe(request)
+    encoded_request = json.dumps(request, sort_keys=True, allow_nan=False).encode("utf-8")
+    if len(encoded_request) > MAX_REQUEST_BYTES:
+        raise ValueError(f"request exceeds {MAX_REQUEST_BYTES}-byte resource limit")
     cap = request.get("wall_cap_s")
     if isinstance(cap, bool) or not isinstance(cap, (int, float)) or not math.isfinite(cap) or cap <= 0:
         raise ValueError("wall_cap_s must be finite and positive")
     deadline = started_at + float(cap)
+    if request.get("worker_kind") in {"public_spline_setup_v1", "compat_line_v1"}:
+        output_text = request.get("output")
+        if not isinstance(output_text, str) or len(output_text) > MAX_PATH_CHARS:
+            raise ValueError("supervised output path exceeds resource limit")
+        if request.get("worker_kind") == "compat_line_v1" and request.get("config", {}).get("output") != request.get("output"):
+            raise ValueError("compatibility output path mismatch")
+        if request.get("worker_kind") == "compat_line_v1" and set(request) != {"worker_kind", "wall_cap_s", "output", "config"}:
+            raise ValueError("compatibility request has unknown options")
+        if request.get("worker_kind") == "compat_line_v1":
+            allowed = {"track", "output", "formulation", "surface", "margin", "half_width", "spacings",
+                       "offset_spacing", "wall_cap_s", "path_smoothing", "control_mode", "control_policy",
+                       "replay_adapter", "solver", "legacy_solver", "compare_control_modes"}
+            if set(request["config"]) - allowed:
+                raise ValueError("compatibility request has unknown config options")
+    if request.get("worker_kind") == "public_spline_setup_v1":
+        if not {"track", "formulation", "surface", "output", "margin", "half_width", "spacings",
+                "offset_spacing", "path_smoothing"}.issubset(request):
+            raise ValueError("public request missing fixed options")
+        if set(request) != {"worker_kind", "wall_cap_s", "track", "formulation", "surface", "output",
+                "margin", "half_width", "spacings", "offset_spacing", "path_smoothing"}:
+            raise ValueError("public request has unknown options")
+        if any(not isinstance(request[k], str) or len(request[k]) > MAX_PATH_CHARS
+               for k in ("track", "formulation", "surface", "output")):
+            raise ValueError("public request path exceeds resource limit")
     root = Path(output_directory)
+    if request.get("worker_kind") in {"public_spline_setup_v1", "compat_line_v1"}:
+        root.parent.mkdir(parents=True, exist_ok=True)
     root.mkdir(parents=True, exist_ok=False)
     request_path, result_path = root / "request.json", root / "result.json"
     artifact_path = root / "solution.npz"
@@ -174,7 +249,7 @@ def run_request(request: dict, output_directory: str) -> dict:
     cleanup_status = "not_started"
     cleanup_errors = []
     try:
-        _write_new(request_path, request)
+        request_path.write_bytes(encoded_request)
         if time.monotonic() >= deadline:
             status = "wall_timeout"
         else:
@@ -249,8 +324,7 @@ def run_request(request: dict, output_directory: str) -> dict:
                 pass
     elif result_path.exists():
         try:
-            raw = result_path.read_text(encoding="utf-8")
-            child = json.loads(raw)
+            child = _bounded_json(result_path, MAX_RESULT_BYTES)
             if not isinstance(child, dict):
                 raise ValueError("worker result must be a JSON object")
             result = child
@@ -264,7 +338,8 @@ def run_request(request: dict, output_directory: str) -> dict:
                           "exitcode": proc.exitcode, "child_result": child}
         except (OSError, ValueError, TypeError) as error:
             try:
-                raw = result_path.read_text(encoding="utf-8")
+                with result_path.open("rb") as stream:
+                    raw = stream.read(4097).decode("utf-8", errors="replace")
             except OSError:
                 raw = ""
             result = {"status": "worker_malformed_result", "accepted": False,
@@ -289,6 +364,8 @@ def run_request(request: dict, output_directory: str) -> dict:
         result.setdefault("ladder_solve_completed", ladder_solve_completed)
         result.setdefault("any_rung_solve_completed", any_rung_solve_completed)
         result["solve_completed"] = bool(result.get("ladder_solve_completed"))
+    elif request.get("worker_kind") == "public_spline_setup_v1":
+        result["solve_completed"] = bool(result.get("solve_completed") or solve_completed)
     else:
         result["solve_completed"] = bool(result.get("solve_completed") or solve_completed)
     if cleanup_errors:

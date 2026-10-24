@@ -964,10 +964,35 @@ def _attempt_worker(request_path: str, result_path: str, artifact_path: str, sta
         _write_json_new_or_replace(Path(result_path), result, initial=True)
 
 
+def _write_attempt_digest_index(root: Path, request: dict) -> None:
+    """Hash known attempt artifacts in worker and publish a bounded index."""
+    entries = []
+    paths = [root / "stage.json", root / "attempt_index.json"]
+    for index in range(min(len(request.get("rung_requests", [])), 32)):
+        rung = root / "attempts" / f"rung-{index}"
+        paths.extend(rung / name for name in ("request.json", "result.json", "stage.json", "solution.npz", "trajectory_metadata.npz"))
+    for path in paths[:162]:
+        try:
+            if not path.is_file():
+                continue
+            data = path.read_bytes()
+            rel = str(path.relative_to(root))
+            entries.append({"path": rel, "status": "unknown_or_partial", "size_bytes": len(data),
+                            "sha256": hashlib.sha256(data).hexdigest()})
+        except OSError:
+            continue
+    target = root / "artifacts.json"
+    temp = root / "artifacts.json.tmp"
+    temp.write_text(json.dumps({"artifacts": entries, "evidence_complete": False}, sort_keys=True), encoding="utf-8")
+    temp.replace(target)
+
+
 def _attempt_ladder_worker(request_path: str, result_path: str, artifact_path: str) -> None:
     """Run all fixed single-rung requests sequentially in this spawned child."""
     request = json.loads(Path(request_path).read_text(encoding="utf-8"))
     _validate_request_options(request)
+    if len(request.get("rung_requests", [])) > 32:
+        raise ValueError("ladder exceeds 32-rung resource limit")
     root = Path(request_path).parent
     attempts_root = root / "attempts"
     attempts_root.mkdir(exist_ok=False)
@@ -1085,12 +1110,17 @@ def _attempt_ladder_worker(request_path: str, result_path: str, artifact_path: s
         stage_state["ladder_solve_completed"] = bool(result["ladder_solve_completed"])
         stage_state["solve_completed"] = bool(result["ladder_solve_completed"])
         publish_stage(records[-1]["index"] if records else None, "complete" if result["solver_succeeded"] else "failed")
+        _write_attempt_digest_index(root, request)
     except BaseException as error:
         result.update({"status": "worker_exception", "error_type": type(error).__name__, "error": str(error),
                        "accepted": False, "solver_succeeded": False, "numerically_validated": False,
                        "any_rung_solve_completed": bool(stage_state["any_rung_solve_completed"]),
                        "ladder_solve_completed": False, "solve_completed": False})
         publish_stage(records[-1]["index"] if records else None, "failed")
+        try:
+            _write_attempt_digest_index(root, request)
+        except Exception:
+            pass
     result["solve_wall_seconds_sum"] = sum(float(r.get("wall_seconds", 0.0) or 0.0) for r in records)
     result["wall_seconds"] = result["solve_wall_seconds_sum"]
     Path(result_path).write_text(json.dumps(result, sort_keys=True, allow_nan=False), encoding="utf-8")

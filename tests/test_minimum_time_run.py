@@ -46,6 +46,9 @@ def _stall_stage(request_path, result_path, artifact_path):
                                                    "solve_completed": request.get("fixture_solved", False),
                                                    "events": []}))
     (root / "partial.bin").write_bytes(b"partial")
+    (root / "artifacts.json").write_text(json.dumps({"artifacts": [
+        {"path": "partial.bin", "status": "unknown_or_partial", "sha256": None}],
+        "evidence_complete": False}))
     time.sleep(10)
 
 
@@ -80,6 +83,11 @@ def _malformed_result(request_path, result_path, artifact_path):
     Path(result_path).write_text("[")
 
 
+def _oversize_result(request_path, result_path, artifact_path):
+    with Path(result_path).open("wb") as stream:
+        stream.write(b" " * (supervisor.MAX_RESULT_BYTES + 1))
+
+
 def _success_then_exit(request_path, result_path, artifact_path):
     import os
     Path(result_path).write_text(json.dumps({"status": "success", "accepted": True,
@@ -88,6 +96,25 @@ def _success_then_exit(request_path, result_path, artifact_path):
 
 
 class MinimumTimeRunTests(unittest.TestCase):
+    def test_oversize_request_fails_before_output_creation(self):
+        with tempfile.TemporaryDirectory() as d:
+            with self.assertRaisesRegex(ValueError, "request.*limit"):
+                supervisor.run_request({"wall_cap_s": 3, "note": "x" * (1024 * 1024 + 1)}, f"{d}/oversize")
+            self.assertEqual(list(Path(d).iterdir()), [])
+
+    def test_parent_finalization_does_not_read_artifact_payload_bytes(self):
+        with tempfile.TemporaryDirectory() as d:
+            with mock.patch.object(supervisor, "_worker", _raise_before_solution):
+                with mock.patch.object(Path, "read_bytes", side_effect=AssertionError("parent payload read")):
+                    result = supervisor.run_request({"wall_cap_s": 3}, f"{d}/bounded")
+            self.assertEqual(result["status"], "worker_exception")
+
+    def test_oversize_result_is_classified_without_reading_all(self):
+        with tempfile.TemporaryDirectory() as d:
+            with mock.patch.object(supervisor, "_worker", _oversize_result):
+                result = supervisor.run_request({"wall_cap_s": 3}, f"{d}/bad-result")
+            self.assertEqual(result["status"], "worker_malformed_result")
+
     def test_nonobject_request_rejected_before_output_creation(self):
         with tempfile.TemporaryDirectory() as d:
             for value in (None, [], "request"):
@@ -113,9 +140,8 @@ class MinimumTimeRunTests(unittest.TestCase):
                 self.assertFalse(result["accepted"])
                 self.assertEqual(result["solve_completed"], stage in ("validate", "export"))
                 manifest = json.loads((Path(d) / "attempt" / "artifacts.json").read_text())
-                part = next(e for e in manifest["artifacts"] if e["path"] == "partial.bin")
-                self.assertEqual(part["status"], "unknown_or_partial")
-                self.assertTrue(part["sha256"])
+                self.assertIn({"path": "partial.bin", "status": "unknown_or_partial", "sha256": None}, manifest["artifacts"])
+                self.assertNotIn("digest_index_status", manifest)
                 self.assertTrue((Path(d) / "attempt" / "timeout_result.json").exists())
 
     def test_timeout_after_solve_failure_stage_retains_completion(self):

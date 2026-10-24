@@ -168,6 +168,7 @@ class MinimumTimeRunTests(unittest.TestCase):
                 observed.append(json.loads((root / "stage.json").read_text())["stage"])
                 return {"index_stage": kwargs.get("stage")}
             with mock.patch.object(runner, "_validate_output_paths"), \
+                 mock.patch("simplified_vehicle_models.solvers.input_preflight.preflight_inputs", return_value=None), \
                  mock.patch.object(runner, "_public_spline_worker_request", return_value={"source_hashes": {},
                      "runtime_provenance": {}}), \
                  mock.patch("tools.diagnostics.verify_no_tv_minimum_lap._attempt_ladder_worker", side_effect=fake_ladder), \

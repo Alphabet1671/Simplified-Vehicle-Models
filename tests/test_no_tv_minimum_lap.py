@@ -8,6 +8,7 @@ from unittest.mock import patch
 import numpy as np
 
 from tools.diagnostics import verify_no_tv_minimum_lap as harness
+from simplified_vehicle_models.solvers import input_preflight
 
 
 class NoTvMinimumLapHarnessTest(unittest.TestCase):
@@ -326,7 +327,8 @@ class NoTvMinimumLapHarnessTest(unittest.TestCase):
                 captured.update(kwargs)
                 return FakeSolution()
             fake_track = SimpleNamespace(distance=np.array([0., 2.]), lap_length=2., is_closed=False)
-            with patch.object(harness, "make_track_view", return_value=fake_track), \
+            with patch.object(input_preflight, "preflight_inputs", return_value=None), \
+                 patch.object(harness, "make_track_view", return_value=fake_track), \
                  patch.object(harness, "corridor_from_track", return_value=object()), \
                  patch.object(harness, "compile_formulation", return_value=SimpleNamespace(model=object())), \
                  patch.object(harness, "point_mass_view_of_planar", return_value=object()), \
@@ -365,7 +367,8 @@ class NoTvMinimumLapHarnessTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory); request_path = root / "request.json"; result_path = root / "result.json"
             request_path.write_text(json.dumps(harness._json_safe(request)), encoding="utf-8")
-            with patch.object(harness, "make_track_view", return_value=object()), \
+            with patch.object(input_preflight, "preflight_inputs", return_value=None), \
+                 patch.object(harness, "make_track_view", return_value=object()), \
                  patch.object(harness, "corridor_from_track", return_value=object()), \
                  patch.object(harness, "compile_formulation", return_value=SimpleNamespace(model=object())), \
                  patch.object(harness, "point_mass_view_of_planar", return_value=object()), \
@@ -413,7 +416,8 @@ class NoTvMinimumLapHarnessTest(unittest.TestCase):
             def capture_solution(*args, **kwargs):
                 captured["seed"] = kwargs["seed"]
                 return FakeSolution()
-            with patch.object(harness, "make_track_view", return_value=object()), \
+            with patch.object(input_preflight, "preflight_inputs", return_value=None), \
+                 patch.object(harness, "make_track_view", return_value=object()), \
                  patch.object(harness, "corridor_from_track", return_value=object()), \
                  patch.object(harness, "compile_formulation", return_value=SimpleNamespace(model=object())), \
                  patch.object(harness, "point_mass_view_of_planar", return_value=object()), \
@@ -473,7 +477,8 @@ class NoTvMinimumLapHarnessTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory); request_path = root / "request.json"; result_path = root / "result.json"
             request_path.write_text(json.dumps(harness._json_safe(request)), encoding="utf-8")
-            with patch.object(harness, "make_track_view", return_value=object()), \
+            with patch.object(input_preflight, "preflight_inputs", return_value=None), \
+                 patch.object(harness, "make_track_view", return_value=object()), \
                  patch.object(harness, "corridor_from_track", return_value=object()), \
                  patch.object(harness, "compile_formulation", return_value=SimpleNamespace(model=object())), \
                  patch.object(harness, "point_mass_view_of_planar", return_value=object()), \
@@ -531,7 +536,8 @@ class NoTvMinimumLapHarnessTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory); request_path = root / "request.json"; result_path = root / "result.json"
             request_path.write_text(json.dumps(harness._json_safe(request)), encoding="utf-8")
-            with patch.object(harness, "make_track_view", return_value=object()), \
+            with patch.object(input_preflight, "preflight_inputs", return_value=None), \
+                 patch.object(harness, "make_track_view", return_value=object()), \
                  patch.object(harness, "corridor_from_track", return_value=object()), \
                  patch.object(harness, "compile_formulation", return_value=SimpleNamespace(model=object())), \
                  patch.object(harness, "point_mass_view_of_planar", return_value=object()), \
@@ -593,7 +599,8 @@ class NoTvMinimumLapHarnessTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory); request_path = root / "request.json"; result_path = root / "result.json"
             request_path.write_text(json.dumps(harness._json_safe(request)), encoding="utf-8")
-            with patch.object(harness, "make_track_view", return_value=object()), \
+            with patch.object(input_preflight, "preflight_inputs", return_value=None), \
+                 patch.object(harness, "make_track_view", return_value=object()), \
                  patch.object(harness, "corridor_from_track", return_value=object()), \
                  patch.object(harness, "compile_formulation", return_value=SimpleNamespace(model=object())), \
                  patch.object(harness, "point_mass_view_of_planar", return_value=object()), \
@@ -630,7 +637,8 @@ class NoTvMinimumLapHarnessTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory); request_path = root / "request.json"; result_path = root / "result.json"
             request_path.write_text(json.dumps(harness._json_safe(request)), encoding="utf-8")
-            with patch.object(harness, "make_track_view", return_value=object()), \
+            with patch.object(input_preflight, "preflight_inputs", return_value=None), \
+                 patch.object(harness, "make_track_view", return_value=object()), \
                  patch.object(harness, "corridor_from_track", return_value=object()), \
                  patch.object(harness, "compile_formulation", return_value=SimpleNamespace(model=object())), \
                  patch.object(harness, "point_mass_view_of_planar", return_value=object()), \

@@ -17,6 +17,7 @@ IMPLEMENTATION_FILES = (
     Path("tools/diagnostics/verify_no_tv_minimum_lap.py"),
     Path("tools/run/solve_minimum_time_line.py"),
     Path("src/simplified_vehicle_models/solvers/minimum_time_run.py"),
+    Path("src/simplified_vehicle_models/solvers/input_preflight.py"),
     Path("src/simplified_vehicle_models/solvers/trajectory_artifact.py"),
     Path("src/simplified_vehicle_models/solvers/run_manifest.py"),
     Path("src/simplified_vehicle_models/solvers/qss_spline_ocp.py"),

@@ -678,6 +678,9 @@ def _attempt_worker(request_path: str, result_path: str, artifact_path: str, sta
               "validation_status": "solver_failed", "wall_seconds": None}
     try:
         mark_stage("setup")
+        from simplified_vehicle_models.solvers.input_preflight import preflight_inputs
+        case_inputs = request.get("case", {})
+        # Pure request validation must take precedence over filesystem admission.
         _validate_request_options(request)
         result["validated_numerical_options"] = {
             "energy_defect_scaling": request.get("energy_defect_scaling", "legacy_reference_speed_v1"),
@@ -697,6 +700,17 @@ def _attempt_worker(request_path: str, result_path: str, artifact_path: str, sta
                            "validation_status": "solver_failed", "solver_succeeded": False,
                            "error_type": "GeometryContractMismatch",
                            "error": f"expected {expected_contract!r}, received {supplied_contract!r}"})
+            return
+        unavailable = preflight_inputs((
+            ("track", case_inputs.get("track", "")),
+            ("formulation", request.get("formulation", "")),
+            ("chart", request.get("surface", "")),
+        ))
+        if unavailable is not None:
+            result.update(unavailable)
+            result.update({"validation_status": "setup_unavailable", "solver_succeeded": False,
+                           "solve_completed": False, "wall_seconds": time.perf_counter() - started})
+            mark_stage("failed")
             return
         track = make_track_view(case)
         if all(hasattr(track, attribute) for attribute in

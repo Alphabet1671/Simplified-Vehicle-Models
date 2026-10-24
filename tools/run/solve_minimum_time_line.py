@@ -838,6 +838,15 @@ def _prepare_public_spline_request_in_worker(request, request_path, result_path,
         if float(request["path_smoothing"]) != 0.0:
             raise ValueError("smoothing is not permitted for a spline trajectory export")
         _validate_output_paths(Path(request["track"]), Path(request["output"]), reject_existing=True)
+        from simplified_vehicle_models.solvers.input_preflight import preflight_inputs
+        unavailable = preflight_inputs((
+            ("track", request["track"]), ("formulation", request["formulation"]),
+            ("chart", request["surface"]),
+        ))
+        if unavailable is not None:
+            _write_new(Path(result_path), unavailable)
+            _publish_worker_stage(root, "failed")
+            return
         ladder = _public_spline_worker_request(args)
         ladder["worker_kind"] = "no_tv_spline_ladder_v1"
         ladder["wall_cap_s"] = request["wall_cap_s"]

@@ -16,6 +16,8 @@ speed, leaving the terminal speed and the endpoint offsets free.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import hashlib
+import json
 import math
 import numbers
 import time
@@ -111,6 +113,7 @@ class SplineSolution:
     off_site_stations: FloatArray | None = None
     off_site_elements: FloatArray | None = None
     off_site_fractions: FloatArray | None = None
+    physical_constraint_identity: dict | None = None
     stage_timings: dict[str, float] = field(default_factory=dict)
     # None preserves the historical free-line solve; otherwise this immutable
     # snapshot records coefficients eliminated from the active NLP.
@@ -417,6 +420,22 @@ def _canonical_constraint_sites(mesh, fractions, constraint_stations):
     # original containing element and is never discarded by explicit additions.
     by_element = [np.flatnonzero(elements == i) for i in range(widths.size)]
     return stations, elements.astype(int), site_fractions, by_element
+
+
+def _physical_constraint_identity(mesh, proposed_sites, effective_sites, elements, fractions):
+    """Return a stable identity for the physical constraint-site layout."""
+    payload = {
+        "schema": "physical_constraint_sites_v1",
+        "mesh_stations_m": np.asarray(mesh).astype(float).tolist(),
+        "proposed_stations_m": np.asarray(proposed_sites).astype(float).tolist(),
+        "effective_stations_m": np.asarray(effective_sites).astype(float).tolist(),
+        "element_indices": np.asarray(elements).astype(int).tolist(),
+        "local_fractions": np.asarray(fractions).astype(float).tolist(),
+    }
+    payload["sha256"] = hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    return payload
 
 
 def build_spline_ocp(track, corridor, surface, mesh, spline, settings: QssSettings,
@@ -838,6 +857,9 @@ def build_spline_ocp(track, corridor, surface, mesh, spline, settings: QssSettin
         "effective_constraint_sites": np.array(off_sites, dtype=float, copy=True),
         "off_site_elements": np.array(off_elements, dtype=int, copy=True),
         "off_site_fractions": np.array(off_fractions, dtype=float, copy=True),
+        "physical_constraint_identity": _physical_constraint_identity(
+            mesh, proposed_sites, off_sites, off_elements, off_fractions,
+        ),
         "off_site_element_indices": tuple(np.array(indices, dtype=int, copy=True)
                                           for indices in off_by_element),
         "count": count,
@@ -1407,6 +1429,7 @@ def solve_spline_line(track, corridor, surface, mesh, spline,
         off_site_stations=np.array(built["off_site_stations"], dtype=float, copy=True),
         off_site_elements=np.array(built["off_site_elements"], dtype=int, copy=True),
         off_site_fractions=np.array(built["off_site_fractions"], dtype=float, copy=True),
+        physical_constraint_identity=built["physical_constraint_identity"],
         stage_timings={**timings,
                        "postprocess_seconds": time.perf_counter() - postprocess_started,
                        "total_seconds": time.perf_counter() - total_started},

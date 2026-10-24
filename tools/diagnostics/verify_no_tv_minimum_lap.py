@@ -1048,6 +1048,7 @@ def _attempt_worker(request_path: str, result_path: str, artifact_path: str, sta
         result["solver_call_started"] = True
         mark_stage("solve")
         solution = solve_spline_line(track, corridor, surface, mesh, spline, settings, seed=seed, **solve_options)
+        result['physical_constraint_identity'] = getattr(solution, 'physical_constraint_identity', None)
         result["applied_numerical_options"] = dict(solve_options)
         result["solve_completed"] = True
         stage_state["solve_completed"] = True
@@ -1220,7 +1221,7 @@ def _attempt_worker(request_path: str, result_path: str, artifact_path: str, sta
                     formulation=snapshot_for(request["formulation"]),
                     chart=snapshot_for(request["surface"]),
                     transitive_dependencies=input_members + ([{"path": "geometry_audit_v1.json", "sha256": result["geometry_audit"]["sha256"]}] if result.get("geometry_audit", {}).get("artifact") == "geometry_audit_v1.json" else []) + ([{"path": "corridor_policy_v1.json", "sha256": hashlib.sha256((root / "corridor_policy_v1.json").read_bytes()).hexdigest()}] if result.get("corridor_policy") else []),
-                    effective_request={**effective, "corridor_policy": result.get("corridor_policy"), "track_problem": result.get("track_problem")},
+                    effective_request={**effective, "corridor_policy": result.get("corridor_policy"), "track_problem": result.get("track_problem"), "physical_constraint_identity": result.get("physical_constraint_identity")},
 
                     runtime=actual_provenance["runtime"],
                     code={"git_head": actual_provenance["git_head"],

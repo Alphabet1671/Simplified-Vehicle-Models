@@ -61,6 +61,44 @@ physical optimum. The legacy per-node builder/solver rejects a nonzero margin.
 The harness records both the selected representation and margin in request,
 result, and solution metadata.
 
+## Spline energy-defect scaling (opt-in)
+
+`solve_spline_line(..., energy_defect_scaling="cell_length_v1")` selects a
+solver-coordinate change for the Hermite--Simpson energy-defect rows only. The
+public default remains `"legacy_reference_speed_v1"`; omitting the keyword
+leaves the legacy NLP coordinates and behavior unchanged. The option is an
+opt-in numerical-conditioning experiment, not a change to physical acceptance.
+
+For an element of length `h`, the builder's original zero-equality residual is
+`g = (W[i+1] - W[i] - h/6 * (F[i] + 4*F[mid] + F[i+1])) / 10`, where
+`W = v**2` and `F = 2*a*G`. The selected solver row is `(10/h)*g`, i.e. the
+same defect in `m^2/s^2` divided by that cell's length. The positive factor
+preserves the zero set. Only recorded energy-defect indices are scaled: other
+constraint rows—including periodic seam and open-start rows—retain their
+original coordinates.
+
+The public success gate evaluates the original, unscaled constraints and
+bounds. Returned maximum violation and failure diagnostics therefore describe
+the original residuals; failure metadata labels the scaling and its scope and
+does not present it as a uniform physical error certificate. Between IPOPT
+continuation stages, constraint multipliers are converted back to original
+coordinates for public diagnostics, while warm-start arguments use IPOPT's
+raw solver-coordinate `lam_g` (and its corresponding scaled decision state).
+
+Typical use, in an already prepared study where `track`, `corridor`, `surface`,
+`mesh`, `spline`, and `settings` have been defined:
+
+```python
+solution = solve_spline_line(
+    track, corridor, surface, mesh, spline, settings,
+    energy_defect_scaling="cell_length_v1",
+)
+```
+
+This call fragment is not a standalone example or a qualification recipe; it
+adds no validation gates, tolerance waivers, or evidence of global readiness.
+The no-TV study's current readiness verdict remains **HOLD / incomplete**.
+
 ## Artifacts, provenance, and qualification protections
 
 Each attempt receives an exclusive output directory and writes `request.json`,

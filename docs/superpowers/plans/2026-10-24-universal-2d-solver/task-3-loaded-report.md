@@ -42,7 +42,7 @@ Per-module focused checks (all exit 0):
 Exact combined covering command:
 `PYTHONPATH=src runs/no_tv_reliability/runtime_install_20261023/venv/bin/python -m unittest tests.test_run_manifest tests.test_input_preflight tests.test_no_tv_minimum_lap tests.test_minimum_time_run tests.test_trajectory_artifact tests.test_minimum_time_line_gate tests.test_tv_runner tests.test_track_problem_contract tests.test_loaded_track_problem_preflight -q`
 
-Result: 192 tests passed in 28.238 seconds, exit 0. Post-commit focused command `... -m unittest tests.test_track_problem_contract tests.test_loaded_track_problem_preflight tests.test_no_tv_minimum_lap -q` passed 61 tests in 0.622 seconds, exit 0. No full suite or expensive optimizer run was made.
+Result: 192 tests passed in 28.238 seconds, exit 0. After the invalid-contract classification fix, focused command `PYTHONPATH=src runs/no_tv_reliability/runtime_install_20261023/venv/bin/python -m unittest tests.test_no_tv_minimum_lap tests.test_track_problem_contract tests.test_loaded_track_problem_preflight -q` passed 61 tests in 0.623 seconds, exit 0. The direct worker regression passed 1 test in 0.008 seconds, exit 0. No full suite or expensive optimizer run was made.
 
 ## Commits and freeze
 

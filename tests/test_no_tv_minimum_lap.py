@@ -128,6 +128,24 @@ class NoTvMinimumLapHarnessTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             request_path = Path(directory) / "request.json"
             result_path = Path(directory) / "result.json"
+            raw = dict(base, track_problem_contract=dict(contract, extra=True))
+            request_path.write_text(json.dumps(harness._json_safe(raw)), encoding="utf-8")
+            with (patch("simplified_vehicle_models.solvers.input_preflight.preflight_inputs", side_effect=AssertionError("must not check filesystem")) as preflight,
+                  patch.object(harness, "make_track_view", side_effect=AssertionError("must not load geometry")) as make_track,
+                  patch.object(harness, "solve_spline_line", side_effect=AssertionError("must not solve")) as solve):
+                harness._attempt_worker(str(request_path), str(result_path), str(Path(directory) / "solution.npz"))
+            result = json.loads(result_path.read_text())
+            self.assertEqual(result["status"], "track_problem_invalid")
+            self.assertEqual(result["validation_status"], "not_run")
+            self.assertFalse(result["solver_attempted"])
+            self.assertFalse(result["solver_succeeded"])
+            self.assertEqual(result["track_problem"]["status"], "invalid")
+            self.assertTrue(result["track_problem"]["reasons"])
+            self.assertIn("invalid track_problem_contract", result["error"])
+            self.assertEqual((preflight.call_count, make_track.call_count, solve.call_count), (0, 0, 0))
+        with tempfile.TemporaryDirectory() as directory:
+            request_path = Path(directory) / "request.json"
+            result_path = Path(directory) / "result.json"
             raw = dict(base, request_schema_version=True)
             request_path.write_text(json.dumps(harness._json_safe(raw)), encoding="utf-8")
             with patch.object(harness, "make_track_view", side_effect=AssertionError("setup must not run")):

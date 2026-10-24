@@ -265,6 +265,14 @@ def _validated_stations(value, name):
     return sorted(set(float(item) for item in stations))
 
 
+class InvalidTrackProblemContract(ValueError):
+    """Strict worker request validation rejected an explicit invalid contract."""
+
+    def __init__(self, validation: dict):
+        self.validation = validation
+        super().__init__("invalid track_problem_contract: " + ",".join(validation.get("reasons", ())))
+
+
 def _validate_request_options(request: dict) -> None:
     """Validate a raw worker request before numerical setup or provenance claims."""
     if not isinstance(request, dict):
@@ -290,7 +298,7 @@ def _validate_request_options(request: dict) -> None:
         from simplified_vehicle_models.solvers.track_problem_contract import validate_problem_contract
         checked_contract = validate_problem_contract(request["track_problem_contract"])
         if checked_contract["status"] == "invalid":
-            raise ValueError("invalid track_problem_contract: " + ",".join(checked_contract["reasons"]))
+            raise InvalidTrackProblemContract(checked_contract)
     kind = request.get("worker_kind", "no_tv_spline_v1")
     if type(kind) is not str or kind not in {"no_tv_spline_v1", "no_tv_spline_ladder_v1"}:
         raise ValueError(f"unsupported worker_kind {kind!r}")
@@ -1018,6 +1026,16 @@ def _attempt_worker(request_path: str, result_path: str, artifact_path: str, sta
         result.update({"error_type": type(error).__name__, "error": str(error),
                        "traceback": traceback.format_exc(), "solver_succeeded": False,
                        "accepted": False, "validation_status": "solver_failed"})
+    except InvalidTrackProblemContract as error:
+        result["track_problem"] = {"status": "invalid", "reasons": error.validation["reasons"],
+                                    "normalized_contract": None,
+                                    "contract_hash": error.validation.get("normalized_hash"),
+                                    "sampling": "diagnostic_only_not_continuous_certificate"}
+        result.update({"status": "track_problem_invalid", "validation_status": "not_run",
+                       "error_type": type(error).__name__, "error": str(error),
+                       "traceback": traceback.format_exc(), "solver_succeeded": False,
+                       "solve_completed": False, "solver_attempted": False,
+                       "failure_stage": "request_validation", "accepted": False})
     except Exception as error:
         result.update({"error_type": type(error).__name__, "error": str(error),
                        "traceback": traceback.format_exc(), "solver_succeeded": False,

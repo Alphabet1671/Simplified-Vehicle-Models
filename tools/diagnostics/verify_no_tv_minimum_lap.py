@@ -278,7 +278,7 @@ def _validate_request_options(request: dict) -> None:
         "seed_profile", "profile_control_projection", "strict_profile_seed", "profile_options",
         "initializer", "convergence_criteria", "provenance", "no_torque_vectoring",
         "mode_switches", "controller_globals", "source_hashes", "stage_budgets_s",
-        "cancel_marker_path", "runtime_provenance", "execution_identity",
+        "cancel_marker_path", "runtime_provenance", "execution_identity", "request_source",
     }
     unknown = set(request) - allowed_fields
     if unknown:
@@ -289,6 +289,10 @@ def _validate_request_options(request: dict) -> None:
     envelope_version = request.get("request_envelope_version", 0)
     if type(envelope_version) is not int or envelope_version not in (0, 1):
         raise ValueError("unsupported request_envelope_version")
+    envelope_fields = {"mesh_spacings_m", "corridor", "start_treatment", "start_speed_mps",
+                       "route_scope", "execution_identity", "runtime_provenance"}
+    if envelope_version == 0 and envelope_fields.intersection(request):
+        raise ValueError("version-0 request cannot contain versioned envelope fields")
     if envelope_version == 1:
         required = {"mesh_spacings_m", "corridor", "start_treatment", "start_speed_mps", "route_scope"}
         if not required.issubset(request):
@@ -301,8 +305,10 @@ def _validate_request_options(request: dict) -> None:
                 any(isinstance(value, bool) or not isinstance(value, (int, float)) or
                     not math.isfinite(value) or value <= 0 for value in mesh_spacings)):
             raise ValueError("mesh_spacings_m must be a nonempty positive finite list")
-        if request["route_scope"] == "single_fine_rung_diagnostic" and len(mesh_spacings) != 1:
-            raise ValueError("single-rung route cannot discard requested mesh rungs")
+        if request["route_scope"] != "single_fine_rung_diagnostic" or len(mesh_spacings) != 1:
+            raise ValueError("route_scope must identify exactly one diagnostic mesh rung")
+        if mesh_spacings[0] != request.get("mesh_spacing_m"):
+            raise ValueError("declared diagnostic rung differs from effective mesh_spacing_m")
         case = request.get("case")
         if not isinstance(case, dict) or request["start_treatment"] != case.get("start_treatment"):
             raise ValueError("start treatment conflicts with serialized matrix case")
@@ -320,6 +326,22 @@ def _validate_request_options(request: dict) -> None:
                 or not isinstance(half_width, (int, float))
                 or not math.isfinite(half_width) or half_width <= 0):
             raise ValueError("corridor half-width must be finite and positive")
+        settings = request.get("settings")
+        topology = case.get("topology")
+        treatment = request["start_treatment"]
+        if topology == "closed":
+            valid_start = treatment == "closed_flying" and start_speed == 0.0
+        elif topology in {"open", "full_cut_open"}:
+            valid_start = treatment == "open_rolling_10" and start_speed > 0.0
+        else:
+            valid_start = False
+        if not valid_start or not isinstance(settings, dict) or settings.get("start_speed") != start_speed:
+            raise ValueError("start policy conflicts with topology or QSS settings")
+        identity = request.get("execution_identity")
+        expected_identity = {"corridor": corridor, "start_treatment": treatment,
+                             "start_speed_mps": start_speed}
+        if identity != expected_identity:
+            raise ValueError("execution identity conflicts with effective envelope fields")
         if request.get("source_hashes") is None or request.get("provenance") is None:
             raise ValueError("public request requires source hashes and runtime provenance")
     version = request.get("request_schema_version", request.get("schema_version", 1))

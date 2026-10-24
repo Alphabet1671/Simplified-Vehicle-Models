@@ -272,8 +272,48 @@ class MinimumTimeRunTests(unittest.TestCase):
             self.assertFalse(_same_refinement_conditions(left, right))
             right["request"] = dict(decoded, start_speed_mps=0.25)
             self.assertFalse(_same_refinement_conditions(left, right))
-            for invalid in (dict(decoded, worker_kind="arbitrary"),
-                            dict(decoded, mystery=1),
-                            dict(decoded, mesh_spacings_m=[5.0, 2.0])):
+            mutations = (
+                dict(decoded, request_envelope_version=0),
+                dict(decoded, route_scope="single_fine_rung_diagnostc"),
+                dict(decoded, mesh_spacing_m=5.0),
+                dict(decoded, settings=dict(decoded["settings"], start_speed=2.0)),
+                dict(decoded, case=dict(decoded["case"], topology="open")),
+                dict(decoded, worker_kind="arbitrary"),
+                dict(decoded, mystery=1),
+                dict(decoded, mesh_spacings_m=[5.0, 2.0]),
+            )
+            for invalid in mutations:
                 with self.subTest(invalid=invalid), self.assertRaises(ValueError):
                     _validate_request_options(invalid)
+            with self.assertRaisesRegex(ValueError, "serialized case track"):
+                build_shared_spline_request(
+                    case, source=formulation, formulation=formulation, surface=surface,
+                    spacings=(2.5,), margin=0.23, half_width=None,
+                    basis_spacing=10.0, wall_cap_s=12.0,
+                )
+            from tools.diagnostics import verify_no_tv_minimum_lap as harness
+            request_path, result_path, artifact_path = (root / "request.json", root / "result.json", root / "solution.npz")
+            request_path.write_text(json.dumps(decoded))
+            with mock.patch.object(harness, "make_track_view", return_value=object()), \
+                 mock.patch.object(harness, "corridor_from_track", return_value=object()) as corridor_spy, \
+                 mock.patch.object(harness, "compile_formulation", side_effect=RuntimeError("stop after corridor")):
+                harness._attempt_worker(str(request_path), str(result_path), str(artifact_path))
+            self.assertEqual(corridor_spy.call_args.kwargs["margin"], .23)
+            self.assertIsNone(corridor_spy.call_args.kwargs["half_width"])
+            open_result_path = root / "open_result.json"
+            open_case = MatrixCase("rolling", source, "open", "open_rolling_10", 7.25, None)
+            open_request = build_shared_spline_request(
+                open_case, source=source, formulation=formulation, surface=surface,
+                spacings=(2.5,), margin=0.19, half_width=None,
+                basis_spacing=10.0, wall_cap_s=12.0,
+            )
+            request_path.write_text(json.dumps(open_request))
+            with mock.patch.object(harness, "make_track_view", return_value=object()), \
+                 mock.patch.object(harness, "corridor_from_track", return_value=object()), \
+                 mock.patch.object(harness, "compile_formulation", return_value=type("Compiled", (), {"model": object()})()), \
+                 mock.patch.object(harness, "point_mass_view_of_planar", return_value=object()), \
+                 mock.patch.object(harness, "load_surface_dispatch", return_value=(type("Surface", (), {"provenance_hash": "expected"})(), "signed")), \
+                 mock.patch.object(harness, "capability_hash", return_value="expected"), \
+                 mock.patch.object(harness, "QssSettings", side_effect=RuntimeError("stop after settings")) as settings_spy:
+                harness._attempt_worker(str(request_path), str(open_result_path), str(artifact_path))
+            self.assertEqual(settings_spy.call_args.kwargs["start_speed"], 7.25)

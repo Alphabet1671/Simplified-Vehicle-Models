@@ -760,6 +760,8 @@ def build_shared_spline_request(case, *, source: Path, formulation: Path, surfac
     """Serialize public effective choices into the fixed harness worker schema."""
     from tools.diagnostics.verify_no_tv_minimum_lap import build_attempt, source_hashes
 
+    if Path(source).resolve() != Path(case.track).resolve():
+        raise ValueError("source must identify the serialized case track")
     if len(spacings) != 1:
         raise ValueError("adapter requires exactly one explicit diagnostic mesh rung")
     if case.start_treatment not in {"closed_flying", "open_rolling_10"}:
@@ -767,8 +769,11 @@ def build_shared_spline_request(case, *, source: Path, formulation: Path, surfac
     if case.topology == "closed":
         if case.start_treatment != "closed_flying" or case.start_speed_mps != 0.0:
             raise ValueError("closed track requires closed_flying start treatment")
-    elif case.start_treatment != "open_rolling_10" or case.start_speed_mps <= 0.0:
-        raise ValueError("open track supports rolling diagnostic only; standing start is unsupported")
+    elif case.topology in {"open", "full_cut_open"}:
+        if case.start_treatment != "open_rolling_10" or case.start_speed_mps <= 0.0:
+            raise ValueError("open track supports rolling diagnostic only; standing start is unsupported")
+    else:
+        raise ValueError("unsupported track topology")
     if isinstance(margin, bool) or not np.isfinite(margin) or margin < 0.0:
         raise ValueError("margin must be finite and nonnegative")
     if half_width is not None and (isinstance(half_width, bool) or
@@ -788,6 +793,7 @@ def build_shared_spline_request(case, *, source: Path, formulation: Path, surfac
     request["case"]["track"] = str(request["case"]["track"])
     request.update({
         "worker_kind": "no_tv_spline_v1",
+        "request_source": "public_minimum_time_line",
         "request_envelope_version": 1,
         "mesh_spacings_m": [float(spacing) for spacing in spacings],
         "corridor": {"margin_m": float(margin), "half_width_m": half_width},

@@ -131,4 +131,32 @@ class CorridorTest(unittest.TestCase):
         self.assertNotEqual(base.policy_hash, corridor_from_track(track, policy="signed-fitted-reference-v1", reference=ref, margin=0.1).policy_hash)
         with self.assertRaises(TypeError): base.policy_descriptor["policy"] = "x"
 
+    def test_policy_hash_must_match_descriptor_and_nested_payload_is_canonical(self) -> None:
+        from simplified_vehicle_models.tracks.corridor import Corridor
+        track = load_track(_write_circle_track(self.directory, radius=3.0, half_width=4.0))
+        c = corridor_from_track(track, policy="signed-fitted-reference-v1", reference=ReferenceCurve(track))
+        with self.assertRaises(ValueError):
+            Corridor(c.distance, c.minimum, c.maximum, c.provenance, c.is_closed, c.policy, c.policy_descriptor, "0"*64)
+        alias = ["mutable"]
+        descriptor = {"nested": alias}
+        bad = Corridor(c.distance, c.minimum, c.maximum, c.provenance, c.is_closed, c.policy, descriptor)
+        alias.append("changed")
+        self.assertEqual(tuple(bad.policy_descriptor["nested"]), ("mutable",))
+        with self.assertRaises((TypeError, ValueError)):
+            Corridor(c.distance, c.minimum, c.maximum, c.provenance, c.is_closed, c.policy, {"bad": np.array([1.0])})
+        with self.assertRaises((TypeError, ValueError)):
+            Corridor(c.distance, c.minimum, c.maximum, c.provenance, c.is_closed, c.policy, {"bad": object()})
+        with self.assertRaises(ValueError):
+            Corridor(c.distance, c.minimum, c.maximum, c.provenance, c.is_closed, c.policy, {}, "0"*64)
+
+    def test_reference_source_geometry_changes_policy_hash(self) -> None:
+        track = load_track(_write_circle_track(self.directory, radius=3.0, half_width=4.0))
+        ref = ReferenceCurve(track)
+        coords = track.path_coordinates
+        changed_xy = replace(coords, y_east=coords.y_east + 0.02*np.sin(np.linspace(0, 2*np.pi, len(coords.y_east))))
+        changed_ref = ReferenceCurve(replace(track, path_coordinates=changed_xy))
+        first = corridor_from_track(track, policy="signed-fitted-reference-v1", reference=ref)
+        second = corridor_from_track(track, policy="signed-fitted-reference-v1", reference=changed_ref)
+        self.assertNotEqual(first.policy_hash, second.policy_hash)
+
 if __name__ == "__main__": unittest.main()

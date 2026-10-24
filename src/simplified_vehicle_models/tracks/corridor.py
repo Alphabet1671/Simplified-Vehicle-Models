@@ -12,6 +12,7 @@ import hashlib
 import json
 from types import MappingProxyType
 from typing import Mapping
+from collections.abc import Mapping as MappingABC
 
 import numpy as np
 
@@ -21,12 +22,29 @@ LEGACY_POLICY = "legacy-abs-source-curvature-v1"
 SIGNED_POLICY = "signed-fitted-reference-v1"
 
 
-def _freeze(value):
-    if isinstance(value, dict):
-        return MappingProxyType({key: _freeze(item) for key, item in value.items()})
-    if isinstance(value, list):
-        return tuple(_freeze(item) for item in value)
+def _thaw(value):
+    if isinstance(value, MappingABC):
+        return {key: _thaw(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return [_thaw(item) for item in value]
     return value
+
+
+def _freeze(value):
+    """Validate and recursively detach canonical JSON values."""
+    if value is None or isinstance(value, (str, bool)):
+        return value
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        if not np.isfinite(value):
+            raise ValueError("policy descriptor numbers must be finite")
+        return value
+    if isinstance(value, MappingABC):
+        if not all(isinstance(key, str) for key in value):
+            raise TypeError("policy descriptor keys must be strings")
+        return MappingProxyType({key: _freeze(item) for key, item in value.items()})
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze(item) for item in value)
+    raise TypeError("policy descriptor must contain only canonical JSON values")
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,11 +75,20 @@ class Corridor:
             raise ValueError("corridor minimum must not exceed maximum")
         if self.policy not in (LEGACY_POLICY, SIGNED_POLICY):
             raise ValueError("unsupported corridor policy")
-        descriptor = dict(self.policy_descriptor)
-        object.__setattr__(self, "policy_descriptor", _freeze(descriptor))
-        if not self.policy_hash and descriptor:
-            payload = json.dumps(descriptor, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
-            object.__setattr__(self, "policy_hash", hashlib.sha256(payload).hexdigest())
+        if not isinstance(self.policy_descriptor, MappingABC):
+            raise TypeError("policy_descriptor must be a mapping")
+        descriptor = _freeze(self.policy_descriptor)
+        # Hash only ordinary dict/list JSON structures, not MappingProxy/tuples.
+        canonical = _thaw(descriptor)
+        payload = json.dumps(canonical, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+        expected_hash = hashlib.sha256(payload).hexdigest() if canonical else ""
+        if self.policy_hash and not expected_hash:
+            raise ValueError("policy_hash requires a nonempty descriptor")
+        if self.policy_hash and self.policy_hash != expected_hash:
+            raise ValueError("policy_hash does not match policy_descriptor")
+        object.__setattr__(self, "policy_descriptor", descriptor)
+        if not self.policy_hash:
+            object.__setattr__(self, "policy_hash", expected_hash)
 
     @property
     def half_width(self) -> float:
@@ -134,6 +161,9 @@ def corridor_from_track(
         recipe = None
     else:
         try:
+            from simplified_vehicle_models.tracks.line_trajectory import ReferenceCurve
+            if not isinstance(reference, ReferenceCurve):
+                raise ValueError("signed fitted policy requires an actual ReferenceCurve")
             reference_station = np.asarray(reference.source_station, dtype=float)
             if reference_station.ndim != 1 or reference_station.size < 2 or np.any(~np.isfinite(reference_station)):
                 raise ValueError("invalid reference station domain")
@@ -150,8 +180,15 @@ def corridor_from_track(
         left_turn = fitted_k < 0.0
         maximum[right_turn] = np.minimum(maximum[right_turn], (1.0-fold_guard)/fitted_k[right_turn])
         minimum[left_turn] = np.maximum(minimum[left_turn], (1.0-fold_guard)/fitted_k[left_turn])
+        fit_digest = hashlib.sha256()
+        for label, spline in ((b"x", reference._x), (b"y", reference._y)):
+            fit_digest.update(label)
+            fit_digest.update(np.asarray(spline.t, dtype="<f8").tobytes())
+            fit_digest.update(np.asarray(spline.c, dtype="<f8").tobytes())
+            fit_digest.update(str(int(spline.k)).encode("ascii"))
         recipe = {"kind": "ReferenceCurve", "start": float(reference.start), "end": float(reference.end),
-                  "is_closed": bool(reference.is_closed), "interpolation_periodic": bool(reference.interpolation_periodic)}
+                  "is_closed": bool(reference.is_closed), "interpolation_periodic": bool(reference.interpolation_periodic),
+                  "fit_sha256": fit_digest.hexdigest()}
     if np.any(minimum > 0.0) or np.any(maximum < 0.0): raise ValueError("the corridor does not contain the centreline")
     if np.any(minimum > maximum): raise ValueError("the corridor is empty")
     descriptor = {

@@ -163,6 +163,17 @@ class TrackGeometryAuditTests(unittest.TestCase):
         a=b=np.array([1.,0.]); c=np.array([0.,0.]); d=np.array([2.,0.])
         self.assertIsNotNone(_segment_event(a,b,c,d))
         self.assertEqual(_segment_distance(a,b,c,d),0.)
+        # Exact sampled-route overlap brackets are classified as an event too.
+        tr,_,_=self.circle(count=17)
+        route=tr.path_coordinates
+        xx=route.x_north.copy(); yy=route.y_east.copy()
+        # Force two non-neighbor sampled chords onto the same collinear interval.
+        xx[7:11]=[0.,1.,2.,3.]; yy[7:11]=0.
+        custom=PathCoordinates(route.distance,xx,yy,route.heading,route.curvature)
+        overlap=TrackProfile(tr.distance,tr.segment_length,tr.radius,tr.curvature,True,"overlap",path_coordinates=custom)
+        out=audit_track_geometry(overlap,ReferenceCurve(overlap),None,sample_budget=17,crossing_pair_budget=500)
+        self.assertGreater(out["crossings"]["count"],0)
+        self.assertEqual(out["crossings"]["minimum_nonlocal_separation_m"]["minimum_m"],0.)
 
 
 if __name__ == "__main__": unittest.main()

@@ -107,6 +107,24 @@ class NoTvMinimumLapHarnessTest(unittest.TestCase):
                 harness._validate_request_options(request)
         harness._validate_request_options(dict(base, mesh_stations=[10., 11., 20.],
                                                 constraint_stations=[15.]))
+        contract = {"schema": "track_problem_v1", "topology": "open", "source_stations": [0., 1.],
+                    "lower_offset": [-1., -1.], "upper_offset": [1., 1.],
+                    "boundary": {"start_mode": "rolling", "start_speed_mps": 10., "finish_mode": "free"}}
+        explicit = dict(base, track_problem_contract=contract)
+        harness._validate_request_options(explicit)
+        with self.assertRaisesRegex(ValueError, "invalid track_problem_contract"):
+            harness._validate_request_options(dict(base, track_problem_contract=dict(contract, extra=True)))
+        with tempfile.TemporaryDirectory() as directory:
+            request_path = Path(directory) / "request.json"
+            result_path = Path(directory) / "result.json"
+            raw = dict(base, track_problem_contract=dict(contract, boundary={"start_mode":"standing", "start_speed_mps":0., "finish_mode":"free"}))
+            request_path.write_text(json.dumps(harness._json_safe(raw)), encoding="utf-8")
+            with patch("simplified_vehicle_models.solvers.input_preflight.preflight_inputs", side_effect=AssertionError("pure request gate must precede filesystem")):
+                harness._attempt_worker(str(request_path), str(result_path), str(Path(directory) / "solution.npz"))
+            result = json.loads(result_path.read_text())
+            self.assertEqual(result["status"], "track_problem_unsupported")
+            self.assertFalse(result["solver_attempted"])
+            self.assertEqual(result.get("validation_status"), "not_run")
         with tempfile.TemporaryDirectory() as directory:
             request_path = Path(directory) / "request.json"
             result_path = Path(directory) / "result.json"
@@ -117,6 +135,13 @@ class NoTvMinimumLapHarnessTest(unittest.TestCase):
             result = json.loads(result_path.read_text())
             self.assertIn("unsupported request_schema_version", result["error"])
             self.assertNotIn("requested_numerical_options", result)
+
+    def test_loaded_contract_identity_requires_matching_nonnull_hash(self):
+        left = {"request": {"track_problem_contract": {"schema": "track_problem_v1"}},
+                "track_problem": {"contract_hash": None}}
+        right = {"request": {"track_problem_contract": {"schema": "track_problem_v1"}},
+                 "track_problem": {"contract_hash": None}}
+        self.assertFalse(harness._same_refinement_conditions(left, right))
 
     def test_preregistered_cases_keep_full_geometry_and_explicit_starts(self):
         cases = harness.default_cases()
@@ -1016,6 +1041,31 @@ class NoTvMinimumLapHarnessTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "profile_step"):
                 harness.build_attempt(case, mesh_spacing_m=5., basis_spacing_m=35., maximum_iterations=1,
                     wall_cap_s=1., seed_name="centerline", formulation=Path("f"), surface=Path("s"), profile_step=bad)
+
+    def test_explicit_contract_hash_is_required_for_comparison_identity(self):
+        contract = {"schema": "track_problem_v1", "topology": "open",
+                    "source_stations": [0., 1.], "lower_offset": [-1., -1.],
+                    "upper_offset": [1., 1.],
+                    "boundary": {"start_mode": "rolling", "start_speed_mps": 3., "finish_mode": "free"}}
+        from simplified_vehicle_models.solvers.track_problem_contract import validate_problem_contract
+        digest = validate_problem_contract(contract)["normalized_hash"]
+        request = {"settings": {}, "initializer": "seed", "convergence_criteria": None,
+                   "source_hashes": {"input": "a"}, "provenance": {"git_head": "a"},
+                   "track_problem_contract": contract}
+        row = {"request": request, "source_hashes_after": {"input": "a"},
+               "provenance_after": {"git_head": "a"}, "surface_representation": "signed",
+               "track_problem": {"contract_hash": None}}
+        right = {**row, "request": dict(request), "track_problem": {"contract_hash": None}}
+        self.assertFalse(harness._same_refinement_conditions(row, right))
+        row["track_problem"] = {"contract_hash": digest}
+        right["track_problem"] = {"contract_hash": digest}
+        self.assertTrue(harness._same_refinement_conditions(row, right))
+        right["request"]["track_problem_contract"] = dict(contract, topology="closed",
+            boundary={"start_mode":"flying", "start_speed_mps":3., "finish_mode":"periodic"})
+        self.assertFalse(harness._same_refinement_conditions(row, right))
+        right["request"]["track_problem_contract"] = contract
+        right["track_problem"]["contract_hash"] = "f" * 64
+        self.assertFalse(harness._same_refinement_conditions(row, right))
 
     def test_explicit_criteria_are_required_for_qualified_edge(self):
         metrics = {"rms_xy_m": .1, "rms_metric": .1, "rms_offset_m": .1, "length_relative": .1,

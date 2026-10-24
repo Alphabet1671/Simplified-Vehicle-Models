@@ -280,11 +280,17 @@ def _validate_request_options(request: dict) -> None:
         "initializer", "convergence_criteria", "provenance", "no_torque_vectoring",
         "mode_switches", "controller_globals", "source_hashes", "stage_budgets_s",
         "cancel_marker_path", "runtime_provenance", "execution_identity", "request_source",
+        "track_problem_contract",
         "rung_requests",
     }
     unknown = set(request) - allowed_fields
     if unknown:
         raise ValueError(f"unknown worker request fields: {sorted(unknown)}")
+    if "track_problem_contract" in request:
+        from simplified_vehicle_models.solvers.track_problem_contract import validate_problem_contract
+        checked_contract = validate_problem_contract(request["track_problem_contract"])
+        if checked_contract["status"] == "invalid":
+            raise ValueError("invalid track_problem_contract: " + ",".join(checked_contract["reasons"]))
     kind = request.get("worker_kind", "no_tv_spline_v1")
     if type(kind) is not str or kind not in {"no_tv_spline_v1", "no_tv_spline_ladder_v1"}:
         raise ValueError(f"unsupported worker_kind {kind!r}")
@@ -678,10 +684,23 @@ def _attempt_worker(request_path: str, result_path: str, artifact_path: str, sta
               "validation_status": "solver_failed", "wall_seconds": None}
     try:
         mark_stage("setup")
-        from simplified_vehicle_models.solvers.input_preflight import preflight_inputs
-        case_inputs = request.get("case", {})
         # Pure request validation must take precedence over filesystem admission.
         _validate_request_options(request)
+        if "track_problem_contract" in request:
+            from simplified_vehicle_models.solvers.track_problem_contract import validate_problem_contract
+            checked = validate_problem_contract(request["track_problem_contract"])
+            if checked["status"] in {"invalid", "unsupported"}:
+                result["track_problem"] = {"status": checked["status"], "reasons": checked["reasons"],
+                                            "normalized_contract": checked.get("normalized_contract"),
+                                            "contract_hash": checked.get("normalized_hash"),
+                                            "sampling": "diagnostic_only_not_continuous_certificate"}
+                result.update({"status": "track_problem_" + checked["status"], "accepted": False,
+                               "validation_status": "not_run", "solver_succeeded": False, "solve_completed": False,
+                               "solver_attempted": False, "failure_stage": "request_validation"})
+                mark_stage("failed")
+                return
+        from simplified_vehicle_models.solvers.input_preflight import preflight_inputs
+        case_inputs = request.get("case", {})
         result["validated_numerical_options"] = {
             "energy_defect_scaling": request.get("energy_defect_scaling", "legacy_reference_speed_v1"),
             "coefficient_coordinate_scale": request.get("coefficient_coordinate_scale", 1.0),
@@ -713,6 +732,23 @@ def _attempt_worker(request_path: str, result_path: str, artifact_path: str, sta
             mark_stage("failed")
             return
         track = make_track_view(case)
+        pure_contract = None
+        loaded_reference = None
+        if "track_problem_contract" in request:
+            from simplified_vehicle_models.tracks.line_trajectory import ReferenceCurve
+            from simplified_vehicle_models.solvers.track_problem_contract import validate_problem_contract
+            from simplified_vehicle_models.solvers.loaded_track_problem import preflight_loaded_problem
+            pure_contract = validate_problem_contract(request["track_problem_contract"])
+            if pure_contract["status"] == "invalid":
+                result["track_problem"] = {"status": "invalid", "reasons": pure_contract["reasons"],
+                                            "normalized_contract": None, "contract_hash": None,
+                                            "sampling": "diagnostic_only_not_continuous_certificate"}
+                result.update({"status": "track_problem_invalid", "accepted": False,
+                               "validation_status": "not_run", "solver_succeeded": False, "solve_completed": False,
+                               "solver_attempted": False, "failure_stage": "request_validation"})
+                mark_stage("failed")
+                return
+            loaded_reference = ReferenceCurve(track)
         if all(hasattr(track, attribute) for attribute in
                ("source_reference_interpolation_periodic", "distance", "lap_length")):
             result["source_geometry"] = {
@@ -745,6 +781,26 @@ def _attempt_worker(request_path: str, result_path: str, artifact_path: str, sta
         # immutable setting type before passing it to the existing OCP API.
         settings_values["off_collocation_fractions"] = tuple(settings_values["off_collocation_fractions"])
         settings = QssSettings(**settings_values)
+        loaded_mesh = None
+        loaded_contract = {"status": "legacy_diagnostic", "reasons": [],
+                           "normalized_contract": None, "contract_hash": None,
+                           "enforcement": "historical_solver_boundary",
+                           "corridor_policy": "legacy-abs-source-curvature-v1",
+                           "sampling": "diagnostic_only_not_continuous_certificate"}
+        if pure_contract is not None:
+            loaded_mesh = (np.asarray(request["mesh_stations"], dtype=float)
+                           if request.get("mesh_stations") is not None else build_mesh(track, request["mesh_spacing_m"]))
+            loaded_contract = preflight_loaded_problem(
+                pure_contract, track=track, reference=loaded_reference, corridor=corridor,
+                surface=surface, settings=settings, mesh=loaded_mesh,
+                constraint_sites=request.get("constraint_stations") or ())
+        result["track_problem"] = loaded_contract
+        if loaded_contract["status"] in {"invalid", "unsupported"}:
+            result.update({"status": "track_problem_" + loaded_contract["status"],
+                           "validation_status": "not_run", "accepted": False, "solver_succeeded": False, "solve_completed": False,
+                           "solver_attempted": False, "failure_stage": "loaded_preflight"})
+            mark_stage("failed")
+            return
         schema_version = request.get("request_schema_version", 1)
         if isinstance(schema_version, bool) or not isinstance(schema_version, int) or schema_version not in (1, 2):
             raise ValueError("unsupported request_schema_version")
@@ -773,6 +829,7 @@ def _attempt_worker(request_path: str, result_path: str, artifact_path: str, sta
         result["actual_constraint_site_fractions"] = ((np.asarray(actual_sites) - mesh[np.searchsorted(mesh, actual_sites, side="right") - 1])
             / np.diff(mesh)[np.searchsorted(mesh, actual_sites, side="right") - 1]).tolist()
         result["actual_request_schema_version"] = schema_version
+        result["track_problem"] = loaded_contract
         result["effective_numerical_options"] = {"energy_defect_scaling": request.get("energy_defect_scaling", "legacy_reference_speed_v1"),
                                                    "coefficient_coordinate_scale": request.get("coefficient_coordinate_scale", 1.0),
                                                    "constraint_stations": request.get("constraint_stations")}
@@ -1005,14 +1062,14 @@ def _attempt_worker(request_path: str, result_path: str, artifact_path: str, sta
                     formulation=snapshot_for(request["formulation"]),
                     chart=snapshot_for(request["surface"]),
                     transitive_dependencies=input_members,
-                    effective_request=effective,
+                    effective_request={**effective, "track_problem": result.get("track_problem")},
                     runtime=actual_provenance["runtime"],
                     code={"git_head": actual_provenance["git_head"],
                           "dirty_tracked_manifest": actual_provenance["dirty_tracked_manifest"],
                           "code_sha256": actual_provenance["code_sha256"]},
                     boundary_event_contract={"geometry": request.get("source_geometry_contract"),
                                              "start_treatment": request["case"].get("start_treatment"),
-                                             "start_speed_mps": request["case"].get("start_speed_mps")},
+                                             "start_speed_mps": request["case"].get("start_speed_mps"), "track_problem": result.get("track_problem")},
                     validation_report="validation_report.json",
                     policy={"status": "unqualified", "approval": False})
                 manifest_path = write_run_manifest_v1(root, identities)
@@ -1299,6 +1356,24 @@ def _request_policy_identity(request: dict) -> dict:
             "acceleration_reserve": request.get("acceleration_reserve")}
 
 
+def _track_problem_identity_matches(left: dict, right: dict) -> bool:
+    """Require canonical request hashes to match recorded loaded identities."""
+    a, b = left.get("request", {}), right.get("request", {})
+    ca, cb = a.get("track_problem_contract"), b.get("track_problem_contract")
+    if ca is None or cb is None:
+        return (ca is None and cb is None
+                and (left.get("track_problem") is None or left.get("track_problem", {}).get("status") == "legacy_diagnostic")
+                and (right.get("track_problem") is None or right.get("track_problem", {}).get("status") == "legacy_diagnostic"))
+    from simplified_vehicle_models.solvers.track_problem_contract import validate_problem_contract
+    va, vb = validate_problem_contract(ca), validate_problem_contract(cb)
+    la, lb = left.get("track_problem"), right.get("track_problem")
+    return (va["status"] != "invalid" and vb["status"] != "invalid"
+            and isinstance(la, dict) and isinstance(lb, dict)
+            and va.get("normalized_hash") is not None and va.get("normalized_hash") == vb.get("normalized_hash")
+            and la.get("contract_hash") == va.get("normalized_hash")
+            and lb.get("contract_hash") == vb.get("normalized_hash"))
+
+
 def _same_refinement_conditions(left: dict, right: dict) -> bool:
     """Forbid policy/settings/source changes from masquerading as refinement.
 
@@ -1328,6 +1403,7 @@ def _same_refinement_conditions(left: dict, right: dict) -> bool:
             and a.get("start_treatment") == b.get("start_treatment")
             and a.get("start_speed_mps") == b.get("start_speed_mps")
             and a.get("execution_identity") == b.get("execution_identity")
+            and _track_problem_identity_matches(left, right)
             and left.get("surface_representation") == right.get("surface_representation"))
 
 

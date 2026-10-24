@@ -100,12 +100,15 @@ def _worker(request_path: str, result_path: str, artifact_path: str):
 def _write_compact_artifact_index(root: Path, extra_paths=(), *, stage="complete", external_root=None):
     """Hash fixed artifact outputs; the volatile stage document is excluded."""
     allowed = {"summary.json", "result.json", "ladder_result.json", "public_result.json",
-               "public_summary.snapshot.json", "compat_summary.snapshot.json", "line.csv", "racing_line.csv",
+               "public_summary.snapshot.json", "compat_summary.snapshot.json", "run_manifest_v1.json",
+               "validation_report.json", "effective_request.json", "runtime.json", "code.json",
+               "boundary_event_contract.json", "policy.json", "line.csv", "racing_line.csv",
                "racing_line_track.csv", "racing_line_track.xml", "rebuilt_width.csv", "trajectory.npz"}
     names = ["attempt_index.json", "request.json", "prepared_ladder_request.json", "ladder_result.json"]
     for index in range(32):
         names.extend(f"attempts/rung-{index}/{name}" for name in
-                     ("request.json", "result.json", "solution.npz", "trajectory_metadata.npz"))
+                     ("request.json", "result.json", "solution.npz", "trajectory_metadata.npz",
+                      "run_manifest_v1.json"))
     for name in extra_paths:
         if name in allowed and name not in names:
             names.append(name)

@@ -18,6 +18,7 @@ IMPLEMENTATION_FILES = (
     Path("tools/run/solve_minimum_time_line.py"),
     Path("src/simplified_vehicle_models/solvers/minimum_time_run.py"),
     Path("src/simplified_vehicle_models/solvers/trajectory_artifact.py"),
+    Path("src/simplified_vehicle_models/solvers/run_manifest.py"),
     Path("src/simplified_vehicle_models/solvers/qss_spline_ocp.py"),
     Path("src/simplified_vehicle_models/solvers/profile_line_seed.py"),
     Path("src/simplified_vehicle_models/tracks/line_trajectory.py"),

@@ -864,7 +864,14 @@ def _prepare_public_spline_request_in_worker(request, request_path, result_path,
         child["public_summary"] = summary
         Path(result_path).write_text(json.dumps(child, sort_keys=True, allow_nan=False))
         from simplified_vehicle_models.solvers.minimum_time_run import _write_compact_artifact_index
-        _write_compact_artifact_index(root, ["result.json", "public_summary.snapshot.json"], stage="export_finalization")
+        manifest_refs = []
+        for attempt in child.get("attempts", []):
+            if attempt.get("manifest"):
+                manifest_refs.extend((
+                    f"{attempt['result'].rsplit('/', 1)[0]}/run_manifest_v1.json",
+                    f"{attempt['result'].rsplit('/', 1)[0]}/validation_report.json",
+                ))
+        _write_compact_artifact_index(root, ["result.json", "public_summary.snapshot.json", *manifest_refs], stage="export_finalization")
         _publish_worker_stage(root, "complete", solve_completed=bool(child.get("solve_completed")),
                               ladder_solve_completed=bool(child.get("ladder_solve_completed")),
                               any_rung_solve_completed=bool(child.get("any_rung_solve_completed")))

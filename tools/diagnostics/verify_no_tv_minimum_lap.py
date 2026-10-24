@@ -20,6 +20,7 @@ import json
 import math
 import multiprocessing as mp
 from pathlib import Path
+import sys
 import time
 
 from tools.diagnostics.no_tv_provenance import resolve_base_commit, runtime_provenance
@@ -127,7 +128,7 @@ def _sha256(path: Path) -> str:
 
 
 def source_hashes(*paths: Path) -> dict[str, str]:
-    """Recursively hash direct inputs and XML ``source``/``data`` dependencies.
+    """Hash direct inputs and transitive model/data references from their source XML.
 
     References are resolved relative to their declaring XML. Missing targets are a
     setup error, rather than silently omitted provenance. ``visited`` makes cyclic
@@ -148,7 +149,7 @@ def source_hashes(*paths: Path) -> dict[str, str]:
             return
         root = ET.parse(path).getroot()
         for node in root.iter():
-            if node.tag not in {"source", "data"}:
+            if node.tag not in {"source", "data"} and node.get("ref") is None:
                 continue
             reference = node.get("ref") or node.get("path")
             if reference:
@@ -952,15 +953,68 @@ def _attempt_worker(request_path: str, result_path: str, artifact_path: str, sta
                        "accepted": False})
     finally:
         result["wall_seconds"] = time.perf_counter() - started
-        if stage_state["events"]:
-            if stage_state["stage"] not in ("complete", "failed"):
-                final_stage = "complete" if result.get("solver_succeeded") else "failed"
-                mark_stage(final_stage)
+        if stage_state["events"] and stage_state["stage"] not in ("export", "failed"):
+            mark_stage("export")
         if stage_state["events"]:
             stage_state["events"][-1]["ended_monotonic"] = time.monotonic()
             temporary = stage_path.with_name("stage.json.tmp")
             temporary.write_text(json.dumps(stage_state, sort_keys=True), encoding="utf-8")
             temporary.replace(stage_path)
+        # Manifest finalization remains worker-owned; no parent reads or hashes the
+        # trajectory after the bounded child returns.
+        try:
+            trajectory_path = Path(artifact_path).with_name("trajectory_metadata.npz")
+            if trajectory_path.is_file():
+                from simplified_vehicle_models.solvers.run_manifest import (
+                    snapshot_source_inputs, build_manifest_identities, write_run_manifest_v1,
+                )
+                root = Path(request_path).parent
+                source_map, input_members = snapshot_source_inputs(root, request.get("source_hashes", {}))
+                def snapshot_for(original):
+                    resolved = str(Path(original).resolve())
+                    try:
+                        return source_map[resolved]
+                    except KeyError as exc:
+                        raise ValueError(f"required source input is absent from request hashes: {original}") from exc
+                report_path = root / "validation_report.json"
+                with report_path.open("x", encoding="utf-8") as report_handle:
+                    json.dump(_json_safe(result), report_handle, sort_keys=True,
+                              separators=(",", ":"), allow_nan=False)
+                    report_handle.write("\n")
+                effective = {"request": request,
+                             "source_snapshot_map": source_map,
+                             "trajectory_filename": trajectory_path.name}
+                provenance_root = Path(request.get("repo_root", Path(__file__).resolve().parents[2]))
+                actual_provenance = runtime_provenance(provenance_root)
+                identities = build_manifest_identities(
+                    root, track=snapshot_for(request["case"]["track"]),
+                    formulation=snapshot_for(request["formulation"]),
+                    chart=snapshot_for(request["surface"]),
+                    transitive_dependencies=input_members,
+                    effective_request=effective,
+                    runtime=actual_provenance["runtime"],
+                    code={"git_head": actual_provenance["git_head"],
+                          "dirty_tracked_manifest": actual_provenance["dirty_tracked_manifest"],
+                          "code_sha256": actual_provenance["code_sha256"]},
+                    boundary_event_contract={"geometry": request.get("source_geometry_contract"),
+                                             "start_treatment": request["case"].get("start_treatment"),
+                                             "start_speed_mps": request["case"].get("start_speed_mps")},
+                    validation_report="validation_report.json",
+                    policy={"status": "unqualified", "approval": False})
+                manifest_path = write_run_manifest_v1(root, identities)
+                result["run_manifest"] = manifest_path.name
+            else:
+                result["run_manifest_unavailable"] = "loader-compatible trajectory artifact absent"
+        except Exception as error:
+            result["manifest_error"] = f"{type(error).__name__}: {error}"
+        if stage_state["events"] and stage_state["stage"] != "failed":
+            if result.get("solver_succeeded") and (result.get("manifest_error") or result.get("run_manifest_unavailable")):
+                result["evidence_complete"] = False
+                result["status"] = "manifest_unavailable"
+                result["accepted"] = False
+                mark_stage("failed")
+            else:
+                mark_stage("complete" if result.get("solver_succeeded") else "failed")
         _write_json_new_or_replace(Path(result_path), result, initial=True)
 
 
@@ -970,8 +1024,9 @@ def _write_attempt_digest_index(root: Path, request: dict) -> None:
     paths = [root / "stage.json", root / "attempt_index.json"]
     for index in range(min(len(request.get("rung_requests", [])), 32)):
         rung = root / "attempts" / f"rung-{index}"
-        paths.extend(rung / name for name in ("request.json", "result.json", "stage.json", "solution.npz", "trajectory_metadata.npz"))
-    for path in paths[:162]:
+        paths.extend(rung / name for name in ("request.json", "result.json", "stage.json", "solution.npz",
+                                               "trajectory_metadata.npz", "run_manifest_v1.json"))
+    for path in paths[:194]:
         try:
             if not path.is_file():
                 continue
@@ -1073,6 +1128,7 @@ def _attempt_ladder_worker(request_path: str, result_path: str, artifact_path: s
                       "solve_completed": solved, "wall_seconds": child.get("wall_seconds"),
                       "result": f"attempts/{rung_dir.name}/result.json",
                       "stage": f"attempts/{rung_dir.name}/stage.json",
+                      "manifest": f"attempts/{rung_dir.name}/run_manifest_v1.json" if child.get("run_manifest") else None,
                       "artifact": f"attempts/{rung_dir.name}/solution.npz" if rung_artifact_path.exists() else None,
                       "checks": child.get("checks", {}), "numerically_validated": child.get("numerically_validated") is True}
             records.append(record)
@@ -1109,7 +1165,8 @@ def _attempt_ladder_worker(request_path: str, result_path: str, artifact_path: s
         stage_state["any_rung_solve_completed"] = bool(result["any_rung_solve_completed"])
         stage_state["ladder_solve_completed"] = bool(result["ladder_solve_completed"])
         stage_state["solve_completed"] = bool(result["ladder_solve_completed"])
-        publish_stage(records[-1]["index"] if records else None, "complete" if result["solver_succeeded"] else "failed")
+        publish_stage(records[-1]["index"] if records else None,
+                      "export" if result["solver_succeeded"] else "failed")
         _write_attempt_digest_index(root, request)
     except BaseException as error:
         result.update({"status": "worker_exception", "error_type": type(error).__name__, "error": str(error),
@@ -1123,6 +1180,20 @@ def _attempt_ladder_worker(request_path: str, result_path: str, artifact_path: s
             pass
     result["solve_wall_seconds_sum"] = sum(float(r.get("wall_seconds", 0.0) or 0.0) for r in records)
     result["wall_seconds"] = result["solve_wall_seconds_sum"]
+    result["manifest_count"] = sum(1 for record in records
+                                   if (root / f"attempts/rung-{record['index']}/run_manifest_v1.json").is_file())
+    result["manifest_complete"] = (result["manifest_count"] == len(records)
+                                   == len(request["rung_requests"]))
+    # Hash presence is not qualification evidence; policy, basis and consumer
+    # validation gates remain absent in this diagnostic worker.
+    result["evidence_complete"] = False
+    if not result["manifest_complete"] and result.get("solver_succeeded"):
+        result["status"] = "manifest_unavailable"
+        result["accepted"] = False
+        publish_stage(records[-1]["index"] if records else None, "failed")
+    else:
+        publish_stage(records[-1]["index"] if records else None,
+                      "complete" if result.get("solver_succeeded") else "failed")
     Path(result_path).write_text(json.dumps(result, sort_keys=True, allow_nan=False), encoding="utf-8")
 
 

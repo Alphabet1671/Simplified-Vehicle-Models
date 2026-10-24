@@ -428,7 +428,10 @@ class NoTvMinimumLapHarnessTest(unittest.TestCase):
                  patch("tools.run.solve_minimum_time_line._write_trajectory_metadata", side_effect=lambda path, solution: np.savez(path, metadata=np.array("fixture"))):
                 harness._attempt_worker(str(request_path), str(result_path), str(root / "solution.npz"))
             result = json.loads(result_path.read_text())
-        self.assertEqual(result["status"], "Solve_Succeeded")
+        self.assertEqual(result["status"], "manifest_unavailable")
+        self.assertIn("required source input is absent", result["manifest_error"])
+        self.assertTrue(result["solver_succeeded"])
+        self.assertFalse(result["accepted"])
         np.testing.assert_array_equal(captured["seed"], profile_seed)
         self.assertTrue(result["profile_seed"]["used"])
         self.assertEqual(captured["control_projection"], "bounded_energy_l1")
@@ -485,7 +488,10 @@ class NoTvMinimumLapHarnessTest(unittest.TestCase):
                  patch("tools.run.solve_minimum_time_line._write_trajectory_metadata", side_effect=fake_trajectory_metadata):
                 harness._attempt_worker(str(request_path), str(result_path), str(root / "solution.npz"))
             result = json.loads(result_path.read_text())
-            self.assertEqual(result["status"], "Solve_Succeeded")
+            self.assertEqual(result["status"], "manifest_unavailable")
+            self.assertIn("required source input is absent", result["manifest_error"])
+            self.assertTrue(result["solver_succeeded"])
+            self.assertFalse(result["accepted"])
             self.assertEqual(result["validation_status"], "incomplete")
             self.assertEqual(captured["fractions"], harness.DEFAULT_OFF_COLLOCATION_FRACTIONS)
             self.assertEqual(captured["control_representation"],
@@ -718,6 +724,16 @@ class NoTvMinimumLapHarnessTest(unittest.TestCase):
             self.assertEqual(set(hashes), {str(xml.resolve()), str(child.resolve()),
                                            str(csv.resolve()), str(binary.resolve())})
             self.assertTrue(all(len(value) == 64 for value in hashes.values()))
+
+    def test_source_hashes_include_model_ref_dependencies(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            root.joinpath("parent.xml").write_text('<model><model ref="nested.xml" /></model>')
+            root.joinpath("nested.xml").write_text('<model><source ref="input.csv" /></model>')
+            root.joinpath("input.csv").write_text("value\\n")
+            hashes = harness.source_hashes(root / "parent.xml")
+            self.assertEqual(set(hashes), {str((root / name).resolve())
+                                           for name in ("parent.xml", "nested.xml", "input.csv")})
 
     def test_source_hashes_reject_missing_recursive_dependency(self):
         with tempfile.TemporaryDirectory() as directory:

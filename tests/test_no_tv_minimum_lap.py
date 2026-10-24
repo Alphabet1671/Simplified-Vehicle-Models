@@ -676,7 +676,7 @@ class NoTvMinimumLapHarnessTest(unittest.TestCase):
         Context.Process = remember
         with tempfile.TemporaryDirectory() as directory:
             request = {"wall_cap_s": 0.001, "case": {"name": "fixture"}}
-            with patch.object(harness.mp, "get_context", return_value=Context()):
+            with patch("simplified_vehicle_models.solvers.minimum_time_run.mp.get_context", return_value=Context()):
                 result = harness.run_bounded_worker(request, Path(directory) / "attempt")
             self.assertTrue(created[0].terminated)
             self.assertTrue(created[0].joined)
@@ -699,7 +699,7 @@ class NoTvMinimumLapHarnessTest(unittest.TestCase):
             def Process(self, *args, **kwargs): return Process()
         with tempfile.TemporaryDirectory() as directory:
             request = {"wall_cap_s": 1.0, "case": {"name": "fixture"}}
-            with patch.object(harness.mp, "get_context", return_value=Context()):
+            with patch("simplified_vehicle_models.solvers.minimum_time_run.mp.get_context", return_value=Context()):
                 result = harness.run_bounded_worker(request, Path(directory) / "attempt")
             self.assertEqual(result["status"], "worker_no_result")
             self.assertFalse(result["solver_succeeded"])

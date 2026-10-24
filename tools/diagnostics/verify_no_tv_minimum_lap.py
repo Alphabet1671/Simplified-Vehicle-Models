@@ -547,10 +547,24 @@ def _fixed_path_profile_evidence(solution, case: MatrixCase, surface) -> dict:
 def _attempt_worker(request_path: str, result_path: str, artifact_path: str) -> None:
     """Spawn-safe worker entry. All communication is filesystem based."""
     request = json.loads(Path(request_path).read_text(encoding="utf-8"))
+    stage_path = Path(request_path).with_name("stage.json")
+    stage_state = {"stage": "setup", "events": []}
+    def mark_stage(name):
+        now = time.monotonic()
+        if stage_state["events"]:
+            stage_state["events"][-1]["ended_monotonic"] = now
+        event = {"stage": name, "started_monotonic": now,
+                 "soft_budget_s": request.get("stage_budgets_s", {}).get(name)}
+        stage_state["stage"] = name
+        stage_state["events"].append(event)
+        temporary = stage_path.with_name("stage.json.tmp")
+        temporary.write_text(json.dumps(stage_state, sort_keys=True), encoding="utf-8")
+        temporary.replace(stage_path)
     started = time.perf_counter()
     result = {"request": request, "status": "worker_exception", "accepted": False,
               "validation_status": "solver_failed", "wall_seconds": None}
     try:
+        mark_stage("setup")
         _validate_request_options(request)
         result["validated_numerical_options"] = {
             "energy_defect_scaling": request.get("energy_defect_scaling", "legacy_reference_speed_v1"),
@@ -637,6 +651,7 @@ def _attempt_worker(request_path: str, result_path: str, artifact_path: str) -> 
                                   "used": False, "fallback": None}
         use_old_seed = True
         seed = None
+        mark_stage("seed")
         if request.get("seed_profile", "none") == "energy-nlp":
             # Preserve a declared lateral perturbation; a centreline profile must
             # never overwrite it without recomputing its analytic trajectory.
@@ -692,8 +707,11 @@ def _attempt_worker(request_path: str, result_path: str, artifact_path: str) -> 
                          "constraint_stations": request.get("constraint_stations")}
         result["solver_numerical_options"] = dict(solve_options)
         result["solver_call_started"] = True
+        mark_stage("solve")
         solution = solve_spline_line(track, corridor, surface, mesh, spline, settings, seed=seed, **solve_options)
         result["applied_numerical_options"] = dict(solve_options)
+        result["solve_completed"] = True
+        mark_stage("export")
         source_grid = np.linspace(float(solution.distance[0]), float(solution.distance[-1]), 256)
         if getattr(solution, "trajectory", None) is not None and getattr(solution, "state_evaluator", None) is not None:
             geometry = solution.trajectory.evaluate(source_grid)
@@ -737,6 +755,7 @@ def _attempt_worker(request_path: str, result_path: str, artifact_path: str) -> 
         from tools.run.solve_minimum_time_line import _write_trajectory_metadata
         trajectory_metadata = Path(artifact_path).with_name("trajectory_metadata.npz")
         _write_trajectory_metadata(trajectory_metadata, solution)
+        mark_stage("validate")
         dense = validate_line(solution, corridor, surface, settings, vehicle=vehicle,
                               maximum_refinements=request["dense_maximum_refinements"])
         checks = dict(dense["checks"])
@@ -808,36 +827,22 @@ def _attempt_worker(request_path: str, result_path: str, artifact_path: str) -> 
                        "accepted": False})
     finally:
         result["wall_seconds"] = time.perf_counter() - started
+        if stage_state["events"]:
+            if stage_state["stage"] not in ("complete", "failed"):
+                final_stage = "complete" if result.get("solver_succeeded") else "failed"
+                mark_stage(final_stage)
+        if stage_state["events"]:
+            stage_state["events"][-1]["ended_monotonic"] = time.monotonic()
+            temporary = stage_path.with_name("stage.json.tmp")
+            temporary.write_text(json.dumps(stage_state, sort_keys=True), encoding="utf-8")
+            temporary.replace(stage_path)
         _write_json_new_or_replace(Path(result_path), result, initial=True)
 
 
 def run_bounded_worker(request: dict, output: Path) -> dict:
-    """Execute one request under a hard spawned-process deadline and persist it."""
-    output = Path(output)
-    output.mkdir(parents=True, exist_ok=False)
-    request_path, result_path, artifact_path = output / "request.json", output / "result.json", output / "solution.npz"
-    _write_json_new_or_replace(request_path, request, initial=True)
-    process = mp.get_context("spawn").Process(target=_attempt_worker,
-        args=(str(request_path), str(result_path), str(artifact_path)))
-    process.start(); process.join(float(request["wall_cap_s"]))
-    if process.is_alive():
-        process.terminate(); process.join()
-        result = {"request": request, "status": "wall_timeout", "accepted": False,
-                  "solver_succeeded": False, "validation_status": "solver_failed",
-                  "error_type": "TimeoutError", "error": "worker exceeded wall cap",
-                  "wall_cap_s": request["wall_cap_s"]}
-        # Preserve a child result, including a partial one, as worker evidence.
-        # The parent verdict is written separately and is authoritative for the
-        # matrix row, so a timeout can never inherit a late success result.
-        _write_json_new_or_replace(output / "timeout_result.json", result, initial=True)
-    elif result_path.exists():
-        result = json.loads(result_path.read_text(encoding="utf-8"))
-    else:
-        result = {"request": request, "status": "worker_no_result", "accepted": False,
-                  "solver_succeeded": False, "validation_status": "solver_failed",
-                  "error_type": "WorkerExit", "error": f"worker exit code {process.exitcode}"}
-        _write_json_new_or_replace(result_path, result, initial=True)
-    return result
+    """Compatibility adapter to the shared hard-deadline supervisor."""
+    from simplified_vehicle_models.solvers.minimum_time_run import run_request
+    return run_request(request, str(output))
 
 
 def _rms_difference(left: Path, right: Path) -> dict:

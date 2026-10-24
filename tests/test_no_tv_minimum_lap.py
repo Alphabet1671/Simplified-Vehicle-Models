@@ -20,6 +20,9 @@ class NoTvMinimumLapHarnessTest(unittest.TestCase):
         legacy = harness.build_attempt(case, **base)
         self.assertNotIn("track_problem_contract", legacy)
         self.assertNotIn("corridor_policy", legacy)
+        self.assertNotIn("corridor_fold_guard", legacy)
+        # Omitted-policy requests retain their historical request identity fields;
+        # the worker may record the realized default as a versioned recipe artifact.
         with self.assertRaisesRegex(ValueError, "corridor policy"):
             harness.build_attempt(case, **base, corridor_policy="unknown-v9")
         with self.assertRaisesRegex(ValueError, "fold_guard"):
@@ -522,9 +525,27 @@ class NoTvMinimumLapHarnessTest(unittest.TestCase):
             self.assertTrue(manifest["transitive_dependencies"])
             recipe_path = root / "corridor_policy_v1.json"
             recipe = json.loads(recipe_path.read_text(encoding="utf-8"))
+            self.assertEqual(recipe["schema"], "corridor_policy_v1")
             self.assertEqual(recipe["policy"], "signed-fitted-reference-v1")
             self.assertEqual(recipe["fold_guard"], 0.35)
+            self.assertEqual(recipe["margin_m"], 0.1)
+            self.assertEqual(recipe["width_recipe"], {"kind": "assumed_half_width", "half_width_m": 2.0, "provenance": "assumed"})
             self.assertEqual(recipe["sha256"], result["corridor_policy"]["sha256"])
+            self.assertEqual(recipe["descriptor"], result["corridor_policy"]["descriptor"])
+            from simplified_vehicle_models.solvers.qss_spline_ocp import _reference_curve
+            expected_reference = _reference_curve(track)
+            from simplified_vehicle_models.tracks.corridor import corridor_from_track
+            expected_corridor = corridor_from_track(track, margin=.1, half_width=2.,
+                policy="signed-fitted-reference-v1", fold_guard=.35, reference=expected_reference)
+            self.assertEqual(recipe["realized_bounds"]["minimum"], expected_corridor.minimum.tolist())
+            self.assertEqual(recipe["realized_bounds"]["maximum"], expected_corridor.maximum.tolist())
+            self.assertEqual(recipe["station_identity"]["stations_m"], expected_corridor.distance.tolist())
+            self.assertEqual(recipe["station_identity"]["is_closed"], corridor.is_closed)
+            self.assertEqual(recipe["reference_fit_identity"]["kind"], "ReferenceCurve")
+            self.assertEqual(recipe["reference_fit_identity"]["fit_sha256"],
+                             recipe["descriptor"]["reference_recipe"]["fit_sha256"])
+            self.assertEqual(recipe["reference_fit_identity"]["fit_sha256"],
+                             expected_corridor.policy_descriptor["reference_recipe"]["fit_sha256"])
             recipe_member = next(member for member in manifest["transitive_dependencies"]
                                  if member["path"] == recipe_path.name)
             self.assertEqual(recipe_member["sha256"], __import__("hashlib").sha256(recipe_path.read_bytes()).hexdigest())
@@ -534,8 +555,6 @@ class NoTvMinimumLapHarnessTest(unittest.TestCase):
             self.assertEqual(result["track_problem"]["corridor_policy"], "signed-fitted-reference-v1")
             self.assertEqual(result["track_problem"]["corridor_identity"]["policy"], "signed-fitted-reference-v1")
             self.assertEqual(result["track_problem"]["corridor_identity"]["provenance"], "assumed")
-            from simplified_vehicle_models.solvers.qss_spline_ocp import _reference_curve
-            expected_reference = _reference_curve(track)
             self.assertEqual((audit_seen[0].start, audit_seen[0].end,
                               audit_seen[0].interpolation_periodic),
                              (expected_reference.start, expected_reference.end,

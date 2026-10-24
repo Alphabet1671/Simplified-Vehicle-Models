@@ -847,8 +847,18 @@ def _attempt_worker(request_path: str, result_path: str, artifact_path: str, sta
         actual_policy = str(getattr(corridor, "policy", selected_policy))
         actual_descriptor = getattr(corridor, "policy_descriptor", {})
         actual_policy_hash = str(getattr(corridor, "policy_hash", ""))
-        result["corridor_policy"] = {"policy": actual_policy, "fold_guard": float(selected_guard),
-                                     "descriptor": _json_safe(actual_descriptor), "sha256": actual_policy_hash}
+        result["corridor_policy"] = {"schema": "corridor_policy_v1", "policy": actual_policy,
+                                     "fold_guard": float(selected_guard),
+                                     "margin_m": float(corridor_options.get("margin_m", 0.1)),
+                                     "width_recipe": {"kind": "track_edges" if getattr(track, "has_edges", False) else "assumed_half_width",
+                                                      "half_width_m": (None if getattr(track, "has_edges", False) else float(corridor_options.get("half_width_m", case.fallback_half_width_m))),
+                                                      "provenance": (str(getattr(corridor, "provenance", None) or "assumed") if not getattr(track, "has_edges", False) else str(getattr(corridor, "provenance", None) or getattr(track, "width_provenance", "unknown")))},
+                                     "descriptor": _json_safe(actual_descriptor), "sha256": actual_policy_hash,
+                                     "reference_fit_identity": _json_safe(actual_descriptor.get("reference_recipe")),
+                                     "realized_bounds": {"minimum": np.asarray(getattr(corridor, "minimum", []), dtype=float).tolist(),
+                                                         "maximum": np.asarray(getattr(corridor, "maximum", []), dtype=float).tolist()},
+                                     "station_identity": {"stations_m": np.asarray(getattr(corridor, "distance", []), dtype=float).tolist(),
+                                                          "is_closed": bool(getattr(corridor, "is_closed", getattr(track, "is_closed", False)))}}
         if "corridor" in request:
             result["corridor_identity"] = {
                 "margin_m": float(corridor_options["margin_m"]),

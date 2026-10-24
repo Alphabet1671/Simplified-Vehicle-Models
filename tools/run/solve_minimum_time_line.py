@@ -800,6 +800,31 @@ def _run_public_shared_spline(args) -> dict:
     return result.get("public_summary", result)
 
 
+def _publish_worker_stage(root: Path, stage: str, *, solve_completed=False,
+                          ladder_solve_completed=False, any_rung_solve_completed=False):
+    """Update the fixed worker's durable phase history without dropping markers."""
+    path = root / "stage.json"
+    try:
+        previous = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        previous = {"events": []}
+    now = time.monotonic()
+    events = previous.get("events", [])
+    if events and "ended_monotonic" not in events[-1]:
+        events[-1]["ended_monotonic"] = now
+    events.append({"stage": stage, "started_monotonic": now})
+    if stage in {"complete", "failed"}:
+        events[-1]["ended_monotonic"] = now
+    value = {**previous, "stage": stage, "events": events,
+             "solve_completed": bool(previous.get("solve_completed") or solve_completed),
+             "ladder_solve_completed": bool(previous.get("ladder_solve_completed") or ladder_solve_completed),
+             "any_rung_solve_completed": bool(previous.get("any_rung_solve_completed") or any_rung_solve_completed)}
+    temp = path.with_name("stage.json.tmp")
+    temp.write_text(json.dumps(value, sort_keys=True), encoding="utf-8")
+    temp.replace(path)
+    return value
+
+
 def _prepare_public_spline_request_in_worker(request, request_path, result_path, artifact_path):
     """Fixed dispatch adapter: build all input identity then run same ladder child."""
     from simplified_vehicle_models.solvers.minimum_time_run import _write_new
@@ -807,7 +832,7 @@ def _prepare_public_spline_request_in_worker(request, request_path, result_path,
     root = Path(request_path).parent
     try:
         stage = root / "stage.json"
-        stage.write_text(json.dumps({"stage": "setup", "solve_completed": False}))
+        _publish_worker_stage(root, "setup")
         args = argparse.Namespace(**{k: request[k] for k in
             ("track", "formulation", "surface", "output", "margin", "half_width", "spacings", "offset_spacing", "path_smoothing", "wall_cap_s")})
         if float(request["path_smoothing"]) != 0.0:
@@ -827,15 +852,22 @@ def _prepare_public_spline_request_in_worker(request, request_path, result_path,
             "validation_status": child.get("validation_status", "unqualified_solved"),
             "shared_worker_result": dict(child), "track_source_hashes": ladder["source_hashes"],
             "runtime_provenance": ladder["runtime_provenance"]}
-        stage.write_text(json.dumps({"stage": "export", "solve_completed": bool(child.get("solve_completed")),
-                                     "ladder_solve_completed": bool(child.get("ladder_solve_completed")),
-                                     "any_rung_solve_completed": bool(child.get("any_rung_solve_completed"))}))
+        _publish_worker_stage(root, "export", solve_completed=bool(child.get("solve_completed")),
+                              ladder_solve_completed=bool(child.get("ladder_solve_completed")),
+                              any_rung_solve_completed=bool(child.get("any_rung_solve_completed")))
         summary_path = Path(request["output"]) / "summary.json"
         if summary_path.exists() or summary_path.is_symlink():
             raise FileExistsError(f"public summary already exists: {summary_path}")
-        summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True, allow_nan=False) + "\n")
+        summary_payload = json.dumps(summary, indent=2, sort_keys=True, allow_nan=False) + "\n"
+        summary_path.write_text(summary_payload)
+        (root / "public_summary.snapshot.json").write_text(summary_payload)
         child["public_summary"] = summary
         Path(result_path).write_text(json.dumps(child, sort_keys=True, allow_nan=False))
+        from simplified_vehicle_models.solvers.minimum_time_run import _write_compact_artifact_index
+        _publish_worker_stage(root, "complete", solve_completed=bool(child.get("solve_completed")),
+                              ladder_solve_completed=bool(child.get("ladder_solve_completed")),
+                              any_rung_solve_completed=bool(child.get("any_rung_solve_completed")))
+        _write_compact_artifact_index(root, ["result.json", "public_summary.snapshot.json"], stage="complete")
     except BaseException as error:
         try:
             _write_new(Path(result_path), {"status": "worker_exception", "accepted": False,
@@ -953,8 +985,29 @@ def _compat_worker_entry(request, request_path, result_path, artifact_path):
         for key in ("track", "output", "formulation", "surface"):
             config[key] = Path(config[key])
         args = argparse.Namespace(**config, _inside_compat_worker=True)
-        result = _run_compat_pipeline(args)
-        Path(result_path).write_text(json.dumps(_json_safe(result), sort_keys=True, allow_nan=False))
+        root = Path(request_path).parent
+        _publish_worker_stage(root, "setup")
+        from simplified_vehicle_models.solvers.minimum_time_run import _write_compact_artifact_index
+        _write_compact_artifact_index(root, ["result.json", "compat_summary.snapshot.json", "line.csv",
+            "racing_line.csv", "racing_line_track.csv", "racing_line_track.xml", "rebuilt_width.csv", "trajectory.npz"],
+            stage="compat_setup", external_root=Path(args.output))
+        args._worker_stage_callback = lambda phase, **flags: _publish_worker_stage(root, phase, **flags)
+        result = _run_compat_pipeline(args, stage_callback=args._worker_stage_callback)
+        result_path_obj = Path(result_path)
+        result_path_obj.write_text(json.dumps(_json_safe(result), sort_keys=True, allow_nan=False))
+        from simplified_vehicle_models.solvers.minimum_time_run import _write_compact_artifact_index
+        external = Path(args.output) / "summary.json"
+        if external.is_file():
+            (root / "compat_summary.snapshot.json").write_bytes(external.read_bytes())
+        for name in ("line.csv", "racing_line.csv", "racing_line_track.csv", "racing_line_track.xml",
+                     "rebuilt_width.csv", "trajectory.npz"):
+            source = Path(args.output) / name
+            if source.is_file():
+                (root / name).write_bytes(source.read_bytes())
+        _publish_worker_stage(root, "complete", solve_completed=True)
+        _write_compact_artifact_index(root, ["result.json", "compat_summary.snapshot.json", "line.csv",
+            "racing_line.csv", "racing_line_track.csv", "racing_line_track.xml", "rebuilt_width.csv", "trajectory.npz"],
+            stage="complete", external_root=Path(args.output))
     except BaseException as error:
         try:
             _write_new(Path(result_path), {"status": "worker_exception", "accepted": False,
@@ -982,8 +1035,17 @@ def _run_compat(args) -> dict:
     return _run_compat_pipeline(args)
 
 
-def _run_compat_pipeline(args) -> dict:
+def _run_compat_pipeline(args, stage_callback=None) -> dict:
     output = args.output.resolve()
+    if stage_callback is None:
+        stage_callback = getattr(args, "_worker_stage_callback", None)
+    def mark_stage(name, solved=False):
+        if stage_callback:
+            stage_callback(name, solve_completed=solved)
+    mark_stage("setup")
+    phase = getattr(args, "_worker_stage_callback", None)
+    if phase:
+        phase("setup")
     # Controller/output configuration is validated before loading a track,
     # solver work, cache writes, or output-directory creation.
     mode = _validate_control_args(args)
@@ -1048,6 +1110,7 @@ def _run_compat_pipeline(args) -> dict:
     if selection.cache_path is not None:
         save_capability_surface(surface, selection.cache_path)
 
+    mark_stage("seed")
     print("Solving centreline envelope...", flush=True)
     centreline_lap = solve_lap(vehicle, track, lap_mode)
     seed_lap = None
@@ -1059,6 +1122,7 @@ def _run_compat_pipeline(args) -> dict:
     zero_corridor = Corridor(corridor.distance, np.zeros_like(corridor.minimum), np.zeros_like(corridor.maximum), corridor.provenance, corridor.is_closed)
     launch = 0.0 if track.is_closed else launch_time(track, surface, settings)
     zero_mesh = build_mesh(track, 1.0 if track.is_closed else 2.0)
+    mark_stage("solve")
     print("Solving zero-corridor control...", flush=True)
     if solver == "legacy":
         zero_seed = None if track.is_closed else _open_envelope_seed(track, zero_mesh, seed_lap, settings)
@@ -1074,6 +1138,8 @@ def _run_compat_pipeline(args) -> dict:
         print(f"Solved free line at {spacing:g} m spacing in {wall_seconds:.2f} s", flush=True)
         stage_wall_seconds.append(wall_seconds)
 
+    mark_stage("solve", solved=True)
+    mark_stage("solve", solved=True)
     print(f"Solving free-line mesh ladder ({'/'.join(f'{s:g}' for s in spacings)} m)...", flush=True)
     if solver == "legacy":
         ladder_seed = None
@@ -1113,6 +1179,7 @@ def _run_compat_pipeline(args) -> dict:
         saturation = sorted(set(saturation))
         recorded_mode = "closed_loop"
 
+    mark_stage("export", solved=True)
     line_rate = (
         _spline_curvature_rate(track, spline, finest) if solver == "spline"
         else None
@@ -1155,6 +1222,7 @@ def _run_compat_pipeline(args) -> dict:
                                closed=False, period=float(track.lap_length))
         maximum = track_sample(corridor.maximum, corridor.distance, unique_mesh,
                                closed=False, period=float(track.lap_length))
+    mark_stage("validate", solved=True)
     containment = check_corridor_containment(containment_offset, minimum, maximum)
     zero_total = zero_solution.lap_time + launch
     free_total = finest.lap_time + launch
@@ -1327,10 +1395,12 @@ def _run_compat_pipeline(args) -> dict:
     if selection.metadata:
         summary["capability_metadata"] = selection.metadata
     summary = _json_safe(summary)
+    mark_stage("export", solved=True)
     (output / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8")
     print("Acceptance check                  Result")
     for name, passed in checks.items():
         print(f"{name:34} {str(passed).lower()}")
+    mark_stage("validate", solved=True)
     return summary
 
 

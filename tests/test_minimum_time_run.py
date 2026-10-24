@@ -102,6 +102,60 @@ class MinimumTimeRunTests(unittest.TestCase):
                 supervisor.run_request({"wall_cap_s": 3, "note": "x" * (1024 * 1024 + 1)}, f"{d}/oversize")
             self.assertEqual(list(Path(d).iterdir()), [])
 
+    def test_final_digest_index_hashes_are_current_and_stage_has_history(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            stage_path = root / "stage.json"
+            initial = {"stage": "solve", "events": [{"stage": "setup", "started_monotonic": 1.0,
+                                                        "ended_monotonic": 1.1}],
+                       "solve_completed": True, "ladder_solve_completed": True,
+                       "any_rung_solve_completed": True}
+            stage_path.write_text(json.dumps(initial))
+            summary = root / "summary.json"
+            summary.write_text("done")
+            from tools.run.solve_minimum_time_line import _publish_worker_stage
+            _publish_worker_stage(root, "complete", solve_completed=True,
+                                  ladder_solve_completed=True, any_rung_solve_completed=True)
+            (root / "result.json").write_text('{"result":"final"}')
+            stage_after_complete = Path(root / "stage.json").read_bytes()
+            supervisor._write_compact_artifact_index(root, ["summary.json", "result.json"], stage="complete")
+            self.assertEqual(Path(root / "stage.json").read_bytes(), stage_after_complete)
+            manifest = json.loads((root / "artifacts.json").read_text())
+            entries = {item["path"]: item for item in manifest["artifacts"]}
+            import hashlib
+            self.assertEqual(entries["summary.json"]["sha256"], hashlib.sha256(b"done").hexdigest())
+            self.assertEqual(entries["result.json"]["sha256"], hashlib.sha256(b'{"result":"final"}').hexdigest())
+            self.assertNotIn("stage.json", entries)
+            self.assertEqual(manifest["index_stage"], "complete")
+            final_stage = json.loads(stage_path.read_text())
+            self.assertEqual(final_stage["stage"], "complete")
+            self.assertGreaterEqual(len(final_stage["events"]), 2)
+            self.assertTrue(final_stage["ladder_solve_completed"])
+
+    def test_external_artifact_index_uses_explicit_safe_base_without_placeholders(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d) / "supervision"
+            output = Path(d) / "output"
+            root.mkdir(); output.mkdir()
+            partial = output / "line.csv"
+            partial.write_text("real partial line")
+            manifest = supervisor._write_compact_artifact_index(
+                root, ["line.csv", "trajectory.npz"], stage="compat_setup", external_root=output)
+            entries = {item["path"]: item for item in manifest["artifacts"]}
+            self.assertEqual(entries["line.csv"], {"path": "line.csv", "base": "caller_output",
+                "status": "unknown_or_partial", "sha256": None})
+            self.assertEqual(entries["trajectory.npz"]["base"], "caller_output")
+            self.assertEqual(entries["trajectory.npz"]["status"], "not_created")
+            self.assertFalse((root / "line.csv").exists())
+            self.assertFalse((root / "trajectory.npz").exists())
+            supervisor._inventory(root)
+            bad = {"artifacts": [{"path": "../../secret", "base": "caller_output"}]}
+            (root / "artifacts.json").write_text(json.dumps(bad))
+            fallback = supervisor._inventory(root)
+            self.assertEqual(fallback["digest_index_status"], "unavailable_or_oversize")
+            self.assertFalse(any(item.get("path") == "../../secret" for item in fallback["artifacts"]))
+            self.assertEqual(len(fallback["artifacts"]), 0)
+
     def test_parent_finalization_does_not_read_artifact_payload_bytes(self):
         with tempfile.TemporaryDirectory() as d:
             with mock.patch.object(supervisor, "_worker", _raise_before_solution):

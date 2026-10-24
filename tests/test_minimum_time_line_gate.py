@@ -637,6 +637,7 @@ class RunnerOrchestrationTest(unittest.TestCase):
                 spacings="5,2", formulation=Path("formulation.xml"),
                 surface=Path("surface.npz"),
             )
+            observed_phases = []
             with (
                 patch.object(runner, "load_track", side_effect=[track, track]),
                 patch.object(runner, "corridor_from_track", return_value=corridor),
@@ -655,7 +656,8 @@ class RunnerOrchestrationTest(unittest.TestCase):
                 patch.object(runner, "check_free_line_not_slower", return_value=True) as free_gate,
                 patch.object(runner, "check_replay_agreement", return_value=True) as replay_gate,
             ):
-                summary = runner._run_compat_pipeline(args)
+                summary = runner._run_compat_pipeline(args, stage_callback=lambda name, **flags: observed_phases.append(name))
+            self.assertEqual(observed_phases, ["setup", "seed", "solve", "solve", "solve", "export", "validate", "export", "validate"])
             zero_gate.assert_called_once_with(open_loop=10.5, ocp=10.4, tolerance=0.01)
             free_gate.assert_called_once_with(centreline=10.5, free=10.3, tolerance=0.002)
             replay_gate.assert_called_once_with(ocp=10.3, replay=10.3, tolerance=0.01)

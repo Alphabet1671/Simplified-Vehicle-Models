@@ -97,6 +97,42 @@ def _worker(request_path: str, result_path: str, artifact_path: str):
             pass
 
 
+def _write_compact_artifact_index(root: Path, extra_paths=(), *, stage="complete", external_root=None):
+    """Hash fixed artifact outputs; the volatile stage document is excluded."""
+    allowed = {"summary.json", "result.json", "ladder_result.json", "public_result.json",
+               "public_summary.snapshot.json", "compat_summary.snapshot.json", "line.csv", "racing_line.csv",
+               "racing_line_track.csv", "racing_line_track.xml", "rebuilt_width.csv", "trajectory.npz"}
+    names = ["attempt_index.json", "request.json", "prepared_ladder_request.json", "ladder_result.json"]
+    for index in range(32):
+        names.extend(f"attempts/rung-{index}/{name}" for name in
+                     ("request.json", "result.json", "solution.npz", "trajectory_metadata.npz"))
+    for name in extra_paths:
+        if name in allowed and name not in names:
+            names.append(name)
+    if len(names) > 256:
+        raise ValueError("artifact index exceeds 256-entry resource limit")
+    entries = []
+    for name in names:
+        path = root / name
+        try:
+            if path.is_file():
+                data = path.read_bytes()
+                entries.append({"path": name, "base": "supervision", "status": "complete", "size_bytes": len(data),
+                                "sha256": hashlib.sha256(data).hexdigest()})
+            elif name in extra_paths and external_root is not None:
+                external = external_root / name
+                entries.append({"path": name, "base": "caller_output",
+                                "status": "unknown_or_partial" if external.exists() else "not_created",
+                                "sha256": None})
+        except OSError:
+            entries.append({"path": name, "base": "supervision", "status": "hash_unavailable", "sha256": None})
+    manifest = {"artifacts": entries, "evidence_complete": False, "index_stage": stage}
+    temp = root / "artifacts.json.tmp"
+    temp.write_text(json.dumps(manifest, sort_keys=True), encoding="utf-8")
+    temp.replace(root / "artifacts.json")
+    return manifest
+
+
 def _inventory(root: Path):
     """Read worker digest index; absent index yields bounded known-name references."""
     try:
@@ -108,6 +144,12 @@ def _inventory(root: Path):
             if not isinstance(item, dict) or not isinstance(item.get("path"), str):
                 raise ValueError("invalid artifact entry")
             rel = Path(item["path"])
+            if item.get("base", "supervision") not in {"supervision", "caller_output"}:
+                raise ValueError("invalid artifact base")
+            if item.get("base") == "caller_output" and item["path"] not in {
+                    "summary.json", "line.csv", "racing_line.csv", "racing_line_track.csv",
+                    "racing_line_track.xml", "rebuilt_width.csv", "trajectory.npz"}:
+                raise ValueError("unsafe caller-output artifact reference")
             if rel.is_absolute() or ".." in rel.parts or len(item["path"]) > MAX_PATH_CHARS:
                 raise ValueError("unsafe artifact reference")
         manifest["evidence_complete"] = False

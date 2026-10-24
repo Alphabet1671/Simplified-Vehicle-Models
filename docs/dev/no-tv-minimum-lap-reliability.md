@@ -73,7 +73,10 @@ For an element of length `h`, the builder's original zero-equality residual is
 `g = (W[i+1] - W[i] - h/6 * (F[i] + 4*F[mid] + F[i+1])) / 10`, where
 `W = v**2` and `F = 2*a*G`. The selected solver row is `(10/h)*g`, i.e. the
 same defect in `m^2/s^2` divided by that cell's length. The positive factor
-preserves the zero set. Only recorded energy-defect indices are scaled: other
+preserves the zero set. Since physical acceleration is recovered as
+`a = F/(2G)`, a finite defect's acceleration implication also depends on cell
+length and metric `G`; this scaling gives no uniform acceleration-error bound.
+Only recorded energy-defect indices are scaled: other
 constraint rows—including periodic seam and open-start rows—retain their
 original coordinates.
 

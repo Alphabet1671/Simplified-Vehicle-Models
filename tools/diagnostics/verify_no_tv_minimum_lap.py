@@ -234,6 +234,30 @@ def _convergence_criteria(criteria: dict | None) -> dict | None:
     return answer
 
 
+def _validated_explicit_mesh(value):
+    if value is None:
+        return None
+    if isinstance(value, (str, bytes)):
+        raise ValueError("mesh_stations must be a finite strictly increasing sequence")
+    mesh = np.asarray(value, dtype=float)
+    if mesh.ndim != 1 or mesh.size < 2 or not np.all(np.isfinite(mesh)):
+        raise ValueError("mesh_stations must be a finite one-dimensional sequence with at least two nodes")
+    if np.any(np.diff(mesh) <= 0.0):
+        raise ValueError("mesh_stations must be strictly increasing with no duplicate nodes")
+    if mesh[0] != 0.0:
+        raise ValueError("mesh_stations must start at zero")
+    return mesh.tolist()
+
+
+def _validated_stations(value, name):
+    if value is None:
+        return None
+    stations = np.asarray(value, dtype=float)
+    if stations.ndim != 1 or not np.all(np.isfinite(stations)):
+        raise ValueError(f"{name} must be a finite one-dimensional sequence")
+    return sorted(set(float(item) for item in stations))
+
+
 def build_attempt(case: MatrixCase, *, mesh_spacing_m: float, basis_spacing_m: float,
                   maximum_iterations: int, wall_cap_s: float, seed_name: str,
                   formulation: Path, surface: Path, nlp_tolerance: float = DEFAULT_NLP_TOLERANCE,
@@ -247,7 +271,10 @@ def build_attempt(case: MatrixCase, *, mesh_spacing_m: float, basis_spacing_m: f
                    profile_control_projection: str = "direct_gradient",
                   strict_profile_seed: bool = False, profile_step: float = 2.0,
                    maximum_profile_iterations: int = 200, maximum_profile_seconds: float = 30.0,
-                   convergence_criteria: dict | None = None, provenance: dict | None = None) -> dict:
+                   convergence_criteria: dict | None = None, provenance: dict | None = None,
+                   energy_defect_scaling: str = "legacy_reference_speed_v1",
+                   coefficient_coordinate_scale: float = 1.0,
+                   mesh_stations=None, constraint_stations=None) -> dict:
     """Build a fully serializable solve request; this has no solver side effects."""
     allowed_meshes = DEFAULT_MESH_SPACINGS + ((DIAGNOSTIC_MESH_SPACING,) if diagnostic_rungs else ())
     allowed_basis = diagnostic_rungs or basis_spacing_m in DEFAULT_BASIS_SPACINGS
@@ -278,6 +305,17 @@ def build_attempt(case: MatrixCase, *, mesh_spacing_m: float, basis_spacing_m: f
         raise ValueError("seed_profile must be none or energy-nlp")
     if profile_control_projection not in {"direct_gradient", "bounded_energy_l1"}:
         raise ValueError("profile_control_projection must be direct_gradient or bounded_energy_l1")
+    if energy_defect_scaling not in {"legacy_reference_speed_v1", "cell_length_v1"}:
+        raise ValueError("energy_defect_scaling must be a supported solver scaling")
+    if (isinstance(coefficient_coordinate_scale, (bool, np.bool_))
+            or not isinstance(coefficient_coordinate_scale, (int, float, np.integer, np.floating))
+            or not math.isfinite(coefficient_coordinate_scale) or coefficient_coordinate_scale <= 0.0):
+        raise ValueError("coefficient_coordinate_scale must be finite and positive")
+    explicit_mesh = _validated_explicit_mesh(mesh_stations)
+    explicit_sites = _validated_stations(constraint_stations, "constraint_stations")
+    if explicit_mesh is not None and (explicit_mesh[0] != 0.0 or
+            (explicit_sites and (explicit_sites[0] <= explicit_mesh[0] or explicit_sites[-1] >= explicit_mesh[-1]))):
+        raise ValueError("constraint_stations must be interior to a zero-origin explicit mesh")
     profile_options = _profile_options(profile_step, maximum_profile_iterations, maximum_profile_seconds)
     criteria = _convergence_criteria(convergence_criteria)
     settings = QssSettings(tolerance=_validate_finite_positive("nlp_tolerance", nlp_tolerance),
@@ -288,14 +326,20 @@ def build_attempt(case: MatrixCase, *, mesh_spacing_m: float, basis_spacing_m: f
                             control_representation=control_representation,
                             speed_domain_margin_mps=float(speed_domain_margin_mps))
     return {
+        "request_schema_version": 2,
         "case": asdict(case),
+        "energy_defect_scaling": energy_defect_scaling,
+        "coefficient_coordinate_scale": float(coefficient_coordinate_scale),
+        "mesh_stations": explicit_mesh,
+        "constraint_stations": explicit_sites,
         "source_geometry_contract": (SOURCE_GEOMETRY_CONTRACT if case.topology == "full_cut_open"
                                       else NATIVE_GEOMETRY_CONTRACT),
         "mesh_spacing_m": float(mesh_spacing_m),
         "basis_spacing_m": float(basis_spacing_m), "seed": seed_name,
         "wall_cap_s": float(wall_cap_s), "settings": asdict(settings),
         "dense_maximum_refinements": _validate_dense_maximum_refinements(dense_maximum_refinements),
-        "mesh_rung_status": "preregistered" if mesh_spacing_m in DEFAULT_MESH_SPACINGS else "diagnostic_not_preregistered",
+        "mesh_rung_status": ("diagnostic_not_preregistered" if explicit_mesh is not None else
+                              ("preregistered" if mesh_spacing_m in DEFAULT_MESH_SPACINGS else "diagnostic_not_preregistered")),
         "basis_rung_status": "preregistered" if basis_spacing_m in DEFAULT_BASIS_SPACINGS else "diagnostic_not_preregistered",
         "formulation": str(Path(formulation).resolve()), "surface": str(Path(surface).resolve()),
         "matched_reference": bool(matched_reference), "seed_profile": seed_profile,
@@ -498,8 +542,37 @@ def _attempt_worker(request_path: str, result_path: str, artifact_path: str) -> 
         # immutable setting type before passing it to the existing OCP API.
         settings_values["off_collocation_fractions"] = tuple(settings_values["off_collocation_fractions"])
         settings = QssSettings(**settings_values)
-        mesh = build_mesh(track, request["mesh_spacing_m"])
+        schema_version = request.get("request_schema_version", 1)
+        result["requested_numerical_options"] = {"energy_defect_scaling": request.get("energy_defect_scaling", "legacy_reference_speed_v1"),
+                                                  "coefficient_coordinate_scale": request.get("coefficient_coordinate_scale", 1.0),
+                                                  "constraint_stations": request.get("constraint_stations")}
+        if isinstance(schema_version, bool) or not isinstance(schema_version, int) or schema_version not in (1, 2):
+            raise ValueError("unsupported request_schema_version")
+        mesh = (np.asarray(request["mesh_stations"], dtype=float) if request.get("mesh_stations") is not None
+                else build_mesh(track, request["mesh_spacing_m"]))
+        if request.get("mesh_stations") is not None:
+            track_start = float(track.distance[0])
+            track_end = float(track.distance[-1])
+            if mesh[0] != track_start or mesh[-1] != track_end:
+                raise ValueError("mesh_stations endpoints must exactly match the loaded track domain")
+        sites = request.get("constraint_stations")
+        if sites and (min(sites) <= mesh[0] or max(sites) >= mesh[-1]):
+            raise ValueError("constraint_stations must be interior to the loaded mesh domain")
         spline = OffsetSpline(track, control_spacing=request["basis_spacing_m"])
+        result["actual_mesh"] = {"stations_m": np.asarray(mesh, dtype=float).tolist(),
+                                  "sha256": hashlib.sha256(np.asarray(mesh, dtype=float).tobytes()).hexdigest(),
+                                  "status": "diagnostic_not_preregistered" if request.get("mesh_stations") is not None else request.get("mesh_rung_status", "preregistered")}
+        from simplified_vehicle_models.solvers.qss_spline_ocp import _canonical_constraint_sites
+        actual_sites = _canonical_constraint_sites(mesh, settings.off_collocation_fractions,
+                                                  request.get("constraint_stations"))[0]
+        result["requested_constraint_stations_m"] = request.get("constraint_stations")
+        result["actual_constraint_stations_m"] = np.asarray(actual_sites, dtype=float).tolist()
+        result["actual_constraint_site_fractions"] = ((np.asarray(actual_sites) - mesh[np.searchsorted(mesh, actual_sites, side="right") - 1])
+            / np.diff(mesh)[np.searchsorted(mesh, actual_sites, side="right") - 1]).tolist()
+        result["actual_request_schema_version"] = schema_version
+        result["effective_numerical_options"] = {"energy_defect_scaling": request.get("energy_defect_scaling", "legacy_reference_speed_v1"),
+                                                   "coefficient_coordinate_scale": request.get("coefficient_coordinate_scale", 1.0),
+                                                   "constraint_stations": request.get("constraint_stations")}
         result["actual_basis"] = {"control_count": int(spline.control_count),
                                   "control_station_m": np.asarray(spline.control_distance, dtype=float).tolist()}
         # A profile is an independent centreline initializer. Attempt it before
@@ -564,7 +637,10 @@ def _attempt_worker(request_path: str, result_path: str, artifact_path: str) -> 
         actual_initializer["fingerprint"] = hashlib.sha256(
             json.dumps(_json_safe(actual_initializer["stable_identity"]), sort_keys=True).encode("utf-8")).hexdigest()
         result["actual_initializer"] = actual_initializer
-        solution = solve_spline_line(track, corridor, surface, mesh, spline, settings, seed=seed)
+        solve_options = {"energy_defect_scaling": request.get("energy_defect_scaling", "legacy_reference_speed_v1"),
+                         "coefficient_coordinate_scale": request.get("coefficient_coordinate_scale", 1.0),
+                         "constraint_stations": request.get("constraint_stations")}
+        solution = solve_spline_line(track, corridor, surface, mesh, spline, settings, seed=seed, **solve_options)
         source_grid = np.linspace(float(solution.distance[0]), float(solution.distance[-1]), 256)
         if getattr(solution, "trajectory", None) is not None and getattr(solution, "state_evaluator", None) is not None:
             geometry = solution.trajectory.evaluate(source_grid)
@@ -784,6 +860,15 @@ def _initializer_stable_identity(request: dict, actual_initializer: dict) -> dic
             "implementation_runtime": request.get("provenance", {})}
 
 
+def _request_policy_identity(request: dict) -> dict:
+    """Resolve legacy requests to their effective numerical policy."""
+    return {"energy_defect_scaling": request.get("energy_defect_scaling", "legacy_reference_speed_v1"),
+            "coefficient_coordinate_scale": request.get("coefficient_coordinate_scale", 1.0),
+            "mesh_stations": request.get("mesh_stations"),
+            "constraint_stations": request.get("constraint_stations"),
+            "acceleration_reserve": request.get("acceleration_reserve")}
+
+
 def _same_refinement_conditions(left: dict, right: dict) -> bool:
     """Forbid policy/settings/source changes from masquerading as refinement.
 
@@ -803,6 +888,7 @@ def _same_refinement_conditions(left: dict, right: dict) -> bool:
     return (a.get("source_geometry_contract", NATIVE_GEOMETRY_CONTRACT)
             == b.get("source_geometry_contract", NATIVE_GEOMETRY_CONTRACT)
             and a.get("settings") == b.get("settings") and a.get("seed") == b.get("seed")
+            and _request_policy_identity(a) == _request_policy_identity(b)
             and a.get("initializer") == b.get("initializer") and identity_matches
             and a.get("provenance") == b.get("provenance")
             and a.get("convergence_criteria") == b.get("convergence_criteria")
@@ -1059,9 +1145,41 @@ def run_matrix(args) -> dict:
     return manifest
 
 
+def _load_structured_request(path: Path, *, formulation: Path, surface: Path) -> dict:
+    raw = json.loads(Path(path).read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise ValueError("request file must contain a JSON object")
+    allowed = {"case", "mesh_spacing_m", "basis_spacing_m", "maximum_iterations", "wall_cap_s", "seed_name",
+               "energy_defect_scaling", "coefficient_coordinate_scale", "mesh_stations", "constraint_stations",
+               "nlp_tolerance", "off_collocation_divisions", "dense_maximum_refinements", "diagnostic_rungs",
+               "hessian_approximation", "control_representation", "speed_domain_margin_mps", "matched_reference",
+               "seed_profile", "profile_control_projection", "strict_profile_seed", "profile_step",
+               "maximum_profile_iterations", "maximum_profile_seconds", "convergence_criteria", "provenance"}
+    unknown = set(raw) - allowed
+    if unknown:
+        raise ValueError(f"request file contains unknown keys: {sorted(unknown)}")
+    if not isinstance(raw.get("case"), str) or raw["case"] not in default_cases():
+        raise ValueError("request file must name a known case")
+    required = {"mesh_spacing_m", "basis_spacing_m", "maximum_iterations", "wall_cap_s", "seed_name"}
+    missing = required - set(raw)
+    if missing:
+        raise ValueError(f"request file missing required keys: {sorted(missing)}")
+    case = default_cases()[raw.pop("case")]
+    raw["formulation"], raw["surface"] = formulation, surface
+    request = build_attempt(case, **raw)
+    if request.get("provenance") is not None:
+        raise ValueError("request-file provenance is output-only and cannot be supplied")
+    repo = Path(__file__).resolve().parents[2]
+    request["provenance"] = runtime_provenance(repo)
+    request["source_hashes"] = source_hashes(case.track, formulation, surface)
+    return request
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--request-file", type=Path, default=None,
+                        help="run one serialized structured request instead of the matrix")
     parser.add_argument("--formulation", type=Path, default=DEFAULT_FORMULATION)
     parser.add_argument("--surface", type=Path, default=DEFAULT_SURFACE)
     parser.add_argument("--cases", default=None, help="comma separated bounded subset of preregistered cases")
@@ -1107,7 +1225,13 @@ def main(argv=None):
     _validate_dense_maximum_refinements(args.dense_maximum_refinements)
     args.convergence_criteria = (_convergence_criteria(json.loads(args.convergence_criteria_json))
                                  if args.convergence_criteria_json is not None else None)
-    run_matrix(args)
+    if args.request_file is not None:
+        if args.cases or args.mesh_spacings != DEFAULT_MESH_SPACINGS or args.basis_spacings != DEFAULT_BASIS_SPACINGS:
+            parser.error("--request-file conflicts with --cases/--mesh-spacings/--basis-spacings")
+        request = _load_structured_request(args.request_file, formulation=args.formulation, surface=args.surface)
+        run_bounded_worker(request, args.output)
+    else:
+        run_matrix(args)
     return 0
 
 

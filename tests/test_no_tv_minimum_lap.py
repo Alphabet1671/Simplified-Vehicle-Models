@@ -11,6 +11,63 @@ from tools.diagnostics import verify_no_tv_minimum_lap as harness
 
 
 class NoTvMinimumLapHarnessTest(unittest.TestCase):
+    def test_structured_numerical_options_roundtrip_and_validation(self):
+        case = harness.default_cases()["acceleration"]
+        base = dict(mesh_spacing_m=5.0, basis_spacing_m=35.0, maximum_iterations=1,
+                    wall_cap_s=3.0, seed_name="centerline", formulation=Path("form.xml"),
+                    surface=Path("surface.npz"))
+        legacy = harness.build_attempt(case, **base)
+        self.assertEqual(legacy["energy_defect_scaling"], "legacy_reference_speed_v1")
+        self.assertEqual(legacy["coefficient_coordinate_scale"], 1.0)
+        options = dict(energy_defect_scaling="cell_length_v1", coefficient_coordinate_scale=0.1,
+                       mesh_stations=[0.0, 0.5, 2.0], constraint_stations=[0.25, 1.25])
+        request = harness.build_attempt(case, **base, **options, diagnostic_rungs=True)
+        wire = json.loads(json.dumps(harness._json_safe(request), allow_nan=False))
+        self.assertEqual(wire["energy_defect_scaling"], options["energy_defect_scaling"])
+        self.assertEqual(wire["coefficient_coordinate_scale"], options["coefficient_coordinate_scale"])
+        self.assertEqual(wire["mesh_stations"], options["mesh_stations"])
+        self.assertEqual(wire["constraint_stations"], options["constraint_stations"])
+        canonical = harness.build_attempt(case, **base, mesh_stations=[0., .5, 2.],
+                                           constraint_stations=[1.25, .25, .25], diagnostic_rungs=True)
+        self.assertEqual(canonical["constraint_stations"], [.25, 1.25])
+        self.assertEqual(harness.build_attempt(case, **base, **dict(options, mesh_stations=[0., 2., 5.]), diagnostic_rungs=True)["mesh_rung_status"], "diagnostic_not_preregistered")
+        with tempfile.TemporaryDirectory() as directory:
+            request_file = Path(directory) / "request.json"
+            request_file.write_text(json.dumps({"case": "acceleration", "mesh_spacing_m": 5.,
+                "basis_spacing_m": 35., "maximum_iterations": 1, "wall_cap_s": 3.,
+                "seed_name": "centerline", **options}), encoding="utf-8")
+            with patch.object(harness, "runtime_provenance", return_value={"git_head": "fixture"}), \
+                 patch.object(harness, "source_hashes", return_value={"fixture": "hash"}):
+                loaded = harness._load_structured_request(request_file, formulation=Path("form.xml"),
+                    surface=Path("surface.npz"))
+            self.assertEqual(loaded["energy_defect_scaling"], "cell_length_v1")
+            legacy_request = dict(loaded)
+            for key in ("request_schema_version", "energy_defect_scaling", "coefficient_coordinate_scale",
+                        "mesh_stations", "constraint_stations"):
+                legacy_request.pop(key, None)
+            self.assertEqual(harness._request_policy_identity(legacy_request)["energy_defect_scaling"],
+                             "legacy_reference_speed_v1")
+            altered = dict(legacy_request, energy_defect_scaling="cell_length_v1")
+            self.assertNotEqual(harness._request_policy_identity(legacy_request),
+                                harness._request_policy_identity(altered))
+            request_file.write_text('{"case":"acceleration","unknown":1}', encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "unknown keys"):
+                with patch.object(harness, "runtime_provenance", return_value={"git_head": "fixture"}), \
+                     patch.object(harness, "source_hashes", return_value={"fixture": "hash"}):
+                    harness._load_structured_request(request_file, formulation=Path("form.xml"),
+                        surface=Path("surface.npz"))
+        for bad in (float("nan"), True, 0.0):
+            with self.assertRaisesRegex(ValueError, "coefficient_coordinate_scale"):
+                harness.build_attempt(case, **base, coefficient_coordinate_scale=bad)
+        for bad_mesh in ([0., 1., 1., 2.], [0., 2., 1.], [1., 2.]):
+            with self.assertRaisesRegex(ValueError, "mesh_stations"):
+                harness.build_attempt(case, **base, mesh_stations=bad_mesh, diagnostic_rungs=True)
+        with self.assertRaisesRegex(ValueError, "constraint_stations"):
+            harness.build_attempt(case, **base, mesh_stations=[0., 1., 2.],
+                                  constraint_stations=[2., 3.], diagnostic_rungs=True)
+        with self.assertRaisesRegex(ValueError, "coefficient_coordinate_scale"):
+            harness.build_attempt(case, **base, coefficient_coordinate_scale=float("nan"))
+
     def test_preregistered_cases_keep_full_geometry_and_explicit_starts(self):
         cases = harness.default_cases()
         self.assertEqual(cases["mis_closed"].track, cases["mis_cut_open"].track)
@@ -197,6 +254,51 @@ class NoTvMinimumLapHarnessTest(unittest.TestCase):
                 seed_name="centerline", formulation=Path("form.xml"), surface=Path("surface.npz"),
                 seed_profile="bad")
 
+    def test_worker_forwards_serialized_nondefault_options_and_records_realized_sites(self):
+        class FakeSpline:
+            control_count = 2
+            control_distance = np.array([0.0, 2.0])
+        class FakeSolution:
+            distance = np.array([0.0, 2.0]); offset = np.zeros(2); heading_error = np.zeros(2)
+            curvature = np.zeros(2); speed = np.full(2, 10.); acceleration = np.zeros(2)
+            midpoint_acceleration = np.zeros(1); coefficients = np.zeros(2)
+            state_representation = "energy_hs_v1"; time_quadrature = "fixture"; time_quadrature_metadata = {}
+            status = "Solve_Succeeded"; lap_time = 1.; objective_value = 1.; iterations = 1; maximum_violation = 0.
+        case = harness.default_cases()["acceleration"]
+        request = harness.build_attempt(case, mesh_spacing_m=5., basis_spacing_m=35., maximum_iterations=1,
+            wall_cap_s=3., seed_name="centerline", formulation=Path("form.xml"), surface=Path("surface.npz"),
+            energy_defect_scaling="cell_length_v1", coefficient_coordinate_scale=.1,
+            mesh_stations=[0., .5, 2.], constraint_stations=[1.25, .25])
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); request_path = root / "request.json"; result_path = root / "result.json"
+            request_path.write_text(json.dumps(harness._json_safe(request), allow_nan=False), encoding="utf-8")
+            captured = {}
+            def capture(*args, **kwargs):
+                captured.update(kwargs)
+                return FakeSolution()
+            fake_track = SimpleNamespace(distance=np.array([0., 2.]), lap_length=2., is_closed=False)
+            with patch.object(harness, "make_track_view", return_value=fake_track), \
+                 patch.object(harness, "corridor_from_track", return_value=object()), \
+                 patch.object(harness, "compile_formulation", return_value=SimpleNamespace(model=object())), \
+                 patch.object(harness, "point_mass_view_of_planar", return_value=object()), \
+                 patch.object(harness, "load_surface_dispatch", return_value=(SimpleNamespace(provenance_hash="ok"), "fixture")), \
+                 patch.object(harness, "capability_hash", return_value="ok"), \
+                 patch.object(harness, "OffsetSpline", return_value=FakeSpline()), \
+                 patch.object(harness, "initial_guess", return_value=np.zeros(7)), \
+                 patch.object(harness, "_seed_domain_report", return_value={}), \
+                 patch.object(harness, "solve_spline_line", side_effect=capture), \
+                 patch.object(harness, "validate_line", return_value={"checks": {}, "model_feasible": False}), \
+                 patch("tools.run.solve_minimum_time_line._write_trajectory_metadata", side_effect=lambda path, solution: np.savez(path, metadata=np.array("fixture"))):
+                harness._attempt_worker(str(request_path), str(result_path), str(root / "solution.npz"))
+            result = json.loads(result_path.read_text())
+        self.assertEqual(captured["energy_defect_scaling"], "cell_length_v1")
+        self.assertEqual(captured["coefficient_coordinate_scale"], .1)
+        self.assertEqual(captured["constraint_stations"], [.25, 1.25])
+        self.assertEqual(result["request"]["energy_defect_scaling"], "cell_length_v1")
+        self.assertEqual(result["actual_mesh"]["stations_m"], [0., .5, 2.])
+        self.assertGreater(len(result["actual_constraint_stations_m"]), 2)
+        self.assertEqual(result["actual_request_schema_version"], 2)
+
     def test_worker_records_profile_seed_fallback(self):
         class FakeSpline:
             control_count = 2
@@ -272,7 +374,7 @@ class NoTvMinimumLapHarnessTest(unittest.TestCase):
                  patch.object(harness, "OffsetSpline", return_value=FakeSpline()), \
                  patch.object(harness, "initial_guess", side_effect=AssertionError("old seed must not run")), \
                  patch.object(harness, "build_profile_line_seed", side_effect=capture_profile), \
-                 patch.object(harness, "solve_spline_line", side_effect=capture_solution), \
+                 patch.object(harness, "solve_spline_line", side_effect=capture_solution) as solve_spy, \
                  patch.object(harness, "validate_line", return_value={"checks": {"geometry_consistency": True, "dense_feasibility": True}, "model_feasible": True}), \
                  patch("tools.run.solve_minimum_time_line._write_trajectory_metadata", side_effect=lambda path, solution: np.savez(path, metadata=np.array("fixture"))):
                 harness._attempt_worker(str(request_path), str(result_path), str(root / "solution.npz"))
@@ -281,6 +383,10 @@ class NoTvMinimumLapHarnessTest(unittest.TestCase):
         np.testing.assert_array_equal(captured["seed"], profile_seed)
         self.assertTrue(result["profile_seed"]["used"])
         self.assertEqual(captured["control_projection"], "bounded_energy_l1")
+        forwarded = solve_spy.call_args.kwargs
+        self.assertEqual(forwarded["energy_defect_scaling"], "legacy_reference_speed_v1")
+        self.assertEqual(forwarded["coefficient_coordinate_scale"], 1.0)
+        self.assertIsNone(forwarded["constraint_stations"])
         self.assertTrue(result["profile_seed"]["initializer_attempted"])
         self.assertTrue(result["profile_seed"]["control_projection_attempted"])
         self.assertEqual(result["profile_seed"]["control_projection_used_by_seed"], "bounded_energy_l1")

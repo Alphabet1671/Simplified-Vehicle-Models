@@ -46,7 +46,7 @@ The smoke's numerical checks were not sufficient for acceptance (dense feasibili
 
 Independent review identified strict schema-label validation and pre-write symlink destination hardening as Important findings, plus a minor inventory recommendation. The implementation follow-up enforces exact top-level/trajectory/qualification fields and refuses symlinked snapshot path components before writes. The manifest is documented as the authoritative closure inventory; no extra parent-side hashing or unbounded index expansion was added.
 
-Verification of the follow-up: `tests.test_run_manifest` passed 13 tests in 2.702 s. The expanded focused command (the five-module command above) passed **123 tests in 28.224 s**, and `git diff --check` passed. This report update records the review follow-up; review closure remains pending independent confirmation.
+Verification of the follow-up: `tests.test_run_manifest` passed 13 tests in 2.702 s. The expanded focused command passed 123 tests in 28.224 s before the fix commit and again in 28.059 s after commit; `git diff --check` passed. Post-fix public smoke ran with output directory `runs/no_tv_reliability/task1B_reviewfix_smoke/.supervision/`; the CLI exit was 1 for the unqualified diagnostic result. Both manifests and trajectories reloaded with strict loaders, qualification remained `{approved: false, status: "unqualified"}`, copied track loading and formulation compilation passed, and each indexed manifest SHA-256 matched. Ladder reported two manifests complete, `evidence_complete=false`, and `accepted=false`. Review closure remains pending independent confirmation.
 
 ## Boundaries and remaining work
 

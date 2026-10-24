@@ -56,12 +56,26 @@ def _segment_event(a, b, c, d):
         if 0 <= u <= 1 and 0 <= v <= 1:
             return a + u*r, float(u), float(v)
         return None
-    # Parallel/collinear: report only exact sampled endpoint coincidence.
-    for u, p in ((0.0, a), (1.0, b)):
-        for v, z in ((0.0, c), (1.0, d)):
-            if np.array_equal(p, z):
-                return p.copy(), u, v
-    return None
+    # Parallel segments intersect only if they are exactly collinear. Project
+    # onto a nonzero direction and intersect closed scalar intervals; no spatial
+    # tolerance is introduced. Degenerate point segments are handled explicitly.
+    rr=float(r@r); ss=float(s@s)
+    if rr == 0.0 and ss == 0.0:
+        return (a.copy(),0.0,0.0) if np.array_equal(a,c) else None
+    if rr == 0.0:
+        if cross(a-c,s) != 0.0:
+            return None
+        v=float(np.clip((a-c)@s/ss,0.0,1.0))
+        return (a.copy(),0.0,v) if np.array_equal(a,c+v*s) else None
+    if cross(q,r) != 0.0:
+        return None
+    t0=float(q@r/rr); t1=t0+float(s@r/rr)
+    lo=max(0.0,min(t0,t1)); hi=min(1.0,max(t0,t1))
+    if lo > hi:
+        return None
+    point=a+lo*r
+    v=0.0 if ss == 0.0 else float(np.clip((point-c)@s/ss,0.0,1.0))
+    return point,float(lo),v
 
 
 def _segment_distance(a, b, c, d):

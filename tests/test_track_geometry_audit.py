@@ -4,7 +4,9 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from simplified_vehicle_models.tracks.geometry_audit import audit_track_geometry
+from simplified_vehicle_models.tracks.geometry_audit import (
+    _segment_distance, _segment_event, audit_track_geometry,
+)
 from simplified_vehicle_models.tracks.corridor import corridor_from_track
 from simplified_vehicle_models.tracks.line_trajectory import ReferenceCurve
 from simplified_vehicle_models.tracks.types import PathCoordinates, TrackProfile
@@ -123,6 +125,12 @@ class TrackGeometryAuditTests(unittest.TestCase):
         a=audit_track_geometry(*self.circle(count=7)); b=audit_track_geometry(*self.circle(count=17))
         self.assertNotAlmostEqual(a["fit"]["metric"]["min_m_per_m"],b["fit"]["metric"]["min_m_per_m"],places=8)
 
+    def test_pair_budget_truncation_is_reported(self):
+        out=audit_track_geometry(*self.circle(count=81),crossing_pair_budget=5)
+        self.assertEqual(out["crossings"]["pairs_examined"],5)
+        self.assertTrue(out["crossings"]["truncated"])
+        self.assertTrue(out["crossings"]["unresolved"])
+
     def test_budget_bool_and_nonfinite_source_explicit(self):
         tr,ref,co=self.circle()
         with self.assertRaises(ValueError): audit_track_geometry(tr,ref,co,crossing_pair_budget=True)
@@ -136,6 +144,25 @@ class TrackGeometryAuditTests(unittest.TestCase):
         out2=audit_track_geometry(tr,ref,badco)
         self.assertFalse(out2["corridor"]["available"])
         json.dumps(out,allow_nan=False); json.dumps(out2,allow_nan=False)
+
+    def test_collinear_overlap_events_and_distances(self):
+        fixtures=[((0.,0.),(2.,0.),(1.,0.),(3.,0.)),
+                  ((0.,0.),(3.,0.),(1.,0.),(2.,0.)),
+                  ((3.,0.),(0.,0.),(2.,0.),(1.,0.))]
+        for points in fixtures:
+            a,b,c,d=(np.asarray(p,float) for p in points)
+            event=_segment_event(a,b,c,d)
+            self.assertIsNotNone(event)
+            self.assertEqual(_segment_distance(a,b,c,d),0.)
+            point,u,v=event
+            self.assertTrue(0.<=u<=1. and 0.<=v<=1.)
+            self.assertAlmostEqual(point[1],0.)
+        a,b,c,d=(np.asarray(p,float) for p in ((0.,0.),(2.,0.),(1.,1.),(3.,1.)))
+        self.assertIsNone(_segment_event(a,b,c,d))
+        self.assertAlmostEqual(_segment_distance(a,b,c,d),1.)
+        a=b=np.array([1.,0.]); c=np.array([0.,0.]); d=np.array([2.,0.])
+        self.assertIsNotNone(_segment_event(a,b,c,d))
+        self.assertEqual(_segment_distance(a,b,c,d),0.)
 
 
 if __name__ == "__main__": unittest.main()

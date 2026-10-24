@@ -105,8 +105,14 @@ def run_analytic_study() -> dict:
     rows.extend((_row("knot_jump", jump, .2, 1., .01, "left", case="knot_jump"),
                  _row("knot_jump", jump, .8, 1., .01, "right", case="knot_jump")))
     # Reported rate is intentionally false; derivative evidence samples speed only.
-    lie = _row("lying_rate", FUNCTIONS["affine"]["value"], .1, .123, .001, "central", case="lying_rate", reported_rate=-99., metric_G=2., physical_control=.25)
-    rows.append(lie)
+    affine_speed = FUNCTIONS["affine"]["value"](station)
+    good_acceleration = affine_speed * .1 / 2.0
+    rows.append(_row("affine_good_control_lie", FUNCTIONS["affine"]["value"], .1, station, .001,
+                     "central", case="lying_rate_good_control", reported_rate=-99.,
+                     metric_G=2., physical_control=good_acceleration))
+    rows.append(_row("affine_bad_control_lie", FUNCTIONS["affine"]["value"], .1, station, .001,
+                     "central", case="lying_rate_bad_control", reported_rate=-99.,
+                     metric_G=2., physical_control=.25))
     rows.append(_row("nan_speed", lambda s: math.nan if s > .5 else 1., math.nan, .5, .01, "right", case="nonfinite"))
     rows.append(_row("sqrt_domain", math.sqrt, math.inf, 0., .01, "central", case="incompatible_domain", domain=(0., math.inf)))
     return {"schema_version": 1, "acceptance_authority": False,

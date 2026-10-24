@@ -268,6 +268,60 @@ def _validate_request_options(request: dict) -> None:
     """Validate a raw worker request before numerical setup or provenance claims."""
     if not isinstance(request, dict):
         raise ValueError("worker request must be a JSON object")
+    allowed_fields = {
+        "worker_kind", "request_envelope_version", "mesh_spacings_m", "corridor",
+        "start_treatment", "start_speed_mps", "route_scope", "request_schema_version",
+        "schema_version", "case", "energy_defect_scaling", "coefficient_coordinate_scale",
+        "mesh_stations", "constraint_stations", "source_geometry_contract", "mesh_spacing_m",
+        "basis_spacing_m", "seed", "wall_cap_s", "settings", "dense_maximum_refinements",
+        "mesh_rung_status", "basis_rung_status", "formulation", "surface", "matched_reference",
+        "seed_profile", "profile_control_projection", "strict_profile_seed", "profile_options",
+        "initializer", "convergence_criteria", "provenance", "no_torque_vectoring",
+        "mode_switches", "controller_globals", "source_hashes", "stage_budgets_s",
+        "cancel_marker_path", "runtime_provenance", "execution_identity",
+    }
+    unknown = set(request) - allowed_fields
+    if unknown:
+        raise ValueError(f"unknown worker request fields: {sorted(unknown)}")
+    kind = request.get("worker_kind", "no_tv_spline_v1")
+    if type(kind) is not str or kind != "no_tv_spline_v1":
+        raise ValueError(f"unsupported worker_kind {kind!r}")
+    envelope_version = request.get("request_envelope_version", 0)
+    if type(envelope_version) is not int or envelope_version not in (0, 1):
+        raise ValueError("unsupported request_envelope_version")
+    if envelope_version == 1:
+        required = {"mesh_spacings_m", "corridor", "start_treatment", "start_speed_mps", "route_scope"}
+        if not required.issubset(request):
+            raise ValueError("public request envelope is incomplete")
+        corridor = request["corridor"]
+        if not isinstance(corridor, dict) or set(corridor) != {"margin_m", "half_width_m"}:
+            raise ValueError("corridor descriptor must declare margin_m and half_width_m")
+        mesh_spacings = request["mesh_spacings_m"]
+        if (not isinstance(mesh_spacings, list) or not mesh_spacings or
+                any(isinstance(value, bool) or not isinstance(value, (int, float)) or
+                    not math.isfinite(value) or value <= 0 for value in mesh_spacings)):
+            raise ValueError("mesh_spacings_m must be a nonempty positive finite list")
+        if request["route_scope"] == "single_fine_rung_diagnostic" and len(mesh_spacings) != 1:
+            raise ValueError("single-rung route cannot discard requested mesh rungs")
+        case = request.get("case")
+        if not isinstance(case, dict) or request["start_treatment"] != case.get("start_treatment"):
+            raise ValueError("start treatment conflicts with serialized matrix case")
+        start_speed = request["start_speed_mps"]
+        if (isinstance(start_speed, bool) or not isinstance(start_speed, (int, float))
+                or not math.isfinite(start_speed) or start_speed < 0
+                or start_speed != case.get("start_speed_mps")):
+            raise ValueError("start speed conflicts with serialized matrix case")
+        margin = corridor.get("margin_m")
+        half_width = corridor.get("half_width_m")
+        if (isinstance(margin, bool) or not isinstance(margin, (int, float))
+                or not math.isfinite(margin) or margin < 0):
+            raise ValueError("corridor margin must be finite and nonnegative")
+        if half_width is not None and (isinstance(half_width, bool)
+                or not isinstance(half_width, (int, float))
+                or not math.isfinite(half_width) or half_width <= 0):
+            raise ValueError("corridor half-width must be finite and positive")
+        if request.get("source_hashes") is None or request.get("provenance") is None:
+            raise ValueError("public request requires source hashes and runtime provenance")
     version = request.get("request_schema_version", request.get("schema_version", 1))
     if isinstance(version, bool) or type(version) is not int or version not in (1, 2):
         raise ValueError("unsupported request_schema_version")
@@ -596,13 +650,25 @@ def _attempt_worker(request_path: str, result_path: str, artifact_path: str) -> 
                 "source_station_end_m": float(track.distance[-1]),
                 "lap_length_m": float(track.lap_length),
             }
-        corridor = corridor_from_track(track, margin=0.1, half_width=case.fallback_half_width_m)
+        corridor_options = request.get("corridor", {})
+        corridor = corridor_from_track(
+            track, margin=float(corridor_options.get("margin_m", 0.1)),
+            half_width=corridor_options.get("half_width_m", case.fallback_half_width_m),
+        )
+        if "corridor" in request:
+            result["corridor_identity"] = {
+                "margin_m": float(corridor_options["margin_m"]),
+                "half_width_m": corridor_options["half_width_m"],
+            }
         vehicle = point_mass_view_of_planar(compile_formulation(request["formulation"]).model)
         surface, representation = load_surface_dispatch(Path(request["surface"]))
         expected = capability_hash(vehicle)
         if getattr(surface, "provenance_hash", None) != expected:
             raise ValueError("capability provenance hash does not match formulation")
         settings_values = dict(request["settings"])
+        if "start_speed_mps" in request:
+            if settings_values.get("start_speed") != request["start_speed_mps"]:
+                raise ValueError("start speed conflicts with QSS settings")
         # JSON transports dataclass tuples as lists; restore the solver's strict
         # immutable setting type before passing it to the existing OCP API.
         settings_values["off_collocation_fractions"] = tuple(settings_values["off_collocation_fractions"])
@@ -795,7 +861,7 @@ def _attempt_worker(request_path: str, result_path: str, artifact_path: str) -> 
                        "stage_timings": getattr(solution, "stage_timings", {}),
                        "trajectory_metadata_artifact": str(trajectory_metadata.name),
                        "artifact": str(Path(artifact_path).name),
-                       "start_treatment": case.start_treatment,
+                       "start_treatment": request.get("start_treatment", case.start_treatment),
                        "candidate_only_reason": case.candidate_only_reason,
                        "reference": reference, "replay": reference["replay"]})
     except RuntimeError as error:
@@ -954,6 +1020,10 @@ def _same_refinement_conditions(left: dict, right: dict) -> bool:
             and a.get("convergence_criteria") == b.get("convergence_criteria")
             and _attempt_sources_unchanged(left) and _attempt_sources_unchanged(right)
             and a.get("source_hashes") == b.get("source_hashes")
+            and a.get("corridor") == b.get("corridor")
+            and a.get("start_treatment") == b.get("start_treatment")
+            and a.get("start_speed_mps") == b.get("start_speed_mps")
+            and a.get("execution_identity") == b.get("execution_identity")
             and left.get("surface_representation") == right.get("surface_representation"))
 
 

@@ -15,6 +15,8 @@ import numpy
 # These are implementation inputs, rather than incidental files in a checkout.
 IMPLEMENTATION_FILES = (
     Path("tools/diagnostics/verify_no_tv_minimum_lap.py"),
+    Path("tools/run/solve_minimum_time_line.py"),
+    Path("src/simplified_vehicle_models/solvers/minimum_time_run.py"),
     Path("src/simplified_vehicle_models/solvers/qss_spline_ocp.py"),
     Path("src/simplified_vehicle_models/solvers/profile_line_seed.py"),
     Path("src/simplified_vehicle_models/tracks/line_trajectory.py"),

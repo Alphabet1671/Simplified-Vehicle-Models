@@ -751,6 +751,61 @@ def _solve_correction(track, corridor, surface, mesh, spline, settings,
 
 
 def run(args) -> dict:
+    return _run_compat(args)
+
+
+def build_shared_spline_request(case, *, source: Path, formulation: Path, surface: Path,
+                                spacings, margin: float, half_width: float | None,
+                                basis_spacing: float, wall_cap_s: float) -> dict:
+    """Serialize public effective choices into the fixed harness worker schema."""
+    from tools.diagnostics.verify_no_tv_minimum_lap import build_attempt, source_hashes
+
+    if len(spacings) != 1:
+        raise ValueError("adapter requires exactly one explicit diagnostic mesh rung")
+    if case.start_treatment not in {"closed_flying", "open_rolling_10"}:
+        raise ValueError("unsupported start treatment")
+    if case.topology == "closed":
+        if case.start_treatment != "closed_flying" or case.start_speed_mps != 0.0:
+            raise ValueError("closed track requires closed_flying start treatment")
+    elif case.start_treatment != "open_rolling_10" or case.start_speed_mps <= 0.0:
+        raise ValueError("open track supports rolling diagnostic only; standing start is unsupported")
+    if isinstance(margin, bool) or not np.isfinite(margin) or margin < 0.0:
+        raise ValueError("margin must be finite and nonnegative")
+    if half_width is not None and (isinstance(half_width, bool) or
+                                   not np.isfinite(half_width) or half_width <= 0.0):
+        raise ValueError("half_width must be finite and positive")
+    if case.fallback_half_width_m != half_width:
+        raise ValueError("case and corridor half_width disagree")
+    from tools.diagnostics.no_tv_provenance import runtime_provenance
+    provenance = runtime_provenance(Path(__file__).resolve().parents[2])
+    input_hashes = source_hashes(source, formulation, surface)
+    request = build_attempt(
+        case, mesh_spacing_m=float(spacings[-1]), basis_spacing_m=float(basis_spacing),
+        maximum_iterations=3000, wall_cap_s=float(wall_cap_s), seed_name="centerline",
+        formulation=formulation, surface=surface, diagnostic_rungs=True,
+        provenance=provenance,
+    )
+    request["case"]["track"] = str(request["case"]["track"])
+    request.update({
+        "worker_kind": "no_tv_spline_v1",
+        "request_envelope_version": 1,
+        "mesh_spacings_m": [float(spacing) for spacing in spacings],
+        "corridor": {"margin_m": float(margin), "half_width_m": half_width},
+        "start_treatment": case.start_treatment,
+        "start_speed_mps": float(case.start_speed_mps),
+        "route_scope": "single_fine_rung_diagnostic",
+        "execution_identity": {
+            "corridor": {"margin_m": float(margin), "half_width_m": half_width},
+            "start_treatment": case.start_treatment,
+            "start_speed_mps": float(case.start_speed_mps),
+        },
+        "source_hashes": input_hashes,
+        "runtime_provenance": provenance["runtime"],
+    })
+    return request
+
+
+def _run_compat(args) -> dict:
     output = args.output.resolve()
     # Controller/output configuration is validated before loading a track,
     # solver work, cache writes, or output-directory creation.

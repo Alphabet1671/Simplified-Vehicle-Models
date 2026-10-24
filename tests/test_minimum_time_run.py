@@ -230,6 +230,50 @@ class MinimumTimeRunTests(unittest.TestCase):
             shared.assert_called_once()
             self.assertFalse(result["accepted"])
 
-
-if __name__ == "__main__":
-    unittest.main()
+    def test_standard_request_adapter_roundtrips_effective_configuration(self):
+        from tools.run.solve_minimum_time_line import build_shared_spline_request
+        from tools.diagnostics.verify_no_tv_minimum_lap import MatrixCase
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "track.xml"
+            formulation = root / "formulation.xml"
+            surface = root / "signed.npz"
+            source.write_text('<model schema-version="1.0" type="track-model"><data ref="geometry.csv" /></model>')
+            (root / "geometry.csv").write_text("distance,north,east\\n0,0,0\\n1,1,0\\n")
+            formulation.write_text('<formulation/>')
+            surface.write_bytes(b"surface")
+            case = MatrixCase("custom", source, "closed", "closed_flying", 0.0, None)
+            request = build_shared_spline_request(
+                case, source=source, formulation=formulation, surface=surface,
+                spacings=(2.5,), margin=0.23, half_width=None,
+                basis_spacing=10.0, wall_cap_s=12.0,
+            )
+            decoded = json.loads(json.dumps(request, allow_nan=False))
+            self.assertEqual(decoded["worker_kind"], "no_tv_spline_v1")
+            self.assertEqual(decoded["case"]["track"], str(source))
+            self.assertEqual(decoded["corridor"], {"margin_m": 0.23, "half_width_m": None})
+            self.assertEqual(decoded["execution_identity"]["corridor"], decoded["corridor"])
+            self.assertEqual(decoded["mesh_spacings_m"], [2.5])
+            self.assertEqual(decoded["basis_spacing_m"], 10.0)
+            self.assertEqual(decoded["start_treatment"], "closed_flying")
+            self.assertIn("git_head", decoded["provenance"])
+            self.assertTrue(decoded["source_hashes"])
+            from tools.diagnostics.verify_no_tv_minimum_lap import _validate_request_options
+            _validate_request_options(decoded)
+            from tools.diagnostics.verify_no_tv_minimum_lap import _same_refinement_conditions
+            left = {"request": dict(decoded), "actual_initializer": {"fingerprint": "same"},
+                    "surface_representation": "signed_transient_normalized_v1",
+                    "source_hashes_after": decoded["source_hashes"], "provenance_after": decoded["provenance"]}
+            right = {"request": dict(decoded), "actual_initializer": {"fingerprint": "same"},
+                     "surface_representation": "signed_transient_normalized_v1",
+                     "source_hashes_after": decoded["source_hashes"], "provenance_after": decoded["provenance"]}
+            self.assertTrue(_same_refinement_conditions(left, right))
+            right["request"]["corridor"] = {"margin_m": .24, "half_width_m": None}
+            self.assertFalse(_same_refinement_conditions(left, right))
+            right["request"] = dict(decoded, start_speed_mps=0.25)
+            self.assertFalse(_same_refinement_conditions(left, right))
+            for invalid in (dict(decoded, worker_kind="arbitrary"),
+                            dict(decoded, mystery=1),
+                            dict(decoded, mesh_spacings_m=[5.0, 2.0])):
+                with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                    _validate_request_options(invalid)

@@ -76,9 +76,22 @@ class NoTvMinimumLapHarnessTest(unittest.TestCase):
             basis_spacing_m=35., maximum_iterations=1, wall_cap_s=3., seed_name="centerline",
             formulation=Path("form.xml"), surface=Path("surface.npz"))
         harness._validate_request_options(base)
+        v1 = dict(base)
+        for key in ("request_schema_version", "schema_version", "energy_defect_scaling",
+                    "coefficient_coordinate_scale", "mesh_stations", "constraint_stations"):
+            v1.pop(key, None)
+        harness._validate_request_options(v1)
+        v1["schema_version"] = 1
+        harness._validate_request_options(v1)
+        v2 = dict(base, schema_version=2)
+        harness._validate_request_options(v2)
         mutations = [
+            ({"request_schema_version": 1, "schema_version": True}, "schema_version"),
+            ({"request_schema_version": 1, "schema_version": 1.0}, "schema_version"),
+            ({"request_schema_version": 1, "schema_version": 9}, "schema_version"),
+            ({"request_schema_version": 1, "schema_version": 2}, "conflicts"),
             ({"request_schema_version": True}, "schema"),
-            ({"request_schema_version": 1, "mesh_stations": [0., 1.]}, "schema v1"),
+            ({"request_schema_version": 1, "schema_version": 1, "mesh_stations": [0., 1.]}, "schema v1"),
             ({"mesh_stations": [0., 2., 1.]}, "strictly increasing"),
             ({"mesh_stations": [0., float("nan"), 2.]}, "finite"),
             ({"constraint_stations": [float("nan")]}, "finite"),

@@ -272,12 +272,16 @@ def _validate_request_options(request: dict) -> None:
     if isinstance(version, bool) or type(version) is not int or version not in (1, 2):
         raise ValueError("unsupported request_schema_version")
     v2_fields = {"energy_defect_scaling", "coefficient_coordinate_scale", "mesh_stations", "constraint_stations"}
+    if "schema_version" in request:
+        alias_version = request["schema_version"]
+        if isinstance(alias_version, bool) or type(alias_version) is not int or alias_version not in (1, 2):
+            raise ValueError("unsupported schema_version")
+        if alias_version != version:
+            raise ValueError("schema_version conflicts with request_schema_version")
     if version == 1 and any(key in request for key in v2_fields):
         raise ValueError("schema v1 request cannot contain schema v2 numerical fields")
     if version == 2 and not v2_fields.issubset(request):
         raise ValueError("schema v2 request is missing numerical option fields")
-    if "schema_version" in request and request["schema_version"] != version:
-        raise ValueError("schema_version conflicts with request_schema_version")
     energy_scaling = request.get("energy_defect_scaling", "legacy_reference_speed_v1")
     if type(energy_scaling) is not str or energy_scaling not in {"legacy_reference_speed_v1", "cell_length_v1"}:
         raise ValueError("energy_defect_scaling must be a supported solver scaling")

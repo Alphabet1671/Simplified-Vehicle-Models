@@ -514,6 +514,123 @@ class NoTvMinimumLapHarnessTest(unittest.TestCase):
             self.assertEqual(audit_bytes, (json.dumps(audit_document, sort_keys=True, separators=(",", ":"),
                 allow_nan=False) + "\n").encode("utf-8"))
 
+    def test_legacy_nested_cut_worker_audit_roundtrip(self):
+        import csv
+        from dataclasses import replace
+        from simplified_vehicle_models.compiler.compile import compile_formulation
+        from simplified_vehicle_models.formulations.point_mass import point_mass_view_of_planar
+        from simplified_vehicle_models.formulations.point_mass_capability import CapabilitySurface, save_capability_surface
+        from simplified_vehicle_models.formulations.point_mass_capability import capability_hash
+        from simplified_vehicle_models.solvers.run_manifest import load_run_manifest_v1
+        from simplified_vehicle_models.solvers.qss_spline_ocp import (
+            _reference_curve, SplineSolution, _SplineStateEvaluator,
+            TIME_QUADRATURE_NAME, _time_quadrature_metadata,
+        )
+        from simplified_vehicle_models.tracks.line_trajectory import ReferenceCurve, OffsetTrajectory
+        from simplified_vehicle_models.tracks.profile import load_track
+        from tools.diagnostics.no_tv_provenance import runtime_provenance
+        from tools.diagnostics.verify_no_tv_minimum_lap import source_hashes
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            geometry = root / "closed.csv"
+            with geometry.open("w", newline="", encoding="utf-8") as stream:
+                writer = csv.writer(stream)
+                writer.writerow(("distance", "x_north", "y_east", "heading_rad", "curvature"))
+                # Closed, positive-radius circular samples; last position repeats the first.
+                radius = 10.0
+                for index in range(17):
+                    angle = 2.0 * np.pi * index / 16
+                    writer.writerow((radius * angle, radius * np.sin(angle),
+                                     radius * (1.0 - np.cos(angle)), angle, 1.0 / radius))
+            track_xml = root / "closed.xml"
+            track_xml.write_text('''<model schema-version="1.0" id="legacy-closed" type="track-model" subtype="closed-xy-profile">
+  <metadata><title>Fresh closed circle</title></metadata><data ref="closed.csv"/>
+  <parameters><parameter name="is_closed" value="true"/><parameter name="terminal_segment_is_duplicate" value="true"/><parameter name="maximum_radius" value="10"/></parameters>
+</model>''', encoding="utf-8")
+            formulation = Path("models/formulations/iem24_murphy_real_planar_7dof.xml").resolve()
+            vehicle = point_mass_view_of_planar(compile_formulation(formulation).model)
+            surface = root / "capability.npz"
+            speeds = np.array([0., 5., 10., 20., 30.])
+            curvatures = np.array([-.2, -.1, 0., .1, .2])
+            save_capability_surface(CapabilitySurface(
+                speeds, curvatures, np.full((5, 5), 4.), np.full((5, 5), -4.),
+                np.full(5, 30.), capability_hash(vehicle)), surface)
+            base_case = replace(harness.default_cases()["mis_cut_open"], track=track_xml,
+                                fallback_half_width_m=1.5)
+            source_track = load_track(track_xml)
+            # Historical caller pattern: outer view open, nested path remains closed.
+            historical_nested_cut = replace(source_track, is_closed=False)
+            case = replace(base_case, topology="full_cut_open", start_treatment="open_rolling_10",
+                           start_speed_mps=10.)
+            expected_reference = _reference_curve(historical_nested_cut)
+            expected_direct = ReferenceCurve(historical_nested_cut)
+            self.assertFalse(expected_reference.interpolation_periodic)
+            self.assertTrue(expected_direct.interpolation_periodic)
+            self.assertFalse(expected_reference.is_closed)
+            self.assertTrue(expected_direct.is_closed)
+            request = harness.build_attempt(case, mesh_spacing_m=5., basis_spacing_m=35.,
+                maximum_iterations=1, wall_cap_s=3., seed_name="centerline",
+                formulation=formulation, surface=surface, diagnostic_rungs=True)
+            request.pop("track_problem_contract", None)
+            request["source_hashes"] = source_hashes(track_xml, formulation, surface)
+            request["provenance"] = runtime_provenance(Path.cwd())
+            request_path, result_path = root / "request.json", root / "result.json"
+            request_path.write_text(json.dumps(harness._json_safe(request), allow_nan=False), encoding="utf-8")
+            captured = {}
+            def audit_spy(track_arg, reference_arg, corridor_arg, **kwargs):
+                captured["track"] = track_arg
+                captured["reference"] = reference_arg
+                return harness.audit_track_geometry.__wrapped__(track_arg, reference_arg, corridor_arg, **kwargs)
+            def solve_spy(*args, **kwargs):
+                self.assertTrue((root / "geometry_audit_v1.json").is_file())
+                distance = np.asarray(args[3], dtype=float)
+                speed = np.full(len(distance), 10.)
+                zeros = np.zeros(len(distance))
+                spline = args[4]
+                trajectory = OffsetTrajectory(expected_reference, spline, np.zeros(spline.control_count))
+                midpoint = np.zeros(len(distance) - 1)
+                evaluator = _SplineStateEvaluator(trajectory, distance, speed, zeros, midpoint)
+                return SplineSolution(distance=distance, offset=zeros, heading_error=zeros,
+                    curvature=np.full(len(distance), .1), speed=speed, acceleration=zeros, lap_time=1.,
+                    status="Solve_Succeeded", iterations=0, maximum_violation=0.,
+                    coefficients=np.zeros(spline.control_count), trajectory=trajectory,
+                    midpoint_acceleration=midpoint, objective_value=1., state_evaluator=evaluator,
+                    control_representation="quadratic_acceleration_v1", time_quadrature=TIME_QUADRATURE_NAME,
+                    time_quadrature_metadata=_time_quadrature_metadata())
+            from simplified_vehicle_models.tracks.geometry_audit import audit_track_geometry as real_audit
+            def audit_spy(track_arg, reference_arg, corridor_arg, **kwargs):
+                captured.update(track=track_arg, reference=reference_arg)
+                return real_audit(track_arg, reference_arg, corridor_arg, **kwargs)
+            with patch.object(harness, "make_track_view", return_value=historical_nested_cut), \
+                 patch.object(harness, "audit_track_geometry", side_effect=audit_spy), \
+                 patch.object(harness, "solve_spline_line", side_effect=solve_spy):
+                harness._attempt_worker(str(request_path), str(result_path), str(root / "solution.npz"))
+            result = json.loads(result_path.read_text(encoding="utf-8"))
+            self.assertEqual(result["track_problem"]["status"], "legacy_diagnostic")
+            self.assertEqual(result["geometry_audit"]["problem_reference"]["contract_status"],
+                             "legacy_diagnostic")
+            audit_file = root / "geometry_audit_v1.json"
+            audit_doc = json.loads(audit_file.read_text(encoding="utf-8"))
+            self.assertTrue(audit_doc["audit"]["source"]["available"], audit_doc["audit"])
+            self.assertEqual(audit_doc["problem_reference"]["source_interpolation_periodic"],
+                             expected_reference.interpolation_periodic)
+            self.assertFalse(audit_doc["problem_reference"]["query_topology_closed"])
+            self.assertEqual((audit_doc["problem_reference"]["reference_start_m"],
+                              audit_doc["problem_reference"]["reference_end_m"]),
+                             (expected_reference.start, expected_reference.end))
+            self.assertFalse(captured["reference"].interpolation_periodic)
+            self.assertFalse(captured["reference"].is_closed)
+            self.assertTrue(captured["track"].path_coordinates.is_closed)
+            self.assertTrue((root / "trajectory_metadata.npz").is_file(), result)
+            self.assertIn("run_manifest", result, result)
+            manifest = load_run_manifest_v1(root)
+            member = next(item for item in manifest["transitive_dependencies"]
+                          if item["path"] == audit_file.name)
+            self.assertEqual(member["sha256"], __import__("hashlib").sha256(audit_file.read_bytes()).hexdigest())
+            self.assertFalse(result["accepted"])
+            self.assertFalse(result.get("evidence_complete", False))
+
     def test_worker_forwards_serialized_nondefault_options_and_records_realized_sites(self):
         class FakeSpline:
             control_count = 2

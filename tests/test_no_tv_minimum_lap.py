@@ -461,10 +461,27 @@ class NoTvMinimumLapHarnessTest(unittest.TestCase):
             request_path, result_path = root / "request.json", root / "result.json"
             artifact_path = root / "solution.npz"
             request_path.write_text(json.dumps(harness._json_safe(request), allow_nan=False), encoding="utf-8")
-            with patch.object(harness, "solve_spline_line", return_value=solution) as solve_mock:
+            from simplified_vehicle_models.tracks.geometry_audit import audit_track_geometry as original_audit
+            audit_seen = []
+            def audit_spy(track_arg, reference_arg, corridor_arg, **kwargs):
+                audit_seen.append(reference_arg)
+                return original_audit(track_arg, reference_arg, corridor_arg, **kwargs)
+            def solve_spy(*args, **kwargs):
+                self.assertTrue((root / "geometry_audit_v1.json").is_file(),
+                                "audit JSON must exist before NLP invocation")
+                return solution
+            with patch.object(harness, "audit_track_geometry", side_effect=audit_spy) as audit_mock, \
+                 patch.object(harness, "solve_spline_line", side_effect=solve_spy) as solve_mock:
                 harness._attempt_worker(str(request_path), str(result_path), str(artifact_path))
             result = json.loads(result_path.read_text(encoding="utf-8"))
             self.assertEqual(solve_mock.call_count, 1, result)
+            self.assertEqual(audit_mock.call_count, 1)
+            self.assertTrue((root / "geometry_audit_v1.json").is_file())
+            audit_document = json.loads((root / "geometry_audit_v1.json").read_text(encoding="utf-8"))
+            self.assertEqual(audit_document["version"], "geometry_audit_v1")
+            self.assertEqual(audit_document["claim"], "diagnostic_only")
+            self.assertEqual(result["geometry_audit"]["artifact"], "geometry_audit_v1.json")
+            self.assertEqual(result["geometry_audit"]["claim"], "diagnostic_only")
             self.assertEqual(result["status"], "Solve_Succeeded", result)
             self.assertFalse(result["accepted"])
             self.assertEqual(result["validation_status"], "incomplete")
@@ -484,6 +501,18 @@ class NoTvMinimumLapHarnessTest(unittest.TestCase):
             self.assertEqual(manifest["boundary_event_contract"]["sha256"], __import__("hashlib").sha256(
                 (root / manifest["boundary_event_contract"]["path"]).read_bytes()).hexdigest())
             self.assertTrue(manifest["transitive_dependencies"])
+            from simplified_vehicle_models.solvers.qss_spline_ocp import _reference_curve
+            expected_reference = _reference_curve(track)
+            self.assertEqual((audit_seen[0].start, audit_seen[0].end,
+                              audit_seen[0].interpolation_periodic),
+                             (expected_reference.start, expected_reference.end,
+                              expected_reference.interpolation_periodic))
+            audit_member = next(member for member in manifest["transitive_dependencies"]
+                                if member["path"] == "geometry_audit_v1.json")
+            audit_bytes = (root / audit_member["path"]).read_bytes()
+            self.assertEqual(audit_member["sha256"], __import__("hashlib").sha256(audit_bytes).hexdigest())
+            self.assertEqual(audit_bytes, (json.dumps(audit_document, sort_keys=True, separators=(",", ":"),
+                allow_nan=False) + "\n").encode("utf-8"))
 
     def test_worker_forwards_serialized_nondefault_options_and_records_realized_sites(self):
         class FakeSpline:
@@ -796,6 +825,10 @@ class NoTvMinimumLapHarnessTest(unittest.TestCase):
                 harness._attempt_worker(str(request_path), str(result_path), str(root / "solution.npz"))
             result = json.loads(result_path.read_text())
             self.assertFalse(result["accepted"]); self.assertFalse(result["solver_succeeded"])
+            audit_path = root / "geometry_audit_v1.json"
+            audit_document = json.loads(audit_path.read_text(encoding="utf-8"))
+            self.assertEqual(audit_document["claim"], "diagnostic_only")
+            self.assertEqual(result["geometry_audit"]["artifact"], audit_path.name)
             self.assertNotIn("artifact", result)
             self.assertEqual(result["failure_diagnostics"]["total_iterations"], 1)
             self.assertEqual(result["failure_diagnostics"]["physical_max_constraint_violation"], .25)

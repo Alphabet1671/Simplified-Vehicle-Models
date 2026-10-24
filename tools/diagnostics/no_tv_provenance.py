@@ -25,6 +25,7 @@ IMPLEMENTATION_FILES = (
     Path("src/simplified_vehicle_models/solvers/qss_spline_ocp.py"),
     Path("src/simplified_vehicle_models/solvers/profile_line_seed.py"),
     Path("src/simplified_vehicle_models/tracks/line_trajectory.py"),
+    Path("src/simplified_vehicle_models/tracks/geometry_audit.py"),
     Path("src/simplified_vehicle_models/solvers/line_validation.py"),
     Path("src/simplified_vehicle_models/formulations/point_mass_capability.py"),
     Path("src/simplified_vehicle_models/formulations/signed_capability.py"),

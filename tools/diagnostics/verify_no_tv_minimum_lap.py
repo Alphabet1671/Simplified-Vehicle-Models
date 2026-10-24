@@ -40,6 +40,7 @@ from simplified_vehicle_models.solvers.line_validation import (
 )
 from simplified_vehicle_models.solvers.capability_profile import capability_profile, matched_profile_replay
 from simplified_vehicle_models.tracks.line_trajectory import OffsetTrajectory
+from simplified_vehicle_models.tracks.geometry_audit import audit_track_geometry
 from simplified_vehicle_models.solvers.qss_line_ocp import QssSettings, build_mesh, track_sample
 from simplified_vehicle_models.solvers.qss_spline_ocp import initial_guess, solve_spline_line
 from simplified_vehicle_models.solvers.profile_line_seed import build_profile_line_seed
@@ -783,8 +784,8 @@ def _attempt_worker(request_path: str, result_path: str, artifact_path: str, sta
         track = make_track_view(case)
         pure_contract = None
         loaded_reference = None
+        from simplified_vehicle_models.solvers.qss_spline_ocp import _reference_curve
         if "track_problem_contract" in request:
-            from simplified_vehicle_models.tracks.line_trajectory import ReferenceCurve
             from simplified_vehicle_models.solvers.track_problem_contract import validate_problem_contract
             from simplified_vehicle_models.solvers.loaded_track_problem import preflight_loaded_problem
             pure_contract = validate_problem_contract(request["track_problem_contract"])
@@ -797,7 +798,7 @@ def _attempt_worker(request_path: str, result_path: str, artifact_path: str, sta
                                "solver_attempted": False, "failure_stage": "request_validation"})
                 mark_stage("failed")
                 return
-            loaded_reference = ReferenceCurve(track)
+            loaded_reference = _reference_curve(track)
         if all(hasattr(track, attribute) for attribute in
                ("source_reference_interpolation_periodic", "distance", "lap_length")):
             result["source_geometry"] = {
@@ -844,6 +845,50 @@ def _attempt_worker(request_path: str, result_path: str, artifact_path: str, sta
                 surface=surface, settings=settings, mesh=loaded_mesh,
                 constraint_sites=request.get("constraint_stations") or ())
         result["track_problem"] = loaded_contract
+        audit_path = Path(request_path).parent / "geometry_audit_v1.json"
+        audit_summary = {"version": "geometry_audit_v1", "claim": "diagnostic_only",
+                         "problem_reference": {"contract_status": loaded_contract["status"],
+                                               "contract_hash": loaded_contract.get("contract_hash")}}
+        try:
+            audit_reference = loaded_reference if loaded_reference is not None else _reference_curve(track)
+            audit_summary["problem_reference"].update({
+                "reference_start_m": float(audit_reference.start),
+                "reference_end_m": float(audit_reference.end),
+                "query_topology_closed": bool(audit_reference.is_closed),
+                "source_interpolation_periodic": bool(audit_reference.interpolation_periodic),
+                "fit_discrepancy": getattr(audit_reference, "fit_discrepancy", {}),
+            })
+            audit_payload = audit_track_geometry(track, audit_reference, corridor)
+        except Exception as audit_error:
+            audit_payload = None
+            audit_unavailable = f"{type(audit_error).__name__}: {audit_error}"
+        if audit_payload is None:
+            audit_document = {**audit_summary, "audit": {"available": False,
+                "unavailable": audit_unavailable, "claim": "diagnostic_only"}}
+        else:
+            audit_document = {**audit_summary, "audit": audit_payload}
+        audit_bytes = (json.dumps(_json_safe(audit_document), sort_keys=True,
+                                  separators=(",", ":"), allow_nan=False) + "\n").encode("utf-8")
+        # Exclusive creation is a durability gate; write/collision errors escape
+        # and NLP is never started without the durable diagnostic.
+        with audit_path.open("xb") as audit_handle:
+            audit_handle.write(audit_bytes)
+        if audit_payload is None:
+            audit_summary.update({"available": False, "unavailable": audit_unavailable,
+                                  "sha256": hashlib.sha256(audit_bytes).hexdigest(),
+                                  "artifact": audit_path.name})
+        else:
+            audit_summary.update({
+                "available": audit_payload.get("source", {}).get("available", False),
+                "sample_count": audit_payload.get("limitations", {}).get("sample_count"),
+                "sample_budget_requested": audit_payload.get("limitations", {}).get("sample_budget_requested"),
+                "pair_budget": audit_payload.get("crossings", {}).get("pair_budget"),
+                "pair_budget_truncated": audit_payload.get("crossings", {}).get("truncated"),
+                "unresolved": audit_payload.get("crossings", {}).get("unresolved"),
+                "sha256": hashlib.sha256(audit_bytes).hexdigest(),
+                "artifact": audit_path.name,
+            })
+        result["geometry_audit"] = audit_summary
         if loaded_contract["status"] in {"invalid", "unsupported"}:
             result.update({"status": "track_problem_" + loaded_contract["status"],
                            "validation_status": "not_run", "accepted": False, "solver_succeeded": False, "solve_completed": False,
@@ -1120,7 +1165,7 @@ def _attempt_worker(request_path: str, result_path: str, artifact_path: str, sta
                     root, track=snapshot_for(request["case"]["track"]),
                     formulation=snapshot_for(request["formulation"]),
                     chart=snapshot_for(request["surface"]),
-                    transitive_dependencies=input_members,
+                    transitive_dependencies=input_members + ([{"path": "geometry_audit_v1.json", "sha256": result["geometry_audit"]["sha256"]}] if result.get("geometry_audit", {}).get("artifact") == "geometry_audit_v1.json" else []),
                     effective_request={**effective, "track_problem": result.get("track_problem")},
                     runtime=actual_provenance["runtime"],
                     code={"git_head": actual_provenance["git_head"],

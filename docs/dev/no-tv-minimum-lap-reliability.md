@@ -104,6 +104,27 @@ The no-TV study's current readiness verdict remains **HOLD / incomplete**.
 
 ## Artifacts, provenance, and qualification protections
 
+### Geometry audit integration boundary
+
+Each worker attempts a bounded `geometry_audit_v1.json` diagnostic after loading
+its track, solver-consistent reference fit, and corridor, and before invoking the
+NLP. The report is canonical finite JSON with diagnostic-only claim and explicit
+sampling/pair-budget limitations; it is not a continuous certificate or a
+physical admission rule. An unavailable audit is recorded separately from
+unsupported geometry. Audit output remains present if the solver later fails;
+exclusive-write/collision errors prevent NLP execution rather than retrying the
+same path. When a trajectory-backed manifest is produced, its transitive
+identity dependency includes the audit bytes by SHA-256.
+
+The structured request-file interface is deliberately registered-case-only.
+For a custom `MatrixCase`, use the public Python builders and provide actual
+source paths and provenance; there is no arbitrary user-track CLI promise.
+Normalized explicit boundary contracts are supported only where the harness
+and solver enforce them; an otherwise normalized but unsupported execution is
+rejected during loaded preflight. This integration's real-geometry proof uses a
+mocked NLP result: it establishes audit ordering, serialization and manifest
+identity, not solver convergence or physical acceptance.
+
 Each attempt receives an exclusive output directory and writes `request.json`,
 `result.json`, and, after a solver return, `solution.npz`. It records
 `state_representation`, `time_quadrature`, serialized `time_metadata`, control

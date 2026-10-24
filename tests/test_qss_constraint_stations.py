@@ -288,4 +288,3 @@ class ConstraintStationTest(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 
-Width report: command `PYTHONPATH=src python3 -m unittest tests.test_qss_constraint_stations -q`; 7 tests run, 7 skipped (CasADi unavailable), 0 failures.

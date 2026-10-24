@@ -39,7 +39,6 @@ def _worker(request_path: str, result_path: str, artifact_path: str):
         from tools.diagnostics.verify_no_tv_minimum_lap import _attempt_worker
         _attempt_worker(request_path, result_path, artifact_path)
     except BaseException as error:
-        # Also capture failures before the harness reaches its own exception guard.
         try:
             _write_new(Path(result_path), {"status": "worker_exception", "accepted": False,
                        "solver_succeeded": False, "solve_completed": False,
@@ -51,10 +50,20 @@ def _worker(request_path: str, result_path: str, artifact_path: str):
 
 def _inventory(root: Path):
     entries = []
+    try:
+        stage = json.loads((root / "stage.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        stage = {}
+    complete = stage.get("stage") == "complete"
     for path in sorted(root.iterdir()):
         if path.is_file() and path.name != "artifacts.json":
-            data = path.read_bytes()
-            entries.append({"path": path.name, "status": "present", "size_bytes": len(data),
+            try:
+                data = path.read_bytes()
+            except OSError:
+                entries.append({"path": path.name, "status": "unreadable"})
+                continue
+            status = "complete" if complete and path.name in ("result.json", "solution.npz", "trajectory_metadata.npz") else "unknown_or_partial"
+            entries.append({"path": path.name, "status": status, "size_bytes": len(data),
                             "sha256": hashlib.sha256(data).hexdigest()})
     manifest = {"artifacts": entries, "evidence_complete": False}
     try:
@@ -64,112 +73,206 @@ def _inventory(root: Path):
     return manifest
 
 
-def run_request(request: dict, output_directory: str) -> dict:
-    """Run the fixed harness worker under a hard end-to-end wall deadline.
+def _read_stage(root: Path):
+    try:
+        value = json.loads((root / "stage.json").read_text(encoding="utf-8"))
+        return value if isinstance(value, dict) else {}
+    except (OSError, ValueError):
+        return {}
 
-    Private `_worker` is a test seam for importable spawn-safe fixtures and is
-    intentionally not read from request JSON.
-    """
-    started_at = time.monotonic()
-    request = _safe(request)
-    cap = request.get("wall_cap_s")
-    if isinstance(cap, bool) or not isinstance(cap, (int, float)) or not math.isfinite(cap) or cap <= 0:
-        raise ValueError("wall_cap_s must be finite and positive")
-    root = Path(output_directory)
-    root.mkdir(parents=True, exist_ok=False)
-    _deadline = started_at + float(cap)
-    if time.monotonic() >= _deadline:
-        raise TimeoutError("deadline elapsed before worker spawn")
-    request_path, result_path = root / "request.json", root / "result.json"
-    artifact_path = root / "solution.npz"
-    _write_new(request_path, request)
-    cancel_path = request.get("cancel_marker_path")
-    # Fixed worker; tests may replace this module-level Python seam, never JSON.
-    worker = _worker
-    proc = mp.get_context("spawn").Process(target=worker,
-        args=(str(request_path), str(result_path), str(artifact_path)))
-    proc.start()
-    deadline = _deadline
-    status = None
-    while proc.is_alive():
-        if cancel_path and Path(cancel_path).exists():
-            status = "cancelled"
-            break
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            status = "wall_timeout"
-            break
-        proc.join(min(0.05, remaining))
-    # Child completion is authoritative only if observed before the hard cap.
-    if status is None and time.monotonic() >= deadline:
-        status = "wall_timeout"
-    if status:
-        proc.terminate()
-        proc.join(0.25)
-        termination = "terminated"
-        if proc.is_alive():
-            if hasattr(proc, "kill"):
-                proc.kill()
-            proc.join(0.5)
-            termination = "killed" if not proc.is_alive() else "reap_failed"
-        active = _active_stage(root)
-        verdict = {"status": status, "accepted": False, "solver_succeeded": False,
-                   "solve_completed": active in ("validate", "export", "complete"), "evidence_complete": False,
-                   "stage": active, "termination": termination,
-                   "error_type": "TimeoutError" if status == "wall_timeout" else "Cancelled",
-                   "wall_cap_s": cap}
-        name = "timeout_result.json" if status == "wall_timeout" else "cancel_result.json"
-        try:
-            _write_new(root / name, verdict)
-        except FileExistsError:
-            pass
-        result = verdict
-    elif result_path.exists():
-        try:
-            result = json.loads(result_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            result = {"status": "worker_malformed_result", "accepted": False,
-                      "solver_succeeded": False, "solve_completed": False,
-                      "evidence_complete": False, "error_type": "WorkerResultError"}
-            try:
-                result["raw_result"] = result_path.read_text(encoding="utf-8")
-            except OSError:
-                pass
-        if not isinstance(result, dict):
-            result = {"status": "worker_malformed_result", "accepted": False,
-                      "solver_succeeded": False, "solve_completed": False,
-                      "evidence_complete": False, "error_type": "WorkerResultError"}
-        result.setdefault("solve_completed", bool(result.get("solver_succeeded")))
-        result.setdefault("evidence_complete", False)
-        result["accepted"] = False
-        if proc.exitcode not in (0, None):
-            result = {"status": "worker_exit_failure", "accepted": False,
-                      "solver_succeeded": False, "solve_completed": False,
-                      "evidence_complete": False, "error_type": "WorkerExit",
-                      "exitcode": proc.exitcode,
-                      "child_result": result}
-    else:
-        result = {"status": "worker_no_result", "accepted": False, "solver_succeeded": False,
-                  "solve_completed": False, "evidence_complete": False,
-                  "error_type": "WorkerExit", "exitcode": proc.exitcode}
-        _write_new(result_path, result)
+
+def _persist_result(root: Path, result: dict) -> dict:
     result["accepted"] = False
-    result.setdefault("solve_completed", bool(result.get("solver_succeeded")))
     result["evidence_complete"] = False
     try:
         _write_new(root / "supervisor_result.json", result)
     except FileExistsError:
-        # A pre-existing output is rejected before this point; this is defensive.
         result = {"status": "supervisor_result_collision", "accepted": False,
-                  "solve_completed": False, "evidence_complete": False}
+                  "solve_completed": bool(result.get("solve_completed")), "evidence_complete": False}
     manifest = _inventory(root)
     result["artifacts"] = manifest["artifacts"]
     return result
 
 
-def _active_stage(root: Path):
-    path = root / "stage.json"
+def _cleanup_process(proc):
+    """Best-effort bounded terminate/kill/reap, preserving any cleanup error."""
+    errors = []
+    if proc is None:
+        return "not_started", errors
     try:
-        return json.loads(path.read_text(encoding="utf-8")).get("stage", "setup")
-    except (OSError, ValueError):
-        return "setup"
+        alive = proc.is_alive()
+    except BaseException as error:
+        errors.append(f"is_alive: {type(error).__name__}: {error}")
+        alive = True
+    if not alive:
+        try:
+            proc.join(0)
+        except BaseException as error:
+            errors.append(f"join: {type(error).__name__}: {error}")
+        return "already_exited", errors
+    try:
+        proc.terminate()
+    except BaseException as error:
+        errors.append(f"terminate: {type(error).__name__}: {error}")
+    try:
+        proc.join(0.25)
+    except BaseException as error:
+        errors.append(f"join_after_terminate: {type(error).__name__}: {error}")
+    try:
+        alive = proc.is_alive()
+    except BaseException as error:
+        errors.append(f"is_alive_after_terminate: {type(error).__name__}: {error}")
+        alive = True
+    if alive:
+        try:
+            proc.kill()
+        except BaseException as error:
+            errors.append(f"kill: {type(error).__name__}: {error}")
+        try:
+            proc.join(0.5)
+        except BaseException as error:
+            errors.append(f"join_after_kill: {type(error).__name__}: {error}")
+        try:
+            alive = proc.is_alive()
+        except BaseException as error:
+            errors.append(f"is_alive_after_kill: {type(error).__name__}: {error}")
+            alive = True
+        return ("reap_failed" if alive else "killed"), errors
+    return "terminated", errors
+
+
+def run_request(request: dict, output_directory: str) -> dict:
+    """Run the fixed harness worker under a hard end-to-end wall deadline.
+
+    `_worker` is a private Python-only test seam; requests cannot choose code.
+    """
+    started_at = time.monotonic()
+    if not isinstance(request, dict):
+        raise TypeError("request must be a dict")
+    request = _safe(request)
+    cap = request.get("wall_cap_s")
+    if isinstance(cap, bool) or not isinstance(cap, (int, float)) or not math.isfinite(cap) or cap <= 0:
+        raise ValueError("wall_cap_s must be finite and positive")
+    deadline = started_at + float(cap)
+    root = Path(output_directory)
+    root.mkdir(parents=True, exist_ok=False)
+    request_path, result_path = root / "request.json", root / "result.json"
+    artifact_path = root / "solution.npz"
+    proc = None
+    started = False
+    status = None
+    cleanup_status = "not_started"
+    cleanup_errors = []
+    try:
+        _write_new(request_path, request)
+        if time.monotonic() >= deadline:
+            status = "wall_timeout"
+        else:
+            proc = mp.get_context("spawn").Process(target=_worker,
+                args=(str(request_path), str(result_path), str(artifact_path)))
+            try:
+                proc.start()
+                started = True
+            except BaseException as error:
+                status = "worker_start_failure"
+                cleanup_errors.append(f"start: {type(error).__name__}: {error}")
+        cancel_path = request.get("cancel_marker_path")
+        while started and status is None:
+            try:
+                if cancel_path and Path(cancel_path).exists():
+                    status = "cancelled"
+                    break
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    status = "wall_timeout"
+                    break
+                if not proc.is_alive():
+                    proc.join(0)
+                    if time.monotonic() >= deadline:
+                        status = "wall_timeout"
+                    break
+                proc.join(min(0.05, remaining))
+                if not proc.is_alive() and time.monotonic() >= deadline:
+                    status = "wall_timeout"
+            except BaseException as error:
+                status = "supervisor_error"
+                cleanup_errors.append(f"poll: {type(error).__name__}: {error}")
+        if started and status is None and time.monotonic() >= deadline:
+            status = "wall_timeout"
+    except BaseException as error:
+        status = "supervisor_error"
+        cleanup_errors.append(f"supervision: {type(error).__name__}: {error}")
+    finally:
+        if proc is not None:
+            if status is not None:
+                cleanup_status, errors = _cleanup_process(proc)
+                cleanup_errors.extend(errors)
+            elif started:
+                try:
+                    proc.join(0)
+                except BaseException as error:
+                    cleanup_errors.append(f"final_join: {type(error).__name__}: {error}")
+                    cleanup_status, errors = _cleanup_process(proc)
+                    cleanup_errors.extend(errors)
+                    status = "supervisor_error"
+
+    stage = _read_stage(root)
+    solve_completed = bool(stage.get("solve_completed"))
+    if status is not None:
+        result = {"status": status, "accepted": False, "solver_succeeded": False,
+                  "solve_completed": solve_completed, "evidence_complete": False,
+                  "stage": stage.get("stage", "setup"), "termination": cleanup_status,
+                  "error_type": "TimeoutError" if status == "wall_timeout" else status,
+                  "wall_cap_s": cap}
+        if cleanup_errors:
+            result["cleanup_errors"] = cleanup_errors
+        name = "timeout_result.json" if status == "wall_timeout" else "cancel_result.json" if status == "cancelled" else "supervisor_result.json"
+        if name != "supervisor_result.json":
+            try:
+                _write_new(root / name, result)
+            except FileExistsError:
+                pass
+    elif result_path.exists():
+        try:
+            raw = result_path.read_text(encoding="utf-8")
+            child = json.loads(raw)
+            if not isinstance(child, dict):
+                raise ValueError("worker result must be a JSON object")
+            result = child
+            result.setdefault("solve_completed", solve_completed or bool(result.get("solver_succeeded")))
+            result.setdefault("evidence_complete", False)
+            result["accepted"] = False
+            if proc.exitcode not in (0, None):
+                result = {"status": "worker_exit_failure", "accepted": False,
+                          "solver_succeeded": False, "solve_completed": solve_completed,
+                          "evidence_complete": False, "error_type": "WorkerExit",
+                          "exitcode": proc.exitcode, "child_result": child}
+        except (OSError, ValueError, TypeError) as error:
+            try:
+                raw = result_path.read_text(encoding="utf-8")
+            except OSError:
+                raw = ""
+            result = {"status": "worker_malformed_result", "accepted": False,
+                      "solver_succeeded": False, "solve_completed": solve_completed,
+                      "evidence_complete": False, "error_type": "WorkerResultError",
+                      "error": str(error), "raw_result": raw[:4096],
+                      "raw_result_path": result_path.name}
+    else:
+        exitcode = None
+        try:
+            exitcode = proc.exitcode if proc is not None else None
+        except BaseException:
+            pass
+        result = {"status": "worker_no_result", "accepted": False, "solver_succeeded": False,
+                  "solve_completed": solve_completed, "evidence_complete": False,
+                  "error_type": "WorkerExit", "exitcode": exitcode}
+        try:
+            _write_new(result_path, result)
+        except (FileExistsError, OSError):
+            pass
+    result["solve_completed"] = bool(result.get("solve_completed") or solve_completed)
+    if cleanup_errors:
+        result["cleanup_errors"] = cleanup_errors
+        if status is None:
+            result["supervisor_cleanup_warning"] = True
+    return _persist_result(root, result)

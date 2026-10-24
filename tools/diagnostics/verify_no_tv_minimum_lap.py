@@ -548,11 +548,12 @@ def _attempt_worker(request_path: str, result_path: str, artifact_path: str) -> 
     """Spawn-safe worker entry. All communication is filesystem based."""
     request = json.loads(Path(request_path).read_text(encoding="utf-8"))
     stage_path = Path(request_path).with_name("stage.json")
-    stage_state = {"stage": "setup", "events": []}
+    stage_state = {"stage": "setup", "events": [], "solve_completed": False}
     def mark_stage(name):
         now = time.monotonic()
         if stage_state["events"]:
             stage_state["events"][-1]["ended_monotonic"] = now
+        stage_state["solve_completed"] = bool(stage_state.get("solve_completed"))
         event = {"stage": name, "started_monotonic": now,
                  "soft_budget_s": request.get("stage_budgets_s", {}).get(name)}
         stage_state["stage"] = name
@@ -711,6 +712,7 @@ def _attempt_worker(request_path: str, result_path: str, artifact_path: str) -> 
         solution = solve_spline_line(track, corridor, surface, mesh, spline, settings, seed=seed, **solve_options)
         result["applied_numerical_options"] = dict(solve_options)
         result["solve_completed"] = True
+        stage_state["solve_completed"] = True
         mark_stage("export")
         source_grid = np.linspace(float(solution.distance[0]), float(solution.distance[-1]), 256)
         if getattr(solution, "trajectory", None) is not None and getattr(solution, "state_evaluator", None) is not None:

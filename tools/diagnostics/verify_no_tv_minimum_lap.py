@@ -1555,6 +1555,7 @@ def _same_refinement_conditions(left: dict, right: dict) -> bool:
             and a.get("settings") == b.get("settings") and a.get("seed") == b.get("seed")
             and _request_policy_identity(a) == _request_policy_identity(b)
             and a.get("initializer") == b.get("initializer") and identity_matches
+            and left.get("physical_constraint_identity") == right.get("physical_constraint_identity")
             and a.get("provenance") == b.get("provenance")
             and a.get("convergence_criteria") == b.get("convergence_criteria")
             and _attempt_sources_unchanged(left) and _attempt_sources_unchanged(right)
@@ -1564,6 +1565,7 @@ def _same_refinement_conditions(left: dict, right: dict) -> bool:
             and a.get("start_speed_mps") == b.get("start_speed_mps")
             and a.get("execution_identity") == b.get("execution_identity")
             and _track_problem_identity_matches(left, right)
+            and left.get('physical_constraint_identity') == right.get('physical_constraint_identity')
             and left.get("surface_representation") == right.get("surface_representation"))
 
 

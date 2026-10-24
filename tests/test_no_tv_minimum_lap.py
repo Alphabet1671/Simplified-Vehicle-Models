@@ -18,6 +18,39 @@ class NoTvMinimumLapHarnessTest(unittest.TestCase):
                     wall_cap_s=3.0, seed_name="centerline", formulation=Path("form.xml"),
                     surface=Path("surface.npz"))
         legacy = harness.build_attempt(case, **base)
+        self.assertNotIn("track_problem_contract", legacy)
+        contract = {"schema": "track_problem_v1", "topology": "open", "source_stations": [0., 1.],
+                    "lower_offset": [-1., -1.], "upper_offset": [1., 1.],
+                    "boundary": {"start_mode": "rolling", "start_speed_mps": 10., "finish_mode": "free"}}
+        explicit = harness.build_attempt(case, **base, track_problem_contract=contract)
+        self.assertEqual(explicit["track_problem_contract"]["boundary"]["start_speed_mps"], 10.)
+        self.assertEqual(explicit["case"]["start_speed_mps"], 10.)
+        explicit_speed = dict(contract, boundary={"start_mode": "rolling", "start_speed_mps": 3., "finish_mode": "free"})
+        derived = harness.build_attempt(case, **base, track_problem_contract=explicit_speed)
+        self.assertEqual(derived["case"]["start_speed_mps"], 3.)
+        self.assertEqual(derived["settings"]["start_speed"], 3.)
+        from tools.run.solve_minimum_time_line import build_shared_spline_ladder_request
+        with patch.object(harness, "source_hashes", return_value={"input": "hash"}), \
+             patch("tools.diagnostics.no_tv_provenance.runtime_provenance", return_value={"runtime": {"python": "fixture"}}):
+            ladder = build_shared_spline_ladder_request(case, source=case.track, formulation=Path("form.xml"),
+                surface=Path("surface.npz"), spacings=(5., 2.5), margin=.1, half_width=case.fallback_half_width_m,
+                basis_spacing=35., wall_cap_s=3., track_problem_contract=explicit_speed)
+        self.assertEqual(ladder["track_problem_contract"], ladder["rung_requests"][0]["track_problem_contract"])
+        self.assertEqual(ladder["case"]["start_speed_mps"], 3.)
+        harness._validate_request_options(ladder)
+        drifted = json.loads(json.dumps(ladder))
+        drifted["track_problem_contract"]["boundary"]["start_speed_mps"] = 4.
+        with self.assertRaisesRegex(ValueError, "outer and rung"):
+            harness._validate_request_options(drifted)
+        closed_case = harness.default_cases()["mis_closed"]
+        closed_contract = {"schema": "track_problem_v1", "topology": "closed", "source_stations": [0., 1.],
+            "lower_offset": [-1., -1.], "upper_offset": [1., 1.],
+            "boundary": {"start_mode": "flying", "start_speed_mps": 3., "finish_mode": "periodic"}}
+        closed_request = harness.build_attempt(closed_case, **base, track_problem_contract=closed_contract)
+        self.assertEqual(closed_request["case"]["start_speed_mps"], 0.)
+        self.assertEqual(closed_request["settings"]["start_speed"], 0.)
+        wire = json.loads(json.dumps(harness._json_safe(explicit), allow_nan=False))
+        self.assertEqual(wire["track_problem_contract"], explicit["track_problem_contract"])
         self.assertEqual(legacy["energy_defect_scaling"], "legacy_reference_speed_v1")
         self.assertEqual(legacy["coefficient_coordinate_scale"], 1.0)
         options = dict(energy_defect_scaling="cell_length_v1", coefficient_coordinate_scale=0.1,
@@ -42,6 +75,14 @@ class NoTvMinimumLapHarnessTest(unittest.TestCase):
                 loaded = harness._load_structured_request(request_file, formulation=Path("form.xml"),
                     surface=Path("surface.npz"))
             self.assertEqual(loaded["energy_defect_scaling"], "cell_length_v1")
+            request_file.write_text(json.dumps({"case": "acceleration", "mesh_spacing_m": 5.,
+                "basis_spacing_m": 35., "maximum_iterations": 1, "wall_cap_s": 3.,
+                "seed_name": "centerline", "track_problem_contract": contract}), encoding="utf-8")
+            with patch.object(harness, "runtime_provenance", return_value={"git_head": "fixture"}), \
+                 patch.object(harness, "source_hashes", return_value={"fixture": "hash"}):
+                loaded_contract = harness._load_structured_request(request_file, formulation=Path("form.xml"),
+                    surface=Path("surface.npz"))
+            self.assertEqual(loaded_contract["track_problem_contract"]["schema"], "track_problem_v1")
             legacy_request = dict(loaded)
             for key in ("request_schema_version", "energy_defect_scaling", "coefficient_coordinate_scale",
                         "mesh_stations", "constraint_stations"):
@@ -346,6 +387,103 @@ class NoTvMinimumLapHarnessTest(unittest.TestCase):
                 basis_spacing_m=35.0, maximum_iterations=7, wall_cap_s=3.0,
                 seed_name="centerline", formulation=Path("form.xml"), surface=Path("surface.npz"),
                 seed_profile="bad")
+
+    def test_explicit_contract_worker_fresh_manifest_roundtrip(self):
+        import csv
+        from dataclasses import replace
+        from simplified_vehicle_models.compiler.compile import compile_formulation
+        from simplified_vehicle_models.formulations.point_mass import point_mass_view_of_planar
+        from simplified_vehicle_models.formulations.point_mass_capability import CapabilitySurface, save_capability_surface
+        from simplified_vehicle_models.solvers.run_manifest import load_run_manifest_v1
+        from simplified_vehicle_models.solvers.track_problem_contract import validate_problem_contract
+        from simplified_vehicle_models.tracks.profile import load_track
+        from simplified_vehicle_models.tracks.line_trajectory import ReferenceCurve, OffsetTrajectory
+        from simplified_vehicle_models.tracks.offset_spline import OffsetSpline
+        from simplified_vehicle_models.solvers.qss_spline_ocp import (
+            SplineSolution, _SplineStateEvaluator, TIME_QUADRATURE_NAME, _time_quadrature_metadata,
+        )
+        from simplified_vehicle_models.formulations.point_mass_capability import capability_hash
+        from tools.diagnostics.no_tv_provenance import runtime_provenance
+        from tools.diagnostics.verify_no_tv_minimum_lap import source_hashes
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            geometry = root / "geometry.csv"
+            with geometry.open("w", newline="", encoding="utf-8") as stream:
+                writer = csv.writer(stream)
+                writer.writerow(("distance", "x_north", "y_east", "heading_rad", "curvature"))
+                for station in range(11):
+                    writer.writerow((station, station, 0., 0., 0.))
+            track_xml = root / "straight.xml"
+            track_xml.write_text('''<model schema-version="1.0" id="fresh-straight" type="track-model" subtype="open-xy-profile">
+  <metadata><title>Fresh 10m open straight</title></metadata><data ref="geometry.csv"/>
+  <parameters><parameter name="is_closed" value="false"/><parameter name="terminal_segment_is_duplicate" value="false"/><parameter name="maximum_radius" value="100000"/></parameters>
+</model>''', encoding="utf-8")
+            formulation = Path("models/formulations/iem24_murphy_real_planar_7dof.xml").resolve()
+            vehicle = point_mass_view_of_planar(compile_formulation(formulation).model)
+            surface = root / "fresh-capability.npz"
+            chart_speed = np.array([0., 5., 10., 20., 30.])
+            chart_curvature = np.array([-.2, -.1, 0., .1, .2])
+            save_capability_surface(CapabilitySurface(
+                chart_speed, chart_curvature, np.full((5, 5), 4.), np.full((5, 5), -4.),
+                np.full(5, 30.), capability_hash(vehicle)), surface)
+            case = replace(harness.default_cases()["acceleration"], track=track_xml,
+                           topology="open", start_speed_mps=10., start_treatment="open_rolling_10",
+                           fallback_half_width_m=2.)
+            track = harness.make_track_view(case)
+            reference = ReferenceCurve(track)
+            corridor = harness.corridor_from_track(track, margin=.1, half_width=2.)
+            contract = {"schema": "track_problem_v1", "topology": "open",
+                "source_stations": reference.source_station.tolist(),
+                "lower_offset": np.asarray(corridor.minimum, dtype=float).tolist(),
+                "upper_offset": np.asarray(corridor.maximum, dtype=float).tolist(),
+                "boundary": {"start_mode": "rolling", "start_speed_mps": 10., "finish_mode": "free"}}
+            request = harness.build_attempt(case, mesh_spacing_m=5., basis_spacing_m=35., maximum_iterations=1,
+                wall_cap_s=3., seed_name="centerline", formulation=formulation, surface=surface,
+                diagnostic_rungs=True, track_problem_contract=contract)
+            request["source_hashes"] = source_hashes(case.track, formulation, surface)
+            request["provenance"] = runtime_provenance(Path.cwd())
+
+            spline = OffsetSpline(track, 35.)
+            coefficients = np.zeros(spline.control_count)
+            trajectory = OffsetTrajectory(reference, spline, coefficients)
+            distance = np.array([0., 5., 10.])
+            speed = np.full(3, 10.)
+            acceleration = np.zeros(3)
+            midpoint = np.zeros(2)
+            evaluator = _SplineStateEvaluator(trajectory, distance, speed, acceleration, midpoint)
+            solution = SplineSolution(distance=distance, offset=np.zeros(3), heading_error=np.zeros(3),
+                curvature=np.zeros(3), speed=speed, acceleration=acceleration, lap_time=1.,
+                status="Solve_Succeeded", iterations=0, maximum_violation=0., coefficients=coefficients,
+                trajectory=trajectory, midpoint_acceleration=midpoint, objective_value=1.,
+                state_evaluator=evaluator, control_representation="quadratic_acceleration_v1",
+                time_quadrature=TIME_QUADRATURE_NAME, time_quadrature_metadata=_time_quadrature_metadata())
+            request_path, result_path = root / "request.json", root / "result.json"
+            artifact_path = root / "solution.npz"
+            request_path.write_text(json.dumps(harness._json_safe(request), allow_nan=False), encoding="utf-8")
+            with patch.object(harness, "solve_spline_line", return_value=solution) as solve_mock:
+                harness._attempt_worker(str(request_path), str(result_path), str(artifact_path))
+            result = json.loads(result_path.read_text(encoding="utf-8"))
+            self.assertEqual(solve_mock.call_count, 1, result)
+            self.assertEqual(result["status"], "Solve_Succeeded", result)
+            self.assertFalse(result["accepted"])
+            self.assertEqual(result["validation_status"], "incomplete")
+            self.assertFalse(result.get("evidence_complete", False))
+            self.assertTrue((root / "trajectory_metadata.npz").is_file())
+            manifest = load_run_manifest_v1(root)
+            effective = json.loads((root / manifest["effective_request"]["path"]).read_text(encoding="utf-8"))
+            boundary = json.loads((root / manifest["boundary_event_contract"]["path"]).read_text(encoding="utf-8"))
+            expected = validate_problem_contract(contract)
+            for identity in (effective["track_problem"], boundary["track_problem"]):
+                self.assertEqual(identity["status"], "supported")
+                self.assertEqual(identity["enforcement"], "requested_boundary_enforced")
+                self.assertEqual(identity["contract_hash"], expected["normalized_hash"])
+                self.assertEqual(identity["normalized_contract"], expected["normalized_contract"])
+            self.assertEqual(manifest["effective_request"]["sha256"], __import__("hashlib").sha256(
+                (root / manifest["effective_request"]["path"]).read_bytes()).hexdigest())
+            self.assertEqual(manifest["boundary_event_contract"]["sha256"], __import__("hashlib").sha256(
+                (root / manifest["boundary_event_contract"]["path"]).read_bytes()).hexdigest())
+            self.assertTrue(manifest["transitive_dependencies"])
 
     def test_worker_forwards_serialized_nondefault_options_and_records_realized_sites(self):
         class FakeSpline:

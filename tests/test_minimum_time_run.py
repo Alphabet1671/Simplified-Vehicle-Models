@@ -696,3 +696,107 @@ class MinimumTimeRunTests(unittest.TestCase):
                  mock.patch.object(harness, "QssSettings", side_effect=RuntimeError("stop after settings")) as settings_spy:
                 harness._attempt_worker(str(request_path), str(open_result_path), str(artifact_path))
             self.assertEqual(settings_spy.call_args.kwargs["start_speed"], 7.25)
+
+    def test_transport_contract_single_ladder_identity_immutable(self):
+        from tools.run.solve_minimum_time_line import build_shared_spline_ladder_request
+        from tools.diagnostics.verify_no_tv_minimum_lap import MatrixCase, _validate_request_options
+        from simplified_vehicle_models.solvers.track_problem_contract import validate_problem_contract
+        import numpy as np
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, formulation, surface = root / "track.xml", root / "form.xml", root / "chart.npz"
+            source.write_text("<track/>"); formulation.write_text("<form/>"); surface.write_bytes(b"chart")
+            raw = {"schema": "track_problem_v1", "topology": "open", "source_stations": [0., 1., 2.],
+                "lower_offset": [-1., -1., -1.], "upper_offset": [1., 1., 1.],
+                "boundary": {"start_mode": "rolling", "start_speed_mps": 3., "finish_mode": "free"}}
+            original = json.loads(json.dumps(raw))
+            case = MatrixCase("rolling", source, "open", "open_rolling_10", 0.5, 1.0, "diagnostic")
+            with mock.patch("tools.diagnostics.verify_no_tv_minimum_lap.source_hashes", return_value={"input": "hash"}), \
+                 mock.patch("tools.diagnostics.no_tv_provenance.runtime_provenance", return_value={"runtime": {"python": "test"}}):
+                request = build_shared_spline_ladder_request(case, source=source, formulation=formulation, surface=surface,
+                    spacings=(5., 2.5), margin=.1, half_width=1., basis_spacing=35., wall_cap_s=3.,
+                    track_problem_contract=raw)
+            self.assertEqual(raw, original)
+            expected = validate_problem_contract(raw)
+            self.assertEqual(request["case"]["start_speed_mps"], 3.)
+            self.assertEqual(request["settings"]["start_speed"], 3.)
+            self.assertEqual(request["track_problem_contract"], expected["normalized_contract"])
+            for rung in request["rung_requests"]:
+                self.assertEqual(rung["track_problem_contract"], expected["normalized_contract"])
+            _validate_request_options(request)
+            drifted = json.loads(json.dumps(request))
+            drifted["rung_requests"][1]["track_problem_contract"]["boundary"]["start_speed_mps"] = 4.
+            with self.assertRaisesRegex(ValueError, "outer and rung"):
+                _validate_request_options(drifted)
+            malformed = dict(raw, boundary=dict(raw["boundary"], start_speed_mps=-1.))
+            with mock.patch("tools.diagnostics.verify_no_tv_minimum_lap.source_hashes", side_effect=AssertionError("hashes must not run")):
+                with self.assertRaisesRegex(ValueError, "invalid track_problem_contract"):
+                    build_shared_spline_ladder_request(case, source=source, formulation=formulation, surface=surface,
+                        spacings=(5.,), margin=.1, half_width=1., basis_spacing=35., wall_cap_s=3.,
+                        track_problem_contract=malformed)
+
+    def test_public_closed_periodic_contract_preserves_legacy_case_on_builder(self):
+        from tools.run.solve_minimum_time_line import _prepare_public_spline_request_in_worker
+        contract = {"schema": "track_problem_v1", "topology": "closed", "source_stations": [0., 1., 2.],
+            "lower_offset": [-1., -1., -1.], "upper_offset": [1., 1., 1.],
+            "boundary": {"start_mode": "flying", "start_speed_mps": 3., "finish_mode": "periodic"}}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); request_path = root / "request.json"; result_path = root / "result.json"
+            track_path = root / "closed.xml"
+            track_path.write_text('<model schema-version="1.0" type="track-model"><data ref="geometry.csv"/></model>')
+            (root / "geometry.csv").write_text("distance,north,east\\n0,0,0\\n1,1,0\\n")
+            request = {"worker_kind": "public_spline_setup_v1", "wall_cap_s": 3., "track": str(track_path),
+                "formulation": str(root / "form.xml"), "surface": str(root / "chart.npz"), "output": str(root / "out"),
+                "margin": .1, "half_width": 2., "spacings": [5., 2.5], "offset_spacing": 35., "path_smoothing": 0.,
+                "track_problem_contract": contract}
+            request_path.write_text(json.dumps(request))
+            from tools.run.solve_minimum_time_line import _public_spline_worker_request
+            args = type("Args", (), {k: request[k] for k in request if k != "worker_kind"})()
+            with mock.patch("tools.run.solve_minimum_time_line.load_track",
+                            return_value=type("Track", (), {"is_closed": True})()), \
+                 mock.patch("tools.run.solve_minimum_time_line._validate_output_paths"), \
+                 mock.patch("tools.run.solve_minimum_time_line._validate_track_for_line_pipeline"), \
+                 mock.patch("tools.run.solve_minimum_time_line.build_shared_spline_ladder_request",
+                            return_value={"track_problem_contract": contract, "case": {"start_speed_mps": 0.},
+                                "settings": {"start_speed": 0.}, "rung_requests": []}) as builder:
+                built = _public_spline_worker_request(args)
+            self.assertEqual(built["case"]["start_speed_mps"], 0.)
+            self.assertEqual(built["settings"]["start_speed"], 0.)
+            builder.assert_called_once()
+            self.assertEqual(builder.call_args.kwargs["track_problem_contract"], contract)
+
+    def test_public_worker_contract_none_preserves_namespace_defaults(self):
+        from tools.run.solve_minimum_time_line import _public_spline_worker_request
+        args = type("Args", (), {"track": "ignored", "output": "ignored", "formulation": "ignored",
+            "surface": "ignored", "margin": .1, "half_width": None, "spacings": [5., 2.5],
+            "offset_spacing": 35., "path_smoothing": 0.})()
+        with mock.patch("tools.run.solve_minimum_time_line.load_track", return_value=type("Track", (), {"is_closed": True})()), \
+             mock.patch("tools.run.solve_minimum_time_line._validate_output_paths"), \
+             mock.patch("tools.run.solve_minimum_time_line._validate_track_for_line_pipeline"), \
+             mock.patch("tools.run.solve_minimum_time_line.build_shared_spline_ladder_request", return_value={"legacy": True}) as builder:
+            self.assertEqual(_public_spline_worker_request(args), {"legacy": True})
+        self.assertIsNone(builder.call_args.kwargs["track_problem_contract"])
+
+    def test_public_worker_pure_contract_gate_precedes_input_preflight(self):
+        from tools.run.solve_minimum_time_line import _prepare_public_spline_request_in_worker
+        contract = {"schema": "track_problem_v1", "topology": "open", "source_stations": [0., 1., 2.],
+            "lower_offset": [-1., -1., -1.], "upper_offset": [1., 1., 1.],
+            "boundary": {"start_mode": "rolling", "start_speed_mps": -1., "finish_mode": "free"}}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); request_path = root / "request.json"; result_path = root / "result.json"
+            request = {"worker_kind": "public_spline_setup_v1", "wall_cap_s": 3., "track": str(root / "missing.xml"),
+                "formulation": str(root / "missing-form.xml"), "surface": str(root / "missing-chart.npz"),
+                "output": str(root / "out"), "margin": .1, "half_width": 1., "spacings": [5.],
+                "offset_spacing": 35., "path_smoothing": 0., "track_problem_contract": contract}
+            request_path.write_text(json.dumps(request))
+            with mock.patch("simplified_vehicle_models.solvers.input_preflight.preflight_inputs",
+                            side_effect=AssertionError("filesystem admission must not run")), \
+                 mock.patch("tools.run.solve_minimum_time_line._validate_output_paths",
+                            side_effect=AssertionError("output admission must not run")), \
+                 mock.patch("tools.diagnostics.verify_no_tv_minimum_lap._attempt_ladder_worker",
+                            side_effect=AssertionError("solver must not run")):
+                _prepare_public_spline_request_in_worker(request, str(request_path), str(result_path), str(root / "solution.npz"))
+            result = json.loads(result_path.read_text())
+            self.assertEqual(result["status"], "track_problem_invalid")
+            self.assertEqual(result["validation_status"], "not_run")
+            self.assertFalse(result["solver_attempted"])

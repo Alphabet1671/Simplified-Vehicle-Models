@@ -766,13 +766,30 @@ def run(args) -> dict:
 def _public_spline_worker_request(args) -> dict:
     """Load the real track and derive all effective request data inside worker."""
     from tools.diagnostics.verify_no_tv_minimum_lap import MatrixCase
+    track_contract = getattr(args, "track_problem_contract", None)
+    contract_check = None
+    if track_contract is not None:
+        from simplified_vehicle_models.solvers.track_problem_contract import validate_problem_contract
+        contract_check = validate_problem_contract(track_contract)
+        if contract_check["status"] == "invalid":
+            raise ValueError("invalid track_problem_contract: " + ",".join(contract_check["reasons"]))
+        track_contract = contract_check["normalized_contract"]
     track_path = Path(args.track).resolve()
     _validate_output_paths(track_path, Path(args.output).resolve(), reject_existing=False)
     track = load_track(track_path)
     half_width = args.half_width
     _validate_track_for_line_pipeline(track, half_width)
     treatment = "closed_flying" if track.is_closed else "open_rolling_10"
-    start_speed = 0.0 if track.is_closed else 0.5
+    boundary = track_contract["boundary"] if track_contract is not None else None
+    explicit_open_rolling = (boundary is not None and not track.is_closed
+                             and boundary["start_mode"] == "rolling" and boundary["finish_mode"] == "free")
+    if track_contract is not None and track_contract["topology"] == "closed":
+        # The existing closed OCP does not impose the newly declared positive start.
+        # Keep its historical case and let loaded preflight return unsupported.
+        start_speed = 0.0
+    else:
+        start_speed = (float(boundary["start_speed_mps"]) if explicit_open_rolling
+                       else (0.0 if track.is_closed else 0.5))
     case = MatrixCase(track_path.stem, track_path, "closed" if track.is_closed else "open",
                       treatment, start_speed, half_width,
                       None if track.is_closed else "rolling open-track diagnostic; not a standing-start event")
@@ -781,7 +798,8 @@ def _public_spline_worker_request(args) -> dict:
         case, source=track_path, formulation=Path(args.formulation).resolve(),
         surface=Path(args.surface).resolve(), spacings=spacings,
         margin=args.margin, half_width=half_width, basis_spacing=args.offset_spacing,
-        wall_cap_s=args.wall_cap_s,
+        wall_cap_s=getattr(args, "wall_cap_s", 900.0),
+        track_problem_contract=track_contract,
     )
 
 
@@ -795,7 +813,7 @@ def _run_public_shared_spline(args) -> dict:
            "margin": float(args.margin), "half_width": args.half_width,
            "spacings": list(_parse_spacings(args.spacings)),
            "offset_spacing": float(DEFAULT_SPLINE_CONTROL_SPACING if args.offset_spacing is None else args.offset_spacing),
-           "path_smoothing": float(args.path_smoothing)}
+           "path_smoothing": float(args.path_smoothing), **({"track_problem_contract": getattr(args, "track_problem_contract")} if getattr(args, "track_problem_contract", None) is not None else {})}
     result = run_request(raw, str(output / ".supervision"))
     return result.get("public_summary", result)
 
@@ -831,13 +849,47 @@ def _prepare_public_spline_request_in_worker(request, request_path, result_path,
     from tools.diagnostics.verify_no_tv_minimum_lap import _attempt_ladder_worker
     root = Path(request_path).parent
     try:
+        contract = request.get("track_problem_contract")
+        checked_contract = None
+        if contract is not None:
+            from simplified_vehicle_models.solvers.track_problem_contract import validate_problem_contract
+            checked_contract = validate_problem_contract(contract)
+            if checked_contract["status"] == "invalid":
+                _write_new(Path(result_path), {"status": "track_problem_invalid", "accepted": False,
+                    "validation_status": "not_run", "solver_attempted": False,
+                    "track_problem": {"status": "invalid", "reasons": checked_contract["reasons"],
+                        "normalized_contract": None, "contract_hash": checked_contract.get("normalized_hash")}})
+                _publish_worker_stage(root, "failed")
+                return
+            if (checked_contract["normalized_contract"]["topology"] == "closed"
+                    and checked_contract["normalized_contract"]["boundary"]["start_speed_mps"] > 0.0):
+                reasons = sorted(set(checked_contract["reasons"] + ["requested_boundary_not_enforced"]))
+                _write_new(Path(result_path), {"status": "track_problem_unsupported", "accepted": False,
+                    "validation_status": "not_run", "solver_attempted": False,
+                    "track_problem": {"status": "unsupported", "reasons": reasons,
+                        "normalized_contract": checked_contract["normalized_contract"],
+                        "contract_hash": checked_contract["normalized_hash"],
+                        "sampling": "diagnostic_only_not_continuous_certificate"}})
+                _publish_worker_stage(root, "failed")
+                return
+            request = dict(request, track_problem_contract=checked_contract["normalized_contract"])
         stage = root / "stage.json"
         _publish_worker_stage(root, "setup")
         args = argparse.Namespace(**{k: request[k] for k in
-            ("track", "formulation", "surface", "output", "margin", "half_width", "spacings", "offset_spacing", "path_smoothing", "wall_cap_s")})
+            ("track", "formulation", "surface", "output", "margin", "half_width", "spacings", "offset_spacing", "path_smoothing", "wall_cap_s", "track_problem_contract") if k in request})
         if float(request["path_smoothing"]) != 0.0:
             raise ValueError("smoothing is not permitted for a spline trajectory export")
         _validate_output_paths(Path(request["track"]), Path(request["output"]), reject_existing=True)
+        if checked_contract is not None and checked_contract["status"] == "unsupported":
+            outcome = {"status": "track_problem_unsupported", "accepted": False,
+                "validation_status": "not_run", "solver_attempted": False,
+                "track_problem": {"status": "unsupported", "reasons": checked_contract["reasons"],
+                    "normalized_contract": checked_contract["normalized_contract"],
+                    "contract_hash": checked_contract["normalized_hash"],
+                    "sampling": "diagnostic_only_not_continuous_certificate"}}
+            _write_new(Path(result_path), outcome)
+            _publish_worker_stage(root, "failed")
+            return
         from simplified_vehicle_models.solvers.input_preflight import preflight_inputs
         unavailable = preflight_inputs((
             ("track", request["track"]), ("formulation", request["formulation"]),
@@ -895,34 +947,51 @@ def _prepare_public_spline_request_in_worker(request, request_path, result_path,
 
 def build_shared_spline_request(case, *, source: Path, formulation: Path, surface: Path,
                                 spacings, margin: float, half_width: float | None,
-                                basis_spacing: float, wall_cap_s: float) -> dict:
+                                basis_spacing: float, wall_cap_s: float,
+                                track_problem_contract: dict | None = None) -> dict:
     """Compatibility single-rung adapter; preserve its strict v1 contract."""
     if len(spacings) != 1:
         raise ValueError("adapter requires exactly one explicit diagnostic mesh rung")
     return _build_shared_spline_ladder_request(
         case, source=source, formulation=formulation, surface=surface, spacings=spacings,
         margin=margin, half_width=half_width, basis_spacing=basis_spacing, wall_cap_s=wall_cap_s,
-        _single_rung=True,
+        _single_rung=True, track_problem_contract=track_problem_contract,
     )
 
 
 def build_shared_spline_ladder_request(case, *, source: Path, formulation: Path, surface: Path,
                                        spacings, margin: float, half_width: float | None,
-                                       basis_spacing: float, wall_cap_s: float) -> dict:
+                                       basis_spacing: float, wall_cap_s: float,
+                                       track_problem_contract: dict | None = None) -> dict:
     """Compose fixed strict single-rung requests into public ladder envelope v2."""
     return _build_shared_spline_ladder_request(
         case, source=source, formulation=formulation, surface=surface, spacings=spacings,
         margin=margin, half_width=half_width, basis_spacing=basis_spacing, wall_cap_s=wall_cap_s,
+        track_problem_contract=track_problem_contract,
     )
 
 
 def _build_shared_spline_ladder_request(case, *, source: Path, formulation: Path, surface: Path,
                                         spacings, margin: float, half_width: float | None,
                                         basis_spacing: float, wall_cap_s: float,
-                                        _single_rung: bool = False) -> dict:
+                                        _single_rung: bool = False,
+                                         track_problem_contract: dict | None = None) -> dict:
     """Serialize public effective choices into the fixed harness worker schema."""
     from tools.diagnostics.verify_no_tv_minimum_lap import build_attempt, source_hashes
 
+    if track_problem_contract is not None:
+        from simplified_vehicle_models.solvers.track_problem_contract import validate_problem_contract
+        contract_check = validate_problem_contract(track_problem_contract)
+        if contract_check["status"] == "invalid":
+            raise ValueError("invalid track_problem_contract: " + ",".join(contract_check["reasons"]))
+        track_problem_contract = contract_check["normalized_contract"]
+        if track_problem_contract["topology"] != case.topology and not (
+                track_problem_contract["topology"] == "open" and case.topology == "full_cut_open"):
+            raise ValueError("track_problem_contract topology conflicts with matrix case")
+        boundary = track_problem_contract["boundary"]
+        if (contract_check["status"] == "supported" and track_problem_contract["topology"] == "open"
+                and boundary["start_mode"] == "rolling" and boundary["finish_mode"] == "free"):
+            case = replace(case, start_speed_mps=float(boundary["start_speed_mps"]))
     if Path(source).resolve() != Path(case.track).resolve():
         raise ValueError("source must identify the serialized case track")
     if len(spacings) == 0 or any(a <= b for a, b in zip(spacings, spacings[1:])):
@@ -953,7 +1022,7 @@ def _build_shared_spline_ladder_request(case, *, source: Path, formulation: Path
             case, mesh_spacing_m=float(spacing), basis_spacing_m=float(basis_spacing),
             maximum_iterations=3000, wall_cap_s=float(wall_cap_s), seed_name="centerline",
             formulation=formulation, surface=surface, diagnostic_rungs=True,
-            provenance=provenance,
+            provenance=provenance, track_problem_contract=track_problem_contract,
         )
         rung["case"]["track"] = str(rung["case"]["track"])
         rung.update({
@@ -963,6 +1032,7 @@ def _build_shared_spline_ladder_request(case, *, source: Path, formulation: Path
             "start_treatment": case.start_treatment,
             "start_speed_mps": float(case.start_speed_mps),
             "route_scope": "single_fine_rung_diagnostic",
+            **({"track_problem_contract": rung["track_problem_contract"]} if track_problem_contract is not None else {}),
             "execution_identity": {
                 "corridor": {"margin_m": float(margin), "half_width_m": half_width},
                 "start_treatment": case.start_treatment,
@@ -979,6 +1049,7 @@ def _build_shared_spline_ladder_request(case, *, source: Path, formulation: Path
         "worker_kind": "no_tv_spline_ladder_v1", "request_envelope_version": 2,
         "request_source": "public_minimum_time_line", "mesh_spacings_m": [float(s) for s in spacings],
         "rung_requests": rungs, "route_scope": ("single_fine_rung_diagnostic" if len(spacings) == 1 else "public_multi_rung_diagnostic"),
+        **({"track_problem_contract": rungs[-1]["track_problem_contract"]} if track_problem_contract is not None else {}),
         "execution_identity": {
             "corridor": {"margin_m": float(margin), "half_width_m": half_width},
             "start_treatment": case.start_treatment,

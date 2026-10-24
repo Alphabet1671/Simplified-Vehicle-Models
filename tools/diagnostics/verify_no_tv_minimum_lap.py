@@ -14,7 +14,7 @@ Example (a deliberately small smoke matrix)::
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 import hashlib
 import json
 import math
@@ -322,6 +322,16 @@ def _validate_request_options(request: dict) -> None:
             if not isinstance(rung, dict) or rung.get("worker_kind") != "no_tv_spline_v1" or rung.get("request_envelope_version") != 1:
                 raise ValueError("ladder members must use the strict single-rung v1 envelope")
             _validate_request_options(rung)
+            if request.get("track_problem_contract") is None:
+                if "track_problem_contract" in rung:
+                    raise ValueError("ladder outer and rung track_problem_contract must match exactly")
+            else:
+                from simplified_vehicle_models.solvers.track_problem_contract import validate_problem_contract
+                outer_contract = validate_problem_contract(request["track_problem_contract"])
+                rung_contract = validate_problem_contract(rung.get("track_problem_contract"))
+                if (outer_contract["status"] == "invalid" or rung_contract["status"] == "invalid"
+                        or outer_contract["normalized_hash"] != rung_contract["normalized_hash"]):
+                    raise ValueError("ladder outer and rung track_problem_contract must match exactly")
             if rung.get("mesh_spacing_m") != spacing or rung.get("mesh_spacings_m") != [spacing]:
                 raise ValueError("ladder member effective spacing mismatch")
             if rung.get("case") != request["case"] or rung.get("source_hashes") != request["source_hashes"]:
@@ -438,6 +448,7 @@ def build_attempt(case: MatrixCase, *, mesh_spacing_m: float, basis_spacing_m: f
                   strict_profile_seed: bool = False, profile_step: float = 2.0,
                    maximum_profile_iterations: int = 200, maximum_profile_seconds: float = 30.0,
                    convergence_criteria: dict | None = None, provenance: dict | None = None,
+                   track_problem_contract: dict | None = None,
                    energy_defect_scaling: str = "legacy_reference_speed_v1",
                    coefficient_coordinate_scale: float = 1.0,
                    mesh_stations=None, constraint_stations=None) -> dict:
@@ -482,16 +493,38 @@ def build_attempt(case: MatrixCase, *, mesh_spacing_m: float, basis_spacing_m: f
     if explicit_mesh is not None and explicit_sites and (
             explicit_sites[0] <= explicit_mesh[0] or explicit_sites[-1] >= explicit_mesh[-1]):
         raise ValueError("constraint_stations must be interior to the explicit mesh domain")
+    normalized_contract = None
+    contract_status = None
+    contract_reasons = []
+    if track_problem_contract is not None:
+        from simplified_vehicle_models.solvers.track_problem_contract import validate_problem_contract
+        checked_contract = validate_problem_contract(track_problem_contract)
+        if checked_contract["status"] == "invalid":
+            raise ValueError("invalid track_problem_contract: " + ",".join(checked_contract["reasons"]))
+        normalized_contract = checked_contract["normalized_contract"]
+        contract_status, contract_reasons = checked_contract["status"], checked_contract["reasons"]
+        if normalized_contract["topology"] != case.topology and not (
+                normalized_contract["topology"] == "open" and case.topology == "full_cut_open"):
+            raise ValueError("track_problem_contract topology conflicts with matrix case")
+        if (checked_contract["status"] == "supported" and normalized_contract["topology"] == "open"
+                and normalized_contract["boundary"]["start_mode"] == "rolling"
+                and normalized_contract["boundary"]["finish_mode"] == "free"):
+            declared_start = normalized_contract["boundary"]["start_speed_mps"]
+            case = replace(case, start_speed_mps=float(declared_start))
+        else:
+            declared_start = float(case.start_speed_mps)
+    else:
+        declared_start = float(case.start_speed_mps)
     profile_options = _profile_options(profile_step, maximum_profile_iterations, maximum_profile_seconds)
     criteria = _convergence_criteria(convergence_criteria)
     settings = QssSettings(tolerance=_validate_finite_positive("nlp_tolerance", nlp_tolerance),
                            maximum_iterations=int(maximum_iterations),
-                           start_speed=float(case.start_speed_mps), open_regularisation=1e-6,
+                           start_speed=float(declared_start), open_regularisation=1e-6,
                            off_collocation_fractions=_off_collocation_fractions(off_collocation_divisions),
                            hessian_approximation=hessian_approximation,
                             control_representation=control_representation,
                             speed_domain_margin_mps=float(speed_domain_margin_mps))
-    return {
+    request = {
         "request_schema_version": 2,
         "case": asdict(case),
         "schema_version": 2,
@@ -518,6 +551,9 @@ def build_attempt(case: MatrixCase, *, mesh_spacing_m: float, basis_spacing_m: f
         "convergence_criteria": criteria, "provenance": provenance,
         "no_torque_vectoring": True, "mode_switches": False, "controller_globals": False,
     }
+    if normalized_contract is not None:
+        request["track_problem_contract"] = normalized_contract
+    return request
 
 
 def _seed_for(spline: OffsetSpline, seed_name: str) -> np.ndarray:
@@ -671,6 +707,10 @@ def _fixed_path_profile_evidence(solution, case: MatrixCase, surface) -> dict:
 def _attempt_worker(request_path: str, result_path: str, artifact_path: str, stage_callback=None) -> None:
     """Spawn-safe strict single-rung worker entry. Filesystem is the interface."""
     request = json.loads(Path(request_path).read_text(encoding="utf-8"))
+    if isinstance(request, dict):
+        request = dict(request)
+        if isinstance(request.get("track_problem_contract"), dict):
+            request["track_problem_contract"] = dict(request["track_problem_contract"])
     stage_path = Path(request_path).with_name("stage.json")
     stage_state = {"stage": "setup", "events": [], "solve_completed": False}
     def mark_stage(name):
@@ -697,6 +737,7 @@ def _attempt_worker(request_path: str, result_path: str, artifact_path: str, sta
         if "track_problem_contract" in request:
             from simplified_vehicle_models.solvers.track_problem_contract import validate_problem_contract
             checked = validate_problem_contract(request["track_problem_contract"])
+            request["track_problem_contract"] = checked["normalized_contract"]
             if checked["status"] in {"invalid", "unsupported"}:
                 result["track_problem"] = {"status": checked["status"], "reasons": checked["reasons"],
                                             "normalized_contract": checked.get("normalized_contract"),
@@ -1682,7 +1723,8 @@ def _load_structured_request(path: Path, *, formulation: Path, surface: Path) ->
                "nlp_tolerance", "off_collocation_divisions", "dense_maximum_refinements", "diagnostic_rungs",
                "hessian_approximation", "control_representation", "speed_domain_margin_mps", "matched_reference",
                "seed_profile", "profile_control_projection", "strict_profile_seed", "profile_step",
-               "maximum_profile_iterations", "maximum_profile_seconds", "convergence_criteria", "provenance"}
+               "maximum_profile_iterations", "maximum_profile_seconds", "convergence_criteria", "provenance",
+                "track_problem_contract"}
     unknown = set(raw) - allowed
     if unknown:
         raise ValueError(f"request file contains unknown keys: {sorted(unknown)}")

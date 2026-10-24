@@ -294,8 +294,8 @@ def run_request(request: dict, output_directory: str) -> dict:
         if not {"track", "formulation", "surface", "output", "margin", "half_width", "spacings",
                 "offset_spacing", "path_smoothing"}.issubset(request):
             raise ValueError("public request missing fixed options")
-        if set(request) != {"worker_kind", "wall_cap_s", "track", "formulation", "surface", "output",
-                "margin", "half_width", "spacings", "offset_spacing", "path_smoothing"}:
+        if set(request) - {"worker_kind", "wall_cap_s", "track", "formulation", "surface", "output",
+                "margin", "half_width", "spacings", "offset_spacing", "path_smoothing", "track_problem_contract"}:
             raise ValueError("public request has unknown options")
         if any(not isinstance(request[k], str) or len(request[k]) > MAX_PATH_CHARS
                for k in ("track", "formulation", "surface", "output")):

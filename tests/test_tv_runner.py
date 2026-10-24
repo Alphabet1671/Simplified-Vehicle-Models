@@ -305,7 +305,7 @@ class PipelineModeTest(unittest.TestCase):
             fixture = _RunnerFixture(
                 self, spline=False, stages=stages, zero=zero,
             ).enter(args)
-            summary = runner.run(args)
+            summary = runner._run_compat_pipeline(args)
             self.assertEqual(summary["control_mode"], "ideal")
             self.assertEqual(summary["requested_control_mode"], "ideal")
             self.assertEqual(summary["controller_hash"], "")
@@ -332,14 +332,49 @@ class PipelineModeTest(unittest.TestCase):
             fixture = _RunnerFixture(
                 self, spline=True, stages=stages, zero=zero,
             ).enter(args)
-            summary = runner.run(args)
-            self.assertEqual(fixture.mocks["solve_spline_line"].call_count, 3)
+            request_result = {"public_summary": {"solver": "spline", "control_mode": "ideal"}}
+            with patch("simplified_vehicle_models.solvers.minimum_time_run.run_request",
+                       return_value=request_result) as submit:
+                summary = runner.run(args)
+            self.assertEqual(summary, request_result["public_summary"])
+            fixture.mocks["solve_spline_line"].assert_not_called()
             fixture.mocks["solve_ladder"].assert_not_called()
-            self.assertEqual(summary["solver"], "spline")
-            self.assertEqual(summary["control_mode"], "ideal")
-            self.assertEqual(summary["spline_control_spacing_m"], 10.0)
-            self.assertEqual(summary["spline_type"], "closed-periodic")
-            self.assertEqual(summary["stages"][-1]["spacing_m"], 2.0)
+            raw = submit.call_args.args[0]
+            self.assertEqual(raw["worker_kind"], "public_spline_setup_v1")
+            self.assertEqual(raw["wall_cap_s"], 900.0)
+            args.wall_cap_s = 123.5
+            with patch("simplified_vehicle_models.solvers.minimum_time_run.run_request",
+                       return_value=request_result) as explicit_submit:
+                runner.run(args)
+            self.assertEqual(explicit_submit.call_args.args[0]["wall_cap_s"], 123.5)
+
+    def test_public_spline_run_uses_shared_route_not_compat_worker(self):
+        with tempfile.TemporaryDirectory() as directory:
+            args = _args(directory, solver="spline")
+            args.wall_cap_s = 42.25
+            expected = {"public_summary": {"route": "shared-ladder"}}
+            with patch("simplified_vehicle_models.solvers.minimum_time_run.run_request",
+                       return_value=expected) as submit:
+                result = runner.run(args)
+            self.assertEqual(result, expected["public_summary"])
+            raw, supervision = submit.call_args.args
+            self.assertEqual(raw["worker_kind"], "public_spline_setup_v1")
+            self.assertEqual(raw["wall_cap_s"], 42.25)
+            self.assertEqual(supervision, str(args.output.resolve() / ".supervision"))
+
+    def test_public_compat_run_uses_fixed_supervisor_route(self):
+        with tempfile.TemporaryDirectory() as directory:
+            args = _args(directory, solver="legacy")
+            expected = {"status": "worker_exception", "error_type": "fixture"}
+            with patch("simplified_vehicle_models.solvers.minimum_time_run.run_request",
+                       return_value=expected) as submit:
+                result = runner.run(args)
+            self.assertEqual(result, expected)
+            raw, supervision = submit.call_args.args
+            self.assertEqual(raw["worker_kind"], "compat_line_v1")
+            self.assertEqual(raw["wall_cap_s"], 900.0)
+            self.assertEqual(raw["config"]["solver"], "legacy")
+            self.assertEqual(supervision, str(args.output.resolve() / ".supervision"))
 
     def test_allocation_samples_a_hash_named_cache(self):
         CONTROL_POLICIES["cap-two"] = _CapPolicy
@@ -354,7 +389,7 @@ class PipelineModeTest(unittest.TestCase):
             _RunnerFixture(
                 self, spline=True, stages=stages, zero=zero,
             ).enter(args)
-            summary = runner.run(args)
+            summary = runner._run_compat_pipeline(args)
             expected_hash = policy_controller_hash(_CapPolicy())
             self.assertEqual(summary["control_mode"], "allocation")
             self.assertEqual(summary["capability_mode"], "allocation")
@@ -381,7 +416,7 @@ class PipelineModeTest(unittest.TestCase):
             fixture = _RunnerFixture(
                 self, spline=False, stages=stages, zero=zero,
             ).enter(args)
-            summary = runner.run(args)
+            summary = runner._run_compat_pipeline(args)
             self.assertEqual(summary["solver"], "legacy")
             self.assertEqual(summary["control_mode"], "allocation")
             self.assertEqual(summary["capability_mode"], "allocation")
@@ -405,7 +440,7 @@ class PipelineModeTest(unittest.TestCase):
             with patch.object(runner, "solve_spline_line") as spline_solve:
                 with self.assertRaisesRegex(
                         ValueError, "infeasible.*zero-acceleration"):
-                    runner.run(args)
+                    runner._run_compat_pipeline(args)
             spline_solve.assert_not_called()
             self.assertFalse((Path(directory) / "output").exists())
 
@@ -422,7 +457,7 @@ class PipelineModeTest(unittest.TestCase):
             ).enter(args)
             with patch.object(runner, "solve_spline_line") as spline_solve:
                 with self.assertRaisesRegex(ValueError, "unknown replay adapter"):
-                    runner.run(args)
+                    runner._run_compat_pipeline(args)
             spline_solve.assert_not_called()
             self.assertFalse((Path(directory) / "output").exists())
 
@@ -438,7 +473,7 @@ class PipelineModeTest(unittest.TestCase):
                 self, spline=False, stages=stages, zero=zero, closed_loop=True,
             ).enter(args)
             with self.assertRaisesRegex(ValueError, "explicit --solver spline"):
-                runner.run(args)
+                runner._run_compat_pipeline(args)
             fixture.mocks["compile_formulation"].assert_not_called()
             fixture.mocks["solve_spline_line"].assert_not_called()
             self.assertFalse((Path(directory) / "output").exists())
@@ -464,7 +499,7 @@ class PipelineModeTest(unittest.TestCase):
                 track=open_track, corridor=open_corridor,
             ).enter(args)
             with self.assertRaisesRegex(ValueError, "open course"):
-                runner.run(args)
+                runner._run_compat_pipeline(args)
             fixture.mocks["compile_formulation"].assert_not_called()
             fixture.mocks["solve_spline_line"].assert_not_called()
             self.assertFalse((Path(directory) / "output").exists())
@@ -488,7 +523,7 @@ class PipelineModeTest(unittest.TestCase):
                 self, spline=True, stages=stages, zero=zero, closed_loop=True,
                 correction=correction,
             ).enter(args)
-            summary = runner.run(args)
+            summary = runner._run_compat_pipeline(args)
             self.assertIsNone(summary["checks"]["mesh_convergence"])
             self.assertIsNone(summary["checks"]["zero_corridor_matches_envelope"])
             self.assertIn("check_unavailable", summary)
@@ -518,7 +553,7 @@ class PipelineModeTest(unittest.TestCase):
                 with self.assertRaisesRegex(
                         ValueError,
                         "requested control mode 'ideal'.*recorded 'allocation'"):
-                    runner.run(args)
+                    runner._run_compat_pipeline(args)
 
     def test_unknown_policy_fails_before_output(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -533,7 +568,7 @@ class PipelineModeTest(unittest.TestCase):
             ).enter(args)
             with patch.object(runner, "compile_formulation") as compile_formulation:
                 with self.assertRaisesRegex(ValueError, "unknown control policy"):
-                    runner.run(args)
+                    runner._run_compat_pipeline(args)
             compile_formulation.assert_not_called()
             self.assertFalse((Path(directory) / "output").exists())
 
@@ -556,7 +591,7 @@ class PipelineModeTest(unittest.TestCase):
                 self, spline=True, stages=stages, zero=zero, closed_loop=True,
                 correction=correction,
             ).enter(args)
-            summary = runner.run(args)
+            summary = runner._run_compat_pipeline(args)
             self.assertEqual(summary["control_mode"], "closed_loop")
             self.assertEqual(summary["capability_mode"], "ideal")
             self.assertEqual(summary["replay_adapter"], "point-mass")
@@ -606,7 +641,7 @@ class PipelineModeTest(unittest.TestCase):
                 zero=_solution(57.9), surface=allocation,
             ).enter(args)
             with self.assertRaisesRegex(ValueError, "launder"):
-                runner.run(args)
+                runner._run_compat_pipeline(args)
             fixture.mocks["solve_line"].assert_not_called()
             fixture.mocks["solve_ladder"].assert_not_called()
             self.assertFalse((Path(directory) / "output").exists())
@@ -625,7 +660,7 @@ class PipelineModeTest(unittest.TestCase):
                 self, spline=True, stages=stages, zero=zero, closed_loop=True,
             ).enter(args)
             with self.assertRaisesRegex(ValueError, "consumes the controller"):
-                runner.run(args)
+                runner._run_compat_pipeline(args)
             fixture.mocks["solve_spline_line"].assert_not_called()
             self.assertFalse((Path(directory) / "output").exists())
 
@@ -665,7 +700,7 @@ class PipelineModeTest(unittest.TestCase):
                 self, spline=True, stages=stages, zero=zero, closed_loop=True,
                 correction=correction,
             ).enter(args)
-            summary = runner.run(args)
+            summary = runner._run_compat_pipeline(args)
             self.assertTrue(summary["controller_aware"])
             self.assertEqual(summary["replay_kind"], "controller_adapter")
             self.assertFalse(summary["accepted"])
@@ -683,7 +718,7 @@ class PipelineModeTest(unittest.TestCase):
             fixture = _RunnerFixture(
                 self, spline=True, stages=stages, zero=zero,
             ).enter(args)
-            summary = runner.run(args)
+            summary = runner._run_compat_pipeline(args)
             self.assertIsNone(summary["checks"]["zero_corridor_matches_envelope"])
             self.assertIsNone(summary["checks"]["replay_agreement"])
             self.assertIn("zero_corridor_matches_envelope",
@@ -726,7 +761,7 @@ class PipelineModeTest(unittest.TestCase):
                 patch.object(runner, "capability_envelope_time",
                              return_value=10.5) as envelope,
             ):
-                summary = runner.run(args)
+                summary = runner._run_compat_pipeline(args)
             # The reference is the allocation surface, not the ideal vehicle.
             self.assertEqual(envelope.call_args.args[1].mode, "allocation")
             fixture.mocks["check_zero_corridor_matches_envelope"].assert_called_once_with(
@@ -756,7 +791,7 @@ class PipelineModeTest(unittest.TestCase):
                 self, spline=True, stages=stages, zero=zero,
             ).enter(args)
             fixture.mocks["check_corridor_containment"].return_value = False
-            summary = runner.run(args)
+            summary = runner._run_compat_pipeline(args)
             self.assertFalse(summary["checks"]["corridor_containment"])
             self.assertFalse(summary["accepted"])
 
@@ -797,7 +832,7 @@ class PipelineModeTest(unittest.TestCase):
                     fixture.mocks["check_replay_agreement"].side_effect = (
                         real_replay_gate
                     )
-                    summary = runner.run(args)
+                    summary = runner._run_compat_pipeline(args)
                     self.assertEqual(
                         summary["checks"]["replay_agreement"], expected,
                     )
@@ -811,7 +846,7 @@ class PipelineModeTest(unittest.TestCase):
             stages = [_solution(57.95, spline=True), _solution(57.9, spline=True)]
             fixture = _RunnerFixture(self, spline=True, stages=stages, zero=zero).enter(args)
             with self.assertRaisesRegex(ValueError, "smoothing is not permitted"):
-                runner.run(args)
+                runner._run_compat_pipeline(args)
             fixture.mocks["compile_formulation"].assert_not_called()
             fixture.mocks["solve_spline_line"].assert_not_called()
             self.assertFalse((Path(directory) / "output").exists())
@@ -826,13 +861,26 @@ class PipelineModeTest(unittest.TestCase):
                 payload = f"prior {name}\n".encode()
                 (output / name).write_bytes(payload)
                 expected[name] = payload
-            zero = _solution(57.9, spline=True)
-            stages = [_solution(57.95, spline=True), _solution(57.9, spline=True)]
-            fixture = _RunnerFixture(self, spline=True, stages=stages, zero=zero).enter(args)
-            with self.assertRaisesRegex(FileExistsError, "already exists"):
-                runner.run(args)
-            fixture.mocks["compile_formulation"].assert_not_called()
-            fixture.mocks["solve_spline_line"].assert_not_called()
+            root = Path(directory) / "control-root"
+            root.mkdir()
+            request_path = root / "request.json"
+            request_path.write_text("{}", encoding="utf-8")
+            result_path = root / "result.json"
+            artifact_path = root / "artifact.json"
+            request = {"output": str(output), "track": str(args.track),
+                       "formulation": str(args.formulation), "surface": str(args.surface),
+                       "margin": args.margin, "half_width": args.half_width,
+                       "spacings": "5,2", "offset_spacing": 10.0,
+                       "path_smoothing": 0.0, "wall_cap_s": 900.0}
+            with patch.object(runner, "_public_spline_worker_request",
+                              side_effect=AssertionError("guard must precede request setup")) as build:
+                runner._prepare_public_spline_request_in_worker(
+                    request, str(request_path), str(result_path), str(artifact_path))
+            build.assert_not_called()
+            child_result = json.loads(result_path.read_text(encoding="utf-8"))
+            self.assertEqual(child_result["status"], "worker_exception")
+            self.assertEqual(child_result["error_type"], "FileExistsError")
+            self.assertIn("already exists", child_result["error"])
             for name, payload in expected.items():
                 self.assertEqual((output / name).read_bytes(), payload)
 
@@ -849,7 +897,7 @@ class PipelineModeTest(unittest.TestCase):
                 self, spline=True, stages=stages, zero=zero, closed_loop=True,
             ).enter(args)
             with self.assertRaisesRegex(ValueError, "path-smoothing"):
-                runner.run(args)
+                runner._run_compat_pipeline(args)
             self.assertFalse((Path(directory) / "output").exists())
 
     def test_allocation_without_policy_fails_before_output_or_solver(self):
@@ -861,7 +909,7 @@ class PipelineModeTest(unittest.TestCase):
                 self, spline=True, stages=stages, zero=zero,
             ).enter(args)
             with self.assertRaisesRegex(ValueError, "controller policy"):
-                runner.run(args)
+                runner._run_compat_pipeline(args)
             fixture.mocks["compile_formulation"].assert_not_called()
             fixture.mocks["solve_spline_line"].assert_not_called()
             self.assertFalse((Path(directory) / "output").exists())
@@ -875,7 +923,7 @@ class PipelineModeTest(unittest.TestCase):
                 self, spline=True, stages=stages, zero=zero, closed_loop=True,
             ).enter(args)
             with self.assertRaisesRegex(ValueError, "replay adapter"):
-                runner.run(args)
+                runner._run_compat_pipeline(args)
             fixture.mocks["compile_formulation"].assert_not_called()
             fixture.mocks["solve_spline_line"].assert_not_called()
             self.assertFalse((Path(directory) / "output").exists())

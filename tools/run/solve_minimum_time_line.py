@@ -789,7 +789,7 @@ def _run_public_shared_spline(args) -> dict:
     """Submit only compact caller options; heavy setup/finalization is supervised."""
     from simplified_vehicle_models.solvers.minimum_time_run import run_request
     output = Path(args.output).resolve()
-    raw = {"worker_kind": "public_spline_setup_v1", "wall_cap_s": float(args.wall_cap_s),
+    raw = {"worker_kind": "public_spline_setup_v1", "wall_cap_s": float(getattr(args, "wall_cap_s", 900.0)),
            "track": str(Path(args.track).resolve()), "formulation": str(Path(args.formulation).resolve()),
            "surface": str(Path(args.surface).resolve()), "output": str(output),
            "margin": float(args.margin), "half_width": args.half_width,

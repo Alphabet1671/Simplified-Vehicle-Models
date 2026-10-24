@@ -1,7 +1,9 @@
 """Actual fixed-straight, nonnegative-acceleration standing-start OCP.
 
-This restricted direct transcription does not optimize a curved line or certify
+This restricted transcription neither optimizes a curved line nor certifies
 continuous feasibility between its finite live and held-out limit samples.
+Wall-time checks are cooperative; callers needing a hard deadline must enforce
+an outer timeout.
 """
 from __future__ import annotations
 
@@ -40,6 +42,8 @@ class StandingStraightResult:
     event_qualified: bool = False
     U3_qualified: bool = False
     numerically_qualified: bool = False
+    physical_feasibility_certified: bool = False
+    global_minimum_proven: bool = False
 
     def __post_init__(self):
         for name in ("time", "distance", "speed", "acceleration"):
@@ -49,98 +53,202 @@ class StandingStraightResult:
 
 
 def _jsonsafe(x):
-    if isinstance(x, (np.integer,)): return int(x)
-    if isinstance(x, (np.floating,)): x = float(x)
+    if isinstance(x, np.ndarray): return _jsonsafe(x.tolist())
+    if isinstance(x, np.generic): return _jsonsafe(x.item())
     if isinstance(x, float): return x if math.isfinite(x) else None
     if isinstance(x, dict): return {str(k): _jsonsafe(v) for k, v in x.items()}
     if isinstance(x, (tuple, list)): return [_jsonsafe(v) for v in x]
-    if isinstance(x, np.ndarray): return _jsonsafe(x.tolist())
-    return x
+    if x is None or isinstance(x, (str, int, bool)): return x
+    return str(x)
 
 
 def solve_standing_straight(vehicle, distance, *, settings=None, acceleration_limit=None):
+    """Solve the restricted straight-line problem; success is not event qualification."""
     started = time.monotonic()
-    report = {"accepted": False, "optimizer_converged": False, "sampled_feasible": False,
-              "event_qualified": False, "U3_qualified": False, "numerically_qualified": False,
-              "physical_feasibility": False, "geometry": "fixed straight, nonnegative longitudinal control, rest-to-free-finish",
+    report = {"accepted": False, "optimizer_converged": False, "solver_reported_success": False,
+              "sampled_feasible": False, "heldout_sampling_complete": False,
+              "heldout_feasible": False, "event_qualified": False, "U3_qualified": False,
+              "numerically_qualified": False, "physical_feasibility_certified": False,
+              "global_minimum_proven": False, "joint_line_optimized": False,
+              "geometry": "fixed straight, nonnegative longitudinal control, rest-to-free-finish",
               "failure": None, "limit_queries": 0, "cache_hits": 0, "model_identity_known": False}
-    def fail(reason):
-        report["failure"] = str(reason); report["wall_seconds"] = time.monotonic()-started
-        return None, _jsonsafe(report)
+
+    def finish_failure(reason, *, budget=False):
+        report["failure"] = str(reason)
+        try:
+            elapsed = time.monotonic() - started
+        except Exception:
+            elapsed = None
+        report["wall_seconds"] = elapsed
+        if budget:
+            report["optimizer_converged"] = False
+            report["sampled_feasible"] = False
+            report["heldout_sampling_complete"] = False
+            report["heldout_feasible"] = False
+            report["accepted"] = False
+        try:
+            safe = _jsonsafe(report)
+            json.dumps(safe, allow_nan=False)
+        except Exception as exc:
+            safe = {"accepted": False, "optimizer_converged": False,
+                    "failure": "report_serialization_error", "exception_type": type(exc).__name__,
+                    "exception_message": str(exc)}
+        return None, safe
+
     if settings is None: settings = StandingStraightSettings()
-    if type(settings) is not StandingStraightSettings: return fail("invalid_settings_type")
+    if type(settings) is not StandingStraightSettings: return finish_failure("invalid_settings_type")
     for name in ("intervals", "maximum_iterations", "maximum_limit_queries", "heldout_fractions"):
-        v=getattr(settings,name)
-        minimum=2 if name in ("intervals","heldout_fractions") else 1
-        if isinstance(v,bool) or not isinstance(v,numbers.Integral) or v<minimum: return fail("invalid_settings_"+name)
-    for name in ("maximum_wall_seconds","tolerance","minimum_interval_seconds","maximum_interval_seconds"):
-        v=getattr(settings,name)
-        if isinstance(v,bool) or not isinstance(v,numbers.Real) or not math.isfinite(v) or v<=0: return fail("invalid_settings_"+name)
-    if settings.minimum_interval_seconds>settings.maximum_interval_seconds: return fail("invalid_interval_bounds")
-    if isinstance(distance,bool) or not isinstance(distance,numbers.Real) or not math.isfinite(distance) or distance<=0: return fail("invalid_distance")
-    distance=float(distance); n=int(settings.intervals)
+        value = getattr(settings, name)
+        minimum = 2 if name == "intervals" else 3 if name == "heldout_fractions" else 1
+        if isinstance(value, bool) or not isinstance(value, numbers.Integral) or value < minimum:
+            return finish_failure("invalid_settings_" + name)
+    for name in ("maximum_wall_seconds", "tolerance", "minimum_interval_seconds", "maximum_interval_seconds"):
+        value = getattr(settings, name)
+        if isinstance(value, bool) or not isinstance(value, numbers.Real) or not math.isfinite(value) or value <= 0:
+            return finish_failure("invalid_settings_" + name)
+    report["settings"] = {name: getattr(settings, name) for name in settings.__dataclass_fields__}
+    if settings.minimum_interval_seconds > settings.maximum_interval_seconds:
+        return finish_failure("invalid_interval_bounds")
+    if isinstance(distance, bool) or not isinstance(distance, numbers.Real) or not math.isfinite(distance) or distance <= 0:
+        return finish_failure("invalid_distance")
+    distance = float(distance); n = int(settings.intervals)
+    calls = 0; cache = {}; x = None
+
+    def budget_check(where):
+        if time.monotonic() - started >= settings.maximum_wall_seconds:
+            raise TimeoutError("wall budget " + where)
+
     try:
         if acceleration_limit is None:
             from simplified_vehicle_models.formulations.point_mass import maximum_acceleration_limit
-            callback=maximum_acceleration_limit
-        else: callback=acceleration_limit
-        if not callable(callback): return fail("invalid_callback")
-        cache={}; calls=0
-        def cap(v):
+            callback = maximum_acceleration_limit
+        else:
+            callback = acceleration_limit
+        if not callable(callback): return finish_failure("invalid_callback")
+
+        def cap(speed):
             nonlocal calls
-            key=(float(v),0.0)
-            if key in cache: report["cache_hits"]+=1; return cache[key]
-            if time.monotonic()-started>=settings.maximum_wall_seconds: raise TimeoutError("wall budget")
-            if calls>=settings.maximum_limit_queries: raise RuntimeError("limit query budget")
-            calls+=1; report["limit_queries"]=calls
-            value=callback(vehicle,float(v),0.0)
-            if time.monotonic()-started>=settings.maximum_wall_seconds: raise TimeoutError("wall budget")
-            if isinstance(value,bool) or not isinstance(value,numbers.Real) or not math.isfinite(value) or value<0: raise ValueError("invalid acceleration limit")
-            cache[key]=float(value); return float(value)
-        a0=cap(0.0)
-        if a0<=0: return fail("zero_rest_limit")
-        T=math.sqrt(2*distance/(.5*a0)); dt=T/n
-        if not settings.minimum_interval_seconds<=dt<=settings.maximum_interval_seconds: return fail("seed_out_of_bounds")
+            budget_check("before callback/cache")
+            key = (float(speed), 0.0)
+            if key in cache:
+                report["cache_hits"] += 1
+                budget_check("after cache")
+                return cache[key]
+            if calls >= settings.maximum_limit_queries: raise RuntimeError("limit query budget")
+            calls += 1; report["limit_queries"] = calls
+            value = callback(vehicle, float(speed), 0.0)
+            budget_check("after callback")
+            if isinstance(value, bool) or not isinstance(value, numbers.Real) or not math.isfinite(value) or value < 0:
+                raise ValueError("invalid acceleration limit")
+            cache[key] = float(value)
+            return float(value)
+
+        a0 = cap(0.0)
+        if a0 <= 0: return finish_failure("zero_rest_limit")
+        T = math.sqrt(2 * distance / (.5 * a0)); dt = T / n
+        if not settings.minimum_interval_seconds <= dt <= settings.maximum_interval_seconds:
+            return finish_failure("seed_out_of_bounds")
         from scipy.optimize import minimize
-        def rollout(x):
-            dts=x[:n]; acc=x[n:]; s=[0.0]; v=[0.0]; t=[0.0]
-            for h,a in zip(dts,acc):
-                vn=v[-1]+a*h; sn=s[-1]+v[-1]*h+.5*a*h*h
-                if not all(map(math.isfinite,(vn,sn))): raise ValueError("nonfinite rollout")
-                v.append(vn); s.append(sn); t.append(t[-1]+h)
-            return np.array(t),np.array(s),np.array(v)
-        def eq(x): return (rollout(x)[1][-1]-distance)/max(1.0,distance)
-        def ineq(x, fractions=(0.0,.5,1.0)):
-            _,_,vs=rollout(x); acc=x[n:]; out=[]
+
+        def rollout(values):
+            dts = values[:n]; acc = values[n:]; positions = [0.0]; speeds = [0.0]; times = [0.0]
+            for h, a in zip(dts, acc):
+                vn = speeds[-1] + a * h
+                sn = positions[-1] + speeds[-1] * h + .5 * a * h * h
+                tn = times[-1] + h
+                if not all(map(math.isfinite, (vn, sn, tn))): raise ValueError("nonfinite rollout")
+                positions.append(sn); speeds.append(vn); times.append(tn)
+            return np.asarray(times), np.asarray(positions), np.asarray(speeds)
+
+        def eq(values): return (rollout(values)[1][-1] - distance) / max(1.0, distance)
+        def constraints(values, fractions):
+            _, _, speeds = rollout(values); acc = values[n:]; out = []
             for i in range(n):
-                for f in fractions: out.append(cap(vs[i]+acc[i]*x[i]*f)-acc[i])
+                for fraction in fractions: out.append(cap(speeds[i] + acc[i] * values[i] * fraction) - acc[i])
             return np.asarray(out)
-        x0=np.r_[np.full(n,dt),np.full(n,.5*a0)]
-        bounds=[(settings.minimum_interval_seconds,settings.maximum_interval_seconds)]*n+[(0,None)]*n
-        opt=minimize(lambda x: float(np.sum(x[:n])),x0,method="SLSQP",bounds=bounds,
-                     constraints=({"type":"eq","fun":eq},{"type":"ineq","fun":ineq}),
-                     options={"maxiter":int(settings.maximum_iterations),"ftol":1e-12})
-        report["optimizer_converged"]=bool(opt.success and opt.status==0)
-        report["optimizer_status"]=int(opt.status); report["optimizer_message"]=str(opt.message)
-        if not report["optimizer_converged"]: return fail("optimizer_not_converged")
-        x=np.asarray(opt.x,dtype=float)
-        if x.shape!=(2*n,) or not np.all(np.isfinite(x)): return fail("invalid_optimizer_iterate")
-        t,s,v=rollout(x); acc=x[n:]
-        sampled=np.asarray(ineq(x)); held=ineq(x,tuple(np.linspace(0,1,int(settings.heldout_fractions))))
-        residual=max(abs(float(s[-1]-distance)),abs(float(v[0])),abs(float(s[0])),
-                     max(0.0,-float(np.min(sampled))),max(0.0,-float(np.min(held))))
-        report.update({"sampled_feasible":bool(np.min(sampled)>=-settings.tolerance),
-                       "heldout_feasible":bool(np.min(held)>=-settings.tolerance),
-                       "maximum_physical_residual_m":float(residual),"heldout_samples":int(len(held)),
-                       "sampled_minimum_slack":float(np.min(sampled)),"heldout_minimum_slack":float(np.min(held))})
-        if time.monotonic()-started>=settings.maximum_wall_seconds: return fail("wall_budget_after_optimize")
-        if not report["sampled_feasible"] or not report["heldout_feasible"] or residual>settings.tolerance: return fail("physical_or_heldout_check_failed")
-        # Deliberately never promote generic/event claims for this restricted model.
-        result=StandingStraightResult(t,s,v,acc,float(np.sum(x[:n])))
-        report["failure"]="restricted_problem_not_event_qualified"
-        report["wall_seconds"]=time.monotonic()-started
-        return result,_jsonsafe(report)
+
+        solver_ftol = float(settings.tolerance) / (10.0 * max(1.0, distance))
+        report["solver_ftol"] = solver_ftol
+        report["solver_ftol_note"] = "normalized terminal-distance equality; ftol is one tenth of normalized caller physical tolerance"
+        x0 = np.r_[np.full(n, dt), np.full(n, .5 * a0)]
+        bounds = [(settings.minimum_interval_seconds, settings.maximum_interval_seconds)] * n + [(0, None)] * n
+        opt = minimize(lambda values: float(np.sum(values[:n])), x0, method="SLSQP", bounds=bounds,
+                       constraints=({"type": "eq", "fun": eq},
+                                    {"type": "ineq", "fun": lambda values: constraints(values, (0., .5, 1.))}),
+                       options={"maxiter": int(settings.maximum_iterations), "ftol": solver_ftol})
+        report["solver_reported_success"] = bool(opt.success and opt.status == 0)
+        report["optimizer_status"] = opt.status; report["optimizer_message"] = str(opt.message)
+        # Preserve finite solver iterate facts even when SLSQP rejects its status.
+        try:
+            x = np.asarray(opt.x, dtype=float)
+            if x.shape == (2*n,) and np.all(np.isfinite(x)):
+                ti, si, vi = rollout(x)
+                report.update({"last_finite_iterate": x.tolist(), "last_finite_time_s": ti.tolist(),
+                               "last_finite_distance_m": si.tolist(), "last_finite_speed_mps": vi.tolist(),
+                               "last_finite_acceleration_mps2": x[n:].tolist(),
+                               "last_finite_total_time_s": float(np.sum(x[:n])),
+                               "last_finite_finish_distance_error_m": float(si[-1]-distance),
+                               "iterations": getattr(opt, "nit", None)})
+        except Exception as exc:
+            report["last_iterate_exception_type"] = type(exc).__name__
+            report["last_iterate_exception_message"] = str(exc)
+        if not report["solver_reported_success"]:
+            return finish_failure("optimizer_not_converged")
+        if x is None or x.shape != (2*n,) or not np.all(np.isfinite(x)):
+            return finish_failure("invalid_optimizer_iterate")
+        t, s, v = rollout(x); acc = x[n:]; dts = x[:n]
+        # Reject optimizer output outside explicit decision bounds before querying
+        # the physical callback at any nonphysical speed/control state.
+        pre_duration_violation = max(0., float(np.max(settings.minimum_interval_seconds-dts)),
+                                     float(np.max(dts-settings.maximum_interval_seconds)))
+        pre_negative_accel_violation = max(0., float(-np.min(acc)))
+        if pre_duration_violation > 0 or pre_negative_accel_violation > 0:
+            report["duration_bound_violation_s"] = pre_duration_violation
+            report["negative_acceleration_violation_mps2"] = pre_negative_accel_violation
+            return finish_failure("optimizer_iterate_out_of_bounds")
+        live = constraints(x, (0., .5, 1.))
+        fractions = tuple(np.linspace(0., 1., int(settings.heldout_fractions)))
+        held = constraints(x, fractions)
+        report["heldout_sampling_complete"] = True
+        report["heldout_samples"] = int(len(held))
+        report["sampled_minimum_slack_mps2"] = float(np.min(live))
+        report["heldout_minimum_slack_mps2"] = float(np.min(held))
+        report["finish_distance_error_m"] = float(s[-1] - distance)
+        report["initial_speed_error_mps"] = float(v[0])
+        report["initial_distance_error_m"] = float(s[0])
+        report["minimum_speed_mps"] = float(np.min(v))
+        report["minimum_acceleration_mps2"] = float(np.min(acc))
+        report["duration_bound_violation_s"] = float(max(0., np.max(settings.minimum_interval_seconds-dts), np.max(dts-settings.maximum_interval_seconds)))
+        report["negative_acceleration_violation_mps2"] = float(max(0., -np.min(acc)))
+        report["sampled_acceleration_violation_mps2"] = float(max(0., -np.min(live)))
+        report["heldout_acceleration_violation_mps2"] = float(max(0., -np.min(held)))
+        tol = float(settings.tolerance)
+        report["sampled_feasible"] = bool(report["sampled_acceleration_violation_mps2"] <= tol)
+        report["heldout_feasible"] = bool(report["heldout_acceleration_violation_mps2"] <= tol)
+        report["physical_feasibility"] = bool(
+            report["finish_distance_error_m"] <= tol and report["finish_distance_error_m"] >= -tol and
+            abs(report["initial_speed_error_mps"]) <= tol and abs(report["initial_distance_error_m"]) <= tol and
+            report["duration_bound_violation_s"] <= tol and report["negative_acceleration_violation_mps2"] <= tol and
+            report["minimum_speed_mps"] >= -tol and report["sampled_feasible"] and report["heldout_feasible"])
+        budget_check("after heldout checks")
+        if (not report["sampled_feasible"] or not report["heldout_feasible"] or
+                not report["physical_feasibility"]):
+            return finish_failure("physical_or_heldout_check_failed")
+        report["optimizer_converged"] = True
+        result = StandingStraightResult(t, s, v, acc, float(np.sum(dts)))
+        report["failure"] = None
+        # Serialize/copy the complete payload before final cooperative deadline test.
+        report["wall_seconds"] = time.monotonic() - started
+        safe = _jsonsafe(report)
+        json.dumps(safe, allow_nan=False)
+        budget_check("after result copy and report serialization")
+        safe["wall_seconds"] = time.monotonic() - started
+        json.dumps(safe, allow_nan=False)
+        budget_check("after final report assembly")
+        return result, safe
     except Exception as exc:
-        text=str(exc)
-        reason="budget_exhausted" if isinstance(exc,(TimeoutError,)) or "budget" in text else "callback_or_solver_error"
-        return fail(reason)
+        text = str(exc)
+        is_budget = isinstance(exc, TimeoutError) or (isinstance(exc, RuntimeError) and "budget" in text.lower())
+        report["exception_type"] = type(exc).__name__
+        report["exception_message"] = text[:500]
+        return finish_failure("budget_exhausted" if is_budget else "callback_or_solver_error", budget=is_budget)

@@ -15,88 +15,140 @@ class StandingStraightOcpTests(unittest.TestCase):
     def test_constant_cap_solves_actual_time_optimum_and_is_immutable(self):
         for intervals in (4, 8):
             result, report = solve_standing_straight(
-                object(), 75.3,
-                settings=StandingStraightSettings(intervals=intervals),
-                acceleration_limit=lambda vehicle, speed, curvature: 3.0,
-            )
+                object(), 75.3, settings=StandingStraightSettings(intervals=intervals),
+                acceleration_limit=lambda vehicle, speed, curvature: 3.0)
             self.assertIsNotNone(result, report)
             self.assertFalse(report["accepted"])
             self.assertTrue(report["optimizer_converged"])
+            self.assertTrue(report["heldout_sampling_complete"])
             self.assertTrue(report["sampled_feasible"])
             self.assertEqual(result.time[0], 0.0)
             self.assertEqual(result.distance[0], 0.0)
             self.assertEqual(result.speed[0], 0.0)
+            self.assertTrue(np.all(np.diff(result.time) > 0))
+            self.assertTrue(np.all(np.diff(result.distance) >= 0))
+            self.assertTrue(np.all(np.diff(result.speed) >= 0))
             self.assertAlmostEqual(result.distance[-1], 75.3, delta=1e-7)
+            self.assertLessEqual(abs(report["finish_distance_error_m"]), 1e-7)
             self.assertAlmostEqual(result.total_time, np.sqrt(2 * 75.3 / 3), delta=3e-5)
             for array in (result.time, result.distance, result.speed, result.acceleration):
                 self.assertFalse(array.flags.writeable)
             self.assertTrue(result.fixed_straight_only)
             self.assertFalse(result.joint_line_optimized)
+            self.assertFalse(result.physical_feasibility_certified)
             json.dumps(report, allow_nan=False)
 
-    def test_acceleration_cap_can_increase_above_rest_cap(self):
+    def test_acceleration_cap_can_increase_above_rest_cap_and_default_is_original(self):
         calls = []
         def cap(vehicle, speed, curvature):
             calls.append((speed, curvature))
             return 1.0 if speed < 2.0 else 5.0
         result, report = solve_standing_straight(
-            object(), 20.0, settings=StandingStraightSettings(intervals=3), acceleration_limit=cap
-        )
+            object(), 20.0, settings=StandingStraightSettings(intervals=3), acceleration_limit=cap)
         self.assertIsNotNone(result, report)
         self.assertGreater(float(np.max(result.acceleration)), 1.0)
         self.assertTrue(all(k == 0 for _, k in calls))
         self.assertTrue(any(v == 0 for v, _ in calls))
 
-    def test_invalid_inputs_fail_before_callback_and_are_json_safe(self):
+        from simplified_vehicle_models.formulations import point_mass
+        observed = []
+        def original(vehicle, speed, curvature):
+            observed.append((speed, curvature))
+            return 3.0
+        with patch.object(point_mass, "maximum_acceleration_limit", original):
+            result, report = solve_standing_straight(object(), 10.0)
+        self.assertIsNotNone(result, report)
+        self.assertTrue(any(speed == 0 and curvature == 0 for speed, curvature in observed))
+        self.assertTrue(any(speed > 0 and curvature == 0 for speed, curvature in observed))
+
+    def test_invalid_inputs_and_settings_fail_before_callback(self):
         calls = []
         def cap(*args):
-            calls.append(args)
-            return 2.0
+            calls.append(args); return 2.0
         for distance in (0.0, float("nan"), -1.0, True):
             result, report = solve_standing_straight(object(), distance, acceleration_limit=cap)
-            self.assertIsNone(result)
-            self.assertFalse(report["accepted"])
+            self.assertIsNone(result); self.assertFalse(report["accepted"])
             json.dumps(report, allow_nan=False)
+        for settings in (StandingStraightSettings(heldout_fractions=2),
+                         StandingStraightSettings(tolerance=float("nan")),
+                         StandingStraightSettings(intervals=True)):
+            result, report = solve_standing_straight(object(), 10., settings=settings, acceleration_limit=cap)
+            self.assertIsNone(result); self.assertFalse(report["accepted"])
         self.assertEqual(calls, [])
 
-    def test_invalid_cap_and_query_budget_never_accept(self):
+    def test_invalid_cap_query_and_slow_callback_budgets_never_accept(self):
         for value in (float("nan"), -1.0, 0.0):
-            result, report = solve_standing_straight(
-                object(), 10.0, acceleration_limit=lambda *_: value
-            )
-            self.assertIsNone(result)
-            self.assertFalse(report["accepted"])
+            result, report = solve_standing_straight(object(), 10., acceleration_limit=lambda *_: value)
+            self.assertIsNone(result); self.assertFalse(report["accepted"])
+            json.dumps(report, allow_nan=False)
         result, report = solve_standing_straight(
-            object(), 10.0,
-            settings=StandingStraightSettings(maximum_limit_queries=1),
-            acceleration_limit=lambda *_: 2.0,
-        )
-        self.assertIsNone(result)
-        self.assertFalse(report["accepted"])
+            object(), 10., settings=StandingStraightSettings(maximum_limit_queries=1),
+            acceleration_limit=lambda *_: 2.)
+        self.assertIsNone(result); self.assertFalse(report["accepted"])
         self.assertIn("budget", report["failure"])
-
-    def test_failure_status_and_heldout_dip_cannot_fake_success(self):
-        result, report = solve_standing_straight(
-            object(), 10.0, acceleration_limit=lambda *_: 2.0,
-            settings=StandingStraightSettings(maximum_iterations=1),
-        )
-        self.assertIsNone(result)
+        ticks = iter([0., 0., 2.] + [2.] * 30)
+        with patch("simplified_vehicle_models.solvers.standing_straight_ocp.time.monotonic", side_effect=lambda: next(ticks)):
+            result, report = solve_standing_straight(
+                object(), 10., settings=StandingStraightSettings(maximum_wall_seconds=1.),
+                acceleration_limit=lambda *_: 2.)
+        self.assertIsNone(result); self.assertFalse(report["optimizer_converged"])
+        self.assertFalse(report["heldout_sampling_complete"])
         self.assertFalse(report["accepted"])
 
-        def dip(vehicle, speed, curvature):
-            return 0.01 if 2.49 < speed < 2.51 else 20.0
-        # Successful optimizer trace: interval midpoints are 0, 5, 15, 20;
-        # held-out quarter-cell samples hit the narrow dip at speed 2.5.
-        fake = SimpleNamespace(success=True, status=0, message="success",
-                               x=np.array([0.5, 0.5, 20.0, 20.0]))
+    def test_fake_success_invalid_negative_acceleration_and_interval_bounds_rejected(self):
+        for badx in (np.array([1., 1., -1., 6.]), np.array([1e-8, 2., 2., 2.]),
+                     np.array([1., 1., 2., 2.])):
+            fake = SimpleNamespace(success=True, status=0, message="success", x=badx, nit=4)
+            with patch("scipy.optimize.minimize", return_value=fake):
+                result, report = solve_standing_straight(
+                    object(), 10., settings=StandingStraightSettings(intervals=2),
+                    acceleration_limit=lambda *_: 20.)
+            self.assertIsNone(result, report)
+            self.assertFalse(report["accepted"])
+
+    def test_optimizer_failure_preserves_last_finite_iterate_and_exception(self):
+        fake = SimpleNamespace(success=False, status=9, message="iteration limit", x=np.array([1., 1., 2., 2.]), nit=7)
         with patch("scipy.optimize.minimize", return_value=fake):
             result, report = solve_standing_straight(
-                object(), 10.0, acceleration_limit=dip,
-                settings=StandingStraightSettings(intervals=2),
-            )
+                object(), 10., settings=StandingStraightSettings(intervals=2),
+                acceleration_limit=lambda *_: 20.)
         self.assertIsNone(result)
-        self.assertTrue(report["optimizer_converged"])
+        self.assertFalse(report["optimizer_converged"])
+        self.assertEqual(report["iterations"], 7)
+        self.assertEqual(len(report["last_finite_time_s"]), 3)
+        self.assertIn("last_finite_finish_distance_error_m", report)
+
+    def test_report_and_late_budget_failures_return_no_candidate(self):
+        fake = SimpleNamespace(success=True, status=0, message="success", x=np.array([1., 1., 2., 2.]), nit=1)
+        # Clock advances only after a complete optimizer/check path, exercising final deadline handling.
+        with patch("scipy.optimize.minimize", return_value=fake), patch(
+                "simplified_vehicle_models.solvers.standing_straight_ocp.time.monotonic",
+                side_effect=[0.] * 100 + [2.] * 100):
+            result, report = solve_standing_straight(
+                object(), 10., settings=StandingStraightSettings(intervals=2, maximum_wall_seconds=1.),
+                acceleration_limit=lambda *_: 20.)
+        self.assertIsNone(result)
         self.assertFalse(report["accepted"])
+        self.assertFalse(report["optimizer_converged"])
+        self.assertTrue(report["heldout_sampling_complete"])
+        json.dumps(report, allow_nan=False)
+
+    def test_unsuccessful_optimizer_and_heldout_dip_never_accept(self):
+        fake = SimpleNamespace(success=False, status=9, message="iteration limit", x=np.array([1., 1., 2., 2.]))
+        with patch("scipy.optimize.minimize", return_value=fake):
+            result, report = solve_standing_straight(object(), 10., acceleration_limit=lambda *_: 2.,
+                                                     settings=StandingStraightSettings(intervals=2))
+        self.assertIsNone(result); self.assertFalse(report["accepted"])
+
+        def dip(vehicle, speed, curvature): return .01 if 2.49 < speed < 2.51 else 20.
+        fake = SimpleNamespace(success=True, status=0, message="success", x=np.array([.5, .5, 20., 20.]))
+        with patch("scipy.optimize.minimize", return_value=fake):
+            result, report = solve_standing_straight(object(), 10., acceleration_limit=dip,
+                                                     settings=StandingStraightSettings(intervals=2))
+        self.assertIsNone(result)
+        self.assertTrue(report["solver_reported_success"])
+        self.assertFalse(report["accepted"])
+        self.assertTrue(report["heldout_sampling_complete"])
         self.assertFalse(report["heldout_feasible"])
 
 

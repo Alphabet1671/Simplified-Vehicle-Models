@@ -1565,7 +1565,6 @@ def _same_refinement_conditions(left: dict, right: dict) -> bool:
             and a.get("start_speed_mps") == b.get("start_speed_mps")
             and a.get("execution_identity") == b.get("execution_identity")
             and _track_problem_identity_matches(left, right)
-            and left.get('physical_constraint_identity') == right.get('physical_constraint_identity')
             and left.get("surface_representation") == right.get("surface_representation"))
 
 

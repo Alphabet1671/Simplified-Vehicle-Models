@@ -101,7 +101,6 @@ def snapshot_source_inputs(root, source_hashes):
     """Copy exact worker-identified input bytes into a manifest-local snapshot."""
     root = Path(root)
     snapshot = root / "inputs" / "source_tree"
-    snapshot.mkdir(parents=True, exist_ok=True)
     mapping, descriptors = {}, []
     sources = {str(Path(name).resolve(strict=True)): sha for name, sha in source_hashes.items()}
     if sources:
@@ -155,13 +154,55 @@ def snapshot_source_inputs(root, source_hashes):
     common = Path(os.path.commonpath(list(sources))) if sources else Path.cwd()
     if common.is_file():
         common = common.parent
+    root_resolved = root.resolve(strict=True)
+    planned = []
     for original, expected in sorted(sources.items()):
         source = Path(original)
         if not source.is_file() or _hash(source) != expected:
             raise ValueError(f"worker source identity changed: {original}")
         relative = Path("inputs") / "source_tree" / source.relative_to(common)
+        if relative.is_absolute() or ".." in relative.parts:
+            raise ValueError(f"snapshot path escapes output root: {relative}")
         destination = root / relative
-        destination.parent.mkdir(parents=True, exist_ok=True)
+        planned.append((source, expected, relative, destination))
+
+    # Preflight every target path before creating any directories or copying any
+    # bytes. Reject symlinks at every existing component, not just the leaf.
+    for _, _, relative, destination in planned:
+        current = root
+        for part in relative.parts:
+            current = current / part
+            if current.is_symlink():
+                raise ValueError(f"snapshot path contains symlink: {current}")
+            if current.exists():
+                resolved = current.resolve(strict=True)
+                if not resolved.is_relative_to(root_resolved):
+                    raise ValueError(f"snapshot path escapes output root: {current}")
+        if destination.exists() and not destination.is_file():
+            raise ValueError(f"snapshot destination is not a regular file: {relative}")
+
+    # Existing path components (including inputs and source_tree) are checked
+    # before this first write-side directory creation.
+    for parent in (root / "inputs", snapshot):
+        if parent.is_symlink():
+            raise ValueError(f"snapshot path contains symlink: {parent}")
+        if parent.exists() and not parent.resolve(strict=True).is_relative_to(root_resolved):
+            raise ValueError(f"snapshot path escapes output root: {parent}")
+    snapshot.mkdir(parents=True, exist_ok=True)
+
+    for source, expected, relative, destination in planned:
+        # Recheck each parent immediately before creation/copy, including paths
+        # created by earlier planned files; no symlink may redirect a write.
+        current = root
+        for part in relative.parts[:-1]:
+            current = current / part
+            if current.is_symlink():
+                raise ValueError(f"snapshot path contains symlink: {current}")
+            current.mkdir(exist_ok=True)
+            if not current.resolve(strict=True).is_relative_to(root_resolved):
+                raise ValueError(f"snapshot path escapes output root: {current}")
+        if destination.is_symlink():
+            raise ValueError(f"snapshot path contains symlink: {destination}")
         if destination.exists():
             if _hash(destination) != expected:
                 raise ValueError(f"snapshot path collision: {relative}")
@@ -269,10 +310,13 @@ def load_run_manifest_v1(root):
         manifest = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise ValueError(f"invalid run manifest: {exc}") from exc
-    if not isinstance(manifest, dict) or manifest.get("schema") != "run_manifest_v1":
-        raise ValueError("wrong run manifest format")
+    allowed = _REQUIRED | {"schema", "trajectory", "qualification"}
+    if not isinstance(manifest, dict) or set(manifest) != allowed or manifest.get("schema") != "run_manifest_v1":
+        raise ValueError("wrong run manifest format or unexpected fields")
     trajectory = manifest.get("trajectory")
-    if not isinstance(trajectory, dict) or trajectory.get("filename") != _TRAJECTORY:
+    if not isinstance(trajectory, dict) or set(trajectory) != {"filename", "sha256"}:
+        raise ValueError("manifest trajectory has missing or unexpected fields")
+    if trajectory.get("filename") != _TRAJECTORY:
         raise ValueError("manifest does not identify the exact loader trajectory")
     member = _safe_member(root, _TRAJECTORY)
     if trajectory.get("sha256") != _hash(member):
@@ -283,6 +327,9 @@ def load_run_manifest_v1(root):
     _validate_identity_fields(identities)
     _verify_identities(root, identities)
     qualification = manifest.get("qualification")
-    if not isinstance(qualification, dict) or qualification.get("approved") is not False:
-        raise ValueError("manifest cannot itself qualify an artifact")
+    if (not isinstance(qualification, dict)
+            or set(qualification) != {"approved", "status"}
+            or qualification.get("approved") is not False
+            or qualification.get("status") != "unqualified"):
+        raise ValueError("manifest qualification must remain explicitly unqualified")
     return manifest

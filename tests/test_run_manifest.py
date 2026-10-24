@@ -77,6 +77,48 @@ class RunManifestTests(unittest.TestCase):
                     boundary_event_contract={"boundary": "rolling"},
                     validation_report="validation_report.json", policy={"status": "unqualified"})
 
+    def test_loader_rejects_unknown_top_level_and_trajectory_fields(self):
+        for target, key in (("top", "accepted"), ("trajectory", "extra")):
+            with self.subTest(target=target), tempfile.TemporaryDirectory() as td:
+                root = Path(td)
+                solution, _ = artifact_fixtures.TrajectoryArtifactTest().make_solution()
+                _write_trajectory_metadata(root / "trajectory_metadata.npz", solution)
+                write_run_manifest_v1(root, self.sample(root))
+                path = root / "run_manifest_v1.json"
+                data = json.loads(path.read_text())
+                (data if target == "top" else data["trajectory"])[key] = "unexpected"
+                path.write_text(json.dumps(data))
+                with self.assertRaisesRegex(ValueError, "unexpected fields"):
+                    load_run_manifest_v1(root)
+
+    def test_loader_rejects_contradictory_or_extended_qualification(self):
+        for changes in ({"approved": False, "status": "accepted"},
+                        {"approved": False, "status": "unqualified", "basis": "other"}):
+            with self.subTest(changes=changes), tempfile.TemporaryDirectory() as td:
+                root = Path(td)
+                solution, _ = artifact_fixtures.TrajectoryArtifactTest().make_solution()
+                _write_trajectory_metadata(root / "trajectory_metadata.npz", solution)
+                write_run_manifest_v1(root, self.sample(root))
+                path = root / "run_manifest_v1.json"
+                data = json.loads(path.read_text())
+                data["qualification"] = changes
+                path.write_text(json.dumps(data))
+                with self.assertRaisesRegex(ValueError, "explicitly unqualified"):
+                    load_run_manifest_v1(root)
+
+    def test_snapshot_rejects_symlinked_intermediate_without_external_writes(self):
+        from simplified_vehicle_models.solvers.run_manifest import snapshot_source_inputs
+        with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as outside:
+            root, external = Path(td), Path(outside)
+            source = root / "input.bin"
+            source.write_bytes(b"source")
+            expected = hashlib.sha256(source.read_bytes()).hexdigest()
+            (root / "inputs").symlink_to(external, target_is_directory=True)
+            with self.assertRaisesRegex(ValueError, "symlink"):
+                snapshot_source_inputs(root, {str(source): expected})
+            self.assertEqual(list(external.iterdir()), [])
+            self.assertEqual(source.read_bytes(), b"source")
+
     def test_manifest_wrongtrajectoryformat_rejected_after_digest_rewritten(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)

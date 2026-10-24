@@ -27,6 +27,7 @@ class StandingStraightSettings:
     minimum_interval_seconds: float = 1e-5
     maximum_interval_seconds: float = 10.0
     heldout_fractions: int = 17
+    transcription_mode: str = "legacy_normalized_fd_v1"
 
 
 @dataclass(frozen=True)
@@ -62,7 +63,7 @@ def _jsonsafe(x):
     return str(x)
 
 
-def solve_standing_straight(vehicle, distance, *, settings=None, acceleration_limit=None):
+def solve_standing_straight(vehicle, distance, *, settings=None, acceleration_limit=None, initial_guess=None):
     """Solve the restricted straight-line problem; success is not event qualification."""
     started = time.monotonic()
     report = {"accepted": False, "optimizer_converged": False, "solver_reported_success": False,
@@ -71,7 +72,7 @@ def solve_standing_straight(vehicle, distance, *, settings=None, acceleration_li
               "numerically_qualified": False, "physical_feasibility_certified": False,
               "global_minimum_proven": False, "joint_line_optimized": False,
               "geometry": "fixed straight, nonnegative longitudinal control, rest-to-free-finish",
-              "failure": None, "limit_queries": 0, "cache_hits": 0, "model_identity_known": False}
+              "failure": None, "limit_queries": 0, "cache_hits": 0, "derivative_limit_queries": 0, "model_identity_known": False}
 
     def finish_failure(reason, *, budget=False):
         report["failure"] = str(reason)
@@ -97,6 +98,10 @@ def solve_standing_straight(vehicle, distance, *, settings=None, acceleration_li
 
     if settings is None: settings = StandingStraightSettings()
     if type(settings) is not StandingStraightSettings: return finish_failure("invalid_settings_type")
+    mode = settings.transcription_mode
+    if type(mode) is not str or mode not in ("legacy_normalized_fd_v1", "physical_units_chain_v1"):
+        return finish_failure("invalid_settings_transcription_mode")
+    physical_mode = mode == "physical_units_chain_v1"
     for name in ("intervals", "maximum_iterations", "maximum_limit_queries", "heldout_fractions"):
         value = getattr(settings, name)
         minimum = 2 if name == "intervals" else 3 if name == "heldout_fractions" else 1
@@ -112,6 +117,29 @@ def solve_standing_straight(vehicle, distance, *, settings=None, acceleration_li
     if isinstance(distance, bool) or not isinstance(distance, numbers.Real) or not math.isfinite(distance) or distance <= 0:
         return finish_failure("invalid_distance")
     distance = float(distance); n = int(settings.intervals)
+    seed = None
+    if initial_guess is not None:
+        try:
+            source = np.asarray(initial_guess, dtype=object)
+            raw = np.asarray(initial_guess)
+            if (source.shape != (2*n,) or any(isinstance(v, (bool, np.bool_)) for v in source.flat)
+                    or raw.shape != (2*n,) or raw.dtype.kind not in "iuf"):
+                return finish_failure("invalid_initial_guess")
+            seed = np.array(raw, dtype=np.float64, copy=True)
+            if not np.all(np.isfinite(seed)) or np.any(seed[:n] < settings.minimum_interval_seconds) or np.any(seed[:n] > settings.maximum_interval_seconds) or np.any(seed[n:] < 0):
+                return finish_failure("invalid_initial_guess")
+            import hashlib
+            report["seed_source"] = "provided"
+            report["initial_guess_sha256"] = hashlib.sha256(seed.astype("<f8", copy=False).tobytes()).hexdigest()
+            distance_guess = 0.0; speed_guess = 0.0
+            for h, a in zip(seed[:n], seed[n:]):
+                distance_guess += speed_guess*h + .5*a*h*h
+                speed_guess += a*h
+            report["initial_guess_finish_distance_residual_m"] = float(distance_guess - float(distance)) if isinstance(distance, numbers.Real) and math.isfinite(distance) else None
+        except Exception:
+            return finish_failure("invalid_initial_guess")
+    else:
+        report["seed_source"] = "legacy_default"
     calls = 0; cache = {}; x = None
 
     def budget_check(where):
@@ -126,7 +154,7 @@ def solve_standing_straight(vehicle, distance, *, settings=None, acceleration_li
             callback = acceleration_limit
         if not callable(callback): return finish_failure("invalid_callback")
 
-        def cap(speed):
+        def cap(speed, *, derivative=False):
             nonlocal calls
             budget_check("before callback/cache")
             key = (float(speed), 0.0)
@@ -136,6 +164,7 @@ def solve_standing_straight(vehicle, distance, *, settings=None, acceleration_li
                 return cache[key]
             if calls >= settings.maximum_limit_queries: raise RuntimeError("limit query budget")
             calls += 1; report["limit_queries"] = calls
+            if derivative: report["derivative_limit_queries"] += 1
             value = callback(vehicle, float(speed), 0.0)
             budget_check("after callback")
             if isinstance(value, bool) or not isinstance(value, numbers.Real) or not math.isfinite(value) or value < 0:
@@ -143,11 +172,20 @@ def solve_standing_straight(vehicle, distance, *, settings=None, acceleration_li
             cache[key] = float(value)
             return float(value)
 
+        def cap_derivative(speed):
+            if not physical_mode: return 0.0
+            if not math.isfinite(speed) or speed < 0: raise ValueError("invalid derivative speed")
+            h = min(.001, speed / 2.) if speed > 0 else .001
+            if speed > 0:
+                return (cap(speed + h, derivative=True) - cap(speed - h, derivative=True)) / (2*h)
+            return (cap(h, derivative=True) - cap(0.0)) / h
+
         a0 = cap(0.0)
         if a0 <= 0: return finish_failure("zero_rest_limit")
-        T = math.sqrt(2 * distance / (.5 * a0)); dt = T / n
-        if not settings.minimum_interval_seconds <= dt <= settings.maximum_interval_seconds:
-            return finish_failure("seed_out_of_bounds")
+        if seed is None:
+            T = math.sqrt(2 * distance / (.5 * a0)); dt = T / n
+            if not settings.minimum_interval_seconds <= dt <= settings.maximum_interval_seconds:
+                return finish_failure("seed_out_of_bounds")
         from scipy.optimize import minimize
 
         def rollout(values):
@@ -160,22 +198,62 @@ def solve_standing_straight(vehicle, distance, *, settings=None, acceleration_li
                 positions.append(sn); speeds.append(vn); times.append(tn)
             return np.asarray(times), np.asarray(positions), np.asarray(speeds)
 
-        def eq(values): return (rollout(values)[1][-1] - distance) / max(1.0, distance)
+        def jets(values):
+            dts, acc = values[:n], values[n:]
+            dv = np.zeros((n+1, 2*n)); ds = np.zeros((n+1, 2*n))
+            v = 0.; s = 0.
+            for i, (h, a) in enumerate(zip(dts, acc)):
+                e_dt = np.zeros(2*n); e_dt[i] = 1.
+                e_a = np.zeros(2*n); e_a[n+i] = 1.
+                dv[i+1] = dv[i] + a*e_dt + h*e_a
+                ds[i+1] = ds[i] + h*dv[i] + (v+a*h)*e_dt + .5*h*h*e_a
+                v += a*h; s += v*h - .5*a*h*h
+            return dv, ds
+
+        def eq(values):
+            terminal = rollout(values)[1][-1] - distance
+            return terminal if physical_mode else terminal / max(1.0, distance)
+        def eq_jac(values):
+            return jets(values)[1][-1] if physical_mode else jets(values)[1][-1] / max(1.0, distance)
         def constraints(values, fractions):
             _, _, speeds = rollout(values); acc = values[n:]; out = []
             for i in range(n):
                 for fraction in fractions: out.append(cap(speeds[i] + acc[i] * values[i] * fraction) - acc[i])
             return np.asarray(out)
 
-        solver_ftol = float(settings.tolerance) / (10.0 * max(1.0, distance))
+        def constraints_jac(values, fractions):
+            dts, acc = values[:n], values[n:]
+            dv, _ = jets(values); _, _, speeds = rollout(values); rows = []
+            for i in range(n):
+                for fraction in fractions:
+                    speed = speeds[i] + acc[i]*dts[i]*fraction
+                    velocity_jet = dv[i].copy()
+                    velocity_jet[i] += acc[i]*fraction
+                    velocity_jet[n+i] += dts[i]*fraction
+                    derivative = cap_derivative(float(speed)) if np.any(velocity_jet != 0.) else 0.
+                    row = derivative*velocity_jet
+                    row[n+i] -= 1.
+                    rows.append(row)
+            return np.asarray(rows)
+
+        solver_ftol = float(settings.tolerance) if physical_mode else float(settings.tolerance) / (10.0 * max(1.0, distance))
         report["solver_ftol"] = solver_ftol
-        report["solver_ftol_note"] = "normalized terminal-distance equality; ftol is one tenth of normalized caller physical tolerance"
-        x0 = np.r_[np.full(n, dt), np.full(n, .5 * a0)]
+        report["transcription_mode"] = mode
+        report["solver_ftol_note"] = ("terminal-distance equality in metres; ftol uses caller tolerance in metres" if physical_mode else "normalized terminal-distance equality; ftol is one tenth of normalized caller physical tolerance")
+        report["jacobian_note"] = ("analytic kinematic chain; cap derivative central difference h=min(0.001,v/2), forward difference at rest" if physical_mode else "SLSQP default finite differences; legacy transcription preserved")
+        x0 = seed.copy() if seed is not None else np.r_[np.full(n, dt), np.full(n, .5 * a0)]
         bounds = [(settings.minimum_interval_seconds, settings.maximum_interval_seconds)] * n + [(0, None)] * n
+        eq_constraint = {"type": "eq", "fun": eq}
+        ineq_constraint = {"type": "ineq", "fun": lambda values: constraints(values, (0., .5, 1.))}
+        if physical_mode:
+            eq_constraint["jac"] = eq_jac
+            ineq_constraint["jac"] = lambda values: constraints_jac(values, (0., .5, 1.))
+        solver_kwargs = {"constraints": (eq_constraint, ineq_constraint),
+                         "options": {"maxiter": int(settings.maximum_iterations), "ftol": solver_ftol}}
+        if physical_mode:
+            solver_kwargs["jac"] = lambda values: np.r_[np.ones(n), np.zeros(n)]
         opt = minimize(lambda values: float(np.sum(values[:n])), x0, method="SLSQP", bounds=bounds,
-                       constraints=({"type": "eq", "fun": eq},
-                                    {"type": "ineq", "fun": lambda values: constraints(values, (0., .5, 1.))}),
-                       options={"maxiter": int(settings.maximum_iterations), "ftol": solver_ftol})
+                       **solver_kwargs)
         report["solver_reported_success"] = bool(opt.success and opt.status == 0)
         report["optimizer_status"] = opt.status; report["optimizer_message"] = str(opt.message)
         # Preserve finite solver iterate facts even when SLSQP rejects its status.

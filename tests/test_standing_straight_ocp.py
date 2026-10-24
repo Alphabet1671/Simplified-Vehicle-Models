@@ -12,10 +12,93 @@ from simplified_vehicle_models.solvers.standing_straight_ocp import (
 
 
 class StandingStraightOcpTests(unittest.TestCase):
+    def test_physical_mode_supplies_chain_jacobians_and_metres_tolerance(self):
+        n = 3
+        settings = StandingStraightSettings(intervals=n, transcription_mode="physical_units_chain_v1", tolerance=2e-5)
+        captured = {}
+        class Fake:
+            success = False; status = 9; message = "captured"; nit = 0
+            x = np.array([1., 1., 1., 1., 1., 1.])
+        def minimize(fun, x0, **kwargs):
+            captured.update(kwargs)
+            return Fake()
+        with patch("scipy.optimize.minimize", side_effect=minimize):
+            _, report = solve_standing_straight(object(), 10., settings=settings,
+                acceleration_limit=lambda v, speed, k: 5. - .01*speed*speed)
+        eq, ineq = captured["constraints"]
+        self.assertIn("jac", eq); self.assertIn("jac", ineq); self.assertIn("jac", captured)
+        np.testing.assert_array_equal(captured["jac"](np.ones(2*n)), np.r_[np.ones(n), np.zeros(n)])
+        self.assertEqual(captured["options"]["ftol"], settings.tolerance)
+        x = np.array([1., 1., 1., .5, .6, .7])
+        np.testing.assert_allclose(eq["jac"](x), [1.5, 1.7, 1.8, 2.5, 1.5, .5], atol=1e-12)
+        direction = np.array([.2, -.1, .3, -.2, .1, .4])
+        jac = ineq["jac"](x)
+        constraint = ineq["fun"]
+        for scale in (.8, 1., 1.2):
+            point = x.copy(); point[:n] *= scale
+            fd = (constraint(point + 1e-5*direction)-constraint(point - 1e-5*direction))/(2e-5)
+            np.testing.assert_allclose(ineq["jac"](point) @ direction, fd, atol=2e-7)
+        self.assertEqual(report["transcription_mode"], "physical_units_chain_v1")
+        self.assertFalse(report["accepted"])
+
+    def test_legacy_jacobian_omitted_and_seed_validation_precedes_callback(self):
+        seen = []
+        def cap(*args): seen.append(args); return 3.
+        captured = {}
+        fake = SimpleNamespace(success=False, status=9, message="stop", x=np.ones(4), nit=0)
+        def minimize(fun, x0, **kwargs):
+            captured.update(kwargs); return fake
+        with patch("scipy.optimize.minimize", side_effect=minimize):
+            solve_standing_straight(object(), 10., settings=StandingStraightSettings(intervals=2), acceleration_limit=cap)
+        self.assertTrue(all("jac" not in c for c in captured["constraints"]))
+        seen.clear()
+        for bad in ([True, 1., 1., 1.], [1., 1.], [1., 1., -1., 1.], [1., 1., np.nan, 1.], ["1", 1., 1., 1.]):
+            result, report = solve_standing_straight(object(), 10., settings=StandingStraightSettings(intervals=2),
+                                                      acceleration_limit=cap, initial_guess=bad)
+            self.assertIsNone(result); self.assertEqual(report["failure"], "invalid_initial_guess")
+        self.assertEqual(seen, [])
+
+    def test_physical_jacobian_respects_global_query_budget_and_future_rest_jet(self):
+        settings = StandingStraightSettings(intervals=2, maximum_limit_queries=2,
+            transcription_mode="physical_units_chain_v1")
+        captured = {}
+        fake = SimpleNamespace(success=False, status=9, message="stop", x=np.ones(4), nit=0)
+        def minimize(fun, x0, **kwargs):
+            captured.update(kwargs)
+            kwargs["constraints"][1]["jac"](np.array([1., 1., 1., 1.]))
+            return fake
+        with patch("scipy.optimize.minimize", side_effect=minimize):
+            result, report = solve_standing_straight(object(), 10., settings=settings,
+                acceleration_limit=lambda v, speed, k: 4. + speed)
+        self.assertIsNone(result); self.assertFalse(report["accepted"])
+        self.assertEqual(report["failure"], "budget_exhausted")
+        self.assertEqual(report["limit_queries"], 2)
+        self.assertEqual(report["derivative_limit_queries"], 1)
+
+        captured.clear()
+        def capture(fun, x0, **kwargs):
+            captured.update(kwargs)
+            return fake
+        with patch("scipy.optimize.minimize", side_effect=capture):
+            solve_standing_straight(object(), 10., settings=StandingStraightSettings(intervals=2,
+                transcription_mode="physical_units_chain_v1"), acceleration_limit=lambda *_: 3.)
+        jac = captured["constraints"][1]["jac"]
+        calls = []
+        def nonnegative_cap(v, speed, k):
+            calls.append(speed); return 4. + speed
+        with patch("scipy.optimize.minimize", side_effect=capture):
+            solve_standing_straight(object(), 10., settings=StandingStraightSettings(intervals=2,
+                transcription_mode="physical_units_chain_v1"), acceleration_limit=nonnegative_cap)
+        jac = captured["constraints"][1]["jac"]
+        row = jac(np.array([1., 1., 0., 1.]))
+        np.testing.assert_allclose(row[3], [0., 0., 1., -1.], atol=1e-12)
+        self.assertTrue(all(speed >= 0 for speed in calls))
+
     def test_constant_cap_solves_actual_time_optimum_and_is_immutable(self):
         for intervals in (4, 8):
+          for mode in ("legacy_normalized_fd_v1", "physical_units_chain_v1"):
             result, report = solve_standing_straight(
-                object(), 75.3, settings=StandingStraightSettings(intervals=intervals),
+                object(), 75.3, settings=StandingStraightSettings(intervals=intervals, transcription_mode=mode),
                 acceleration_limit=lambda vehicle, speed, curvature: 3.0)
             self.assertIsNotNone(result, report)
             self.assertFalse(report["accepted"])

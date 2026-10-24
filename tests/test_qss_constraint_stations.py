@@ -1,5 +1,7 @@
 """Localized physical off-site constraint station regressions."""
 from dataclasses import replace
+import hashlib
+import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -65,6 +67,35 @@ class ConstraintStationTest(unittest.TestCase):
         ])
         np.testing.assert_array_equal(default["off_site_stations"], expected)
         self.assertEqual(default["off_site_fractions"].size, expected.size)
+
+    def test_physical_constraint_identity_tracks_retained_explicit_stations(self):
+        left, right = self.build([18.]), self.build([20.])
+        left_identity = left["physical_constraint_identity"]
+        right_identity = right["physical_constraint_identity"]
+        for identity in (left_identity, right_identity):
+            payload = dict(identity)
+            supplied_sha = payload.pop("sha256")
+            expected_sha = hashlib.sha256(
+                json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest()
+            self.assertEqual(supplied_sha, expected_sha)
+        self.assertNotEqual(left_identity, right_identity)
+        self.assertNotEqual(left["effective_constraint_sites"].tolist(),
+                            right["effective_constraint_sites"].tolist())
+
+        # The refinement comparator separately includes this physical identity.
+        from tools.diagnostics.verify_no_tv_minimum_lap import _same_refinement_conditions
+        base = {
+            "request": {"settings": {}, "seed": "same", "initializer": {},
+                        "provenance": None, "convergence_criteria": None,
+                        "source_hashes": {}, "corridor": {}, "start_treatment": "open",
+                        "start_speed_mps": 10., "execution_identity": {},},
+            "actual_initializer": {"fingerprint": None, "stable_identity": None},
+            "physical_constraint_identity": left_identity,
+            "surface_representation": None,
+        }
+        other = {**base, "physical_constraint_identity": right_identity}
+        self.assertFalse(_same_refinement_conditions(base, other))
 
     def test_validation_and_canonicalization(self):
         for stations in ([np.nan], [-1.], [self.mesh[-1]], [0.], 18.):
@@ -256,3 +287,5 @@ class ConstraintStationTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+Width report: command `PYTHONPATH=src python3 -m unittest tests.test_qss_constraint_stations -q`; 7 tests run, 7 skipped (CasADi unavailable), 0 failures.

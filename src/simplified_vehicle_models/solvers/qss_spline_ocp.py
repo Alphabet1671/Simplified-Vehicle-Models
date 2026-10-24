@@ -118,6 +118,7 @@ class SplineSolution:
     line_optimized: bool = True
     coefficient_coordinate_scale: float = 1.0
     coefficient_coordinate_scale_applied: bool = False
+    energy_defect_scaling: str = "legacy_reference_speed_v1"
 
     def __post_init__(self):
         if self.fixed_coefficients is not None:
@@ -583,6 +584,7 @@ def build_spline_ocp(track, corridor, surface, mesh, spline, settings: QssSettin
     off_site_domain_speed_indices: list[int] = []
     off_site_corridor_indices: list[int] = []
     off_site_speed_cap_indices: list[int] = []
+    energy_defect_indices: list[int] = []
 
     def add(expression, low, high):
         constraints.append(expression)
@@ -680,8 +682,10 @@ def build_spline_ocp(track, corridor, surface, mesh, spline, settings: QssSettin
         # Normalize this m²/s² row by a fixed 10 m/s reference speed for NLP
         # conditioning. This does not redefine the independently reported
         # physical energy residual or provide a speed-uniform error bound.
-        add((speed[index + 1] ** 2 - speed[index] ** 2
-             - h / 6.0 * (f0 + 4.0 * f_mid + f1)) / 10.0, 0.0, 0.0)
+        energy_defect_indices.append(add(
+            (speed[index + 1] ** 2 - speed[index] ** 2
+             - h / 6.0 * (f0 + 4.0 * f_mid + f1)) / 10.0, 0.0, 0.0,
+        ))
         if not rate_control:
             # Only the legacy quadratic acceleration control has an acceleration
             # Bernstein guard. In rate mode F/(2G) is not quadratic, so this
@@ -855,6 +859,7 @@ def build_spline_ocp(track, corridor, surface, mesh, spline, settings: QssSettin
         ),
         "off_site_corridor_indices": np.asarray(off_site_corridor_indices, dtype=int),
         "off_site_speed_cap_indices": np.asarray(off_site_speed_cap_indices, dtype=int),
+        "energy_defect_indices": np.asarray(energy_defect_indices, dtype=int),
     }
 
 
@@ -1051,7 +1056,9 @@ def _spline_failure_diagnostics(*, status, iter_count, total_iterations, objecti
                                 settings, stage_timings=None,
                                 active_decision_indices=None,
                                 coefficient_coordinate_scale=1.0,
-                                coefficient_coordinate_scale_applied=False) -> dict[str, object]:
+                                coefficient_coordinate_scale_applied=False,
+                                 energy_defect_scaling="legacy_reference_speed_v1",
+                                 energy_defect_scaling_applied=False) -> dict[str, object]:
     """Serialize only solver-state facts needed to diagnose strict rejection."""
     diagnostics: dict[str, object] = {
         "return_status": str(status),
@@ -1065,13 +1072,15 @@ def _spline_failure_diagnostics(*, status, iter_count, total_iterations, objecti
                    "decision_size": int(built["nlp"]["x"].numel())},
         "control_representation": settings.control_representation,
         "state_representation": "energy_hs_v1",
-        # IPOPT receives affine-scaled x but the constraint residual g is not
-        # rescaled.  These labels prevent a failed iterate from implying a
-        # common physical coordinate system for both multiplier vectors.
+        # Decision multipliers remain in scaled-x coordinates; constraint
+        # multipliers below are recovered to the canonical residual coordinates.
         "dual_x_coordinates": "scaled_decision",
-        "dual_g_coordinates": "unscaled_constraint_residuals",
+        "dual_g_coordinates": "unscaled_constraint_residuals" if not energy_defect_scaling_applied else "original_constraint_residuals",
         "coefficient_coordinate_scale": float(coefficient_coordinate_scale),
         "coefficient_coordinate_scale_applied": bool(coefficient_coordinate_scale_applied),
+        "energy_defect_scaling": energy_defect_scaling,
+        "energy_defect_scaling_applied": bool(energy_defect_scaling_applied),
+        "energy_defect_scaling_scope": "solver-only positive constraint coordinate change; no uniform physical error certificate",
         "time_quadrature": TIME_QUADRATURE_NAME,
         "off_site_stations": np.array(built.get("off_site_stations", []), copy=True).tolist(),
         "off_site_elements": np.array(built.get("off_site_elements", []), copy=True).tolist(),
@@ -1100,7 +1109,9 @@ def _raise_spline_solver_failure(*, status, values, constraints, objective,
                                  total_iterations, stats, result, built, settings,
                                  stage_timings=None, active_decision_indices=None,
                                  coefficient_coordinate_scale=1.0,
-                                 coefficient_coordinate_scale_applied=False):
+                                 coefficient_coordinate_scale_applied=False,
+                                  energy_defect_scaling="legacy_reference_speed_v1",
+                                  energy_defect_scaling_applied=False):
     """Run the unchanged strict gate and decorate a rejection with raw evidence."""
     try:
         _validate_solver_result(
@@ -1116,6 +1127,8 @@ def _raise_spline_solver_failure(*, status, values, constraints, objective,
             active_decision_indices=active_decision_indices,
             coefficient_coordinate_scale=coefficient_coordinate_scale,
             coefficient_coordinate_scale_applied=coefficient_coordinate_scale_applied,
+            energy_defect_scaling=energy_defect_scaling,
+            energy_defect_scaling_applied=energy_defect_scaling_applied,
         )
         raise SplineSolveError(
             str(error), diagnostics, failed_values=values,
@@ -1128,13 +1141,17 @@ def solve_spline_line(track, corridor, surface, mesh, spline,
                       settings: QssSettings, *, seed: FloatArray | None = None,
                       speed_cap=None, constraint_stations=None,
                       fixed_coefficients=None,
-                      coefficient_coordinate_scale: float = 1.0) -> SplineSolution:
+                      coefficient_coordinate_scale: float = 1.0,
+                       energy_defect_scaling: str = "legacy_reference_speed_v1") -> SplineSolution:
     """Solve the consistent spline minimum-time problem on a fixed mesh.
 
     The status and tolerance contract matches :func:`solve_line`: a solver
     status other than ``Solve_Succeeded``, a non-finite value, or a constraint
     violation above ``settings.tolerance`` raises ``RuntimeError``.
     """
+    if type(energy_defect_scaling) is not str or energy_defect_scaling not in (
+            "legacy_reference_speed_v1", "cell_length_v1"):
+        raise ValueError("energy_defect_scaling must be 'legacy_reference_speed_v1' or 'cell_length_v1'")
     if (isinstance(coefficient_coordinate_scale, (bool, np.bool_))
             or not isinstance(coefficient_coordinate_scale, numbers.Real)):
         raise ValueError("coefficient_coordinate_scale must be a finite positive real scalar")
@@ -1216,15 +1233,26 @@ def solve_spline_line(track, corridor, surface, mesh, spline,
         lower = (built["x_lower"][control_count:] - center[control_count:]) / scale[control_count:]
         upper = (built["x_upper"][control_count:] - center[control_count:]) / scale[control_count:]
         scaled_seed = (vector[control_count:] - center[control_count:]) / scale[control_count:]
+    scaled_g = ca.substitute(built["nlp"]["g"], original_x, physical_x)
+    energy_factors = np.ones(built["g_lower"].size, dtype=float)
+    if energy_defect_scaling == "cell_length_v1":
+        energy_indices = np.asarray(built["energy_defect_indices"], dtype=int)
+        energy_factors[energy_indices] = 10.0 / np.diff(built["mesh"])
+        if not np.all(np.isfinite(energy_factors)) or np.any(energy_factors <= 0.0):
+            raise ValueError("energy defect scaling factors must be finite and positive")
+        scaled_g = ca.DM(energy_factors) * scaled_g
+    solver_g_lower = energy_factors * built["g_lower"]
+    solver_g_upper = energy_factors * built["g_upper"]
     scaled_nlp = {
         "x": scaled_x,
         "f": ca.substitute(built["nlp"]["f"], original_x, physical_x),
-        "g": ca.substitute(built["nlp"]["g"], original_x, physical_x),
+        "g": scaled_g,
     }
 
     tolerances = _tolerance_schedule(settings)
     timings["symbolic_scaling_seconds"] = time.perf_counter() - scaling_started
     lam_x = lam_g = None
+    solver_lam_g = None
     total_iterations = 0
     iter_count = 0
     result = None
@@ -1268,11 +1296,11 @@ def solve_spline_line(track, corridor, surface, mesh, spline,
             "x0": scaled_seed,
             "lbx": lower,
             "ubx": upper,
-            "lbg": built["g_lower"],
-            "ubg": built["g_upper"],
+            "lbg": solver_g_lower,
+            "ubg": solver_g_upper,
         }
         if lam_x is not None:
-            arguments.update({"lam_x0": lam_x, "lam_g0": lam_g})
+            arguments.update({"lam_x0": lam_x, "lam_g0": solver_lam_g})
         execution_started = time.perf_counter()
         result = solver(**arguments)
         timings["solver_execution_seconds"] += time.perf_counter() - execution_started
@@ -1286,7 +1314,8 @@ def solve_spline_line(track, corridor, surface, mesh, spline,
         else:
             values = np.concatenate([fixed, center[control_count:]
                                      + scale[control_count:] * active_values])
-        constraints = np.asarray(result["g"], dtype=float).ravel()
+        solver_constraints = np.asarray(result["g"], dtype=float).ravel()
+        constraints = solver_constraints / energy_factors
         violation = float(np.max(np.maximum(
             np.maximum(built["g_lower"] - constraints, 0.0),
             constraints - built["g_upper"],
@@ -1297,7 +1326,8 @@ def solve_spline_line(track, corridor, surface, mesh, spline,
         if stage + 1 < len(tolerances):
             scaled_seed = np.asarray(result["x"], dtype=float).ravel()
             lam_x = np.asarray(result["lam_x"], dtype=float).ravel()
-            lam_g = np.asarray(result["lam_g"], dtype=float).ravel()
+            solver_lam_g = np.asarray(result["lam_g"], dtype=float).ravel()
+            lam_g = solver_lam_g * energy_factors
 
     bound_violation = float(np.max(np.maximum(
         np.maximum(built["x_lower"] - values, 0.0), values - built["x_upper"],
@@ -1307,11 +1337,15 @@ def solve_spline_line(track, corridor, surface, mesh, spline,
         status=status, values=values, constraints=constraints, objective=objective,
         constraint_violation=violation, bound_violation=bound_violation,
         iter_count=iter_count, total_iterations=total_iterations, stats=stats,
-        result=result or {}, built=built, settings=settings,
+        result=({**result, "lam_g": np.asarray(result["lam_g"], dtype=float).ravel()
+                * energy_factors} if result and "lam_g" in result else result or {}),
+        built=built, settings=settings,
         stage_timings=dict(timings),
         active_decision_indices=active_indices if fixed is not None else None,
         coefficient_coordinate_scale=coefficient_coordinate_scale,
         coefficient_coordinate_scale_applied=coefficient_scale_applied,
+        energy_defect_scaling=energy_defect_scaling,
+        energy_defect_scaling_applied=energy_defect_scaling == "cell_length_v1",
     )
     violation = max(violation, bound_violation)
     postprocess_started = time.perf_counter()
@@ -1341,6 +1375,7 @@ def solve_spline_line(track, corridor, surface, mesh, spline,
         line_optimized=fixed is None,
         coefficient_coordinate_scale=coefficient_coordinate_scale,
         coefficient_coordinate_scale_applied=coefficient_scale_applied,
+        energy_defect_scaling=energy_defect_scaling,
         trajectory=trajectory,
         midpoint_acceleration=np.array(blocks["mid_acceleration"], copy=True),
         objective_value=objective,

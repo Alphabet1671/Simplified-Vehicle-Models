@@ -59,14 +59,50 @@ class NoTvMinimumLapHarnessTest(unittest.TestCase):
         for bad in (float("nan"), True, 0.0):
             with self.assertRaisesRegex(ValueError, "coefficient_coordinate_scale"):
                 harness.build_attempt(case, **base, coefficient_coordinate_scale=bad)
-        for bad_mesh in ([0., 1., 1., 2.], [0., 2., 1.], [1., 2.]):
+        for bad_mesh in ([0., 1., 1., 2.], [0., 2., 1.], [0., float("nan"), 2.]):
             with self.assertRaisesRegex(ValueError, "mesh_stations"):
                 harness.build_attempt(case, **base, mesh_stations=bad_mesh, diagnostic_rungs=True)
+        offset_mesh = harness.build_attempt(case, **base, mesh_stations=[10., 11., 20.],
+            constraint_stations=[15.], diagnostic_rungs=True)
+        self.assertEqual(offset_mesh["mesh_stations"], [10., 11., 20.])
         with self.assertRaisesRegex(ValueError, "constraint_stations"):
             harness.build_attempt(case, **base, mesh_stations=[0., 1., 2.],
                                   constraint_stations=[2., 3.], diagnostic_rungs=True)
         with self.assertRaisesRegex(ValueError, "coefficient_coordinate_scale"):
             harness.build_attempt(case, **base, coefficient_coordinate_scale=float("nan"))
+
+    def test_worker_raw_request_options_rejected_before_setup(self):
+        base = harness.build_attempt(harness.default_cases()["acceleration"], mesh_spacing_m=5.,
+            basis_spacing_m=35., maximum_iterations=1, wall_cap_s=3., seed_name="centerline",
+            formulation=Path("form.xml"), surface=Path("surface.npz"))
+        harness._validate_request_options(base)
+        mutations = [
+            ({"request_schema_version": True}, "schema"),
+            ({"request_schema_version": 1, "mesh_stations": [0., 1.]}, "schema v1"),
+            ({"mesh_stations": [0., 2., 1.]}, "strictly increasing"),
+            ({"mesh_stations": [0., float("nan"), 2.]}, "finite"),
+            ({"constraint_stations": [float("nan")]}, "finite"),
+            ({"coefficient_coordinate_scale": True}, "coefficient_coordinate_scale"),
+            ({"coefficient_coordinate_scale": float("nan")}, "coefficient_coordinate_scale"),
+            ({"energy_defect_scaling": "bad"}, "energy_defect_scaling"),
+            ({"no_torque_vectoring": False}, "no_torque_vectoring"),
+        ]
+        for mutation, message in mutations:
+            request = dict(base); request.update(mutation)
+            with self.subTest(mutation=mutation), self.assertRaisesRegex(ValueError, message):
+                harness._validate_request_options(request)
+        harness._validate_request_options(dict(base, mesh_stations=[10., 11., 20.],
+                                                constraint_stations=[15.]))
+        with tempfile.TemporaryDirectory() as directory:
+            request_path = Path(directory) / "request.json"
+            result_path = Path(directory) / "result.json"
+            raw = dict(base, request_schema_version=True)
+            request_path.write_text(json.dumps(harness._json_safe(raw)), encoding="utf-8")
+            with patch.object(harness, "make_track_view", side_effect=AssertionError("setup must not run")):
+                harness._attempt_worker(str(request_path), str(result_path), str(Path(directory) / "solution.npz"))
+            result = json.loads(result_path.read_text())
+            self.assertIn("unsupported request_schema_version", result["error"])
+            self.assertNotIn("requested_numerical_options", result)
 
     def test_preregistered_cases_keep_full_geometry_and_explicit_starts(self):
         cases = harness.default_cases()

@@ -239,23 +239,61 @@ def _validated_explicit_mesh(value):
         return None
     if isinstance(value, (str, bytes)):
         raise ValueError("mesh_stations must be a finite strictly increasing sequence")
-    mesh = np.asarray(value, dtype=float)
-    if mesh.ndim != 1 or mesh.size < 2 or not np.all(np.isfinite(mesh)):
+    raw = np.asarray(value, dtype=object)
+    if raw.ndim != 1 or any(isinstance(item, (bool, np.bool_)) or
+                            not isinstance(item, (int, float, np.integer, np.floating)) for item in raw):
+        raise ValueError("mesh_stations must be a finite one-dimensional numeric sequence")
+    mesh = np.asarray(raw, dtype=float)
+    if mesh.size < 2 or not np.all(np.isfinite(mesh)):
         raise ValueError("mesh_stations must be a finite one-dimensional sequence with at least two nodes")
     if np.any(np.diff(mesh) <= 0.0):
         raise ValueError("mesh_stations must be strictly increasing with no duplicate nodes")
-    if mesh[0] != 0.0:
-        raise ValueError("mesh_stations must start at zero")
     return mesh.tolist()
 
 
 def _validated_stations(value, name):
     if value is None:
         return None
-    stations = np.asarray(value, dtype=float)
-    if stations.ndim != 1 or not np.all(np.isfinite(stations)):
+    raw = np.asarray(value, dtype=object)
+    if raw.ndim != 1 or any(isinstance(item, (bool, np.bool_)) or
+                            not isinstance(item, (int, float, np.integer, np.floating)) for item in raw):
+        raise ValueError(f"{name} must be a finite one-dimensional numeric sequence")
+    stations = np.asarray(raw, dtype=float)
+    if not np.all(np.isfinite(stations)):
         raise ValueError(f"{name} must be a finite one-dimensional sequence")
     return sorted(set(float(item) for item in stations))
+
+
+def _validate_request_options(request: dict) -> None:
+    """Validate a raw worker request before numerical setup or provenance claims."""
+    if not isinstance(request, dict):
+        raise ValueError("worker request must be a JSON object")
+    version = request.get("request_schema_version", request.get("schema_version", 1))
+    if isinstance(version, bool) or type(version) is not int or version not in (1, 2):
+        raise ValueError("unsupported request_schema_version")
+    v2_fields = {"energy_defect_scaling", "coefficient_coordinate_scale", "mesh_stations", "constraint_stations"}
+    if version == 1 and any(key in request for key in v2_fields):
+        raise ValueError("schema v1 request cannot contain schema v2 numerical fields")
+    if version == 2 and not v2_fields.issubset(request):
+        raise ValueError("schema v2 request is missing numerical option fields")
+    if "schema_version" in request and request["schema_version"] != version:
+        raise ValueError("schema_version conflicts with request_schema_version")
+    energy_scaling = request.get("energy_defect_scaling", "legacy_reference_speed_v1")
+    if type(energy_scaling) is not str or energy_scaling not in {"legacy_reference_speed_v1", "cell_length_v1"}:
+        raise ValueError("energy_defect_scaling must be a supported solver scaling")
+    scale = request.get("coefficient_coordinate_scale", 1.0)
+    if (isinstance(scale, (bool, np.bool_)) or not isinstance(scale, (int, float, np.integer, np.floating))
+            or not math.isfinite(float(scale)) or float(scale) <= 0.0):
+        raise ValueError("coefficient_coordinate_scale must be finite and positive")
+    mesh = _validated_explicit_mesh(request.get("mesh_stations"))
+    sites = _validated_stations(request.get("constraint_stations"), "constraint_stations")
+    if mesh is not None and sites and (sites[0] <= mesh[0] or sites[-1] >= mesh[-1]):
+        raise ValueError("constraint_stations must be interior to the explicit mesh domain")
+    expected_controls = {"no_torque_vectoring": True, "mode_switches": False,
+                         "controller_globals": False}
+    for field, expected in expected_controls.items():
+        if request.get(field, expected) is not expected:
+            raise ValueError(f"{field} must remain {expected!r} for no-TV worker requests")
 
 
 def build_attempt(case: MatrixCase, *, mesh_spacing_m: float, basis_spacing_m: float,
@@ -313,9 +351,9 @@ def build_attempt(case: MatrixCase, *, mesh_spacing_m: float, basis_spacing_m: f
         raise ValueError("coefficient_coordinate_scale must be finite and positive")
     explicit_mesh = _validated_explicit_mesh(mesh_stations)
     explicit_sites = _validated_stations(constraint_stations, "constraint_stations")
-    if explicit_mesh is not None and (explicit_mesh[0] != 0.0 or
-            (explicit_sites and (explicit_sites[0] <= explicit_mesh[0] or explicit_sites[-1] >= explicit_mesh[-1]))):
-        raise ValueError("constraint_stations must be interior to a zero-origin explicit mesh")
+    if explicit_mesh is not None and explicit_sites and (
+            explicit_sites[0] <= explicit_mesh[0] or explicit_sites[-1] >= explicit_mesh[-1]):
+        raise ValueError("constraint_stations must be interior to the explicit mesh domain")
     profile_options = _profile_options(profile_step, maximum_profile_iterations, maximum_profile_seconds)
     criteria = _convergence_criteria(convergence_criteria)
     settings = QssSettings(tolerance=_validate_finite_positive("nlp_tolerance", nlp_tolerance),
@@ -328,6 +366,7 @@ def build_attempt(case: MatrixCase, *, mesh_spacing_m: float, basis_spacing_m: f
     return {
         "request_schema_version": 2,
         "case": asdict(case),
+        "schema_version": 2,
         "energy_defect_scaling": energy_defect_scaling,
         "coefficient_coordinate_scale": float(coefficient_coordinate_scale),
         "mesh_stations": explicit_mesh,
@@ -508,6 +547,13 @@ def _attempt_worker(request_path: str, result_path: str, artifact_path: str) -> 
     result = {"request": request, "status": "worker_exception", "accepted": False,
               "validation_status": "solver_failed", "wall_seconds": None}
     try:
+        _validate_request_options(request)
+        result["validated_numerical_options"] = {
+            "energy_defect_scaling": request.get("energy_defect_scaling", "legacy_reference_speed_v1"),
+            "coefficient_coordinate_scale": request.get("coefficient_coordinate_scale", 1.0),
+            "mesh_stations": request.get("mesh_stations"),
+            "constraint_stations": request.get("constraint_stations"),
+        }
         case = MatrixCase(**request["case"])
         expected_contract = (SOURCE_GEOMETRY_CONTRACT if case.topology == "full_cut_open"
                              else NATIVE_GEOMETRY_CONTRACT)
@@ -543,9 +589,6 @@ def _attempt_worker(request_path: str, result_path: str, artifact_path: str) -> 
         settings_values["off_collocation_fractions"] = tuple(settings_values["off_collocation_fractions"])
         settings = QssSettings(**settings_values)
         schema_version = request.get("request_schema_version", 1)
-        result["requested_numerical_options"] = {"energy_defect_scaling": request.get("energy_defect_scaling", "legacy_reference_speed_v1"),
-                                                  "coefficient_coordinate_scale": request.get("coefficient_coordinate_scale", 1.0),
-                                                  "constraint_stations": request.get("constraint_stations")}
         if isinstance(schema_version, bool) or not isinstance(schema_version, int) or schema_version not in (1, 2):
             raise ValueError("unsupported request_schema_version")
         mesh = (np.asarray(request["mesh_stations"], dtype=float) if request.get("mesh_stations") is not None
@@ -559,6 +602,9 @@ def _attempt_worker(request_path: str, result_path: str, artifact_path: str) -> 
         if sites and (min(sites) <= mesh[0] or max(sites) >= mesh[-1]):
             raise ValueError("constraint_stations must be interior to the loaded mesh domain")
         spline = OffsetSpline(track, control_spacing=request["basis_spacing_m"])
+        result["requested_numerical_options"] = {"energy_defect_scaling": request.get("energy_defect_scaling", "legacy_reference_speed_v1"),
+                                                  "coefficient_coordinate_scale": request.get("coefficient_coordinate_scale", 1.0),
+                                                  "constraint_stations": request.get("constraint_stations")}
         result["actual_mesh"] = {"stations_m": np.asarray(mesh, dtype=float).tolist(),
                                   "sha256": hashlib.sha256(np.asarray(mesh, dtype=float).tobytes()).hexdigest(),
                                   "status": "diagnostic_not_preregistered" if request.get("mesh_stations") is not None else request.get("mesh_rung_status", "preregistered")}
@@ -640,7 +686,10 @@ def _attempt_worker(request_path: str, result_path: str, artifact_path: str) -> 
         solve_options = {"energy_defect_scaling": request.get("energy_defect_scaling", "legacy_reference_speed_v1"),
                          "coefficient_coordinate_scale": request.get("coefficient_coordinate_scale", 1.0),
                          "constraint_stations": request.get("constraint_stations")}
+        result["solver_numerical_options"] = dict(solve_options)
+        result["solver_call_started"] = True
         solution = solve_spline_line(track, corridor, surface, mesh, spline, settings, seed=seed, **solve_options)
+        result["applied_numerical_options"] = dict(solve_options)
         source_grid = np.linspace(float(solution.distance[0]), float(solution.distance[-1]), 256)
         if getattr(solution, "trajectory", None) is not None and getattr(solution, "state_evaluator", None) is not None:
             geometry = solution.trajectory.evaluate(source_grid)

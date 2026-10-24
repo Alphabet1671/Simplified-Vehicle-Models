@@ -118,20 +118,57 @@ class StandingStraightOcpTests(unittest.TestCase):
         self.assertEqual(len(report["last_finite_time_s"]), 3)
         self.assertIn("last_finite_finish_distance_error_m", report)
 
-    def test_report_and_late_budget_failures_return_no_candidate(self):
-        fake = SimpleNamespace(success=True, status=0, message="success", x=np.array([1., 1., 2., 2.]), nit=1)
-        # Clock advances only after a complete optimizer/check path, exercising final deadline handling.
-        with patch("scipy.optimize.minimize", return_value=fake), patch(
-                "simplified_vehicle_models.solvers.standing_straight_ocp.time.monotonic",
-                side_effect=[0.] * 100 + [2.] * 100):
+    def test_wall_budget_after_complete_report_serialization_returns_no_candidate(self):
+        fake = SimpleNamespace(success=True, status=0, message="success", x=np.array([.5, .5, 20., 20.]), nit=1)
+        module = __import__("simplified_vehicle_models.solvers.standing_straight_ocp", fromlist=["_jsonsafe"])
+        real_dumps = json.dumps
+        clock = [0.]
+        serialization_completed = []
+        def advance_after_success_report(*args, **kwargs):
+            encoded = real_dumps(*args, **kwargs)
+            if args and isinstance(args[0], dict) and args[0].get("optimizer_converged"):
+                serialization_completed.append(True)
+                clock[0] = 2.
+            return encoded
+        with patch("scipy.optimize.minimize", return_value=fake), \
+             patch.object(module.time, "monotonic", side_effect=lambda: clock[0]), \
+             patch.object(module.json, "dumps", side_effect=advance_after_success_report):
             result, report = solve_standing_straight(
                 object(), 10., settings=StandingStraightSettings(intervals=2, maximum_wall_seconds=1.),
                 acceleration_limit=lambda *_: 20.)
+        self.assertTrue(serialization_completed)
         self.assertIsNone(result)
-        self.assertFalse(report["accepted"])
+        self.assertEqual(report["failure"], "budget_exhausted")
+        self.assertTrue(report["solver_reported_success"])
         self.assertFalse(report["optimizer_converged"])
-        self.assertTrue(report["heldout_sampling_complete"])
-        json.dumps(report, allow_nan=False)
+        self.assertFalse(report["heldout_sampling_complete"])
+        self.assertFalse(report["accepted"])
+        real_dumps(report, allow_nan=False)
+
+    def test_wall_budget_is_checked_before_cached_limit_hit(self):
+        calls = []
+        def cap(vehicle, speed, curvature):
+            calls.append((speed, curvature))
+            return 20.
+        settings = StandingStraightSettings(intervals=2, maximum_wall_seconds=1.)
+        clock = [0.]
+        def fake_minimize(fun, x0, **kwargs):
+            # The rest-speed limit was queried before optimization and is cached.
+            # Make a repeated rest-speed query cross the budget before it can hit cache.
+            clock[0] = 2.
+            kwargs["constraints"][1]["fun"](x0)
+            raise AssertionError("expired cache query should have stopped optimization")
+        module = __import__("simplified_vehicle_models.solvers.standing_straight_ocp", fromlist=["time"])
+        with patch("scipy.optimize.minimize", side_effect=fake_minimize), \
+             patch.object(module.time, "monotonic", side_effect=lambda: clock[0]):
+            result, report = solve_standing_straight(object(), 10., settings=settings, acceleration_limit=cap)
+        self.assertIsNone(result)
+        self.assertEqual(report["failure"], "budget_exhausted")
+        self.assertEqual(calls, [(0.0, 0.0)])
+        self.assertEqual(report["limit_queries"], 1)
+        self.assertFalse(report["optimizer_converged"])
+        self.assertFalse(report["heldout_sampling_complete"])
+        self.assertFalse(report["accepted"])
 
     def test_unsuccessful_optimizer_and_heldout_dip_never_accept(self):
         fake = SimpleNamespace(success=False, status=9, message="iteration limit", x=np.array([1., 1., 2., 2.]))

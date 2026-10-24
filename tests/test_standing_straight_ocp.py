@@ -94,6 +94,148 @@ class StandingStraightOcpTests(unittest.TestCase):
         np.testing.assert_allclose(row[3], [0., 0., 1., -1.], atol=1e-12)
         self.assertTrue(all(speed >= 0 for speed in calls))
 
+    def test_solver_api_preserves_legacy_values_and_scales_physical_equality(self):
+        n = 2
+        seed = np.array([1.2, 1.4, 0.7, 0.8])
+        records = []
+        fake = SimpleNamespace(success=False, status=9, message="captured", x=seed.copy(), nit=0)
+
+        def run(mode, provided_seed=True):
+            seen = []
+            captured = {}
+            def cap(vehicle, speed, curvature):
+                seen.append((speed, curvature))
+                return 5. - .01 * speed * speed
+            def minimize(fun, x0, **kwargs):
+                captured["objective_fun"] = fun
+                captured["objective"] = fun(np.array([1.1, 1.3, .6, .9]))
+                captured["x0"] = np.array(x0, copy=True)
+                captured["bounds"] = list(kwargs["bounds"])
+                captured["options"] = dict(kwargs["options"])
+                captured["constraints"] = kwargs["constraints"]
+                captured["objective_jac"] = kwargs.get("jac")
+                x = np.array([1.1, 1.3, .6, .9])
+                captured["eq"] = kwargs["constraints"][0]["fun"](x)
+                captured["ineq"] = kwargs["constraints"][1]["fun"](x)
+                captured["callback_order"] = list(seen)
+                return fake
+            mode_kwargs = {} if mode is None else {"transcription_mode": mode}
+            settings = StandingStraightSettings(intervals=n, **mode_kwargs,
+                tolerance=3e-5, minimum_interval_seconds=.1, maximum_interval_seconds=4.)
+            with patch("scipy.optimize.minimize", side_effect=minimize):
+                _, report = solve_standing_straight(object(), 9., settings=settings,
+                    acceleration_limit=cap, initial_guess=seed if provided_seed else None)
+            captured["report"] = report
+            records.append(captured)
+            return captured
+
+        # Compare omitted mode against explicit legacy mode.
+        omitted_capture = {}
+        seen_omitted = []
+        def omitted_cap(vehicle, speed, curvature):
+            seen_omitted.append((speed, curvature)); return 5. - .01 * speed * speed
+        def omitted_minimize(fun, x0, **kwargs):
+            x = np.array([1.1, 1.3, .6, .9])
+            omitted_capture.update(objective=fun(x), x0=np.array(x0, copy=True),
+                bounds=list(kwargs["bounds"]), options=dict(kwargs["options"]),
+                constraints=kwargs["constraints"],
+                eq=kwargs["constraints"][0]["fun"](x),
+                ineq=kwargs["constraints"][1]["fun"](x), callback_order=list(seen_omitted),
+                objective_jac=kwargs.get("jac"))
+            return fake
+        with patch("scipy.optimize.minimize", side_effect=omitted_minimize):
+            solve_standing_straight(object(), 9., settings=StandingStraightSettings(intervals=n,
+                tolerance=3e-5, minimum_interval_seconds=.1, maximum_interval_seconds=4.),
+                acceleration_limit=omitted_cap, initial_guess=seed)
+        explicit = run("legacy_normalized_fd_v1")
+        omitted = omitted_capture
+        for key in ("objective", "x0", "bounds", "options", "eq", "ineq", "callback_order"):
+            np.testing.assert_equal(omitted[key], explicit[key])
+        np.testing.assert_equal(omitted["x0"], seed)
+        self.assertEqual(omitted["options"], {"maxiter": 120, "ftol": 3e-5 / (10 * 9.)})
+        self.assertIsNone(omitted["objective_jac"])
+        self.assertTrue(all("jac" not in c for c in omitted["constraints"]))
+
+        physical = run("physical_units_chain_v1")
+        np.testing.assert_equal(physical["x0"], seed)
+        np.testing.assert_allclose(physical["eq"], omitted["eq"] * 9.)
+        np.testing.assert_allclose(physical["ineq"], omitted["ineq"])
+        self.assertEqual(physical["objective"], omitted["objective"])
+        self.assertEqual(physical["bounds"], omitted["bounds"])
+        self.assertEqual(physical["options"]["maxiter"], omitted["options"]["maxiter"])
+        self.assertEqual(physical["options"]["ftol"], 3e-5)
+        self.assertTrue(np.array_equal(physical["objective_jac"](seed), [1., 1., 0., 0.]))
+
+        default_x0 = []
+        def default_capture(fun, x0, **kwargs):
+            default_x0.append(np.array(x0, copy=True))
+            return fake
+        with patch("scipy.optimize.minimize", side_effect=default_capture):
+            solve_standing_straight(object(), 9., settings=StandingStraightSettings(intervals=n),
+                acceleration_limit=lambda *_: 5.)
+        with patch("scipy.optimize.minimize", side_effect=default_capture):
+            solve_standing_straight(object(), 9., settings=StandingStraightSettings(intervals=n,
+                transcription_mode="legacy_normalized_fd_v1"), acceleration_limit=lambda *_: 5.)
+        np.testing.assert_equal(default_x0[0], default_x0[1])
+        expected_dt = np.sqrt(2. * 9. / (.5 * 5.)) / n
+        np.testing.assert_allclose(default_x0[0], [expected_dt] * n + [2.5] * n)
+
+    def test_provided_seed_copy_hash_and_default_seed_bounds_bypass(self):
+        import hashlib
+        n = 2
+        original = np.array([1., 1., 1., 1.])
+        before = original.copy()
+        expected_hash = hashlib.sha256(before.astype("<f8", copy=False).tobytes()).hexdigest()
+        seen = []
+        fake = SimpleNamespace(success=False, status=9, message="captured", x=np.array([1., 1., 1., 1.]), nit=0)
+        settings = StandingStraightSettings(intervals=n, minimum_interval_seconds=1.,
+            maximum_interval_seconds=1.)
+        for mode in ("legacy_normalized_fd_v1", "physical_units_chain_v1"):
+            seen = []
+            def minimize(fun, x0, **kwargs):
+                seen.append((np.array(x0, copy=True), np.shares_memory(x0, original)))
+                x0[:] = 99.  # An optimizer may mutate its private starting vector.
+                return fake
+            with patch("scipy.optimize.minimize", side_effect=minimize):
+                result, report = solve_standing_straight(object(), 100., settings=StandingStraightSettings(
+                    intervals=n, minimum_interval_seconds=1., maximum_interval_seconds=1., transcription_mode=mode),
+                    acceleration_limit=lambda *_: 3., initial_guess=original)
+            self.assertIsNone(result)
+            self.assertEqual(len(seen), 1)
+            np.testing.assert_equal(seen[0][0], before)
+            self.assertFalse(seen[0][1])
+            np.testing.assert_equal(original, before)
+            self.assertEqual(report["seed_source"], "provided")
+            self.assertEqual(report["initial_guess_sha256"], expected_hash)
+            self.assertEqual(report["initial_guess_finish_distance_residual_m"], -98.)
+
+    def test_invalid_mode_and_seed_types_precede_callback_and_solver(self):
+        cases = [
+            np.array([1 + 0j, 1, 1, 1]), np.array([object(), 1, 1, 1], dtype=object),
+            np.array([[1., 1.], [1., 1.]]), np.array(1.),
+            np.array(["1", "1", "1", "1"]), np.array([1., 1., 1., 1.], dtype=object),
+            [1., True, 1., 1.], [1., 1., np.inf, 1.], [1., 1., 1., 1., 1.],
+            [1e-8, 1., 1., 1.], [1., 1., -1., 1.],
+        ]
+        callback_calls = []
+        def cap(*args):
+            callback_calls.append(args)
+            return 3.
+        with patch("scipy.optimize.minimize") as minimize:
+            for seed in cases:
+                result, report = solve_standing_straight(object(), 10.,
+                    settings=StandingStraightSettings(intervals=2), acceleration_limit=cap,
+                    initial_guess=seed)
+                self.assertIsNone(result)
+                self.assertEqual(report["failure"], "invalid_initial_guess")
+            for mode in (False, "unknown", object()):
+                result, report = solve_standing_straight(object(), 10.,
+                    settings=StandingStraightSettings(transcription_mode=mode), acceleration_limit=cap)
+                self.assertIsNone(result)
+                self.assertEqual(report["failure"], "invalid_settings_transcription_mode")
+        self.assertEqual(callback_calls, [])
+        minimize.assert_not_called()
+
     def test_constant_cap_solves_actual_time_optimum_and_is_immutable(self):
         for intervals in (4, 8):
           for mode in ("legacy_normalized_fd_v1", "physical_units_chain_v1"):

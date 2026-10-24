@@ -1,4 +1,6 @@
+import json
 import unittest
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -9,161 +11,131 @@ from simplified_vehicle_models.tracks.types import PathCoordinates, TrackProfile
 
 
 class TrackGeometryAuditTests(unittest.TestCase):
-    def circle(self, count=13, transform=None):
+    def circle(self, count=13, transform=None, left=None, right=None):
         radius = 20.0
-        theta = np.linspace(0.0, 2.0 * np.pi, count)
-        distance = radius * theta
-        north = radius * np.sin(theta)
-        east = radius * (1.0 - np.cos(theta))
+        theta = np.linspace(0.0, 2.0*np.pi, count)
+        distance = radius*theta
+        north, east = radius*np.sin(theta), radius*(1.0-np.cos(theta))
         heading = theta
-        if transform is not None:
+        if transform:
             angle, shift = transform
-            north, east = (north * np.cos(angle) - east * np.sin(angle) + shift[0],
-                           north * np.sin(angle) + east * np.cos(angle) + shift[1])
-            heading = heading + angle
-        curvature = np.full(count, 1.0 / radius)
-        coordinates = PathCoordinates(distance, north, east, heading, curvature)
-        track = TrackProfile(distance, np.diff(distance), np.full(count, radius), curvature,
-                             True, "analytic circle", path_coordinates=coordinates,
-                             half_width_left=np.linspace(4.0, 6.0, count), half_width_right=np.linspace(7.0, 3.0, count),
-                             width_provenance="surveyed")
-        reference = ReferenceCurve(track)
-        corridor = corridor_from_track(track)
-        return track, reference, corridor
-
-    def test_circle_reports_finite_diagnostic_and_metric(self):
-        result = audit_track_geometry(*self.circle())
-        self.assertEqual(result["claim"], "diagnostic_only")
-        self.assertAlmostEqual(result["source"]["curvature"]["range"]["min_per_m"], 0.05)
-        self.assertAlmostEqual(result["fit"]["metric"]["min_m_per_m"], 1.0, places=3)
-        self.assertEqual(result["corridor"]["provenance"], "surveyed")
-
-    def test_translation_rotation_preserves_geometry_diagnostics(self):
-        base = audit_track_geometry(*self.circle())
-        moved = audit_track_geometry(*self.circle(transform=(0.71, (120.0, -80.0))))
-        self.assertAlmostEqual(base["fit"]["metric"]["min_m_per_m"], moved["fit"]["metric"]["min_m_per_m"], places=8)
-        self.assertAlmostEqual(base["source_vs_fit"]["xy"]["max_m"], moved["source_vs_fit"]["xy"]["max_m"], places=7)
-
-    def test_pair_budget_is_reported(self):
-        result = audit_track_geometry(*self.circle(count=81), crossing_pair_budget=5)
-        self.assertTrue(result["crossings"]["truncated"])
-        self.assertEqual(result["crossings"]["pairs_examined"], 5)
-
-    def test_reversal_negates_signed_curvature_and_swaps_width_sides(self):
-        track, _, _ = self.circle(count=17)
-        distance = track.distance[-1] - track.distance[::-1]
-        coordinates = PathCoordinates(distance, track.path_coordinates.x_north[::-1],
-                                      track.path_coordinates.y_east[::-1],
-                                      track.path_coordinates.heading[::-1] + np.pi,
-                                      -track.curvature[::-1])
-        reversed_track = TrackProfile(distance, np.diff(distance), track.radius[::-1],
-                                      -track.curvature[::-1], True, "reversed",
-                                      path_coordinates=coordinates,
-                                      half_width_left=track.half_width_right[::-1],
-                                      half_width_right=track.half_width_left[::-1],
-                                      width_provenance="surveyed")
-        result = audit_track_geometry(reversed_track, ReferenceCurve(reversed_track),
-                                      corridor_from_track(reversed_track))
-        self.assertAlmostEqual(result["source"]["curvature"]["range"]["min_per_m"], -0.05)
-        self.assertTrue(np.allclose(reversed_track.half_width_left, track.half_width_right[::-1]))
-        self.assertLess(result["source"]["curvature"]["range"]["max_per_m"], 0.0)
-        self.assertAlmostEqual(reversed_track.half_width_left[0], track.half_width_right[-1])
-        self.assertEqual(result["corridor"]["provenance"], "surveyed")
-
-    def test_tangent_kink_seam_is_measured_one_sided(self):
-        track, _, corridor = self.circle(count=13)
-        # The fit itself retains its periodic condition; source heading mismatch
-        # reports the deliberate seam kink independently of query topology.
-        heading = track.path_coordinates.heading.copy()
-        heading[-1] += 0.2
-        coords = PathCoordinates(track.distance, track.path_coordinates.x_north,
-                                 track.path_coordinates.y_east, heading, track.curvature)
-        kinked = TrackProfile(track.distance, track.segment_length, track.radius, track.curvature,
-                              True, "kink", path_coordinates=coords,
-                              half_width_left=track.half_width_left,
-                              half_width_right=track.half_width_right, width_provenance="surveyed")
-        result = audit_track_geometry(kinked, ReferenceCurve(kinked), corridor)
-        self.assertIn("one_sided_probe_offset_m", result["seam"])
-        self.assertTrue(result["seam"]["source_interpolation_periodic"])
-        self.assertGreater(result["source_vs_fit"]["heading_wrapped"]["max_abs_rad"], 0.05)
-
-    def test_nonuniform_curvature_ramp_compares_source_and_fit(self):
-        # Analytic parabola r(s)=(s,s^2): k=2/(1+4s^2)^(3/2),
-        # sampled at deliberately nonuniform source stations.
-        parameter = np.array([-2.0, -1.1, -0.4, 0.0, 0.15, 0.55, 1.3, 2.0])
-        distance = np.array([0.0, 0.7, 1.0, 1.2, 1.35, 1.8, 2.8, 4.0])
-        north, east = parameter, parameter**2
-        heading = np.arctan2(2.0*parameter, np.ones_like(parameter))
-        curvature = 2.0 / (1.0 + 4.0*parameter**2)**1.5
-        coords = PathCoordinates(distance, north, east, heading, curvature, is_closed=False)
-        track = TrackProfile(distance, np.diff(distance), 1.0/curvature, curvature,
-                             False, "nonuniform curvature ramp", path_coordinates=coords)
-        result = audit_track_geometry(track, ReferenceCurve(track), None)
-        gaps = np.diff(distance)
-        self.assertAlmostEqual(result["source"]["spacing"]["ratio"], float(gaps.max()/gaps.min()))
-        self.assertGreater(result["source"]["curvature"]["range"]["max_per_m"],
-                           result["source"]["curvature"]["range"]["min_per_m"])
-        self.assertIsNotNone(result["source_vs_fit"]["signed_curvature"]["max_abs_per_m"])
-
-    def test_tight_hairpin_fit_reports_metric_and_source_discrepancy(self):
-        theta = np.linspace(-np.pi / 2, np.pi / 2, 9)
-        north, east = 8.0 * np.cos(theta), 8.0 * np.sin(theta)
-        distance = np.linspace(0.0, 8.0 * np.pi, len(theta))
-        heading, curvature = theta + np.pi / 2, np.full(len(theta), 1.0 / 8.0)
-        coords = PathCoordinates(distance, north, east, heading, curvature, is_closed=False)
-        track = TrackProfile(distance, np.diff(distance), np.full(len(distance), 8.0), curvature,
-                             False, "hairpin", path_coordinates=coords,
-                             half_width_left=np.full(len(distance), 1.0),
-                             half_width_right=np.full(len(distance), 1.0), width_provenance="assumed")
-        result = audit_track_geometry(track, ReferenceCurve(track), corridor_from_track(track))
-        self.assertTrue(np.isfinite(result["fit"]["metric"]["min_m_per_m"]))
-        self.assertGreater(result["source_vs_fit"]["xy"]["max_m"], 0.0)
-
-    def test_asymmetric_width_pinch_station_and_provenance(self):
-        track, _, _ = self.circle(count=13)
-        left = np.full(track.distance.shape, 6.0)
-        left[5] = 1.25
-        right = np.full(track.distance.shape, 3.0)
-        pinch = TrackProfile(track.distance, track.segment_length, track.radius, track.curvature,
-                             True, "pinch", path_coordinates=track.path_coordinates,
-                             half_width_left=left, half_width_right=right,
-                             width_provenance="assumed")
-        result = audit_track_geometry(pinch, ReferenceCurve(pinch), corridor_from_track(pinch))
-        self.assertAlmostEqual(result["corridor"]["narrowest_left_width_m"], 1.25)
-        self.assertAlmostEqual(result["corridor"]["narrowest_right_width_m"], 3.0)
-        self.assertEqual(result["corridor"]["pinch_station_left_m"], track.distance[5])
-        self.assertIn("not vehicle-footprint", result["corridor"]["interpretation"])
-
-    def test_ordered_figure_eight_crossing_is_retained_as_diagnostic(self):
-        t = np.linspace(0.0, 2.0*np.pi, 33)
-        north = 12.0*np.sin(t)
-        east = 12.0*np.sin(t)*np.cos(t)
-        distance = np.linspace(0.0, 100.0, len(t))
-        # Heading/curvature are source diagnostic fields, not used to fit XY.
-        dn, de = np.gradient(north, distance), np.gradient(east, distance)
-        heading = np.unwrap(np.arctan2(de, dn))
-        d2n, d2e = np.gradient(dn, distance), np.gradient(de, distance)
-        curvature = (dn*d2e - de*d2n) / np.maximum(dn*dn + de*de, 1e-12)**1.5
-        north[-1], east[-1] = north[0], east[0]
-        curvature[-1] = curvature[0]
+            north, east = (north*np.cos(angle)-east*np.sin(angle)+shift[0],
+                           north*np.sin(angle)+east*np.cos(angle)+shift[1])
+            heading += angle
+        curvature = np.full(count, 1.0/radius)
         coords = PathCoordinates(distance, north, east, heading, curvature)
-        track = TrackProfile(distance, np.diff(distance), np.ones(len(t)), curvature,
-                             True, "figure eight", path_coordinates=coords)
-        result = audit_track_geometry(track, ReferenceCurve(track), None,
-                                     sample_budget=250, crossing_pair_budget=50_000)
-        self.assertGreater(result["crossings"]["count"], 0)
-        self.assertGreater(len(result["crossings"]["records"]), 0)
-        self.assertNotEqual(result["crossings"]["records"][0]["station_a_m"],
-                            result["crossings"]["records"][0]["station_b_m"])
+        track = TrackProfile(distance, np.diff(distance), np.full(count, radius), curvature,
+                             True, "circle", path_coordinates=coords,
+                             half_width_left=np.asarray(left if left is not None else np.linspace(4.,6.,count)),
+                             half_width_right=np.asarray(right if right is not None else np.linspace(7.,3.,count)),
+                             width_provenance="surveyed")
+        return track, ReferenceCurve(track), corridor_from_track(track)
 
-    def test_resampling_is_observed_not_assumed_invariant(self):
-        coarse = audit_track_geometry(*self.circle(count=7))
-        fine = audit_track_geometry(*self.circle(count=17))
-        self.assertGreater(abs(coarse["fit"]["metric"]["min_m_per_m"] - 1.0), 1e-10)
-        self.assertGreater(abs(fine["fit"]["metric"]["min_m_per_m"] - 1.0), 1e-10)
-        self.assertNotAlmostEqual(coarse["fit"]["metric"]["min_m_per_m"],
-                                  fine["fit"]["metric"]["min_m_per_m"], places=8)
+    def test_circle_analytic_fit_and_json(self):
+        result = audit_track_geometry(*self.circle())
+        json.dumps(result, allow_nan=False)
+        self.assertEqual(result["claim"], "diagnostic_only")
+        self.assertAlmostEqual(result["source"]["curvature"]["range"]["min_per_m"], .05)
+        self.assertAlmostEqual(result["fit"]["metric"]["min_m_per_m"], 1., places=3)
+        self.assertLess(result["source_vs_fit"]["xy"]["max_abs_m"], 1e-9)
+
+    def test_translation_rotation_invariance(self):
+        a = audit_track_geometry(*self.circle())
+        b = audit_track_geometry(*self.circle(transform=(.71,(120.,-80.))))
+        self.assertAlmostEqual(a["fit"]["metric"]["min_m_per_m"], b["fit"]["metric"]["min_m_per_m"], places=8)
+        self.assertAlmostEqual(a["source_vs_fit"]["xy"]["max_abs_m"], b["source_vs_fit"]["xy"]["max_abs_m"], places=7)
+
+    def test_nonuniform_parabola_analytic_curvature_and_metric(self):
+        p=np.array([-2.,-1.1,-.4,0.,.15,.55,1.3,2.])
+        s=p+2.0  # source distance is the polynomial parameter, despite unequal gaps
+        x,y=p,p*p
+        h=np.arctan2(2*p,np.ones_like(p)); k=2/(1+4*p*p)**1.5
+        c=PathCoordinates(s,x,y,h,k,is_closed=False)
+        t=TrackProfile(s,np.diff(s),1/k,k,False,"parabola",path_coordinates=c)
+        r=audit_track_geometry(t,ReferenceCurve(t),None,sample_budget=9)
+        self.assertAlmostEqual(r["source"]["curvature"]["range"]["max_per_m"],2.)
+        self.assertAlmostEqual(r["source_vs_fit"]["xy"]["max_abs_m"],0.,places=12)
+        expected_metric=np.sqrt(1.0+4.0*p*p)
+        self.assertLess(r["fit"]["metric"]["max_m_per_m"],float(expected_metric.max())+1e-9)
+        self.assertGreater(r["fit"]["metric"]["min_m_per_m"],float(expected_metric.min())-1e-9)
+        self.assertLess(r["source_vs_fit"]["signed_curvature"]["max_abs_per_m"],1e-9)
+        self.assertLess(r["source_vs_fit"]["heading_wrapped"]["max_abs_rad"],1e-9)
+
+    def test_figure_eight_intersection_location_order_and_separation(self):
+        t=np.linspace(0,2*np.pi,33); x=12*np.sin(t); y=12*np.sin(t)*np.cos(t)
+        s=np.linspace(0,100,len(t)); dx,dy=np.gradient(x,s),np.gradient(y,s)
+        h=np.unwrap(np.arctan2(dy,dx)); ddx,ddy=np.gradient(dx,s),np.gradient(dy,s)
+        k=(dx*ddy-dy*ddx)/np.maximum(dx*dx+dy*dy,1e-12)**1.5
+        x[-1],y[-1],k[-1]=x[0],y[0],k[0]
+        c=PathCoordinates(s,x,y,h,k); tr=TrackProfile(s,np.diff(s),np.ones(len(s)),k,True,"8",path_coordinates=c)
+        r=audit_track_geometry(tr,ReferenceCurve(tr),None,sample_budget=250)
+        self.assertGreater(r["crossings"]["count"],0)
+        event=r["crossings"]["records"][0]
+        self.assertLess(event["station_a_bracket_m"][0],event["station_b_bracket_m"][0])
+        self.assertTrue(np.isfinite(event["north_m"]))
+        sep=r["crossings"]["minimum_nonlocal_separation_m"]
+        self.assertTrue(sep["available"])
+        self.assertEqual(sep["minimum_m"],0.)
+        self.assertGreaterEqual(r["crossings"]["count"],len(r["crossings"]["records"]))
+        self.assertFalse(r["crossings"]["records_truncated"])
+        self.assertAlmostEqual(event["north_m"],0.,places=1)
+        self.assertAlmostEqual(event["east_m"],0.,places=1)
+
+    def test_reversal_audit_sign_and_width_swap(self):
+        tr,_,_=self.circle(count=17)
+        s=tr.distance[-1]-tr.distance[::-1]
+        c=PathCoordinates(s,tr.path_coordinates.x_north[::-1],tr.path_coordinates.y_east[::-1],
+                          tr.path_coordinates.heading[::-1]+np.pi,-tr.curvature[::-1])
+        rev=TrackProfile(s,np.diff(s),tr.radius[::-1],-tr.curvature[::-1],True,"rev",path_coordinates=c,
+                         half_width_left=tr.half_width_right[::-1],half_width_right=tr.half_width_left[::-1],
+                         width_provenance="surveyed")
+        orig=audit_track_geometry(tr,ReferenceCurve(tr),corridor_from_track(tr))
+        got=audit_track_geometry(rev,ReferenceCurve(rev),corridor_from_track(rev))
+        self.assertLess(got["source"]["curvature"]["range"]["max_per_m"],0)
+        self.assertAlmostEqual(got["source_vs_fit"]["signed_curvature"]["rms_per_m"],orig["source_vs_fit"]["signed_curvature"]["rms_per_m"],places=5)
+        self.assertAlmostEqual(got["corridor"]["narrowest_left_width_m"],orig["corridor"]["narrowest_right_width_m"],places=6)
+        self.assertGreater(orig["fit"]["curvature"]["min_per_m"],0.)
+        self.assertLess(got["fit"]["curvature"]["max_per_m"],0.)
+
+    def test_kink_source_fit_heading_error(self):
+        tr,_,co=self.circle(); h=tr.path_coordinates.heading.copy(); h[-1]+=.2
+        c=PathCoordinates(tr.distance,tr.path_coordinates.x_north,tr.path_coordinates.y_east,h,tr.curvature)
+        kink=TrackProfile(tr.distance,tr.segment_length,tr.radius,tr.curvature,True,"kink",path_coordinates=c,
+                          half_width_left=tr.half_width_left,half_width_right=tr.half_width_right,width_provenance="surveyed")
+        r=audit_track_geometry(kink,ReferenceCurve(kink),co)
+        self.assertGreater(r["source_vs_fit"]["heading_wrapped"]["max_abs_rad"],.05)
+
+    def test_hairpin_and_asymmetric_pinch(self):
+        th=np.linspace(-np.pi/2,np.pi/2,9); s=np.linspace(0,8*np.pi,len(th)); k=np.full(len(th),1/8)
+        c=PathCoordinates(s,8*np.cos(th),8*np.sin(th),th+np.pi/2,k,is_closed=False)
+        t=TrackProfile(s,np.diff(s),np.full(len(th),8.),k,False,"hairpin",path_coordinates=c,
+                       half_width_left=np.ones(len(th)),half_width_right=np.ones(len(th)),width_provenance="assumed")
+        r=audit_track_geometry(t,ReferenceCurve(t),corridor_from_track(t))
+        self.assertTrue(np.isfinite(r["fit"]["metric"]["min_m_per_m"]))
+        tr,_,_=self.circle(); left=np.full(len(tr.distance),6.); left[5]=1.25
+        p=TrackProfile(tr.distance,tr.segment_length,tr.radius,tr.curvature,True,"pinch",path_coordinates=tr.path_coordinates,
+                       half_width_left=left,half_width_right=np.full(len(left),3.),width_provenance="assumed")
+        q=audit_track_geometry(p,ReferenceCurve(p),corridor_from_track(p))
+        self.assertAlmostEqual(q["corridor"]["narrowest_left_width_m"],1.25)
+        self.assertEqual(q["corridor"]["pinch_station_left_m"],tr.distance[5])
+
+    def test_resampling_exposes_fit_change(self):
+        a=audit_track_geometry(*self.circle(count=7)); b=audit_track_geometry(*self.circle(count=17))
+        self.assertNotAlmostEqual(a["fit"]["metric"]["min_m_per_m"],b["fit"]["metric"]["min_m_per_m"],places=8)
+
+    def test_budget_bool_and_nonfinite_source_explicit(self):
+        tr,ref,co=self.circle()
+        with self.assertRaises(ValueError): audit_track_geometry(tr,ref,co,crossing_pair_budget=True)
+        x=tr.path_coordinates.x_north.copy(); x[3]=np.nan
+        malformed=SimpleNamespace(distance=tr.distance,curvature=tr.curvature,path_coordinates=SimpleNamespace(
+            x_north=x,y_east=tr.path_coordinates.y_east,heading=tr.path_coordinates.heading))
+        out=audit_track_geometry(malformed,ref,co)
+        self.assertIn("unavailable",out["source_vs_fit"]["xy"])
+        badco=SimpleNamespace(distance=np.array([0.,1.]),minimum=np.array([0.,np.nan]),
+                              maximum=np.array([1.,2.]),provenance="unknown")
+        out2=audit_track_geometry(tr,ref,badco)
+        self.assertFalse(out2["corridor"]["available"])
+        json.dumps(out,allow_nan=False); json.dumps(out2,allow_nan=False)
 
 
-if __name__ == "__main__":
-    unittest.main()
+if __name__ == "__main__": unittest.main()

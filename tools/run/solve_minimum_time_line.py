@@ -864,10 +864,10 @@ def _prepare_public_spline_request_in_worker(request, request_path, result_path,
         child["public_summary"] = summary
         Path(result_path).write_text(json.dumps(child, sort_keys=True, allow_nan=False))
         from simplified_vehicle_models.solvers.minimum_time_run import _write_compact_artifact_index
+        _write_compact_artifact_index(root, ["result.json", "public_summary.snapshot.json"], stage="export_finalization")
         _publish_worker_stage(root, "complete", solve_completed=bool(child.get("solve_completed")),
                               ladder_solve_completed=bool(child.get("ladder_solve_completed")),
                               any_rung_solve_completed=bool(child.get("any_rung_solve_completed")))
-        _write_compact_artifact_index(root, ["result.json", "public_summary.snapshot.json"], stage="complete")
     except BaseException as error:
         try:
             _write_new(Path(result_path), {"status": "worker_exception", "accepted": False,
@@ -993,6 +993,7 @@ def _compat_worker_entry(request, request_path, result_path, artifact_path):
             stage="compat_setup", external_root=Path(args.output))
         args._worker_stage_callback = lambda phase, **flags: _publish_worker_stage(root, phase, **flags)
         result = _run_compat_pipeline(args, stage_callback=args._worker_stage_callback)
+        _publish_worker_stage(root, "export", solve_completed=True)
         result_path_obj = Path(result_path)
         result_path_obj.write_text(json.dumps(_json_safe(result), sort_keys=True, allow_nan=False))
         from simplified_vehicle_models.solvers.minimum_time_run import _write_compact_artifact_index
@@ -1004,10 +1005,11 @@ def _compat_worker_entry(request, request_path, result_path, artifact_path):
             source = Path(args.output) / name
             if source.is_file():
                 (root / name).write_bytes(source.read_bytes())
-        _publish_worker_stage(root, "complete", solve_completed=True)
+        _publish_worker_stage(root, "export", solve_completed=True)
         _write_compact_artifact_index(root, ["result.json", "compat_summary.snapshot.json", "line.csv",
             "racing_line.csv", "racing_line_track.csv", "racing_line_track.xml", "rebuilt_width.csv", "trajectory.npz"],
-            stage="complete", external_root=Path(args.output))
+            stage="compat_export_finalization", external_root=Path(args.output))
+        _publish_worker_stage(root, "complete", solve_completed=True)
     except BaseException as error:
         try:
             _write_new(Path(result_path), {"status": "worker_exception", "accepted": False,
@@ -1043,9 +1045,6 @@ def _run_compat_pipeline(args, stage_callback=None) -> dict:
         if stage_callback:
             stage_callback(name, solve_completed=solved)
     mark_stage("setup")
-    phase = getattr(args, "_worker_stage_callback", None)
-    if phase:
-        phase("setup")
     # Controller/output configuration is validated before loading a track,
     # solver work, cache writes, or output-directory creation.
     mode = _validate_control_args(args)

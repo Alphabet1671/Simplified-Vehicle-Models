@@ -70,6 +70,25 @@ def _success_late(request_path, result_path, artifact_path):
     time.sleep(10)
 
 
+def _actual_compat_stall_worker(request_path, result_path, artifact_path):
+    from tools.run import solve_minimum_time_line as runner
+    request = json.loads(Path(request_path).read_text())
+    def stall_solve(*args, **kwargs):
+        output = Path(request["config"]["output"])
+        (output / "line.csv").write_text("partial,real,output")
+        stage = Path(request_path).parent / "stage.json"
+        from tools.run.solve_minimum_time_line import _publish_worker_stage
+        _publish_worker_stage(stage.parent, "solve", solve_completed=False)
+        from simplified_vehicle_models.solvers.minimum_time_run import _write_compact_artifact_index
+        names = ["result.json", "compat_summary.snapshot.json", "line.csv", "racing_line.csv",
+                 "racing_line_track.csv", "racing_line_track.xml", "rebuilt_width.csv", "trajectory.npz"]
+        _write_compact_artifact_index(stage.parent, names, stage="compat_solve",
+                                      external_root=output)
+        time.sleep(10)
+    with mock.patch.object(runner, "solve_line", side_effect=stall_solve):
+        runner._compat_worker_entry(request, request_path, result_path, artifact_path)
+
+
 def _raise_before_solution(request_path, result_path, artifact_path):
     Path(result_path).write_text(json.dumps({"status": "worker_exception", "accepted": False,
                                               "error_type": "RuntimeError", "error": "fixture failure"}))
@@ -101,6 +120,96 @@ class MinimumTimeRunTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "request.*limit"):
                 supervisor.run_request({"wall_cap_s": 3, "note": "x" * (1024 * 1024 + 1)}, f"{d}/oversize")
             self.assertEqual(list(Path(d).iterdir()), [])
+
+    def test_compat_live_solve_timeout_reports_phase_and_real_partial_reference(self):
+        from tools.diagnostics.generate_minimum_time_cli_fixture import build_fixture
+        with tempfile.TemporaryDirectory() as d:
+            fixture = Path(d) / "fixture"
+            generated = build_fixture(fixture)
+            output = Path(d) / "output"
+            output.mkdir()
+            root = output / ".supervision"
+            config = {"track": str(fixture / "tiny_track.xml"), "formulation": generated["formulation"],
+                      "surface": str(fixture / "surface.npz"), "output": str(output),
+                      "margin": 0.1, "half_width": 2.0, "spacings": [5.0, 2.0, 1.0],
+                      "wall_cap_s": 10.0, "solver": "legacy", "control_mode": "ideal"}
+            raw = {"worker_kind": "compat_line_v1", "wall_cap_s": 10.0, "output": str(output), "config": config}
+            with mock.patch.object(supervisor, "_worker", _actual_compat_stall_worker):
+                result = supervisor.run_request(raw, str(root))
+            self.assertEqual(result["status"], "wall_timeout")
+            self.assertEqual(result["stage"], "solve")
+            self.assertFalse(result["accepted"])
+            self.assertFalse(result["solve_completed"])
+            manifest = json.loads((root / "artifacts.json").read_text())
+            line_ref = next(item for item in manifest["artifacts"] if item["path"] == "line.csv")
+            self.assertEqual(line_ref["base"], "caller_output")
+            self.assertTrue((output / "line.csv").exists())
+            self.assertEqual(line_ref["status"], "unknown_or_partial")
+            self.assertFalse((root / "line.csv").exists())
+
+    def test_public_worker_index_finalization_keeps_stage_export_until_done(self):
+        from tools.run import solve_minimum_time_line as runner
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d) / ".supervision"
+            output = Path(d) / "output"
+            root.mkdir(); output.mkdir()
+            request_path = root / "request.json"
+            request_path.write_text("{}")
+            request = {"track": str(Path(d) / "track.xml"), "formulation": str(Path(d) / "form.xml"),
+                       "surface": str(Path(d) / "surface.npz"), "output": str(output), "margin": .1,
+                       "half_width": 2., "spacings": [5., 2.], "offset_spacing": 10.,
+                       "path_smoothing": 0., "wall_cap_s": 10.}
+            observed = []
+            def fake_ladder(request_file, result_file, artifact_file):
+                Path(result_file).write_text(json.dumps({"status": "success", "solve_completed": True,
+                    "ladder_solve_completed": True, "any_rung_solve_completed": True,
+                    "attempts": [], "accepted": False}))
+            def slow_index(*args, **kwargs):
+                observed.append(json.loads((root / "stage.json").read_text())["stage"])
+                return {"index_stage": kwargs.get("stage")}
+            with mock.patch.object(runner, "_validate_output_paths"), \
+                 mock.patch.object(runner, "_public_spline_worker_request", return_value={"source_hashes": {},
+                     "runtime_provenance": {}}), \
+                 mock.patch("tools.diagnostics.verify_no_tv_minimum_lap._attempt_ladder_worker", side_effect=fake_ladder), \
+                 mock.patch.object(supervisor, "_write_compact_artifact_index", side_effect=slow_index):
+                runner._prepare_public_spline_request_in_worker(request, str(request_path),
+                    str(root / "result.json"), str(root / "solution.npz"))
+            self.assertEqual(observed, ["export"])
+            self.assertEqual(json.loads((root / "stage.json").read_text())["stage"], "complete")
+
+    def test_worker_index_finalization_keeps_terminal_stage_export_until_done(self):
+        import argparse
+        from tools.run import solve_minimum_time_line as runner
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d) / ".supervision"
+            output = Path(d) / "output"
+            output.mkdir()
+            root.mkdir()
+            result_path = root / "result.json"
+            request_path = root / "request.json"
+            request_path.write_text(json.dumps({"worker_kind": "compat_line_v1", "config": {"output": str(output)}}))
+            runner._publish_worker_stage(root, "validate", solve_completed=True)
+            runner._publish_worker_stage(root, "export", solve_completed=True)
+            observed = []
+            def slow_index(*args, **kwargs):
+                stage = json.loads((root / "stage.json").read_text())
+                observed.append(stage["stage"])
+                time.sleep(0.05)
+                return {"index_stage": kwargs.get("stage")}
+            def fake_pipeline(args, stage_callback=None):
+                for name in ("setup", "seed", "solve", "validate", "export", "validate"):
+                    stage_callback(name, solve_completed=True)
+                (output / "summary.json").write_text("summary")
+                return {"accepted": False, "solve_completed": True}
+            with mock.patch.object(runner, "_run_compat_pipeline", side_effect=fake_pipeline), \
+                 mock.patch.object(supervisor, "_write_compact_artifact_index", side_effect=slow_index):
+                runner._compat_worker_entry({"config": {"track": output / "t.xml", "output": output,
+                    "formulation": output / "f.xml", "surface": output / "s.npz"}},
+                    str(request_path), str(result_path), str(root / "solution.npz"))
+            self.assertTrue(observed)
+            self.assertEqual(observed[-1], "export")
+            final_stage = json.loads((root / "stage.json").read_text())
+            self.assertEqual(final_stage["stage"], "complete")
 
     def test_final_digest_index_hashes_are_current_and_stage_has_history(self):
         with tempfile.TemporaryDirectory() as d:

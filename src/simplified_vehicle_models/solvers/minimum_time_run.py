@@ -140,12 +140,23 @@ def _inventory(root: Path):
         if (not isinstance(manifest, dict) or not isinstance(manifest.get("artifacts"), list)
                 or len(manifest["artifacts"]) > 256):
             raise ValueError("invalid artifact digest index")
+        caller_output = None
+        try:
+            request = _bounded_json(root / "request.json", MAX_REQUEST_BYTES)
+            output_value = (request.get("config", {}).get("output") if request.get("worker_kind") == "compat_line_v1"
+                            else request.get("output") if request.get("worker_kind") == "public_spline_setup_v1" else None)
+            if isinstance(output_value, str) and len(output_value) <= MAX_PATH_CHARS:
+                caller_output = Path(output_value)
+        except (OSError, ValueError, UnicodeError, RecursionError):
+            pass
         for item in manifest["artifacts"]:
             if not isinstance(item, dict) or not isinstance(item.get("path"), str):
                 raise ValueError("invalid artifact entry")
             rel = Path(item["path"])
             if item.get("base", "supervision") not in {"supervision", "caller_output"}:
                 raise ValueError("invalid artifact base")
+            if item.get("base") == "caller_output" and caller_output is None:
+                raise ValueError("caller-output artifact has no validated output root")
             if item.get("base") == "caller_output" and item["path"] not in {
                     "summary.json", "line.csv", "racing_line.csv", "racing_line_track.csv",
                     "racing_line_track.xml", "rebuilt_width.csv", "trajectory.npz"}:
@@ -153,6 +164,13 @@ def _inventory(root: Path):
             if rel.is_absolute() or ".." in rel.parts or len(item["path"]) > MAX_PATH_CHARS:
                 raise ValueError("unsafe artifact reference")
         manifest["evidence_complete"] = False
+        for item in manifest["artifacts"]:
+            if item.get("base") == "caller_output" and item.get("status") == "not_created" and caller_output is not None:
+                try:
+                    if (caller_output / item["path"]).exists():
+                        item["status"] = "unknown_or_partial"
+                except OSError:
+                    item["status"] = "unknown_or_partial"
         return manifest
     except (OSError, ValueError, UnicodeError, RecursionError):
         known = []

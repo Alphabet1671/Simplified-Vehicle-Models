@@ -1,6 +1,6 @@
 # Task 1B Canonical Manifest Implementation Report
 
-**Status:** Manifest implementation completed and reviewed against the scoped runtime checks. This report does not claim full Task 1B/input-preflight acceptance or physical qualification.
+**Status:** Manifest implementation is committed and tested, pending independent review. Implementation commit: `a4ae706932dc0b8ca73a9936e134f97ad7fdce62`. This report does not claim full Task 1B/input-preflight acceptance or physical qualification.
 
 ## Implementation
 
@@ -24,9 +24,19 @@ Focused final test command:
 PYTHONPATH=src runs/no_tv_reliability/runtime_install_20261023/venv/bin/python -m unittest tests.test_run_manifest tests.test_no_tv_minimum_lap tests.test_minimum_time_run tests.test_trajectory_artifact -q
 ```
 
-Result: **93 tests passed** in 26.216 seconds. `git diff --check` passed.
+Focused test history: one pre-fix attempt ran 93 tests and failed (2 failures, 1 error) due to deliberately incomplete worker fixtures and missing files in a conflict-document test. After correcting those fixtures/expectations, the final pre-commit command passed **93 tests in 26.267 seconds** (a preceding pass was 26.216 seconds). After commit, the expanded command below passed **120 tests in 26.743 seconds**; `git diff --check` passed.
 
-Public two-rung CLI smoke used the tiny fixture with spline spacings 20 m and 10 m. The CLI returned exit code 1 because the diagnostic reported an unqualified/non-accepted result; this is not solver failure. The ladder result recorded both solves as `Solve_Succeeded`, two manifests present, `manifest_complete=true`, `evidence_complete=false`, and `accepted=false`. Each manifest and its trajectory reloaded with strict loaders; copied track loading and copied formulation compilation both succeeded. The artifact index included both rung manifests with `complete` status and SHA-256 values matching the files.
+```text
+PYTHONPATH=src runs/no_tv_reliability/runtime_install_20261023/venv/bin/python -m unittest tests.test_run_manifest tests.test_no_tv_minimum_lap tests.test_minimum_time_run tests.test_trajectory_artifact tests.test_minimum_time_line_gate -q
+```
+
+Post-commit public smoke command:
+
+```text
+PYTHONPATH=src runs/no_tv_reliability/runtime_install_20261023/venv/bin/python tools/run/solve_minimum_time_line.py --track runs/no_tv_reliability/task1A2a2_fixture_postcommit/tiny_track.xml --formulation models/formulations/iem24_murphy_real_planar_7dof.xml --surface runs/no_tv_reliability/task1A2a2_fixture_postcommit/surface.npz --output runs/no_tv_reliability/task1B_public_manifest_postcommit --solver spline --spacings 20,10 --wall-cap-s 180 --half-width 2
+```
+
+The CLI exit code was 1 because this diagnostic case was unqualified/non-accepted, not because solving failed. Output: `runs/no_tv_reliability/task1B_public_manifest_postcommit/.supervision/`. The ladder result recorded both solves as `Solve_Succeeded`, two manifests present, `manifest_complete=true`, `evidence_complete=false`, and `accepted=false`. Each manifest and its trajectory reloaded with strict loaders; copied track loading and copied formulation compilation both succeeded. The artifact index included both rung manifests with `complete` status and SHA-256 values matching the files.
 
 The smoke's numerical checks were not sufficient for acceptance (dense feasibility false); no acceptance or physical-validation claim is made. An earlier smoke exposed missing XML component dependencies in the source snapshot; the dependency closure was fixed, and the later snapshot compile/load verification succeeded. A later index check verified manifest indexing and hashes.
 

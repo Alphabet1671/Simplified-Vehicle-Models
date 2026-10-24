@@ -649,6 +649,11 @@ class MinimumTimeRunTests(unittest.TestCase):
             self.assertTrue(_same_refinement_conditions(left, right))
             right["request"]["corridor"] = {"margin_m": .24, "half_width_m": None}
             self.assertFalse(_same_refinement_conditions(left, right))
+            right["request"] = json.loads(json.dumps(decoded))
+            right["request"]["corridor"] = {"margin_m": .23, "half_width_m": None,
+                                             "policy": "signed-fitted-reference-v1", "fold_guard": 0.35,
+                                             "descriptor_sha256": "different-descriptor"}
+            self.assertFalse(_same_refinement_conditions(left, right))
             right["request"] = dict(decoded, start_speed_mps=0.25)
             self.assertFalse(_same_refinement_conditions(left, right))
             mutations = (

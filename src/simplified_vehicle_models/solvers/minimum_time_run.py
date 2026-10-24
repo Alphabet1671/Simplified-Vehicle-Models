@@ -102,7 +102,7 @@ def _write_compact_artifact_index(root: Path, extra_paths=(), *, stage="complete
     allowed = {"summary.json", "result.json", "ladder_result.json", "public_result.json",
                "public_summary.snapshot.json", "compat_summary.snapshot.json", "run_manifest_v1.json",
                "validation_report.json", "effective_request.json", "runtime.json", "code.json",
-               "boundary_event_contract.json", "policy.json", "line.csv", "racing_line.csv",
+               "boundary_event_contract.json", "policy.json", "corridor_policy_v1.json", "line.csv", "racing_line.csv",
                "racing_line_track.csv", "racing_line_track.xml", "rebuilt_width.csv", "trajectory.npz"}
     names = ["attempt_index.json", "request.json", "prepared_ladder_request.json", "ladder_result.json"]
     for index in range(32):
@@ -287,15 +287,24 @@ def run_request(request: dict, output_directory: str) -> dict:
         if request.get("worker_kind") == "compat_line_v1":
             allowed = {"track", "output", "formulation", "surface", "margin", "half_width", "spacings",
                        "offset_spacing", "wall_cap_s", "path_smoothing", "control_mode", "control_policy",
-                       "replay_adapter", "solver", "legacy_solver", "compare_control_modes"}
+                       "replay_adapter", "solver", "legacy_solver", "compare_control_modes", "corridor_policy", "corridor_fold_guard"}
             if set(request["config"]) - allowed:
                 raise ValueError("compatibility request has unknown config options")
     if request.get("worker_kind") == "public_spline_setup_v1":
+        from simplified_vehicle_models.tracks.corridor import LEGACY_POLICY, SIGNED_POLICY
+        policy = request.get("corridor_policy")
+        guard = request.get("corridor_fold_guard", 0.2)
+        if policy is not None and (type(policy) is not str or policy not in (LEGACY_POLICY, SIGNED_POLICY)):
+            raise ValueError("unsupported corridor policy")
+        if (isinstance(guard, bool) or not isinstance(guard, (int, float))
+                or not math.isfinite(guard) or not 0.0 < guard < 1.0):
+            raise ValueError("corridor fold_guard must be finite and strictly between zero and one")
         if not {"track", "formulation", "surface", "output", "margin", "half_width", "spacings",
                 "offset_spacing", "path_smoothing"}.issubset(request):
             raise ValueError("public request missing fixed options")
         if set(request) - {"worker_kind", "wall_cap_s", "track", "formulation", "surface", "output",
-                "margin", "half_width", "spacings", "offset_spacing", "path_smoothing", "track_problem_contract"}:
+                "margin", "half_width", "spacings", "offset_spacing", "path_smoothing", "track_problem_contract",
+                "corridor_policy", "corridor_fold_guard"}:
             raise ValueError("public request has unknown options")
         if any(not isinstance(request[k], str) or len(request[k]) > MAX_PATH_CHARS
                for k in ("track", "formulation", "surface", "output")):

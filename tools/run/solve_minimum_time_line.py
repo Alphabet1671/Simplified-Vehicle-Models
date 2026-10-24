@@ -800,6 +800,8 @@ def _public_spline_worker_request(args) -> dict:
         margin=args.margin, half_width=half_width, basis_spacing=args.offset_spacing,
         wall_cap_s=getattr(args, "wall_cap_s", 900.0),
         track_problem_contract=track_contract,
+        corridor_policy=getattr(args, "corridor_policy", None),
+        corridor_fold_guard=getattr(args, "corridor_fold_guard", 0.2),
     )
 
 
@@ -813,7 +815,7 @@ def _run_public_shared_spline(args) -> dict:
            "margin": float(args.margin), "half_width": args.half_width,
            "spacings": list(_parse_spacings(args.spacings)),
            "offset_spacing": float(DEFAULT_SPLINE_CONTROL_SPACING if args.offset_spacing is None else args.offset_spacing),
-           "path_smoothing": float(args.path_smoothing), **({"track_problem_contract": getattr(args, "track_problem_contract")} if getattr(args, "track_problem_contract", None) is not None else {})}
+           "path_smoothing": float(args.path_smoothing), **({"corridor_policy": args.corridor_policy, "corridor_fold_guard": float(args.corridor_fold_guard)} if getattr(args, "corridor_policy", None) is not None else {}), **({"track_problem_contract": getattr(args, "track_problem_contract")} if getattr(args, "track_problem_contract", None) is not None else {})}
     result = run_request(raw, str(output / ".supervision"))
     return result.get("public_summary", result)
 
@@ -876,7 +878,7 @@ def _prepare_public_spline_request_in_worker(request, request_path, result_path,
         stage = root / "stage.json"
         _publish_worker_stage(root, "setup")
         args = argparse.Namespace(**{k: request[k] for k in
-            ("track", "formulation", "surface", "output", "margin", "half_width", "spacings", "offset_spacing", "path_smoothing", "wall_cap_s", "track_problem_contract") if k in request})
+            ("track", "formulation", "surface", "output", "margin", "half_width", "spacings", "offset_spacing", "path_smoothing", "wall_cap_s", "track_problem_contract", "corridor_policy", "corridor_fold_guard") if k in request})
         if float(request["path_smoothing"]) != 0.0:
             raise ValueError("smoothing is not permitted for a spline trajectory export")
         _validate_output_paths(Path(request["track"]), Path(request["output"]), reject_existing=True)
@@ -948,7 +950,8 @@ def _prepare_public_spline_request_in_worker(request, request_path, result_path,
 def build_shared_spline_request(case, *, source: Path, formulation: Path, surface: Path,
                                 spacings, margin: float, half_width: float | None,
                                 basis_spacing: float, wall_cap_s: float,
-                                track_problem_contract: dict | None = None) -> dict:
+                                track_problem_contract: dict | None = None,
+                                corridor_policy: str | None = None, corridor_fold_guard: float = 0.2) -> dict:
     """Compatibility single-rung adapter; preserve its strict v1 contract."""
     if len(spacings) != 1:
         raise ValueError("adapter requires exactly one explicit diagnostic mesh rung")
@@ -956,18 +959,21 @@ def build_shared_spline_request(case, *, source: Path, formulation: Path, surfac
         case, source=source, formulation=formulation, surface=surface, spacings=spacings,
         margin=margin, half_width=half_width, basis_spacing=basis_spacing, wall_cap_s=wall_cap_s,
         _single_rung=True, track_problem_contract=track_problem_contract,
+        corridor_policy=corridor_policy, corridor_fold_guard=corridor_fold_guard,
     )
 
 
 def build_shared_spline_ladder_request(case, *, source: Path, formulation: Path, surface: Path,
                                        spacings, margin: float, half_width: float | None,
                                        basis_spacing: float, wall_cap_s: float,
-                                       track_problem_contract: dict | None = None) -> dict:
+                                       track_problem_contract: dict | None = None,
+                                       corridor_policy: str | None = None, corridor_fold_guard: float = 0.2) -> dict:
     """Compose fixed strict single-rung requests into public ladder envelope v2."""
     return _build_shared_spline_ladder_request(
         case, source=source, formulation=formulation, surface=surface, spacings=spacings,
         margin=margin, half_width=half_width, basis_spacing=basis_spacing, wall_cap_s=wall_cap_s,
         track_problem_contract=track_problem_contract,
+        corridor_policy=corridor_policy, corridor_fold_guard=corridor_fold_guard,
     )
 
 
@@ -975,7 +981,8 @@ def _build_shared_spline_ladder_request(case, *, source: Path, formulation: Path
                                         spacings, margin: float, half_width: float | None,
                                         basis_spacing: float, wall_cap_s: float,
                                         _single_rung: bool = False,
-                                         track_problem_contract: dict | None = None) -> dict:
+                                         track_problem_contract: dict | None = None,
+                                          corridor_policy: str | None = None, corridor_fold_guard: float = 0.2) -> dict:
     """Serialize public effective choices into the fixed harness worker schema."""
     from tools.diagnostics.verify_no_tv_minimum_lap import build_attempt, source_hashes
 
@@ -1006,6 +1013,12 @@ def _build_shared_spline_ladder_request(case, *, source: Path, formulation: Path
             raise ValueError("open track supports rolling diagnostic only; standing start is unsupported")
     else:
         raise ValueError("unsupported track topology")
+    from simplified_vehicle_models.tracks.corridor import LEGACY_POLICY, SIGNED_POLICY
+    if corridor_policy is not None and (type(corridor_policy) is not str or corridor_policy not in (LEGACY_POLICY, SIGNED_POLICY)):
+        raise ValueError("unsupported corridor policy")
+    if (isinstance(corridor_fold_guard, bool) or not isinstance(corridor_fold_guard, (int, float))
+            or not np.isfinite(corridor_fold_guard) or not 0.0 < corridor_fold_guard < 1.0):
+        raise ValueError("corridor fold_guard must be finite and strictly between zero and one")
     if isinstance(margin, bool) or not np.isfinite(margin) or margin < 0.0:
         raise ValueError("margin must be finite and nonnegative")
     if half_width is not None and (isinstance(half_width, bool) or
@@ -1023,18 +1036,21 @@ def _build_shared_spline_ladder_request(case, *, source: Path, formulation: Path
             maximum_iterations=3000, wall_cap_s=float(wall_cap_s), seed_name="centerline",
             formulation=formulation, surface=surface, diagnostic_rungs=True,
             provenance=provenance, track_problem_contract=track_problem_contract,
+            corridor_policy=corridor_policy, corridor_fold_guard=corridor_fold_guard,
         )
         rung["case"]["track"] = str(rung["case"]["track"])
         rung.update({
             "worker_kind": "no_tv_spline_v1", "request_source": "public_minimum_time_line",
             "request_envelope_version": 1, "mesh_spacings_m": [float(spacing)],
-            "corridor": {"margin_m": float(margin), "half_width_m": half_width},
+            "corridor": {"margin_m": float(margin), "half_width_m": half_width,
+                         **({"policy": corridor_policy, "fold_guard": float(corridor_fold_guard)} if corridor_policy is not None else {})},
             "start_treatment": case.start_treatment,
             "start_speed_mps": float(case.start_speed_mps),
             "route_scope": "single_fine_rung_diagnostic",
             **({"track_problem_contract": rung["track_problem_contract"]} if track_problem_contract is not None else {}),
             "execution_identity": {
-                "corridor": {"margin_m": float(margin), "half_width_m": half_width},
+                "corridor": {"margin_m": float(margin), "half_width_m": half_width,
+                             **({"policy": corridor_policy, "fold_guard": float(corridor_fold_guard)} if corridor_policy is not None else {})},
                 "start_treatment": case.start_treatment,
                 "start_speed_mps": float(case.start_speed_mps),
             },
@@ -1051,7 +1067,8 @@ def _build_shared_spline_ladder_request(case, *, source: Path, formulation: Path
         "rung_requests": rungs, "route_scope": ("single_fine_rung_diagnostic" if len(spacings) == 1 else "public_multi_rung_diagnostic"),
         **({"track_problem_contract": rungs[-1]["track_problem_contract"]} if track_problem_contract is not None else {}),
         "execution_identity": {
-            "corridor": {"margin_m": float(margin), "half_width_m": half_width},
+            "corridor": {"margin_m": float(margin), "half_width_m": half_width,
+                         **({"policy": corridor_policy, "fold_guard": float(corridor_fold_guard)} if corridor_policy is not None else {})},
             "start_treatment": case.start_treatment,
             "start_speed_mps": float(case.start_speed_mps),
         },
@@ -1156,7 +1173,14 @@ def _run_compat_pipeline(args, stage_callback=None) -> dict:
     half_width = getattr(args, "half_width", None)
     _validate_track_for_line_pipeline(track, half_width)
     spacings = _parse_spacings(getattr(args, "spacings", (5.0, 2.0, 1.0)))
-    corridor = corridor_from_track(track, margin=args.margin, half_width=half_width)
+    policy = getattr(args, "corridor_policy", None) or "legacy-abs-source-curvature-v1"
+    guard = getattr(args, "corridor_fold_guard", 0.2)
+    reference = None
+    if policy == "signed-fitted-reference-v1":
+        from simplified_vehicle_models.solvers.qss_spline_ocp import _reference_curve
+        reference = _reference_curve(track)
+    corridor = corridor_from_track(track, margin=args.margin, half_width=half_width,
+                                   policy=policy, fold_guard=guard, reference=reference)
     policy = _load_policy(args)
 
     compiled = compile_formulation(str(args.formulation))

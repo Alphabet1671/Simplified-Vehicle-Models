@@ -19,6 +19,15 @@ class NoTvMinimumLapHarnessTest(unittest.TestCase):
                     surface=Path("surface.npz"))
         legacy = harness.build_attempt(case, **base)
         self.assertNotIn("track_problem_contract", legacy)
+        self.assertNotIn("corridor_policy", legacy)
+        with self.assertRaisesRegex(ValueError, "corridor policy"):
+            harness.build_attempt(case, **base, corridor_policy="unknown-v9")
+        with self.assertRaisesRegex(ValueError, "fold_guard"):
+            harness.build_attempt(case, **base, corridor_fold_guard=True)
+        signed = harness.build_attempt(case, **base, corridor_policy="signed-fitted-reference-v1",
+                                       corridor_fold_guard=0.35)
+        self.assertEqual(signed["corridor_policy"], "signed-fitted-reference-v1")
+        self.assertEqual(signed["corridor_fold_guard"], 0.35)
         contract = {"schema": "track_problem_v1", "topology": "open", "source_stations": [0., 1.],
                     "lower_offset": [-1., -1.], "upper_offset": [1., 1.],
                     "boundary": {"start_mode": "rolling", "start_speed_mps": 10., "finish_mode": "free"}}
@@ -34,8 +43,17 @@ class NoTvMinimumLapHarnessTest(unittest.TestCase):
              patch("tools.diagnostics.no_tv_provenance.runtime_provenance", return_value={"runtime": {"python": "fixture"}}):
             ladder = build_shared_spline_ladder_request(case, source=case.track, formulation=Path("form.xml"),
                 surface=Path("surface.npz"), spacings=(5., 2.5), margin=.1, half_width=case.fallback_half_width_m,
-                basis_spacing=35., wall_cap_s=3., track_problem_contract=explicit_speed)
+                basis_spacing=35., wall_cap_s=3., track_problem_contract=explicit_speed,
+                corridor_policy="signed-fitted-reference-v1", corridor_fold_guard=0.35)
         self.assertEqual(ladder["track_problem_contract"], ladder["rung_requests"][0]["track_problem_contract"])
+        self.assertEqual(ladder["corridor_policy"], "signed-fitted-reference-v1")
+        self.assertEqual(ladder["corridor_fold_guard"], 0.35)
+        self.assertEqual(ladder["corridor"], ladder["rung_requests"][0]["corridor"])
+        drifted_policy = json.loads(json.dumps(ladder))
+        drifted_policy["rung_requests"][0]["corridor"]["fold_guard"] = 0.4
+        drifted_policy["rung_requests"][0]["execution_identity"]["corridor"]["fold_guard"] = 0.4
+        with self.assertRaisesRegex(ValueError, "rungs must share"):
+            harness._validate_request_options(drifted_policy)
         self.assertEqual(ladder["case"]["start_speed_mps"], 3.)
         harness._validate_request_options(ladder)
         drifted = json.loads(json.dumps(ladder))
@@ -440,7 +458,8 @@ class NoTvMinimumLapHarnessTest(unittest.TestCase):
                 "boundary": {"start_mode": "rolling", "start_speed_mps": 10., "finish_mode": "free"}}
             request = harness.build_attempt(case, mesh_spacing_m=5., basis_spacing_m=35., maximum_iterations=1,
                 wall_cap_s=3., seed_name="centerline", formulation=formulation, surface=surface,
-                diagnostic_rungs=True, track_problem_contract=contract)
+                diagnostic_rungs=True, track_problem_contract=contract,
+                corridor_policy="signed-fitted-reference-v1", corridor_fold_guard=0.35)
             request["source_hashes"] = source_hashes(case.track, formulation, surface)
             request["provenance"] = runtime_provenance(Path.cwd())
 
@@ -501,6 +520,20 @@ class NoTvMinimumLapHarnessTest(unittest.TestCase):
             self.assertEqual(manifest["boundary_event_contract"]["sha256"], __import__("hashlib").sha256(
                 (root / manifest["boundary_event_contract"]["path"]).read_bytes()).hexdigest())
             self.assertTrue(manifest["transitive_dependencies"])
+            recipe_path = root / "corridor_policy_v1.json"
+            recipe = json.loads(recipe_path.read_text(encoding="utf-8"))
+            self.assertEqual(recipe["policy"], "signed-fitted-reference-v1")
+            self.assertEqual(recipe["fold_guard"], 0.35)
+            self.assertEqual(recipe["sha256"], result["corridor_policy"]["sha256"])
+            recipe_member = next(member for member in manifest["transitive_dependencies"]
+                                 if member["path"] == recipe_path.name)
+            self.assertEqual(recipe_member["sha256"], __import__("hashlib").sha256(recipe_path.read_bytes()).hexdigest())
+            effective_doc = json.loads((root / manifest["effective_request"]["path"]).read_text(encoding="utf-8"))
+            self.assertEqual(effective_doc["corridor_policy"]["policy"], "signed-fitted-reference-v1")
+            self.assertEqual(effective_doc["corridor_policy"]["sha256"], recipe["sha256"])
+            self.assertEqual(result["track_problem"]["corridor_policy"], "signed-fitted-reference-v1")
+            self.assertEqual(result["track_problem"]["corridor_identity"]["policy"], "signed-fitted-reference-v1")
+            self.assertEqual(result["track_problem"]["corridor_identity"]["provenance"], "assumed")
             from simplified_vehicle_models.solvers.qss_spline_ocp import _reference_curve
             expected_reference = _reference_curve(track)
             self.assertEqual((audit_seen[0].start, audit_seen[0].end,

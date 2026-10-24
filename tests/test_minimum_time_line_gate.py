@@ -542,7 +542,7 @@ class RunnerOrchestrationTest(unittest.TestCase):
             ):
                 with self.assertRaisesRegex(RuntimeError, "stop"):
                     runner._run_compat_pipeline(args)
-            build_corridor.assert_called_once_with(track, margin=.1, half_width=2.0)
+            build_corridor.assert_called_once_with(track, margin=.1, half_width=2.0, policy="legacy-abs-source-curvature-v1", fold_guard=0.2, reference=None)
             solve_lap.assert_called_once()
             self.assertIs(solve_lap.call_args.args[2], LapMode.STANDING_START)
             self.assertTrue((root / "output").is_dir())

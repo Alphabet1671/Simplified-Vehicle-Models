@@ -13,6 +13,14 @@ from simplified_vehicle_models.solvers.track_problem_contract import validate_pr
 CORRIDOR_POLICY = "legacy-abs-source-curvature-v1"
 
 
+def _plain(value):
+    if hasattr(value, "items"):
+        return {key: _plain(item) for key, item in value.items()}
+    if isinstance(value, (tuple, list)):
+        return [_plain(item) for item in value]
+    return value
+
+
 def preflight_loaded_problem(validation, *, track, reference, corridor, surface, settings,
                              mesh, constraint_sites):
     """Bind a pure contract to actual loaded track, chart and solver settings."""
@@ -143,13 +151,17 @@ def preflight_loaded_problem(validation, *, track, reference, corridor, surface,
             "reasons": reasons, "normalized_contract": normalized,
             "contract_hash": validation.get("normalized_hash"),
             "enforcement": "requested_boundary_enforced" if not reasons else "not_enforced",
-            "corridor_policy": str(getattr(corridor, "source", CORRIDOR_POLICY)),
+            "corridor_policy": str(getattr(corridor, "policy", CORRIDOR_POLICY)),
             "reference_fit": dict(getattr(reference, "fit_discrepancy", {})),
             "source_domain_m": safe_domain,
             "sampling": "diagnostic_only_not_continuous_certificate",
             "sample_count": int(len(samples)) if "samples" in locals() else 0,
             "domain_check_scope": "sampled_reference_curvature_only_not_offset_path_chart_certificate",
-            "corridor_identity": {"policy": str(getattr(corridor, "provenance", CORRIDOR_POLICY)),
+            "corridor_identity": {"policy": str(getattr(corridor, "policy", CORRIDOR_POLICY)),
+                                   "provenance": str(getattr(corridor, "provenance", "unknown")),
+                                   "conditional": bool(getattr(corridor, "is_conditional", True)),
+                                   "descriptor": _plain(getattr(corridor, "policy_descriptor", {})),
+                                   "policy_sha256": str(getattr(corridor, "policy_hash", "")),
                                   "source_station_start_m": float(stations[0]) if "stations" in locals() and len(stations) else None,
                                   "source_station_end_m": float(stations[-1]) if "stations" in locals() and len(stations) else None,
                                   "source_station_sha256": hashlib.sha256(np.asarray(stations, dtype=np.float64).tobytes()).hexdigest() if "stations" in locals() and len(stations) else None}}

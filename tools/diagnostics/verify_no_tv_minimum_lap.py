@@ -101,7 +101,7 @@ def default_cases() -> dict[str, MatrixCase]:
 
 
 def _json_safe(value):
-    if isinstance(value, dict):
+    if hasattr(value, "items"):
         return {str(key): _json_safe(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
         return [_json_safe(item) for item in value]
@@ -289,7 +289,7 @@ def _validate_request_options(request: dict) -> None:
         "initializer", "convergence_criteria", "provenance", "no_torque_vectoring",
         "mode_switches", "controller_globals", "source_hashes", "stage_budgets_s",
         "cancel_marker_path", "runtime_provenance", "execution_identity", "request_source",
-        "track_problem_contract",
+        "track_problem_contract", "corridor_policy", "corridor_fold_guard",
         "rung_requests",
     }
     unknown = set(request) - allowed_fields
@@ -357,8 +357,18 @@ def _validate_request_options(request: dict) -> None:
         if not required.issubset(request):
             raise ValueError("public request envelope is incomplete")
         corridor = request["corridor"]
-        if not isinstance(corridor, dict) or set(corridor) != {"margin_m", "half_width_m"}:
+        if (not isinstance(corridor, dict)
+                or set(corridor) - {"margin_m", "half_width_m", "policy", "fold_guard"}
+                or not {"margin_m", "half_width_m"}.issubset(corridor)):
             raise ValueError("corridor descriptor must declare margin_m and half_width_m")
+        from simplified_vehicle_models.tracks.corridor import LEGACY_POLICY, SIGNED_POLICY
+        policy = corridor.get("policy")
+        guard = corridor.get("fold_guard", 0.2)
+        if policy is not None and (type(policy) is not str or policy not in (LEGACY_POLICY, SIGNED_POLICY)):
+            raise ValueError("unsupported corridor policy")
+        if (isinstance(guard, bool) or not isinstance(guard, (int, float))
+                or not math.isfinite(guard) or not 0.0 < guard < 1.0):
+            raise ValueError("corridor fold_guard must be finite and strictly between zero and one")
         mesh_spacings = request["mesh_spacings_m"]
         if (not isinstance(mesh_spacings, list) or not mesh_spacings or
                 any(isinstance(value, bool) or not isinstance(value, (int, float)) or
@@ -399,6 +409,9 @@ def _validate_request_options(request: dict) -> None:
         identity = request.get("execution_identity")
         expected_identity = {"corridor": corridor, "start_treatment": treatment,
                              "start_speed_mps": start_speed}
+        expected_policy = {key: corridor[key] for key in ("policy", "fold_guard") if key in corridor}
+        if expected_policy:
+            expected_identity["corridor"].update(expected_policy)
         if identity != expected_identity:
             raise ValueError("execution identity conflicts with effective envelope fields")
         if request.get("source_hashes") is None or request.get("provenance") is None:
@@ -452,7 +465,8 @@ def build_attempt(case: MatrixCase, *, mesh_spacing_m: float, basis_spacing_m: f
                    track_problem_contract: dict | None = None,
                    energy_defect_scaling: str = "legacy_reference_speed_v1",
                    coefficient_coordinate_scale: float = 1.0,
-                   mesh_stations=None, constraint_stations=None) -> dict:
+                   mesh_stations=None, constraint_stations=None,
+                   corridor_policy: str | None = None, corridor_fold_guard: float = 0.2) -> dict:
     """Build a fully serializable solve request; this has no solver side effects."""
     allowed_meshes = DEFAULT_MESH_SPACINGS + ((DIAGNOSTIC_MESH_SPACING,) if diagnostic_rungs else ())
     allowed_basis = diagnostic_rungs or basis_spacing_m in DEFAULT_BASIS_SPACINGS
@@ -489,6 +503,14 @@ def build_attempt(case: MatrixCase, *, mesh_spacing_m: float, basis_spacing_m: f
             or not isinstance(coefficient_coordinate_scale, (int, float, np.integer, np.floating))
             or not math.isfinite(coefficient_coordinate_scale) or coefficient_coordinate_scale <= 0.0):
         raise ValueError("coefficient_coordinate_scale must be finite and positive")
+    if corridor_policy is not None:
+        from simplified_vehicle_models.tracks.corridor import LEGACY_POLICY, SIGNED_POLICY
+        if type(corridor_policy) is not str or corridor_policy not in (LEGACY_POLICY, SIGNED_POLICY):
+            raise ValueError("unsupported corridor policy")
+    if (isinstance(corridor_fold_guard, (bool, np.bool_))
+            or not isinstance(corridor_fold_guard, (int, float, np.integer, np.floating))
+            or not math.isfinite(corridor_fold_guard) or not 0.0 < corridor_fold_guard < 1.0):
+        raise ValueError("corridor fold_guard must be finite and strictly between zero and one")
     explicit_mesh = _validated_explicit_mesh(mesh_stations)
     explicit_sites = _validated_stations(constraint_stations, "constraint_stations")
     if explicit_mesh is not None and explicit_sites and (
@@ -554,6 +576,9 @@ def build_attempt(case: MatrixCase, *, mesh_spacing_m: float, basis_spacing_m: f
     }
     if normalized_contract is not None:
         request["track_problem_contract"] = normalized_contract
+    if corridor_policy is not None:
+        request["corridor_policy"] = corridor_policy
+        request["corridor_fold_guard"] = float(corridor_fold_guard)
     return request
 
 
@@ -783,8 +808,8 @@ def _attempt_worker(request_path: str, result_path: str, artifact_path: str, sta
             return
         track = make_track_view(case)
         pure_contract = None
-        loaded_reference = None
         from simplified_vehicle_models.solvers.qss_spline_ocp import _reference_curve
+        loaded_reference = None
         if "track_problem_contract" in request:
             from simplified_vehicle_models.solvers.track_problem_contract import validate_problem_contract
             from simplified_vehicle_models.solvers.loaded_track_problem import preflight_loaded_problem
@@ -798,7 +823,6 @@ def _attempt_worker(request_path: str, result_path: str, artifact_path: str, sta
                                "solver_attempted": False, "failure_stage": "request_validation"})
                 mark_stage("failed")
                 return
-            loaded_reference = _reference_curve(track)
         if all(hasattr(track, attribute) for attribute in
                ("source_reference_interpolation_periodic", "distance", "lap_length")):
             result["source_geometry"] = {
@@ -809,14 +833,28 @@ def _attempt_worker(request_path: str, result_path: str, artifact_path: str, sta
                 "lap_length_m": float(track.lap_length),
             }
         corridor_options = request.get("corridor", {})
+        from simplified_vehicle_models.tracks.corridor import LEGACY_POLICY, SIGNED_POLICY
+        selected_policy = request.get("corridor_policy", corridor_options.get("policy", LEGACY_POLICY))
+        selected_guard = request.get("corridor_fold_guard", corridor_options.get("fold_guard", 0.2))
+        if selected_policy == SIGNED_POLICY and loaded_reference is None:
+            loaded_reference = _reference_curve(track)
+        corridor_reference = loaded_reference if selected_policy != LEGACY_POLICY else None
         corridor = corridor_from_track(
             track, margin=float(corridor_options.get("margin_m", 0.1)),
             half_width=corridor_options.get("half_width_m", case.fallback_half_width_m),
+            policy=selected_policy, fold_guard=selected_guard, reference=corridor_reference,
         )
+        actual_policy = str(getattr(corridor, "policy", selected_policy))
+        actual_descriptor = getattr(corridor, "policy_descriptor", {})
+        actual_policy_hash = str(getattr(corridor, "policy_hash", ""))
+        result["corridor_policy"] = {"policy": actual_policy, "fold_guard": float(selected_guard),
+                                     "descriptor": _json_safe(actual_descriptor), "sha256": actual_policy_hash}
         if "corridor" in request:
             result["corridor_identity"] = {
                 "margin_m": float(corridor_options["margin_m"]),
                 "half_width_m": corridor_options["half_width_m"],
+                "policy": actual_policy, "fold_guard": float(selected_guard),
+                "descriptor": _json_safe(actual_descriptor), "sha256": actual_policy_hash,
             }
         vehicle = point_mass_view_of_planar(compile_formulation(request["formulation"]).model)
         surface, representation = load_surface_dispatch(Path(request["surface"]))
@@ -838,6 +876,7 @@ def _attempt_worker(request_path: str, result_path: str, artifact_path: str, sta
                            "corridor_policy": "legacy-abs-source-curvature-v1",
                            "sampling": "diagnostic_only_not_continuous_certificate"}
         if pure_contract is not None:
+            loaded_reference = loaded_reference or _reference_curve(track)
             loaded_mesh = (np.asarray(request["mesh_stations"], dtype=float)
                            if request.get("mesh_stations") is not None else build_mesh(track, request["mesh_spacing_m"]))
             loaded_contract = preflight_loaded_problem(
@@ -1159,14 +1198,20 @@ def _attempt_worker(request_path: str, result_path: str, artifact_path: str, sta
                 effective = {"request": request,
                              "source_snapshot_map": source_map,
                              "trajectory_filename": trajectory_path.name}
+                if result.get("corridor_policy"):
+                    corridor_recipe_path = root / "corridor_policy_v1.json"
+                    corridor_recipe_path.write_text(json.dumps(result["corridor_policy"], sort_keys=True,
+                                                               separators=(",", ":"), allow_nan=False) + "\n",
+                                                    encoding="utf-8")
                 provenance_root = Path(request.get("repo_root", Path(__file__).resolve().parents[2]))
                 actual_provenance = runtime_provenance(provenance_root)
                 identities = build_manifest_identities(
                     root, track=snapshot_for(request["case"]["track"]),
                     formulation=snapshot_for(request["formulation"]),
                     chart=snapshot_for(request["surface"]),
-                    transitive_dependencies=input_members + ([{"path": "geometry_audit_v1.json", "sha256": result["geometry_audit"]["sha256"]}] if result.get("geometry_audit", {}).get("artifact") == "geometry_audit_v1.json" else []),
-                    effective_request={**effective, "track_problem": result.get("track_problem")},
+                    transitive_dependencies=input_members + ([{"path": "geometry_audit_v1.json", "sha256": result["geometry_audit"]["sha256"]}] if result.get("geometry_audit", {}).get("artifact") == "geometry_audit_v1.json" else []) + ([{"path": "corridor_policy_v1.json", "sha256": hashlib.sha256((root / "corridor_policy_v1.json").read_bytes()).hexdigest()}] if result.get("corridor_policy") else []),
+                    effective_request={**effective, "corridor_policy": result.get("corridor_policy"), "track_problem": result.get("track_problem")},
+
                     runtime=actual_provenance["runtime"],
                     code={"git_head": actual_provenance["git_head"],
                           "dirty_tracked_manifest": actual_provenance["dirty_tracked_manifest"],
@@ -1200,7 +1245,7 @@ def _write_attempt_digest_index(root: Path, request: dict) -> None:
     for index in range(min(len(request.get("rung_requests", [])), 32)):
         rung = root / "attempts" / f"rung-{index}"
         paths.extend(rung / name for name in ("request.json", "result.json", "stage.json", "solution.npz",
-                                               "trajectory_metadata.npz", "run_manifest_v1.json"))
+                                               "trajectory_metadata.npz", "run_manifest_v1.json", "corridor_policy_v1.json"))
     for path in paths[:194]:
         try:
             if not path.is_file():

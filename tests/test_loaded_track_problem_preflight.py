@@ -42,7 +42,22 @@ class LoadedTrackProblemTest(unittest.TestCase):
         self.assertEqual(result["status"], "supported")
         self.assertEqual(result["contract_hash"], validate_problem_contract(self.contract)["normalized_hash"])
         self.assertEqual(result["corridor_policy"], "legacy-abs-source-curvature-v1")
+        self.assertEqual(result["corridor_identity"]["policy"], "legacy-abs-source-curvature-v1")
+        self.assertEqual(result["corridor_identity"]["provenance"], "assumed")
         self.assertEqual(result["sampling"], "diagnostic_only_not_continuous_certificate")
+
+    def test_corridor_policy_identity_keeps_policy_distinct_from_width_provenance(self):
+        from simplified_vehicle_models.tracks.corridor import SIGNED_POLICY
+        descriptor = {"schema": "test-v1", "nested": {"guard": 0.2}}
+        self.corridor.policy = SIGNED_POLICY
+        self.corridor.policy_descriptor = descriptor
+        self.corridor.policy_hash = "abc123"
+        result = self.run_check()
+        self.assertEqual(result["corridor_policy"], SIGNED_POLICY)
+        self.assertEqual(result["corridor_identity"]["policy"], SIGNED_POLICY)
+        self.assertEqual(result["corridor_identity"]["provenance"], "assumed")
+        self.assertEqual(result["corridor_identity"]["descriptor"], descriptor)
+        self.assertEqual(result["corridor_identity"]["policy_sha256"], "abc123")
 
     def test_contract_source_grid_must_match_loaded_corridor(self):
         altered = dict(self.contract, source_stations=[0., 4., 10.])

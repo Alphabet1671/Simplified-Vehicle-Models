@@ -1,74 +1,95 @@
 import unittest
 import numpy as np
 
-from simplified_vehicle_models.solvers.maneuver_simulation import (
-    SimulationSettings, simulate_maneuver,
-)
+from simplified_vehicle_models.solvers.maneuver_simulation import SimulationSettings, simulate_maneuver
 
 
-class _Solved:
-    def __init__(self, rates):
-        self.rates = rates
-
-    def solve(self):
-        return self.rates
+class Solved:
+    def __init__(self, rates): self.rates = rates
+    def solve(self): return self.rates
 
 
-class _Plant:
+class Plant:
     state_size = 1
-
-    def __init__(self):
-        self.evaluate_calls = 0
-
-    def evaluate(self, time, state, command):
-        self.evaluate_calls += 1
-        return _Solved(np.array([1.0]))
-
-    def observe(self, state):
-        return float(state[0])
+    def evaluate(self, t, y, c): return Solved(np.array([float(c)]))
+    def observe(self, t, y, c): return float(y[0])
 
 
-class _Program:
-    def __init__(self):
-        self.ticks = []
-
+class Program:
+    def __init__(self, duration=.1, source=None):
+        self.data = {'termination': {'duration_s': duration}}
+        self.csv_source = source
+        self.tick_count = 0
     def tick(self, observation, dt):
-        self.ticks.append((observation, dt))
-        return (len(self.ticks),)
-
-    def breakpoints(self):
-        return (0.0, 0.035, 0.07, 0.1)
+        self.tick_count += 1
+        return float(self.tick_count)
+    def breakpoints(self): return self.csv_source.breakpoints() if self.csv_source else ()
 
 
 class ManeuverSimulationTests(unittest.TestCase):
-    def run_sim(self, plant):
-        program = _Program()
-        result = simulate_maneuver(
-            plant, program, [0.0],
-            SimulationSettings(duration_s=0.1, controller_tick_s=0.01, max_step_s=0.01),
-        )
-        return result, program
+    def test_sampled_tick_count_and_rhs_independence(self):
+        a, b = Program(), Program()
+        ra = simulate_maneuver(Plant(), a, [0.], SimulationSettings())
+        rb = simulate_maneuver(Plant(), b, [0.], SimulationSettings(rtol=1e-4, atol=1e-6))
+        self.assertEqual(a.tick_count, 10)
+        self.assertEqual(b.tick_count, 10)
+        np.testing.assert_array_equal(ra.requested_commands, rb.requested_commands)
+        self.assertEqual(ra.termination_reason, 'duration')
+        self.assertEqual(len(ra.time_s), len(ra.state_rate))
+        self.assertFalse(ra.state.flags.writeable)
+        self.assertIsInstance(ra.requested_commands, tuple)
+        self.assertIsInstance(ra.applied_commands, tuple)
+        with self.assertRaises(AttributeError): ra.applied_commands.append(9)
 
-    def test_ticks_at_zero_and_each_tick_strictly_before_duration(self):
-        result, program = self.run_sim(_Plant())
-        self.assertEqual(result.status, "completed")
-        self.assertEqual(len(program.ticks), 10)
-        np.testing.assert_allclose([item[1] for item in program.ticks], [0.01] * 10)
-        self.assertAlmostEqual(program.ticks[0][0], 0.0)
-        self.assertEqual(result.requested, tuple((i,) for i in range(1, 11)))
-        self.assertEqual(len(result.time_s), len(result.state))
+    def test_source_knot_does_not_tick_pid(self):
+        class Source:
+            def breakpoints(self): return (.015,)
+            def sample(self, t): return 2. if t >= .015 else 1.
+        p = Program(source=Source())
+        r = simulate_maneuver(Plant(), p, [0.], SimulationSettings())
+        self.assertEqual(p.tick_count, 10)
+        self.assertTrue(any(abs(t-.015)<1e-12 for t in r.time_s))
 
-    def test_history_independent_of_evaluate_call_counter(self):
-        a, _ = self.run_sim(_Plant())
-        other = _Plant()
-        self.run_sim(other)
-        other.evaluate_calls += 999
-        b, _ = self.run_sim(_Plant())
-        np.testing.assert_array_equal(a.time_s, b.time_s)
-        np.testing.assert_array_equal(a.state, b.state)
-        self.assertFalse(a.time_s.flags.writeable)
-        self.assertFalse(a.state.flags.writeable)
+    def test_csv_ends_before_duration_without_extrapolation(self):
+        class Source:
+            time_s = (0., .04)
+            def breakpoints(self): return self.time_s
+            def sample(self, t):
+                if t > .04: raise AssertionError('extrapolation attempted')
+                return 1.
+        p = Program(source=Source())
+        r = simulate_maneuver(Plant(), p, [0.], SimulationSettings())
+        self.assertEqual(r.termination_reason, 'source_end')
+        self.assertAlmostEqual(r.time_s[-1], .04)
+
+    def test_duration_at_nonintegral_tick(self):
+        p=Program(.105); r=simulate_maneuver(Plant(),p,[0.],SimulationSettings())
+        self.assertEqual(p.tick_count,11)
+        self.assertAlmostEqual(r.time_s[-1],.105)
+
+    def test_wall_budget_and_cancel_are_classified(self):
+        r=simulate_maneuver(Plant(),Program(),[0.],SimulationSettings(max_wall_s=1e-12))
+        self.assertEqual(r.termination_reason,'wall_budget')
+        r=simulate_maneuver(Plant(),Program(),[0.],SimulationSettings(cancel=lambda: True))
+        self.assertEqual(r.termination_reason,'cancelled')
+
+    def test_model_domain_failure_is_classified(self):
+        class Bad(Plant):
+            def evaluate(self,t,y,c): raise type('TrialStateError',(Exception,),{})('bad')
+        r=simulate_maneuver(Bad(),Program(),[0.],SimulationSettings())
+        self.assertEqual(r.termination_reason,'model_limit')
+
+    def test_zero_speed_root(self):
+        class SpeedPlant:
+            state_size=4
+            def evaluate(self,t,y,c): return Solved(np.array([0.,0.,0.,-1.]))
+            def observe(self,t,y,c): return float(y[3])
+        class BrakeProgram(Program):
+            def __init__(self): self.data={'termination':{'duration_s':2.}}; self.csv_source=None; self.tick_count=0
+            def tick(self,o,dt): self.tick_count+=1; return 0.
+        result=simulate_maneuver(SpeedPlant(),BrakeProgram(),[0.,0.,0.,1.],SimulationSettings())
+        self.assertEqual(result.termination_reason,'zero_speed')
+        self.assertEqual(result.events[0]['kind'],'zero_speed')
 
 
-if __name__ == "__main__":
-    unittest.main()
+if __name__ == '__main__': unittest.main()

@@ -100,6 +100,30 @@ class ManeuverSimulationTests(unittest.TestCase):
         self.assertGreater(result.events[0]['speed_threshold_mps'], SpeedPlant.minimum_speed)
         self.assertEqual(result.termination_outcome if hasattr(result, 'termination_outcome') else result.execution_outcome, 'stopped')
 
+    def test_initial_speed_between_domain_minimum_and_floor_stops_with_evidence(self):
+        class SpeedPlant:
+            state_size=4
+            minimum_speed=.1
+            def evaluate(self,t,y,c):
+                if y[3] <= self.minimum_speed:
+                    raise type('ModelDomainError',(Exception,),{})('outside domain')
+                return Solved(np.array([0.,0.,0.,-1.]))
+            def observe(self,t,y,c): return float(y[3])
+            def accepted_outputs(self,t,y,c): return {'accepted_speed': float(y[3])}
+        class BrakeProgram(Program):
+            def __init__(self): self.data={'termination':{'duration_s':2.}}; self.csv_source=None; self.tick_count=0
+            def tick(self,o,dt): self.tick_count+=1; return 0.
+        start_speed=.1005
+        result=simulate_maneuver(SpeedPlant(),BrakeProgram(),[0.,0.,0.,start_speed],SimulationSettings())
+        self.assertEqual(result.execution_outcome,'stopped')
+        self.assertEqual(result.termination_reason,'zero_speed')
+        self.assertEqual(result.events[0]['kind'],'zero_speed')
+        self.assertAlmostEqual(result.events[0]['speed_threshold_mps'],.101)
+        self.assertAlmostEqual(result.events[0]['state_speed_mps'],start_speed)
+        self.assertAlmostEqual(result.state_rate[0,3],-1.)
+        self.assertAlmostEqual(result.channels[0]['accepted_speed'],start_speed)
+        self.assertNotEqual(result.termination_reason,'model_limit')
+
     def test_mutable_command_evidence_is_snapshotted(self):
         class CommandProgram(Program):
             def __init__(self):

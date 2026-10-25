@@ -189,6 +189,29 @@ def simulate_maneuver(plant, program, initial_state, settings=SimulationSettings
             if not np.isfinite(minimum_speed) or minimum_speed <= 0:
                 raise ValueError('plant minimum speed must be finite and positive')
             speed_floor = minimum_speed + max(1e-6, 1e-3 * max(1., minimum_speed))
+            # If the accepted segment-start state is already on/below the
+            # stop surface, there is no valid interval to integrate. Record
+            # evidence at the actual state (not a clipped RHS probe) before
+            # stopping. States at/below the plant's true minimum are left to
+            # the normal model-domain handling below.
+            if minimum_speed < current[speed_index] <= speed_floor:
+                try:
+                    accepted_rate = _rate(plant, left, current, command)
+                    if not np.all(np.isfinite(accepted_rate)):
+                        raise ValueError('plant rates must be finite')
+                    times.append(float(left)); states.append(current.copy())
+                    rates.append(accepted_rate.copy()); applied.append(command)
+                    observations.append(_observe(plant, left, current, command))
+                    channels.append(plant.accepted_outputs(left, current, command)
+                                    if hasattr(plant, 'accepted_outputs') else {})
+                except Exception as exc:
+                    outcome, reason = 'failed', ('model_limit' if type(exc).__name__ in ('TrialStateError','ModelDomainError') else 'model_error')
+                    break
+                events.append({'time_s': float(left), 'kind': 'zero_speed',
+                               'speed_threshold_mps': speed_floor,
+                               'state_speed_mps': float(current[speed_index])})
+                outcome, reason = 'stopped', 'zero_speed'
+                break
             def zero_speed(t, y): return y[speed_index] - speed_floor
             zero_speed.terminal = True; zero_speed.direction = -1
             evs.append(zero_speed)

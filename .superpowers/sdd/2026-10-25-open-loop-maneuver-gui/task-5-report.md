@@ -27,3 +27,10 @@ Replaced the previous Euler-based maneuver simulation core with segmented stiff 
 ## Commit
 
 `38ad61b feat: execute maneuvers with sampled controls and exact breakpoints`
+
+## Fix round 3 — initial speed already within the stop band
+
+- At each segment start, if longitudinal speed is strictly above the plant's actual minimum but already at or below the computed `speed_floor`, the simulator now records accepted rate/evidence for the actual state, adds a `zero_speed` event with threshold and state speed, and immediately returns `execution_outcome='stopped'` / `termination_reason='zero_speed'` without invoking `solve_ivp`.
+- Speed at/below the plant's actual minimum is not accepted through this shortcut; normal model-domain behavior remains authoritative.
+- Regression test uses `SpeedPlant.minimum_speed = 0.1` and initial `vx = 0.1005` (floor ~0.101), asserting stopped/zero_speed, event threshold/state speed, finite accepted rate and accepted output evidence.
+- Verification: `test_maneuver_simulation.py` PASS (9 tests); all `test_maneuver_*.py` PASS (49); all `test_planar*.py` PASS (77); all `test_forward*.py` PASS (130); `git diff --check` PASS.

@@ -23,6 +23,21 @@ class ConsumerApprovalRecordTests(unittest.TestCase):
         self.assertFalse(result.policy_approved)
         self.assertIsNone(result.geometry_state_convergence)
 
+    def test_proposed_policy_precedes_malformed_inputs(self):
+        for record, identity, evidence in (
+            ({"bad": float("nan")}, {}, {}),
+            ({1: "non-string key"}, {}, {}),
+            ({}, float("inf"), {}),
+            ({}, {}, {"bad": object()}),
+        ):
+            result = verify_consumer_approval_record(record, policy=NUMERICAL_POLICY_V1,
+                executed_identity=identity, required_evidence=evidence)
+            self.assertEqual(result.status, ApprovalStatus.UNAPPROVED_POLICY)
+            self.assertFalse(result.qualified)
+            self.assertFalse(result.accepted)
+            self.assertFalse(result.policy_approved)
+            self.assertIsNone(result.geometry_state_convergence)
+
     def _approved_case(self):
         from types import SimpleNamespace
         policy = SimpleNamespace(status="approved", requirements_status="approved",
@@ -43,7 +58,7 @@ class ConsumerApprovalRecordTests(unittest.TestCase):
                 "uncertainty": "declared",
             }, "executed_identity": identity,
         }
-        evidence = {name: {"passed": True} for name in
+        evidence = {name: {"passed": True, "trace": {"artifact": name}} for name in
                     ("grid", "seed", "reference", "replay", "original_model")}
         evidence.update({"maximum_accuracy_certified": False, "meets_accuracy_budget": None})
         return policy, identity, record, evidence
@@ -71,7 +86,7 @@ class ConsumerApprovalRecordTests(unittest.TestCase):
             },
             "executed_identity": identity,
         }
-        evidence = {name: {"passed": True} for name in
+        evidence = {name: {"passed": True, "trace": {"artifact": name}} for name in
                     ("grid", "seed", "reference", "replay", "original_model")}
         evidence.update({"maximum_accuracy_certified": False, "meets_accuracy_budget": None})
         result = verify_consumer_approval_record(
@@ -89,6 +104,47 @@ class ConsumerApprovalRecordTests(unittest.TestCase):
             result = verify_consumer_approval_record(candidate, policy=policy,
                                                      executed_identity=identity, required_evidence=evidence)
             self.assertEqual(result.status, ApprovalStatus.MISSING_CONSUMER_ALLOCATION)
+
+    def test_allocation_values_and_uncertainty_must_be_meaningful(self):
+        policy, identity, record, evidence = self._approved_case()
+        for value in (None, True, False, "", "  ", {}, []):
+            allocation = dict(record["consumer_allocation"])
+            dims = dict(allocation["dimensional_allocations"])
+            dims["time"] = value
+            allocation["dimensional_allocations"] = dims
+            candidate = dict(record, consumer_allocation=allocation)
+            self.assertEqual(verify_consumer_approval_record(candidate, policy=policy,
+                executed_identity=identity, required_evidence=evidence).status,
+                ApprovalStatus.MISSING_CONSUMER_ALLOCATION)
+            allocation = dict(record["consumer_allocation"], uncertainty=value)
+            candidate = dict(record, consumer_allocation=allocation)
+            self.assertEqual(verify_consumer_approval_record(candidate, policy=policy,
+                executed_identity=identity, required_evidence=evidence).status,
+                ApprovalStatus.MISSING_CONSUMER_ALLOCATION)
+
+    def test_each_evidence_requires_meaningful_trace(self):
+        policy, identity, record, evidence = self._approved_case()
+        for name in ("grid", "seed", "reference", "replay", "original_model"):
+            for replacement in ({"passed": True}, {"passed": True, "trace": None},
+                                {"passed": True, "trace": "  "}, {"passed": True, "trace": []}):
+                candidate = dict(evidence, **{name: replacement})
+                self.assertEqual(verify_consumer_approval_record(record, policy=policy,
+                    executed_identity=identity, required_evidence=candidate).status,
+                    ApprovalStatus.MISSING_REQUIRED_EVIDENCE)
+
+    def test_carrier_snapshots_are_immutable_and_to_dict_is_detached(self):
+        policy, identity, record, evidence = self._approved_case()
+        result = verify_consumer_approval_record(record, policy=policy,
+            executed_identity=identity, required_evidence=evidence)
+        with self.assertRaises(TypeError):
+            result.record["new"] = "mutation"
+        with self.assertRaises(TypeError):
+            result.evidence["grid"]["passed"] = False
+        detached = result.to_dict()
+        detached["record"]["consumer_allocation"]["dimensional_allocations"]["time"] = "changed"
+        detached["evidence"]["grid"]["trace"]["artifact"] = "changed"
+        self.assertEqual(result.record["consumer_allocation"]["dimensional_allocations"]["time"], "opaque")
+        self.assertEqual(result.evidence["grid"]["trace"]["artifact"], "grid")
 
     def test_each_identity_field_is_bound_exactly(self):
         policy, identity, record, evidence = self._approved_case()
@@ -154,7 +210,7 @@ class ConsumerApprovalRecordTests(unittest.TestCase):
         candidate = dict(record, consumer_allocation=dict(record["consumer_allocation"], uncertainty=True))
         self.assertEqual(verify_consumer_approval_record(candidate, policy=policy,
             executed_identity=identity, required_evidence=evidence).status,
-            ApprovalStatus.QUALIFICATION_UNRESOLVED)
+            ApprovalStatus.MISSING_CONSUMER_ALLOCATION)
 
 
 if __name__ == "__main__":

@@ -6,6 +6,26 @@ import numpy as np
 
 
 @dataclass(frozen=True, slots=True)
+class Observation:
+    time_s: float
+    x_m: float
+    y_m: float
+    heading_rad: float
+    speed_mps: float
+    yaw_rate_rad_s: float
+    swa_rad: float
+    ay_mps2: float
+
+    def __post_init__(self):
+        vals=(self.time_s,self.x_m,self.y_m,self.heading_rad,self.speed_mps,self.yaw_rate_rad_s,self.swa_rad,self.ay_mps2)
+        if any(isinstance(v,(bool,np.bool_)) for v in vals): raise ValueError('observation values must be numeric, not boolean')
+        try: values=np.asarray(vals,dtype=float)
+        except (TypeError,ValueError) as exc: raise ValueError('observation values must be numeric') from exc
+        if not np.all(np.isfinite(values)): raise ValueError('observation values must be finite')
+        for name,value in zip(('time_s','x_m','y_m','heading_rad','speed_mps','yaw_rate_rad_s','swa_rad','ay_mps2'),values): object.__setattr__(self,name,float(value))
+
+
+@dataclass(frozen=True, slots=True)
 class RobotCommand:
     """Canonical command: SWA radians and normalized accelerator/brake travel."""
     swa_rad: float

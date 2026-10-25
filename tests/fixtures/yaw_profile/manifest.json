@@ -9,9 +9,9 @@
     },
     {
       "file": "fsc-raw-anchored-window.json",
-      "sha256": "4db75441b9f2771506e4860e8e9a175e01540a486a127ca4f92913a575b38eb8",
-      "source_output": "runs/yaw_aware_driver/task1-probes/fsc-raw-anchored.json",
-      "source_output_sha256": "5b67bf22688ebe995e13725f934d654eb0b544ae5dd5c2c9b981b6297cd4dd34",
+      "sha256": "ed6a07aec9eecb52cd3e13135bc103adc755ae72f460631fd3a73961fc83dec7",
+      "source_output": "runs/yaw_aware_driver/task1-probes-structured/fsc-raw-anchored.json",
+      "source_output_sha256": "5f0ff2d7edebe8ae1ff4b8c724416c2708ce4ccdab59f1fabf057081f7789075",
       "geometry": "raw-centerline",
       "anchored": true,
       "track": "models/tracks/fsc_may_2026_synthetic_3m_edged.xml",
@@ -44,9 +44,9 @@
     },
     {
       "file": "fsc-raw-original-window.json",
-      "sha256": "e70c628ca171f9fb86bfc1171949d0a2653a74fa6a4cbf8990633d33be411758",
-      "source_output": "runs/yaw_aware_driver/task1-probes/fsc-raw-original.json",
-      "source_output_sha256": "1c0ca10868a14b09f1af2222df6457a97f8372aba80e84e20afc6e17deb8ca12",
+      "sha256": "80dca8b45197389591a918ed150d591a5c48579f5f92a744080f03289c4fbdc8",
+      "source_output": "runs/yaw_aware_driver/task1-probes-structured/fsc-raw-original.json",
+      "source_output_sha256": "627aa4a3f646a9eee359314017fe39cdb1e1bfb251cfa62ba9538a80a2b88406",
       "geometry": "raw-centerline",
       "anchored": false,
       "track": "models/tracks/fsc_may_2026_synthetic_3m_edged.xml",
@@ -78,9 +78,9 @@
     },
     {
       "file": "fsc-zero-anchored-window.json",
-      "sha256": "628d8f95a82e6868ca54ed22cb74db8980f13a3f688706ab21d9b953efe3c266",
-      "source_output": "runs/yaw_aware_driver/task1-probes/fsc-zero-anchored.json",
-      "source_output_sha256": "6659808538c8f4f50245582f08172f9722100d2ee744ba31c59e8f13839e25a0",
+      "sha256": "28337022ae517ecb5ddc5906f336078f13f7805dd6f917679c1df400f7ce854e",
+      "source_output": "runs/yaw_aware_driver/task1-probes-structured/fsc-zero-anchored.json",
+      "source_output_sha256": "523130e198392ed57aa1e3fc54b9ed6762a9b0f2a7ed3e4ef24e4721885c2186",
       "geometry": "zero-offset",
       "anchored": true,
       "track": "models/tracks/fsc_may_2026_synthetic_3m_edged.xml",
@@ -113,9 +113,9 @@
     },
     {
       "file": "fsc-zero-original-window.json",
-      "sha256": "dd6953ef21e2ab6b86b4e9c8dd867595be15340a0691b735657025d9ecb77783",
-      "source_output": "runs/yaw_aware_driver/task1-probes/fsc-zero-original.json",
-      "source_output_sha256": "a150418e5c3cd9e3162b0e953ed2fcd0cbece8232cba696a4886f9e58085ff22",
+      "sha256": "f04a2e1236344d845d1f0768bc2e617595fcd12243fe8549a64e8608b5725ed3",
+      "source_output": "runs/yaw_aware_driver/task1-probes-structured/fsc-zero-original.json",
+      "source_output_sha256": "dc7170c314181a0f78c91f8bbecf9e188e941b07520c38f022639cc69b72cfcc",
       "geometry": "zero-offset",
       "anchored": false,
       "track": "models/tracks/fsc_may_2026_synthetic_3m_edged.xml",
@@ -147,9 +147,9 @@
     },
     {
       "file": "mis-raw-anchored-window.json",
-      "sha256": "d235ad1c4989c587d5c831efab27fe7ede7939f1aa970ccfc5b4e71dc1151d2a",
-      "source_output": "runs/yaw_aware_driver/task1-probes/mis-raw-anchored.json",
-      "source_output_sha256": "9abfb87cfd192b32246b094821f19b0e257320193cd5c440f77d055f7a67eaec",
+      "sha256": "e464709d2d320745bbdf27baa18f18b2c3d718245241d2e9785bce15612d4faa",
+      "source_output": "runs/yaw_aware_driver/task1-probes-structured/mis-raw-anchored.json",
+      "source_output_sha256": "a2d6b76b195cc69cfc217fcea78da56bf8c32a6d466ae7c5692db2bf3b638ba0",
       "geometry": "raw-centerline",
       "anchored": true,
       "track": "models/tracks/2024_michigan_endurance_closed_edged.xml",
@@ -216,9 +216,9 @@
     },
     {
       "file": "mis-raw-original-window.json",
-      "sha256": "a885901c057d22c20625b770b4b02baf2e9d62186eea61c47c7a3c20db583be8",
-      "source_output": "runs/yaw_aware_driver/task1-probes/mis-raw-original.json",
-      "source_output_sha256": "353c59c6945438c468d1a3ffe746da008e889cf55a10d740cf20ef01147e693f",
+      "sha256": "34a8ec4c63d1afc83b593186d0a7c87720bb218f126434e48cad35646e21e2da",
+      "source_output": "runs/yaw_aware_driver/task1-probes-structured/mis-raw-original.json",
+      "source_output_sha256": "8455e05306d0e393788295d0592b30c0c2ca1762aad550b3ad5e3aa7dba3003e",
       "geometry": "raw-centerline",
       "anchored": false,
       "track": "models/tracks/2024_michigan_endurance_closed_edged.xml",
@@ -250,9 +250,9 @@
     },
     {
       "file": "mis-zero-anchored-window.json",
-      "sha256": "274f80092a3eeec28d45d531a541563cbb15b1eb3127e7d0f4c2da556cb41130",
-      "source_output": "runs/yaw_aware_driver/task1-probes/mis-zero-anchored.json",
-      "source_output_sha256": "104ac5a5817587550ddf62602deb0b29f28eb94a9d6237a44f29919674cc87d0",
+      "sha256": "c28b816de17018bf4107e8a217c413e5b9992c295aa28cadf2c4224d48a9e0e8",
+      "source_output": "runs/yaw_aware_driver/task1-probes-structured/mis-zero-anchored.json",
+      "source_output_sha256": "09aa14527de43d0e193b1dee2f1ca0404be0d33dd60d5afb4f3be9838f8e21a2",
       "geometry": "zero-offset",
       "anchored": true,
       "track": "models/tracks/2024_michigan_endurance_closed_edged.xml",
@@ -285,9 +285,9 @@
     },
     {
       "file": "mis-zero-original-window.json",
-      "sha256": "9f999a3f5dbebb922995511e76edb08fcfe209419b6cea68540fb01f99f949f3",
-      "source_output": "runs/yaw_aware_driver/task1-probes/mis-zero-original.json",
-      "source_output_sha256": "7f1762e586321443e3da887394bfa9110e326ad9605b66eb68274dc1180921ad",
+      "sha256": "8daf2be6e5fbb15cf2dc77d53753a108cc7f46e863e20af3f733303fa174577d",
+      "source_output": "runs/yaw_aware_driver/task1-probes-structured/mis-zero-original.json",
+      "source_output_sha256": "3b660009ba549f32b448c9d4ba0585cb16add52c1fa163ea21f26fa95fc0f9a3",
       "geometry": "zero-offset",
       "anchored": false,
       "track": "models/tracks/2024_michigan_endurance_closed_edged.xml",
@@ -322,5 +322,69 @@
     "legacy q0 state",
     "legacy yaw margin"
   ],
-  "interpretation": "Physical probes are failed-profile observations for the listed map/path settings. Compact windows retain +/-10 m around each failure segment and bracketing samples; no legacy q0 or yaw-margin state is available in the outputs. The synthetic fixture remains only a feasible witness."
+  "interpretation": "Physical probes retain structured transition diagnostics from the actual structured artifacts. All four paired original/anchored comparisons remain failed; anchoring alone does not remove the observed failure. Compact windows retain +/-10 m around each failure segment and bracketing samples; legacy q0 and yaw-margin states remain unavailable. The synthetic fixture remains only a feasible witness.",
+  "model_revision": "4a4e4befefc115e50b4481839ba632145a714452",
+  "generation_command": "PYTHONPATH=src:. python3 -m unittest tests.test_yaw_aware_profile.YawProfileTests.test_explicit_lower_speed_witness_passes_strict_oracle_on_fine_grid -v",
+  "comparisons": [
+    {
+      "geometry": "raw-centerline",
+      "track": "models/tracks/2024_michigan_endurance_closed_edged.xml",
+      "original_fixture": "mis-raw-original-window.json",
+      "anchored_fixture": "mis-raw-anchored-window.json",
+      "original_observation": {
+        "status": "failed",
+        "failed_segment": 10
+      },
+      "anchored_observation": {
+        "status": "failed",
+        "failed_segment": 10
+      },
+      "anchoring_alone_removes_failure": false
+    },
+    {
+      "geometry": "zero-offset",
+      "track": "models/tracks/2024_michigan_endurance_closed_edged.xml",
+      "original_fixture": "mis-zero-original-window.json",
+      "anchored_fixture": "mis-zero-anchored-window.json",
+      "original_observation": {
+        "status": "failed",
+        "failed_segment": 14
+      },
+      "anchored_observation": {
+        "status": "failed",
+        "failed_segment": 15
+      },
+      "anchoring_alone_removes_failure": false
+    },
+    {
+      "geometry": "raw-centerline",
+      "track": "models/tracks/fsc_may_2026_synthetic_3m_edged.xml",
+      "original_fixture": "fsc-raw-original-window.json",
+      "anchored_fixture": "fsc-raw-anchored-window.json",
+      "original_observation": {
+        "status": "failed",
+        "failed_segment": 83
+      },
+      "anchored_observation": {
+        "status": "failed",
+        "failed_segment": 83
+      },
+      "anchoring_alone_removes_failure": false
+    },
+    {
+      "geometry": "zero-offset",
+      "track": "models/tracks/fsc_may_2026_synthetic_3m_edged.xml",
+      "original_fixture": "fsc-zero-original-window.json",
+      "anchored_fixture": "fsc-zero-anchored-window.json",
+      "original_observation": {
+        "status": "failed",
+        "failed_segment": 7
+      },
+      "anchored_observation": {
+        "status": "failed",
+        "failed_segment": 7
+      },
+      "anchoring_alone_removes_failure": false
+    }
+  ]
 }

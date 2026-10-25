@@ -39,15 +39,27 @@ def write_maneuver_run_record(path, definition, artifact_directory, *, model_kin
     if len(commands) != len(time):
         raise ValueError("commands.csv must contain one command per accepted sample")
     channel_names = tuple(name for name in CHANNEL_CATALOGUE if any(name in row for row in channels))
+    required_display = {"position-x", "position-y", "heading-world"}
+    if not required_display.issubset(channel_names):
+        raise ValueError("artifact accepted channels lack required animation world-pose evidence")
     recorder = RunRecorder(path, state_names=names,
         state_units=tuple(state_unit(name) for name in names), control_names=CONTROL_NAMES,
         control_units=CONTROL_UNITS, channel_names=channel_names, precision="float64")
     for i, (t, state, rate, control, supplied) in enumerate(zip(time, states, rates, commands, channels)):
         recorder.append(t, i, state, rate, control,
                         {name: supplied[name] for name in channel_names if name in supplied})
+    formulation = data.get("vehicle", {}).get("formulation") or data.get("vehicle", {}).get("model")
+    from simplified_vehicle_models.compiler.compile import compile_formulation
+    from simplified_vehicle_models.results.plant_channels import vehicle_geometry
+    vehicle = compile_formulation(formulation).model
+    geometry = vehicle_geometry(vehicle.planar, vehicle)
     digest = source["hashes"]["result_sha256"]
     metadata = {"producer": {"name": "maneuver_run_record", "version": 2},
         "model": {"kind": model_kind, "provenance": source},
         "sources": {}, "segment": {"definition": data},
-        "vehicle_geometry": {}, "notes": [f"maneuver-artifact-sha256=sha256:{digest}"]}
+        "track": {"file": "models/tracks/fsae_2026_acceleration.xml"},
+        "vehicle_geometry": geometry, "notes": [
+            f"maneuver-artifact-sha256=sha256:{digest}",
+            "Animation uses the display-only straight-reference track geometry."],
+    }
     return recorder.close(metadata)

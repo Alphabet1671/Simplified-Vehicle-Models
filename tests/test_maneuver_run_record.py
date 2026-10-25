@@ -30,7 +30,8 @@ class ManeuverRunRecordTests(unittest.TestCase):
         definition = ManeuverDefinition.from_dict(definition).to_dict()
         assert "state_names" not in definition
         time = np.array([0., .25, .5]); state = np.arange(3*38, dtype=float).reshape(3, 38)/10
-        rows = tuple(MappingProxyType({"position-x": [float(i)], "position-y": [float(2*i)], "speed": [float(5+i)]}) for i in range(3))
+        rows = tuple(MappingProxyType({"position-x": [float(i)], "position-y": [float(2*i)],
+                                      "heading-world": [0.], "speed": [float(5+i)]}) for i in range(3))
         result = SimpleNamespace(time_s=time, state=state, state_rate=-state,
             applied_commands=tuple(RobotCommand(.1*i, .2*i, 0.) for i in range(3)),
             channels=rows, execution_outcome="completed", termination_reason="duration")

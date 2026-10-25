@@ -39,13 +39,16 @@ class SimulationResult:
             value.setflags(write=False)
             object.__setattr__(self, name, value)
         for name in ('requested_commands','applied_commands','observations','channels','events'):
-            values = tuple(getattr(self, name))
-            if name in ('channels', 'events'):
-                values = tuple(_freeze(value) for value in values)
+            values = tuple(_freeze(value) for value in getattr(self, name))
             object.__setattr__(self, name, values)
 
 
 def _freeze(value):
+    # RobotCommand and other frozen records may still contain mutable arrays;
+    # rebuild dataclasses recursively so snapshots never alias caller objects.
+    import dataclasses
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        return type(value)(**{field.name: _freeze(getattr(value, field.name)) for field in dataclasses.fields(value)})
     if isinstance(value, dict):
         from types import MappingProxyType
         return MappingProxyType({key: _freeze(item) for key, item in value.items()})
@@ -159,7 +162,14 @@ def simulate_maneuver(plant, program, initial_state, settings=SimulationSettings
             stop = interrupted()
             if stop: raise _Stop(stop)
             if not np.all(np.isfinite(y)): raise _Stop('nonfinite_state')
-            try: result = _rate(plant, t, y, command)
+            # Implicit Radau stages can probe past a terminal event before
+            # localizing it. Keep those internal probes on the valid side of
+            # the stop surface; the event function still roots the true state.
+            eval_state = y
+            if speed_index is not None and y[speed_index] <= speed_floor:
+                eval_state = np.array(y, copy=True)
+                eval_state[speed_index] = speed_floor
+            try: result = _rate(plant, t, eval_state, command)
             except Exception as exc:
                 kind = 'model_limit' if type(exc).__name__ in ('TrialStateError','ModelDomainError') else 'model_error'
                 raise _Stop(kind) from exc
@@ -168,8 +178,18 @@ def simulate_maneuver(plant, program, initial_state, settings=SimulationSettings
 
         evs = []
         speed_index = 3 if current.size > 3 else None
+        speed_floor = None
         if speed_index is not None:
-            def zero_speed(t, y): return y[speed_index]
+            # Stop just above the plant's minimum valid speed: the event root
+            # must not land on a boundary where the plant RHS rejects equality.
+            minimum_speed = getattr(plant, 'minimum_speed', None)
+            if minimum_speed is None:
+                minimum_speed = getattr(plant, 'minimum_forward_speed_mps', 1e-6)
+            minimum_speed = float(minimum_speed)
+            if not np.isfinite(minimum_speed) or minimum_speed <= 0:
+                raise ValueError('plant minimum speed must be finite and positive')
+            speed_floor = minimum_speed + max(1e-6, 1e-3 * max(1., minimum_speed))
+            def zero_speed(t, y): return y[speed_index] - speed_floor
             zero_speed.terminal = True; zero_speed.direction = -1
             evs.append(zero_speed)
         try:
@@ -194,8 +214,10 @@ def simulate_maneuver(plant, program, initial_state, settings=SimulationSettings
         if bad: break
         current = sol.y[:, -1].copy()
         if sol.status == 1:
-            events.append({'time_s': float(sol.t[-1]), 'kind': 'zero_speed'})
-            outcome, reason = 'completed', 'zero_speed'; break
+            events.append({'time_s': float(sol.t[-1]), 'kind': 'zero_speed',
+                           'speed_threshold_mps': speed_floor,
+                           'state_speed_mps': float(sol.y[speed_index, -1])})
+            outcome, reason = 'stopped', 'zero_speed'; break
 
     if not times:
         times, states, rates = [0.], [state.copy()], [np.full_like(state, np.nan)]

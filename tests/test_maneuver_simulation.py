@@ -82,7 +82,11 @@ class ManeuverSimulationTests(unittest.TestCase):
     def test_zero_speed_root(self):
         class SpeedPlant:
             state_size=4
-            def evaluate(self,t,y,c): return Solved(np.array([0.,0.,0.,-1.]))
+            minimum_speed = .1
+            def evaluate(self,t,y,c):
+                if y[3] <= self.minimum_speed:
+                    raise type('ModelDomainError',(Exception,),{})('outside domain')
+                return Solved(np.array([0.,0.,0.,-1.]))
             def observe(self,t,y,c): return float(y[3])
         class BrakeProgram(Program):
             def __init__(self): self.data={'termination':{'duration_s':2.}}; self.csv_source=None; self.tick_count=0
@@ -90,6 +94,26 @@ class ManeuverSimulationTests(unittest.TestCase):
         result=simulate_maneuver(SpeedPlant(),BrakeProgram(),[0.,0.,0.,1.],SimulationSettings())
         self.assertEqual(result.termination_reason,'zero_speed')
         self.assertEqual(result.events[0]['kind'],'zero_speed')
+        expected_threshold = .1 + max(1e-6, 1e-3 * max(1., .1))
+        self.assertAlmostEqual(result.state[-1, 3], expected_threshold, places=8)
+        self.assertAlmostEqual(result.events[0]['speed_threshold_mps'], expected_threshold)
+        self.assertGreater(result.events[0]['speed_threshold_mps'], SpeedPlant.minimum_speed)
+        self.assertEqual(result.termination_outcome if hasattr(result, 'termination_outcome') else result.execution_outcome, 'stopped')
+
+    def test_mutable_command_evidence_is_snapshotted(self):
+        class CommandProgram(Program):
+            def __init__(self):
+                super().__init__(.01)
+                self.command = {'requested': np.array([1.]), 'applied': [2.]}
+            def tick(self, observation, dt): return self.command
+        p = CommandProgram()
+        result = simulate_maneuver(Plant(), p, [0.], SimulationSettings())
+        p.command['requested'][0] = 9.
+        p.command['applied'][0] = 8.
+        self.assertEqual(result.requested_commands[0]['requested'][0], 1.)
+        self.assertEqual(result.applied_commands[-1]['applied'], (2.,))
+        with self.assertRaises(ValueError): result.requested_commands[0]['requested'][0] = 3.
+        with self.assertRaises(TypeError): result.applied_commands[-1]['new'] = 1
 
 
 if __name__ == '__main__': unittest.main()

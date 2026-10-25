@@ -32,7 +32,7 @@ class ProbeArtifactTests(unittest.TestCase):
                  patch("simplified_vehicle_models.formulations.yaw_capability.YawCapabilityGrid") as grid_type, \
                  patch("simplified_vehicle_models.formulations.yaw_capability.build_physical_yaw_map", return_value=capability), \
                  patch("simplified_vehicle_models.solvers.yaw_aware_profile._MapInterpolator"), \
-                 patch("simplified_vehicle_models.solvers.yaw_aware_profile.yaw_aware_profile", side_effect=ValueError("no profile")):
+                 patch("simplified_vehicle_models.solvers.yaw_aware_profile.yaw_aware_profile", side_effect=ValueError("no forward-feasible transition on segment 3")):
                 grid_type.return_value.speed = np.array([0., 10.])
                 grid_type.return_value.longitudinal_acceleration = np.array([-1., 1.])
                 grid_type.return_value.lateral_acceleration = np.array([-2., 2.])
@@ -41,8 +41,8 @@ class ProbeArtifactTests(unittest.TestCase):
         self.assertEqual(result["profile"]["status"], "failed")
         self.assertTrue(artifact["path"]["distance"])
         self.assertTrue(artifact["map"]["feasible_mask"])
-        self.assertIsNone(artifact["profile"]["failed_segment"])
-        self.assertIn("does not expose", artifact["profile"]["segment_evidence_note"])
+        self.assertEqual(artifact["profile"]["failed_segment"], 3)
+        self.assertIn("parsed from exception", artifact["profile"]["segment_evidence_note"])
 
 
 if __name__ == "__main__":

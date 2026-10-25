@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 from pathlib import Path
 import time
 
@@ -88,12 +89,14 @@ def run(args):
         profile = yaw_aware_profile(path, capability, boundary=boundary, maximum_speed=speed_domain)
         doc["profile"] = {"status": "ok", "lap_time": profile.lap_time}
     except Exception as error:
-        # Preserve typed failure and the whole fixed path. Legacy exceptions do
-        # not expose a segment index; mark unavailable segment-level evidence
-        # explicitly instead of inventing it.
-        doc["profile"] = {"status": "failed", "exception": type(error).__name__, "message": str(error),
-                         "failed_segment": None, "segment_evidence": None,
-                         "segment_evidence_note": "legacy profile does not expose failed-segment diagnostics"}
+        # Preserve typed failure and the whole fixed path. Recover only the
+        # explicit segment integer carried by the legacy exception message.
+        message = str(error)
+        match = re.search(r"\bsegment\s+(\d+)\b", message)
+        failed_segment = int(match.group(1)) if match else None
+        doc["profile"] = {"status": "failed", "exception": type(error).__name__, "message": message,
+                         "failed_segment": failed_segment, "segment_evidence": None,
+                         "segment_evidence_note": "segment parsed from exception message; legacy profile exposes no further failed-segment diagnostics"}
     doc["profile_seconds"] = time.perf_counter() - started
     args.output.write_text(json.dumps(doc, indent=2, allow_nan=False) + "\n")
     return doc

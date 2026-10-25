@@ -107,6 +107,73 @@ def _jsonable(value):
     return value
 
 
+def record_metadata(args, track, vehicle, capability, plan, result):
+    """Build deterministic provenance metadata for a recorded diagnostic run."""
+    import platform
+    import scipy
+
+    from simplified_vehicle_models.results.plant_channels import source_hashes
+
+    def identity(path):
+        path = Path(path)
+        try:
+            return str(path.resolve().relative_to(Path.cwd().resolve()))
+        except ValueError:
+            return str(path)
+
+    formulation = PLANAR_FORMULATION
+    track_path = Path(args.track)
+    sources = [formulation, track_path]
+    data_path = None
+    try:
+        import xml.etree.ElementTree as ElementTree
+        root = ElementTree.parse(track_path).getroot()
+        data_paths = [track_path.parent / node.get("ref")
+                      for node in root.findall("./data") if node.get("ref")]
+    except (OSError, ElementTree.ParseError):
+        data_paths = []
+    for candidate in (getattr(track, "source_file", None), getattr(track, "data_file", None),
+                      getattr(track, "csv_path", None)):
+        if candidate:
+            data_paths.append(Path(candidate))
+    for data_path in data_paths:
+        if not data_path.is_absolute():
+            data_path = track_path.parent / data_path
+        sources.append(data_path)
+    settings = plan.settings if getattr(plan, "settings", None) is not None else None
+    return _jsonable({
+        "producer": {"tool": "tools/run/run_yaw_aware_forward_driver.py",
+                     "python": platform.python_version(), "numpy": np.__version__,
+                     "scipy": scipy.__version__},
+        "model": {"model": args.model, "plant_class": "PlanarForwardPlant",
+                  "formulation_xml": identity(formulation), "mechanical_dof": 7,
+                  "vehicle_name": getattr(vehicle, "name", None)},
+        "sources": source_hashes(sources),
+        "track": {"file": identity(track_path), "reference": "yaw-aware-optimized-line",
+                  "source_path_identity": identity(track_path),
+                  "optimized_path_identity": "line.csv"},
+        "yaw_capability": {"source_kind": capability.source_kind,
+                           "source_identity": capability.source_identity,
+                           "yaw_inertia": float(capability.yaw_inertia),
+                           "grid": {"speed": capability.speed.tolist(),
+                                    "longitudinal_acceleration": capability.longitudinal_acceleration.tolist(),
+                                    "lateral_acceleration": capability.lateral_acceleration.tolist()}},
+        "planning": {"status": plan.status, "settings": asdict(settings) if settings is not None else None,
+                     "settings_used": {"maximum_speed": args.maximum_speed,
+                         "lateral_margin": args.lateral_margin, "control_spacing": args.control_spacing,
+                         "planning_grid_spacing": args.planning_grid_spacing,
+                         "planner_iterations": args.planner_iterations, "planner_passes": args.planner_passes},
+                     "line_shape_metrics": dict(plan.shape_metrics),
+                     "predicted_lap_time_seconds": float(plan.profile.lap_time)},
+        "integrator": {"method": args.method, "rtol": args.rtol, "atol": args.rtol * .01,
+                       "maximum_step": args.maximum_step, "duration": args.duration,
+                       "wall_seconds": args.wall_seconds, "actual_wall_seconds": float(result.wall_seconds)},
+        "segment": {"duration_s": float(result.time[-1] - result.time[0]) if len(result.time) else 0.,
+                    "lap_completed": bool(result.lap_completed)},
+        "diagnostic_only": DIAGNOSTIC_NONCLAIMS,
+    })
+
+
 def run(args):
     """Compile, plan, drive and emit diagnostic artifacts into a fresh directory."""
     from simplified_vehicle_models.compiler.compile import compile_formulation
@@ -175,13 +242,18 @@ def run(args):
         maximum_wall_seconds=300., maximum_step=args.maximum_step, rtol=args.rtol,
         atol=args.rtol * .01, method=args.method, step_sink=kwargs.get("step_sink"))
     if sink is not None:
-        # The geometry stored in the record is the optimized line, while the
-        # source XML remains the named physical track for the animation scene.
-        # Preserve both identities explicitly so the exporter can load edges.
-        sink.close({"producer": {"tool": "tools/run/run_yaw_aware_forward_driver.py"},
-                    "track": {"file": str(args.track), "reference": "yaw-aware-optimized-line"},
-                    "segment": {"lap_completed": bool(result.lap_completed)},
-                    "diagnostic_only": DIAGNOSTIC_NONCLAIMS})
+        # A sink with no accepted steps cannot produce a legitimate record. Keep
+        # the fresh output directory and leave the failure explicit for diagnosis.
+        try:
+            sink.close(record_metadata(args, track, vehicle, capability, plan, result))
+        except RuntimeError as error:
+            summary = {"status": "failed", "failure_stage": "record",
+                       "lap_completed": False, "qualified": False, "accepted": False,
+                       "U3_qualified": False, "exception": str(error),
+                       "elapsed_setup_seconds": time.perf_counter() - started,
+                       "diagnostic_only": DIAGNOSTIC_NONCLAIMS}
+            (output / "summary.json").write_text(json.dumps(_jsonable(summary), indent=2) + "\n")
+            return summary
     np.savetxt(output / "trace.csv", np.column_stack((result.time, result.state.T)), delimiter=",", comments="",
                header=",".join(("time", *plant.state_names)))
     if result.pedal is not None:

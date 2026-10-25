@@ -93,5 +93,46 @@ class BoundedAttemptTests(unittest.TestCase):
         for x in (True, 0, -1, math.inf, math.nan, "2"):
             with self.subTest(value=x), self.assertRaises(ValueError): AttemptBudget(x)
 
+    def test_cancellation_during_export_wins_and_retains_output(self):
+        c=FakeClock(); st=suite(c)
+        def export(ctx):
+            c.advance(.1)
+            cancelled[0] = True
+            return {"done": True}
+        cancelled=[False]
+        st["export"] = export
+        r=run_bounded_attempt(budget=AttemptBudget(3), clock=c, stages=st,
+                              cancellation=lambda: cancelled[0])
+        self.assertEqual(r["terminal"], "cancelled")
+        self.assertEqual(r["attempt_state"]["export"], {"done": True})
+        self.assertEqual(r["stages"][-1]["outcome"], "completed")
+
+    def test_malformed_stage_result_flags_fail_closed(self):
+        c=FakeClock(); st=suite(c, outputs={"validate": StageResult("x", locally_valid=1)})
+        r=run_bounded_attempt(budget=AttemptBudget(3), clock=c, stages=st)
+        self.assertEqual(r["terminal"], "stage_failed")
+
+    def test_nested_nonfinite_stage_data_fails_closed(self):
+        c=FakeClock(); st=suite(c, outputs={"solve": {"nested": [float("nan")]}})
+        r=run_bounded_attempt(budget=AttemptBudget(3), clock=c, stages=st)
+        self.assertEqual(r["terminal"], "stage_failed")
+        json.dumps(r, allow_nan=False)
+
+    def test_backward_and_overflowing_finite_elapsed_fail_closed(self):
+        class SeqClock:
+            def __init__(self, values): self.values=iter(values)
+            def __call__(self): return next(self.values)
+        cases = (([0., 0., 1., -1., -1.], AttemptBudget(3), "invalid_clock"),
+                 ([-1e308, -1e308, -9e307, 1e308], AttemptBudget(1.7e308), "invalid_clock"))
+        for values, budget, reason in cases:
+            with self.subTest(values=values):
+                r=run_bounded_attempt(budget=budget, clock=SeqClock(values), stages=suite(FakeClock()))
+                self.assertEqual(r["terminal"], "stage_failed")
+                self.assertEqual(r["terminal_reason"], reason)
+                if values[0] == 0.:
+                    self.assertEqual(r["stages"][0]["outcome"], "completed")
+                    self.assertEqual(r["stages"][1]["outcome"], "skipped")
+                json.dumps(r, allow_nan=False)
+
 
 if __name__ == "__main__": unittest.main()

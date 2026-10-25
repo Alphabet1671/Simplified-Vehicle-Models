@@ -26,6 +26,8 @@ def validate_profile(path: YawPath, capability: YawCapabilityMap, q,
         raise TypeError("path and capability must be YawPath and YawCapabilityMap")
     if not isinstance(settings, CoupledProfileSettings):
         raise TypeError("settings must be CoupledProfileSettings")
+    if not isinstance(dense, bool):
+        raise ValueError("dense must be boolean")
     if boundary not in ("flying", "standing"):
         raise ValueError("boundary must be 'flying' or 'standing'")
     if not isinstance(maximum_speed, (int, float)) or isinstance(maximum_speed, bool) or not math.isfinite(maximum_speed) or maximum_speed <= 0:
@@ -41,6 +43,7 @@ def validate_profile(path: YawPath, capability: YawCapabilityMap, q,
     max_ax_violation = max_yaw_violation = 0.0
     min_margin = math.inf
     invalid_support = 0
+    dense_valid = True if dense else None
     total_time = 0.0
     interp = _MapInterpolator(capability)
     for i, ds in enumerate(np.diff(path.distance)):
@@ -54,6 +57,11 @@ def validate_profile(path: YawPath, capability: YawCapabilityMap, q,
             continue
         vm = math.sqrt(.5 * (v0*v0 + v1*v1))
         ax = (v1*v1-v0*v0)/(2.*float(ds))
+        ax_violation = max(0., float(capability.longitudinal_acceleration[0])-ax,
+                           ax-float(capability.longitudinal_acceleration[-1]))
+        max_ax_violation = max(max_ax_violation, ax_violation)
+        if ax_violation > settings.acceleration_tolerance:
+            bad.append(i)
         k = .5*(float(path.curvature[i])+float(path.curvature[i+1]))
         kp = .5*(float(path.curvature_rate[i])+float(path.curvature_rate[i+1]))
         ay = vm*vm*k
@@ -65,14 +73,29 @@ def validate_profile(path: YawPath, capability: YawCapabilityMap, q,
         into, out = evidence["moments"]
         sign = math.copysign(1., k if abs(k)>1e-12 else (kp if abs(kp)>1e-12 else 1.))
         demand = sign*capability.yaw_inertia*(ax*k+vm*vm*kp)
-        ax_violation = max(0., float(capability.longitudinal_acceleration[0])-ax,
-                           ax-float(capability.longitudinal_acceleration[-1]))
         yaw_violation = max(0., demand-into, -out-demand)
-        max_ax_violation = max(max_ax_violation, ax_violation)
         max_yaw_violation = max(max_yaw_violation, yaw_violation)
         min_margin = min(min_margin, into-demand, out+demand)
         if ax_violation > settings.acceleration_tolerance or yaw_violation > settings.yaw_moment_tolerance:
             bad.append(i)
+        if dense:
+            for fraction in (0.0, 0.25, 0.75, 1.0):
+                v = (1.-fraction)*v0 + fraction*v1
+                kf = (1.-fraction)*float(path.curvature[i]) + fraction*float(path.curvature[i+1])
+                kpf = (1.-fraction)*float(path.curvature_rate[i]) + fraction*float(path.curvature_rate[i+1])
+                ayf = v*v*kf
+                audit = interp.query_evidence(v, ax, ayf)
+                if audit["reason"].value != "supported":
+                    dense_valid = False
+                    continue
+                fi, fo = audit["moments"]
+                fs = math.copysign(1., kf if abs(kf)>1e-12 else (kpf if abs(kpf)>1e-12 else 1.))
+                fdemand = fs*capability.yaw_inertia*(ax*kf+v*v*kpf)
+                fax_violation = max(0., float(capability.longitudinal_acceleration[0])-ax,
+                                    ax-float(capability.longitudinal_acceleration[-1]))
+                fyaw_violation = max(0., fdemand-fi, -fo-fdemand)
+                if fax_violation > settings.acceleration_tolerance or fyaw_violation > settings.yaw_moment_tolerance:
+                    dense_valid = False
         if v0+v1 > 0:
             total_time += 2.*float(ds)/(v0+v1)
     seam_error = abs(float(speed[0]-speed[-1])) if path.is_closed else 0.0
@@ -80,10 +103,12 @@ def validate_profile(path: YawPath, capability: YawCapabilityMap, q,
         bad.append(0)
     if boundary == "flying" and (not path.is_closed or seam_error > 1e-10):
         bad.append(max(0,nseg-1))
-    valid = not bad
+    if dense and not dense_valid:
+        bad.extend(range(nseg))
+    valid = not bad and dense_valid is not False
     return ProfileValidation(valid, max_ax_violation, max_yaw_violation,
-        None if min_margin is math.inf else float(min_margin), tuple(sorted(set(bad))),
-        invalid_support, seam_error, float(total_time), None)
+        None if min_margin == math.inf else float(min_margin), tuple(sorted(set(bad))),
+        invalid_support, seam_error, float(total_time), dense_valid)
 
 
 def validate_profile_object(path: YawPath, capability: YawCapabilityMap, profile: YawAwareProfile,

@@ -4,6 +4,6 @@ Implemented the inherited contracts and strict-map refactor plus an independent 
 
 Added closed curvature-rate seam agreement to `YawPath`; retained `_MapInterpolator` as an import alias from `yaw_profile_map`. Settings constructors already validate every declared count and tolerance, and tests now cover all fields.
 
-Focused verification: `PYTHONPATH=src python3 -m unittest tests.test_yaw_profile_validation tests.test_yaw_aware_profile -q` — 17 tests passed.
+The validator reports longitudinal acceleration-domain violation independently of strict support outcomes, checks exact standing-start and flying-seam conditions, audits stored elapsed/lap durations against the edge sum, and supports a dense endpoint/quarter-point audit with piecewise-linear speed and path geometry. The focused tests exercise an exact grid face next to a masked corner and a nearby query with positive masked-corner weight; evidence reports the `1e-14` support threshold.
 
-The focused tests also exercise an exact grid face next to a masked corner and a nearby query with positive masked-corner weight; evidence reports the `1e-14` support threshold.
+Focused verification: `PYTHONPATH=src python3 -m unittest tests.test_yaw_profile_validation tests.test_yaw_aware_profile -q` — 22 tests passed.

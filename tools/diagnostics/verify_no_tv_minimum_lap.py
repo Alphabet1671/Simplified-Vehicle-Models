@@ -19,8 +19,10 @@ import hashlib
 import json
 import math
 import multiprocessing as mp
+import os
 from pathlib import Path
 import sys
+import tempfile
 import time
 
 from tools.diagnostics.no_tv_provenance import resolve_base_commit, runtime_provenance
@@ -1438,26 +1440,48 @@ def run_bounded_worker(request: dict, output: Path) -> dict:
         reason = "deadline_exhausted"
     elif status == "worker_no_result":
         reason = "worker_no_result"
-    elif status in {"worker_exit_failure", "worker_malformed_result", "worker_exception",
-                    "worker_start_failure", "supervisor_error", "cancelled"}:
-        reason = "worker_unresolved"
-    else:
+    elif status == "Solve_Succeeded" or status in {"success", "succeeded"}:
         reason = "worker_completed_unqualified"
+    else:
+        reason = "worker_unresolved"
     evidence = {"schema": "bounded_attempt_v1", "parent_wall_cap_s": cap,
                 "terminal_reason": reason, "accepted": False,
-                "hard_supervisor": "separate_authoritative"}
+                "hard_supervisor": "separate_authoritative",
+                "persistence_status": "persisted"}
     result["bounded_attempt"] = evidence
     root = Path(output)
+    persistence_failed = False
     for name in ("result.json", "timeout_result.json", "cancel_result.json", "supervisor_result.json"):
         path = root / name
-        if path.is_file():
-            try:
-                persisted = json.loads(path.read_text(encoding="utf-8"))
-                if isinstance(persisted, dict):
-                    persisted["bounded_attempt"] = evidence
-                    _write_json_new_or_replace(path, persisted, initial=False)
-            except (OSError, ValueError, TypeError):
-                pass
+        if not path.is_file():
+            continue
+        temporary = None
+        try:
+            persisted = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(persisted, dict):
+                continue
+            persisted["bounded_attempt"] = evidence
+            # Stage the complete serialization beside the target, then atomically
+            # replace it. Any pre-replace error leaves canonical evidence intact.
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=root,
+                                             prefix=f".{path.name}.", suffix=".tmp",
+                                             delete=False) as handle:
+                temporary = Path(handle.name)
+                json.dump(_json_safe(persisted), handle, indent=2, sort_keys=True, allow_nan=False)
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            temporary.replace(path)
+        except (OSError, ValueError, TypeError):
+            persistence_failed = True
+        finally:
+            if temporary is not None:
+                try:
+                    temporary.unlink(missing_ok=True)
+                except OSError:
+                    pass
+    if persistence_failed:
+        evidence["persistence_status"] = "failed"
     return result
 
 

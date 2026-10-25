@@ -1052,6 +1052,38 @@ class NoTvMinimumLapHarnessTest(unittest.TestCase):
             with self.assertRaises(FileExistsError):
                 harness.run_bounded_worker(request, output)
 
+    def test_bounded_worker_unknown_status_is_unresolved(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "attempt"
+            unknown = {"status": "future_supervisor_terminal", "accepted": False}
+            with patch("simplified_vehicle_models.solvers.minimum_time_run.run_request",
+                       return_value=unknown):
+                result = harness.run_bounded_worker({"wall_cap_s": 2.5}, output)
+            self.assertEqual(result["status"], "future_supervisor_terminal")
+            self.assertEqual(result["bounded_attempt"]["terminal_reason"], "worker_unresolved")
+
+    def test_bounded_worker_persistence_failure_preserves_original_and_is_observable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "attempt"
+            original = {"status": "wall_timeout", "accepted": False,
+                        "partial_evidence": {"marker": "retain"}}
+            canonical = output / "timeout_result.json"
+            original_bytes = (json.dumps(original) + "\n").encode("utf-8")
+            def fake_supervisor(request, output_dir):
+                Path(output_dir).mkdir(parents=True)
+                canonical.write_bytes(original_bytes)
+                return {"status": "wall_timeout", "accepted": False}
+            with patch("simplified_vehicle_models.solvers.minimum_time_run.run_request",
+                       side_effect=fake_supervisor), \
+                 patch.object(harness.json, "dump", side_effect=OSError("injected persistence failure")):
+                result = harness.run_bounded_worker({"wall_cap_s": 2.5}, output)
+            self.assertEqual(canonical.read_bytes(), original_bytes)
+            self.assertEqual(json.loads(canonical.read_text(encoding="utf-8")), original)
+            self.assertEqual(result["status"], "wall_timeout")
+            self.assertFalse(result["accepted"])
+            self.assertEqual(result["bounded_attempt"]["persistence_status"], "failed")
+            self.assertNotIn("bounded_attempt", json.loads(canonical.read_text(encoding="utf-8")))
+
     def test_bounded_worker_normal_completion_records_unqualified_attempt(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "attempt"
@@ -1069,7 +1101,7 @@ class NoTvMinimumLapHarnessTest(unittest.TestCase):
             self.assertEqual(result["bounded_attempt"], {
                 "schema": "bounded_attempt_v1", "parent_wall_cap_s": 2.5,
                 "terminal_reason": "worker_completed_unqualified", "accepted": False,
-                "hard_supervisor": "separate_authoritative"})
+                "hard_supervisor": "separate_authoritative", "persistence_status": "persisted"})
             self.assertEqual(result["status"], "Solve_Succeeded")
             self.assertTrue(result["solve_completed"])
             self.assertTrue(result["solver_succeeded"])

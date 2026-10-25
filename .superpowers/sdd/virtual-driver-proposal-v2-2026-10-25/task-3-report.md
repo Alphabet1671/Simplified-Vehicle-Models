@@ -20,8 +20,11 @@
 - `git diff --check` — passed.
 - Full suite was started as background job `bash-3085` but canceled after exceeding the available turn window; no full-suite result is claimed.
 
-## Limitations
+## Repair round 1 (review findings)
 
-- Dense corridor containment is an empirical gate, not a continuous certificate.
-- The first implementation does not explicitly segment track corners or optimize per-corner windows/outer passes; Powell searches whole-lap offset controls from deterministic centreline and edge-using seed families. The v2 proposal's QP epsilon family and curvature-quiet corner segmentation remain follow-up refinements.
-- The synthetic time-authority sensitivity is exercised on a circular closed fixture; representative 90-degree, hairpin, chicane, and width-pinch ranking fixtures should be added before physical-track use.
+- Default corridor construction now uses `SIGNED_POLICY` with the fitted `ReferenceCurve`; footprint/buffer-shrunk signed bounds are returned as the plan corridor, with the turn-side fold guard reapplied and dense candidate fold checks retained.
+- Replaced the prior sinusoidal stand-in with deterministic epsilon-family seeds `(0, .25, .5, .75)`, generated from signed curvature-energy/shorter-radius station targets and projected onto the offset controls.
+- Added curvature-quiet complex detection, per-complex bounded Powell optimization with controls outside each complex fixed, and outer reprofile/reoptimization passes (maximum three, 1 ms convergence criterion).
+- Plan status distinguishes `converged` from `iteration_limit`; failed proposals retain explicit gate reasons. Apex offset is evaluated through the physical station map at the peak-curvature path station.
+- Expanded tests to exercise asymmetric width pinch/corner complex detection, exact speed-plan projection, explicit candidate failure, and yaw authority sensitivity. The full vehicle-specific V/ U time-ordering remains an acceptance test for later realistic asymmetric corner fixtures; these synthetic checks do not claim that trend universally.
+- Dense corridor containment remains an empirical check, not a continuous certificate. QSS OCPs remain unchanged.

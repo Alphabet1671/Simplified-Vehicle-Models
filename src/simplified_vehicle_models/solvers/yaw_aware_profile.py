@@ -159,6 +159,28 @@ def _segment_acceleration(interp, path, v0, v1, index, ds):
     return interp.yaw_feasible(vm, ax, k, kp)
 
 
+def _transition_candidates(interp, upper, fixed_speed, ds, *, forward, samples=80):
+    """Descending endpoint-speed scan augmented by map-axis projections.
+
+    A uniform speed scan can skip the narrow interval corresponding to a
+    feasible longitudinal-acceleration cell when ``ds`` is small. Projecting
+    each acceleration axis value through the energy equation guarantees that
+    those physically meaningful transition candidates are sampled. The original
+    descending scan remains in the set so nonmonotone feasibility is not assumed.
+    """
+    values = list(np.linspace(float(upper), 0., max(2, int(samples))))
+    fixed_sq = float(fixed_speed) ** 2
+    for ax in interp.axes[1]:
+        endpoint_sq = fixed_sq + (2. * ds * ax if forward else -2. * ds * ax)
+        if endpoint_sq > 0.:
+            values.append(math.sqrt(endpoint_sq))
+    # Add interval midpoints as well: map values may be feasible between axis
+    # projections, and midpoint sampling improves resolution without monotonicity.
+    projected = sorted(set(v for v in values if math.isfinite(v) and 0. < v <= upper), reverse=True)
+    mids = [(a + b) * .5 for a, b in zip(projected[:-1], projected[1:])]
+    return sorted(set(projected + mids), reverse=True)
+
+
 def yaw_aware_profile(path: YawPath, capability: YawCapabilityMap, *,
                        boundary: Literal["flying", "standing"] = "flying",
                        start_speed: float | None = None, maximum_speed: float = 100.,
@@ -217,9 +239,7 @@ def yaw_aware_profile(path: YawPath, capability: YawCapabilityMap, *,
             else:
                 trial = upper
             found = None
-            for value in np.linspace(trial, 0., 80):
-                if value <= 0.:
-                    continue
+            for value in _transition_candidates(interp, trial, speed[i], float(ds), forward=True):
                 if _segment_acceleration(interp, path, float(speed[i]), float(value), i, float(ds)):
                     found = float(value); break
             if found is None:
@@ -234,9 +254,7 @@ def yaw_aware_profile(path: YawPath, capability: YawCapabilityMap, *,
             ds = float(path.distance[i + 1] - path.distance[i])
             upper = min(speed[i], caps[i])
             found = None
-            for value in np.linspace(upper, 0., 80):
-                if value <= 0.:
-                    continue
+            for value in _transition_candidates(interp, upper, speed[i + 1], ds, forward=False):
                 if _segment_acceleration(interp, path, float(value), float(speed[i + 1]), i, ds):
                     found = float(value); break
             if found is None:

@@ -49,6 +49,20 @@ class YawProfileTests(unittest.TestCase):
         self.assertLessEqual(result.speed.max(), 20.)
         self.assertGreater(result.speed[-1], 0.)
 
+    def test_fine_grid_transition_uses_projected_acceleration_candidates(self):
+        # A 0.05 m segment with finite +/-1 m/s^2 capability has a launch
+        # endpoint of only sqrt(2*ds)=0.316 m/s. That value is absent from
+        # the coarse 80-point scan over a 20 m/s range.
+        distance = np.arange(0., 2.0001, .05)
+        path = YawPath(distance, np.zeros_like(distance), np.zeros_like(distance), False)
+        cap = yaw_map(ax=(-1., 0., 1.))
+        result = yaw_aware_profile(path, cap, boundary="standing", maximum_speed=20.)
+        self.assertEqual(result.speed[0], 0.)
+        self.assertGreater(result.speed[1], 0.)
+        self.assertGreater(result.speed[-1], result.speed[1])
+        self.assertTrue(np.all(np.diff(result.speed) >= -1e-10))
+        self.assertLessEqual(np.max(np.abs(result.longitudinal_acceleration)), 1. + 1e-8)
+
     def test_clothoid_yaw_moment_caps_speed(self):
         distance = np.linspace(0., 20., 41)
         k = .002 * distance

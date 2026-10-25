@@ -43,6 +43,10 @@ For component replacement, the GUI scans registered XML files below `models/`. I
 
 The forward runner supports `planar-7dof` and `14dof-simple`. The point-mass model has no forward runner in this GUI.
 
+## Open-loop maneuvers
+
+After opening a vehicle model, use the **Maneuvers** tab for simulation-only SWA and pedal experiments. It does not require a track and is mutually exclusive with Single Run/Study execution while active. See [Open-loop maneuver GUI and commissioning limits](maneuver-gui.md) for definitions, CSV import, artifacts, cancellation, and the strict no-real-hardware boundary.
+
 ## Swap a component
 
 1. Open a vehicle model.

@@ -189,10 +189,11 @@ def _cell_lp(vehicle, speed, ax, ay, tv_limits, direction, *, ideal=False):
     else:
         for i in range(4):
             row=np.zeros(n); row[i]=1.; aeq.append(row); beq.append(0.)
-    # Hydraulic brake bias is axle-total equality unless hydraulic TV is enabled.
-    if not (tv_limits is not None and tv_limits.brake_vectoring_allowed and not ideal):
-        row=np.zeros(n); row[8:10]=1-vehicle.brake_bias; row[10:12]=-vehicle.brake_bias
-        aeq.append(row); beq.append(0.)
+    # Preserve front/rear axle-total brake-bias equality for every physical
+    # cell, including hydraulic TV cells. Hydraulic TV may only redistribute
+    # braking left/right within each axle under its separate force-difference cap.
+    row=np.zeros(n); row[8:10]=1-vehicle.brake_bias; row[10:12]=-vehicle.brake_bias
+    aeq.append(row); beq.append(0.)
     # Each axle's hydraulic braking is left/right equal absent hydraulic TV.
     # When enabled, the dedicated force-difference cap below is applied.
     if not (tv_limits is not None and tv_limits.brake_vectoring_allowed and not ideal):

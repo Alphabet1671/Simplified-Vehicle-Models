@@ -66,7 +66,8 @@ class YawMapTest(unittest.TestCase):
         vehicle=point_mass_view_of_planar(model)
         observed=[]
         def fake_linprog(*args, **kwargs):
-            observed.append((kwargs["A_ub"].copy(), kwargs["b_ub"].copy()))
+            observed.append((kwargs["A_ub"].copy(), kwargs["b_ub"].copy(),
+                             kwargs["A_eq"].copy(), kwargs["b_eq"].copy()))
             return SimpleNamespace(success=True, fun=0.)
         with patch.object(yaw_capability, "_require_linprog", return_value=fake_linprog):
             for force_limit in (0., 500.):
@@ -77,13 +78,22 @@ class YawMapTest(unittest.TestCase):
         # variables. The motor torque cap is identical in both LPs; the
         # hydraulic difference allowance changes from zero to 500 N.
         def limits(pair):
-            a,b=pair
+            a,b,*_=pair
             return [float(bound) for row,bound in zip(a,b)
                     if np.count_nonzero(row[8:12]) == 2
                     and np.count_nonzero(row[:8]) == 0
                     and np.count_nonzero(row[12:]) == 0]
         self.assertEqual(limits(observed[0]), [0., 0., 0., 0.])
         self.assertEqual(limits(observed[1]), [500., 500., 500., 500.])
+        # Hydraulic vectoring does not remove the front/rear axle-total bias
+        # equality. Its coefficient vector is (1-bias) per front wheel and
+        # -bias per rear wheel in hydraulic variables [8:12].
+        bias = vehicle.brake_bias
+        expected = np.array([0., 0., 0., 0., 0., 0., 0., 0.,
+                             1.-bias, 1.-bias, -bias, -bias, 0., 0.])
+        for _, _, aeq, beq in observed:
+            self.assertTrue(any(np.array_equal(row, expected) and bound == 0.
+                                for row, bound in zip(aeq, beq)))
 
     def test_legacy_drivetrain_is_rejected(self):
         from dataclasses import replace

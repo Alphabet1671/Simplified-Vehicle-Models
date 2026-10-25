@@ -31,6 +31,14 @@ class LayeredQGraph:
             raise ValueError("edge costs must be finite and positive")
         if np.any(~np.isfinite(q)) or np.any(tg < 0) or np.any(tg >= len(q)):
             raise ValueError("invalid packed graph values")
+        # Every edge must advance exactly one layer; this is required by the
+        # forward/backward passes and makes the DP topological by packed ID.
+        if len(tg):
+            sources = np.repeat(np.arange(len(q), dtype=np.int64), np.diff(eo))
+            source_layers = np.searchsorted(no, sources, side="right") - 1
+            target_layers = np.searchsorted(no, tg, side="right") - 1
+            if np.any(target_layers != source_layers + 1):
+                raise ValueError("every edge must connect adjacent forward layers")
         for name, value in (("node_offsets", no), ("q", q), ("edge_offsets", eo), ("targets", tg), ("costs", co)):
             value.setflags(write=False)
             object.__setattr__(self, name, value)
@@ -42,6 +50,38 @@ class LayeredQGraph:
     @property
     def n_nodes(self) -> int:
         return len(self.q)
+
+
+def pack_layered_q_graph(node_counts: np.ndarray, q_values: np.ndarray, edge_sources: np.ndarray,
+                         targets: np.ndarray, costs: np.ndarray, *, max_nodes: int, max_edges: int) -> LayeredQGraph | dict:
+    """Pack edge-list inputs after checking global budgets, before CSR allocation.
+
+    Returns ``{"status": "budget_exceeded"}`` when the declared node/edge
+    counts exceed limits. Input edge-list arrays are caller-owned; no packed
+    graph arrays are allocated on that path.
+    """
+    counts = np.asarray(node_counts)
+    if counts.ndim != 1 or counts.size < 2 or np.any(counts < 0):
+        raise ValueError("node_counts must contain nonnegative per-layer counts")
+    nnodes = int(np.sum(counts, dtype=np.int64))
+    nedge = len(targets)
+    if nnodes > max_nodes or nedge > max_edges:
+        return {"status": "budget_exceeded", "node_count": nnodes, "edge_count": nedge}
+    q = np.asarray(q_values, dtype=np.float64)
+    src = np.asarray(edge_sources, dtype=np.int64)
+    tgt = np.asarray(targets, dtype=np.int64)
+    cost = np.asarray(costs, dtype=np.float64)
+    if q.shape != (nnodes,) or src.shape != tgt.shape or cost.shape != tgt.shape:
+        raise ValueError("inconsistent packed graph input lengths")
+    offsets = np.concatenate(([0], np.cumsum(counts, dtype=np.int64)))
+    if np.any(src < 0) or np.any(src >= nnodes):
+        raise ValueError("invalid edge source")
+    order = np.argsort(src, kind="stable")
+    sorted_src = src[order]
+    edge_offsets = np.empty(nnodes + 1, dtype=np.int64)
+    edge_offsets[0] = 0
+    np.cumsum(np.bincount(sorted_src, minlength=nnodes), out=edge_offsets[1:])
+    return LayeredQGraph(offsets, q, edge_offsets, tgt[order], cost[order])
 
 
 def _result(status: str, path: list[int], time: float, reach: np.ndarray, coreach: np.ndarray, failed: int | None, **extra: Any) -> dict:

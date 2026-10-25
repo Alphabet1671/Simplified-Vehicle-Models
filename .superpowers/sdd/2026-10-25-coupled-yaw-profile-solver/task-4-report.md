@@ -18,6 +18,16 @@ PYTHONPATH=src python3 -m unittest tests.test_layered_q_graph -v
 
 Output: 5 tests ran, all passed (`OK`). Coverage includes a locally-fast dead end with slower connected route, odd-cycle anchor mismatch, exhaustive tiny open and closed minimum comparisons, disconnected bands/positive-direction edges, and pre-solve node budget behavior.
 
+## Fix round 1
+
+Added constructor validation that every stored edge advances exactly one layer, rejecting same-layer, backward, and skipped-layer targets. Added `pack_layered_q_graph`, an edge-list factory that receives per-layer node counts and edge count before CSR allocation. If either declared count exceeds `max_nodes` / `max_edges`, it returns `budget_exceeded` with counts before allocating packed arrays. Focused command rerun:
+
+```sh
+PYTHONPATH=src python3 -m unittest tests.test_layered_q_graph -v
+```
+
+Output: 7 tests ran, all passed (`OK`), including invalid edge layer progression and factory preallocation budget behavior.
+
 ## Concerns / limits
 
 The graph layer is synthetic and performs no physical transition construction, map access, or QSS/OCP work, as required. Exactness is only over the graph's provided directed edges and positive costs. `q` is retained as packed candidate data but does not independently establish physical feasibility. The caller must supply correctly matching seam-pair IDs and already-built graph topology. Closed traversal currently relies on the supplied graph representing the duplicated seam traversal topology; it does not create copies itself.

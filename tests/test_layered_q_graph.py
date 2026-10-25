@@ -3,7 +3,7 @@ import unittest
 
 import numpy as np
 
-from simplified_vehicle_models.solvers.layered_q_graph import LayeredQGraph, solve_closed_graph, solve_open_graph
+from simplified_vehicle_models.solvers.layered_q_graph import (LayeredQGraph, pack_layered_q_graph, solve_closed_graph, solve_open_graph)
 
 
 def graph(layers, edges):
@@ -52,6 +52,28 @@ class PackedGraphTests(unittest.TestCase):
         r = solve_open_graph(g, 0, np.array([5]))
         self.assertEqual(r['status'], 'disconnected')
         self.assertEqual(solve_open_graph(g, 1, np.array([5]))['status'], 'ok')
+
+    def test_rejects_non_adjacent_or_backward_edges(self):
+        offsets = np.array([0, 1, 2, 3])
+        # Source 0 to node 2 skips a layer.
+        with self.assertRaisesRegex(ValueError, "adjacent forward layers"):
+            LayeredQGraph(offsets, np.array([0., 1., 2.]), np.array([0, 1, 1, 1]),
+                          np.array([2]), np.array([1.]))
+        # Source 1 to node 0 goes backward.
+        with self.assertRaisesRegex(ValueError, "adjacent forward layers"):
+            LayeredQGraph(offsets, np.array([0., 1., 2.]), np.array([0, 0, 1, 1]),
+                          np.array([0]), np.array([1.]))
+
+    def test_factory_checks_budgets_before_packing(self):
+        result = pack_layered_q_graph(np.array([1, 1]), np.array([0., 1.]),
+                                      np.array([0]), np.array([1]), np.array([1.]),
+                                      max_nodes=1, max_edges=1)
+        self.assertEqual(result["status"], "budget_exceeded")
+        self.assertNotIsInstance(result, LayeredQGraph)
+        packed = pack_layered_q_graph(np.array([1, 1]), np.array([0., 1.]),
+                                      np.array([0]), np.array([1]), np.array([1.]),
+                                      max_nodes=2, max_edges=1)
+        self.assertIsInstance(packed, LayeredQGraph)
 
     def test_budget_is_status_not_pruning(self):
         g = graph([[0], [1]], [(0,1,1)])

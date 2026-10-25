@@ -32,10 +32,51 @@ class UnsupportedWidthSeam(ValueError):
     """Widths disagree at periodic seam; no approved discontinuity policy exists."""
 
 
+def _freeze_json_identity(value):
+    if value is None or type(value) in (str, bool, int):
+        return ("scalar", value)
+    if type(value) is float and math.isfinite(value):
+        return ("scalar", value)
+    if type(value) is list:
+        return ("list", tuple(_freeze_json_identity(item) for item in value))
+    if type(value) is dict and all(type(key) is str for key in value):
+        return ("object", tuple((key, _freeze_json_identity(value[key])) for key in sorted(value)))
+    raise ValueError("source_identity must contain only finite JSON scalars, lists, and string-keyed objects")
+
+
+def _thaw_json_identity(value):
+    kind, payload = value
+    if kind == "scalar": return payload
+    if kind == "list": return [_thaw_json_identity(item) for item in payload]
+    if kind == "object": return {key: _thaw_json_identity(item) for key, item in payload}
+    raise AssertionError("invalid frozen identity kind")
+
+
+def reference_fit_identity(reference: object) -> dict[str, Any]:
+    """Return actual deterministic fit recipe/grid identity for a ReferenceCurve."""
+    from simplified_vehicle_models.tracks.line_trajectory import ReferenceCurve
+    if type(reference) is not ReferenceCurve or not hasattr(reference, "_x") or not hasattr(reference, "_y"):
+        raise ValueError("source identity requires an exact ReferenceCurve fit")
+    x, y = reference._x, reference._y
+    # Spline t/c/k completely specify SciPy's realized coordinate interpolant.
+    def spline_identity(spline):
+        return {"degree": int(spline.k), "knots": np.asarray(spline.t, dtype=float).tolist(),
+                "coefficients": np.asarray(spline.c, dtype=float).tolist()}
+    return {"kind": "ReferenceCurve", "source_station": np.asarray(reference.source_station, dtype=float).tolist(),
+            "source_start": float(reference.start), "source_end": float(reference.end),
+            "source_periodic": bool(reference.interpolation_periodic), "query_closed": bool(reference.is_closed),
+            "north_spline": spline_identity(x), "east_spline": spline_identity(y)}
+
+
 class PeriodicCutMapping:
-    """Strict descriptor-backed map from open view stations to a periodic source."""
-    __slots__ = ("_descriptor", "source_identity", "source_start", "source_end", "period", "cut_source_station", "view_start", "view_end", "canonical_json", "sha256")
+    """Strict immutable descriptor-backed map from open view to periodic source."""
+    __slots__ = ("_descriptor", "source_identity", "source_start", "source_end", "period", "cut_source_station", "view_start", "view_end", "canonical_json", "sha256", "_locked")
     _keys = frozenset(("mapping_version", "source_start", "source_end", "cut_source_station", "view_start", "view_end", "source_identity"))
+
+    def __setattr__(self, name, value):
+        if getattr(self, "_locked", False):
+            raise AttributeError("PeriodicCutMapping is immutable")
+        object.__setattr__(self, name, value)
 
     def __init__(self, descriptor: dict[str, Any]):
         if type(descriptor) is not dict or set(descriptor) != self._keys:
@@ -43,28 +84,12 @@ class PeriodicCutMapping:
         if descriptor["mapping_version"] != "periodic_cut_v1":
             raise ValueError("unsupported mapping_version")
         vals = {}
-        def freeze_identity(value):
-            if value is None or type(value) in (str, bool, int): return value
-            if type(value) is float and math.isfinite(value): return value
-            if type(value) is list: return tuple(freeze_identity(item) for item in value)
-            if type(value) is dict and all(type(key) is str for key in value):
-                return tuple((key, freeze_identity(value[key])) for key in sorted(value))
-            raise ValueError("source_identity must contain only finite JSON scalars, lists, and string-keyed objects")
-        identity = freeze_identity(descriptor["source_identity"])
-        # Thaw immutable tuple encoding to canonical JSON object/array form.
-        def thaw_identity(value):
-            if isinstance(value, tuple):
-                if value and all(isinstance(item, tuple) and len(item) == 2 and isinstance(item[0], str) for item in value):
-                    return {key: thaw_identity(item) for key, item in value}
-                return [thaw_identity(item) for item in value]
-            return value
-        identity_json = thaw_identity(identity)
+        identity = _freeze_json_identity(descriptor["source_identity"])
         for name in self._keys - {"mapping_version", "source_identity"}:
             value = descriptor[name]
-            if isinstance(value, (bool, np.bool_)):
-                raise ValueError(f"{name} must be a finite real number")
-            try: value = float(value)
-            except (TypeError, ValueError, OverflowError) as exc: raise ValueError(f"{name} must be finite") from exc
+            if isinstance(value, (bool, np.bool_)) or not isinstance(value, (int, float, np.integer, np.floating)):
+                raise ValueError(f"{name} must be a numeric scalar, not {type(value).__name__}")
+            value = float(value)
             if not math.isfinite(value): raise ValueError(f"{name} must be finite")
             vals[name] = value
         start, end, cut = vals["source_start"], vals["source_end"], vals["cut_source_station"]
@@ -73,27 +98,23 @@ class PeriodicCutMapping:
             raise ValueError("source period must be positive and cut inside [source_start, source_end)")
         if vals["view_start"] != 0. or vals["view_end"] != period:
             raise ValueError("view domain must be [0, period]")
-        frozen = {"mapping_version": "periodic_cut_v1", **vals, "source_identity": identity_json}
-        canonical = json.dumps(frozen, sort_keys=True, separators=(",", ":"), allow_nan=False)
+        canonical_obj = {"mapping_version": "periodic_cut_v1", **vals,
+                         "source_identity": _thaw_json_identity(identity)}
+        canonical = json.dumps(canonical_obj, sort_keys=True, separators=(",", ":"), allow_nan=False)
         object.__setattr__(self, "_descriptor", ("periodic_cut_v1", vals["source_start"], vals["source_end"], vals["cut_source_station"], vals["view_start"], vals["view_end"], identity))
         object.__setattr__(self, "source_identity", identity)
         for key, value in vals.items(): object.__setattr__(self, key, value)
         object.__setattr__(self, "period", period)
         object.__setattr__(self, "canonical_json", canonical)
         object.__setattr__(self, "sha256", hashlib.sha256(canonical.encode()).hexdigest())
+        object.__setattr__(self, "_locked", True)
 
     @property
     def descriptor(self):
         version, start, end, cut, view_start, view_end, identity = self._descriptor
-        def thaw(value):
-            if isinstance(value, tuple):
-                if value and all(isinstance(item, tuple) and len(item) == 2 and isinstance(item[0], str) for item in value):
-                    return {key: thaw(item) for key, item in value}
-                return [thaw(item) for item in value]
-            return value
         return {"mapping_version": version, "source_start": start, "source_end": end,
                 "cut_source_station": cut, "view_start": view_start, "view_end": view_end,
-                "source_identity": thaw(identity)}
+                "source_identity": _thaw_json_identity(identity)}
 
     def to_source(self, view_station: object, *, endpoint_side: str = "launch"):
         if endpoint_side not in ("launch", "terminal"):
@@ -120,14 +141,12 @@ class PeriodicCutMapping:
         if not (math.isfinite(a) and math.isfinite(b) and 0 <= a <= b <= self.period):
             raise ValueError("closed view interval must be bounded by [0, period]")
         if a == b: return ()
-        # The single old source seam occurs where c+u reaches source_end.
         seam = self.source_end - self.cut_source_station
         bounds = [a] + ([seam] if a < seam < b else []) + [b]
         panels = []
         for lo, hi in zip(bounds, bounds[1:]):
             if hi <= lo: continue
-            unwrapped_lo = self.cut_source_station + lo
-            unwrapped_hi = self.cut_source_station + hi
+            unwrapped_lo, unwrapped_hi = self.cut_source_station + lo, self.cut_source_station + hi
             if unwrapped_hi <= self.source_end:
                 slo, shi, side = unwrapped_lo, unwrapped_hi, "before_seam"
             else:
@@ -151,14 +170,21 @@ class PeriodicCutMapping:
 
 
 class MappedReferenceView:
-    """Ordinary query adapter; deliberately not an exact ReferenceCurve."""
-    __slots__ = ("source_reference", "mapping")
+    """Immutable ordinary query adapter, not an exact ReferenceCurve."""
+    __slots__ = ("source_reference", "mapping", "_locked")
+    def __setattr__(self, name, value):
+        if getattr(self, "_locked", False): raise AttributeError("MappedReferenceView is immutable")
+        object.__setattr__(self, name, value)
+
     def __init__(self, source_reference: object, mapping: PeriodicCutMapping):
         if not getattr(source_reference, "interpolation_periodic", False):
             raise ValueError("mapped view requires a periodic original reference fit")
         if (float(source_reference.start), float(source_reference.end)) != (mapping.source_start, mapping.source_end):
             raise ValueError("mapping source domain does not match reference")
+        if mapping.source_identity != _freeze_json_identity(reference_fit_identity(source_reference)):
+            raise ValueError("mapping source identity does not match supplied reference fit")
         self.source_reference, self.mapping = source_reference, mapping
+        object.__setattr__(self, "_locked", True)
 
     @property
     def is_exact_reference_curve(self): return False
@@ -168,6 +194,5 @@ class MappedReferenceView:
     def evaluate(self, view_station: object):
         q = np.asarray(view_station, dtype=float)
         source = np.asarray(self.mapping.to_source(q, endpoint_side="launch"))
-        terminal = q == self.mapping.period
-        source = np.where(terminal, self.mapping.source_end, source)
+        source = np.where(q == self.mapping.period, self.mapping.source_end, source)
         return self.source_reference.evaluate(float(source) if q.ndim == 0 else source)

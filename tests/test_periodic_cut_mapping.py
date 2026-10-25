@@ -18,6 +18,13 @@ class PeriodicCutMappingTests(unittest.TestCase):
         self.assertEqual(mapping.to_source(0.), 18.)
         self.assertEqual(mapping.to_source(10.), 18.)
         self.assertEqual(mapping.to_source(10., endpoint_side="terminal"), 20.)
+        with self.assertRaises(AttributeError): mapping.cut_source_station = 19.
+        with self.assertRaises(AttributeError): mapping.sha256 = "stale"
+        self.assertEqual(mapping.descriptor["source_identity"]["grid"], [1, 2])
+        pair_list = PeriodicCutMapping({**mapping.descriptor, "source_identity": [["a", 1], ["b", 2]]})
+        self.assertEqual(pair_list.descriptor["source_identity"], [["a", 1], ["b", 2]])
+        for key in ("source_start", "source_end", "cut_source_station", "view_start", "view_end"):
+            with self.assertRaises(ValueError): PeriodicCutMapping({**mapping.descriptor, key: "10.0"})
         self.assertEqual(mapping.to_source(np.array([0., 2.]), endpoint_side="launch").tolist(), [18., 10.])
         identity = {"recipe": ["quintic", 5], "grid": {"count": 4}}
         descriptor = {"mapping_version": "periodic_cut_v1", "source_start": 0., "source_end": 10.,
@@ -53,6 +60,7 @@ class PeriodicCutMappingTests(unittest.TestCase):
         from types import SimpleNamespace
         from scipy.interpolate import make_interp_spline
         from simplified_vehicle_models.tracks.line_trajectory import ReferenceCurve
+        from simplified_vehicle_models.tracks.periodic_cut import reference_fit_identity
         s = np.array([0., .7, 1.8, 3.1, 4.4, 6., 8.])
         track = SimpleNamespace(path_coordinates=SimpleNamespace(distance=s,
             x_north=10*np.cos(2*np.pi*s/8), y_east=7*np.sin(2*np.pi*s/8),
@@ -61,7 +69,7 @@ class PeriodicCutMappingTests(unittest.TestCase):
         cuts = (0., 2.35, 7.91)
         mappings = [PeriodicCutMapping({"mapping_version": "periodic_cut_v1", "source_start": 0.,
             "source_end": 8., "cut_source_station": cut, "view_start": 0., "view_end": 8.,
-            "source_identity": {"fit": "periodic-quintic", "grid": s.tolist()}}) for cut in cuts]
+            "source_identity": reference_fit_identity(ref)}) for cut in cuts]
         mapping = mappings[1]
         with patch("scipy.interpolate.make_interp_spline", side_effect=AssertionError("refit")):
             view = MappedReferenceView(ref, mapping)
@@ -75,8 +83,28 @@ class PeriodicCutMappingTests(unittest.TestCase):
             np.testing.assert_allclose(getattr(actual, field), getattr(expected, field))
         self.assertEqual(view.source_station(u).shape, u.shape)
         self.assertFalse(view.is_exact_reference_curve)
+        altered_track = SimpleNamespace(path_coordinates=SimpleNamespace(distance=s,
+            x_north=11*np.cos(2*np.pi*s/8), y_east=7*np.sin(2*np.pi*s/8),
+            curvature=np.zeros_like(s), is_closed=True), is_closed=True)
+        altered_ref = ReferenceCurve(altered_track)
+        with self.assertRaisesRegex(ValueError, "source identity"):
+            MappedReferenceView(altered_ref, mapping)
+        class LookalikeReference:
+            __name__ = "ReferenceCurve"
+            interpolation_periodic = True
+            start = 0.
+            end = 8.
+        with self.assertRaisesRegex(ValueError, "exact ReferenceCurve"):
+            MappedReferenceView(LookalikeReference(), mapping)
+        class DerivedReference(ReferenceCurve):
+            pass
+        subclass_ref = DerivedReference(track)
+        with self.assertRaisesRegex(ValueError, "exact ReferenceCurve"):
+            MappedReferenceView(subclass_ref, mapping)
         for cut_mapping in mappings:
             cut_view = MappedReferenceView(ref, cut_mapping)
+            with self.assertRaises(AttributeError): cut_view.mapping = mapping
+            with self.assertRaises(AttributeError): cut_view.source_reference = ref
             sample = np.array([0., .31, 4.7, 8.])
             got = cut_view.evaluate(sample)
             source = cut_mapping.to_source(sample, endpoint_side="terminal")

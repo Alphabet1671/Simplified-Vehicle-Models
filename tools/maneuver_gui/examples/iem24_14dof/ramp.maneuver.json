@@ -1,0 +1,79 @@
+{
+  "backend": "simulation",
+  "calibration": {
+    "accelerator_force_n": [
+      0.0,
+      10.5
+    ],
+    "accelerator_travel": [
+      0.0,
+      1.0
+    ],
+    "ackermann_inner_angle_rad": [
+      0.0,
+      0.6
+    ],
+    "ackermann_outer_offset_rad": [
+      0.0,
+      0.1
+    ],
+    "brake_force_n": [
+      0.0,
+      588.399,
+      1176.798
+    ],
+    "brake_travel": [
+      0.0,
+      0.5,
+      1.0
+    ],
+    "maximum_road_wheel_angle_rad": 0.5235987755982988,
+    "maximum_swa_rad": 8.0,
+    "maximum_swa_rate_rad_s": 2.0,
+    "rack_travel_per_revolution_m": 0.04,
+    "steer_arm_length_m": 0.1
+  },
+  "clock": {
+    "controller_tick_s": 0.01
+  },
+  "csv": null,
+  "initial": {
+    "heading_rad": 0.0,
+    "speed_mps": 16.6666666667,
+    "x_m": 0.0,
+    "y_m": 0.0
+  },
+  "limits": {
+    "max_swa_rad": 0.5,
+    "max_swa_rate_rad_s": 2.0
+  },
+  "longitudinal": {
+    "kd": 0.0,
+    "ki": 0.05,
+    "kp": 0.5,
+    "mode": "cruise_pid",
+    "target_speed_mps": 16.6666666667
+  },
+  "name": "REQUESTED \u2014 FROZEN PEAK-AY CALIBRATION REQUIRED \u2014 IEM24 14DoF ramp steering, 1.0g at 60 km/h",
+  "preset": "ramp_steer",
+  "profile": {
+    "duration_s": 5.1,
+    "hold_s": 2.0,
+    "lead_in_s": 1.0,
+    "ramp_s": 1.0,
+    "recovery_s": 1.0,
+    "release_s": 0.1
+  },
+  "schema": "maneuver-v1",
+  "steering": {
+    "amplitude_mps2": 9.80665,
+    "direction": 1,
+    "mode": "peak_ay"
+  },
+  "termination": {
+    "duration_s": 5.1
+  },
+  "vehicle": {
+    "model": "models/formulations/iem24_murphy_real_14dof_simple.xml"
+  }
+}

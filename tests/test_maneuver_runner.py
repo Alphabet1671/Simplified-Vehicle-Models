@@ -26,6 +26,15 @@ class ArtifactTests(unittest.TestCase):
         return SimpleNamespace(time_s=np.array([0.,.01]), state=np.zeros((2,2)), state_rate=np.ones((2,2)),
             events=(), applied_commands=(), execution_outcome='completed', termination_reason='duration')
 
+    def test_manifest_definition_calibration_model_and_summary_consistency(self):
+        with tempfile.TemporaryDirectory() as td:
+            d=Path(td)/'attempt'; d.mkdir()
+            write_artifacts(d, definition(), self.result(), {'execution_outcome':'completed'})
+            manifest=json.loads((d/'manifest.json').read_text())
+            manifest['model']={'tampered':True}
+            (d/'manifest.json').write_text(json.dumps(manifest))
+            with self.assertRaises(ValueError): load_manifest(d)
+
     def test_safe_generated_names_atomic_npz_and_manifest_integrity(self):
         with tempfile.TemporaryDirectory() as td:
             d=Path(td)/'attempt'; d.mkdir()
@@ -37,6 +46,13 @@ class ArtifactTests(unittest.TestCase):
             with self.assertRaises(FileExistsError): write_artifacts(d, definition(), self.result(), {})
             (d/'run_record.npz').write_bytes(b'corrupt')
             with self.assertRaises(ValueError): load_manifest(d)
+
+    def test_arbitrary_formulation_path_rejected(self):
+        from tools.maneuver_gui.runner import _allowed_formulation
+        with self.assertRaises(ValueError):
+            _allowed_formulation("/tmp/attacker.xml")
+        with self.assertRaises(ValueError):
+            _allowed_formulation("models/../../tmp/attacker.xml")
 
     def test_definition_invalid_rejected_without_child_physics(self):
         with tempfile.TemporaryDirectory() as td:
@@ -71,7 +87,7 @@ class ArtifactTests(unittest.TestCase):
             pidfile = Path(td) / 'grandchild.pid'
             child = (
                 'import subprocess,sys,time; '
-                'p=subprocess.Popen([sys.executable,"-c","import time; time.sleep(60)"]); '
+                'p=subprocess.Popen([sys.executable,"-c","import signal,time; signal.signal(signal.SIGTERM,signal.SIG_IGN); time.sleep(60)"]); '
                 'open(sys.argv[1],"w").write(str(p.pid)); '
                 'print(\'{"event":"progress","time_s":0.1,"fraction":0.2,"phase":"test"}\',flush=True); '
                 'time.sleep(60)'

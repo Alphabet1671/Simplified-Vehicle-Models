@@ -31,6 +31,40 @@ def _cancel_requested(cancel) -> bool:
     return bool(cancel() if callable(cancel) else cancel.is_set())
 
 
+def _group_exists(pgid: int) -> bool:
+    try:
+        os.killpg(pgid, 0)
+        return True
+    except (ProcessLookupError, PermissionError):
+        return False
+
+
+def _terminate_group(proc, grace: float) -> None:
+    """Signal the process group, then unconditionally SIGKILL after grace."""
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError):
+        pass
+    deadline = time.monotonic() + max(0.0, grace)
+    while time.monotonic() < deadline:
+        try:
+            os.killpg(proc.pid, 0)
+        except ProcessLookupError:
+            break
+        except PermissionError:
+            break
+        time.sleep(min(0.02, deadline - time.monotonic()))
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+    try:
+        proc.wait(timeout=max(1.0, grace))
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+
+
 def run_child(command, *, on_progress=None, cancel=None, timeout_s=None,
               terminate_timeout_s: float = 2.0, env=None, cwd=None) -> int:
     """Run a child in its own process group, forwarding JSON progress events.
@@ -85,42 +119,40 @@ def run_child(command, *, on_progress=None, cancel=None, timeout_s=None,
             elif line:
                 print(line, file=sys.stderr, flush=True)
         if not eof:
-            try:
-                os.killpg(proc.pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
-            try:
-                proc.wait(timeout=terminate_timeout_s)
-            except subprocess.TimeoutExpired:
-                try:
-                    os.killpg(proc.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-                proc.wait()
+            _terminate_group(proc, terminate_timeout_s)
             if timed_out:
                 raise subprocess.TimeoutExpired(command, timeout_s)
             return proc.returncode
-        return proc.wait()
+        # Leader completion is not group completion: kill lingering descendants
+        # only if the group still exists, including TERM-ignoring grandchildren.
+        if not _group_exists(proc.pid):
+            return proc.wait()
+        _terminate_group(proc, terminate_timeout_s)
+        return proc.returncode
     finally:
-        if proc.poll() is None:
-            try:
-                os.killpg(proc.pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
-            try:
-                proc.wait(timeout=terminate_timeout_s)
-            except subprocess.TimeoutExpired:
-                try:
-                    os.killpg(proc.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-                proc.wait()
+        if _group_exists(proc.pid):
+            _terminate_group(proc, terminate_timeout_s)
+        else:
+            proc.wait()
         if proc.stdout:
             proc.stdout.close()
         reader.join(timeout=terminate_timeout_s)
 
 
-def run_definition(definition_path: Path, output_root: Path) -> Path:
+def _allowed_formulation(value: str) -> Path:
+    """Only compile a checked-in model formulation, never arbitrary paths."""
+    candidate = Path(value).expanduser()
+    repo = Path(__file__).resolve().parents[2]
+    models = (repo / "models").resolve()
+    resolved = candidate.resolve() if candidate.is_absolute() else (repo / candidate).resolve()
+    if resolved.suffix.lower() != ".xml" or models not in resolved.parents:
+        raise ValueError("formulation must resolve to an XML file under the repository models/ root")
+    if not resolved.is_file() or not resolved.resolve(strict=True):
+        raise ValueError("formulation does not exist")
+    return resolved
+
+
+def run_definition(definition_path: Path, output_root: Path, *, cancel=None, timeout_s=305) -> Path:
     """Validate and run a definition in an isolated Python child process."""
     attempt = create_attempt_directory(output_root)
     source = Path(definition_path).expanduser().resolve()
@@ -135,8 +167,16 @@ def run_definition(definition_path: Path, output_root: Path) -> Path:
         artifact = calibration.get("artifact", calibration)
         if not isinstance(artifact, dict):
             raise ValueError("simulation calibration artifact must be a JSON object")
-        source_copy = attempt / "maneuver.json"
+        vehicle_spec = data.get("vehicle", {})
+        formulation = vehicle_spec.get("formulation") or vehicle_spec.get("model")
+        if not formulation:
+            raise ValueError("vehicle.model must name a planar-7dof formulation path")
+        formulation_path = _allowed_formulation(str(formulation))
+        vehicle_spec["formulation"] = str(formulation_path)
+        source_copy = attempt / "maneuver-source.json"
         source_copy.write_text(json.dumps(data, indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8")
+        stage = attempt / ".result-stage"
+        stage.mkdir()
         helper = r'''import json, sys, traceback
 from pathlib import Path
 from simplified_vehicle_models.controls.maneuvers.schema import load_definition
@@ -165,7 +205,7 @@ except BaseException as e:
     (out/'summary.json').write_text(json.dumps(summary,indent=2,sort_keys=True)+'\n')
     traceback.print_exc(); sys.exit(2)
 '''
-        command = [sys.executable, "-c", helper, str(source_copy), str(attempt)]
+        command = [sys.executable, "-c", helper, str(source_copy), str(stage)]
         env = os.environ.copy()
         root = Path(__file__).resolve().parents[2]
         env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(root / "src"), str(root), env.get("PYTHONPATH", "")]))
@@ -173,15 +213,27 @@ except BaseException as e:
             if {"event", "time_s", "fraction", "phase"}.issubset(event):
                 print(json.dumps(event), flush=True)
         try:
-            code = run_child(command, on_progress=forward_progress, timeout_s=305, env=env)
+            code = run_child(command, on_progress=forward_progress, cancel=cancel, timeout_s=timeout_s, env=env)
         except (KeyboardInterrupt, subprocess.TimeoutExpired):
             _rejection(attempt, "simulation interrupted or timed out")
             return attempt
-        if code < 0:
+        if code < 0 or _cancel_requested(cancel):
+            import shutil
+            shutil.rmtree(stage, ignore_errors=True)
             _rejection(attempt, "cancelled")
             return attempt
-        if code != 0 and not (attempt / "summary.json").exists():
+        if code != 0:
+            import shutil
+            shutil.rmtree(stage, ignore_errors=True)
             _rejection(attempt, f"simulation child exited {code}")
+            return attempt
+        # Parent accepts only a successful, complete child publication.
+        from tools.maneuver_gui.artifacts import load_manifest
+        load_manifest(stage)
+        for item in stage.iterdir():
+            os.replace(item, attempt / item.name)
+        stage.rmdir()
+        source_copy.unlink(missing_ok=True)
         return attempt
     except Exception as exc:
         _rejection(attempt, exc)

@@ -57,6 +57,9 @@ def _safe_name(name: str) -> str:
 
 def create_attempt_directory(output_root: Path, *, overwrite: bool = False) -> Path:
     root = Path(output_root).expanduser().resolve()
+    models_root = (Path(__file__).resolve().parents[2] / "models").resolve()
+    if root == models_root or models_root in root.parents:
+        raise ValueError("output root may not be inside models/")
     root.mkdir(parents=True, exist_ok=True)
     for _ in range(32):
         candidate = root / str(uuid.uuid4())
@@ -114,10 +117,14 @@ def write_artifacts(directory: Path, definition, result, summary: dict) -> None:
         commands.append(f"{index},{time_value:.17g},{float(row[0]):.17g},{float(row[1]):.17g},{float(row[2]):.17g}")
     command_bytes = ("\n".join(commands) + "\n").encode()
     npz_bytes = buf.getvalue()
-    hashes = {"definition_sha256": hashlib.sha256(definition_bytes).hexdigest(),
-              "calibration_sha256": hashlib.sha256(json.dumps(data.get("calibration"), sort_keys=True).encode()).hexdigest(),
-              "model_sha256": hashlib.sha256(json.dumps(data.get("vehicle"), sort_keys=True).encode()).hexdigest(),
-              "result_sha256": hashlib.sha256(npz_bytes).hexdigest()}
+    canonical = lambda value: json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+    hashes = {"definition_sha256": hashlib.sha256(canonical(data)).hexdigest(),
+              "calibration_sha256": hashlib.sha256(canonical(data.get("calibration"))).hexdigest(),
+              "model_sha256": hashlib.sha256(canonical(data.get("vehicle"))).hexdigest(),
+              "result_sha256": hashlib.sha256(npz_bytes).hexdigest(),
+              "summary_sha256": hashlib.sha256(summary_bytes).hexdigest(),
+              "events_sha256": hashlib.sha256(events_bytes).hexdigest(),
+              "commands_sha256": hashlib.sha256(command_bytes).hexdigest()}
     manifest = {"schema": ARTIFACT_SCHEMA, "version": 1, "definition": data,
                 "calibration": data.get("calibration"), "model": data.get("vehicle"),
                 "hashes": hashes, "execution_outcome": summary_doc["execution_outcome"]}
@@ -125,18 +132,28 @@ def write_artifacts(directory: Path, definition, result, summary: dict) -> None:
     payloads = {"maneuver.json": definition_bytes, "summary.json": summary_bytes,
                 "events.json": events_bytes, "commands.csv": command_bytes,
                 "run_record.npz": npz_bytes, "manifest.json": manifest_bytes}
-    written = []
+    # Publish through a same-filesystem sibling directory. A UUID destination is
+    # reserved with mkdir (never reused); readers only see a complete directory.
+    parent = directory.parent
+    parent.mkdir(parents=True, exist_ok=True)
+    if directory.is_symlink():
+        raise ValueError("artifact destination may not be a symlink")
+    if directory.exists() and any(directory.iterdir()):
+        raise FileExistsError(f"artifacts already exist in {directory}")
+    stage = parent / f".{directory.name}.{uuid.uuid4().hex}.staging"
+    stage.mkdir()
     try:
         for name, payload in payloads.items():
-            path = directory / name
-            if path.parent != directory:
+            if Path(name).name != name:
                 raise ValueError("unsafe generated artifact path")
-            _atomic_bytes(path, payload)
-            written.append(path)
+            (stage / name).write_bytes(payload)
+        # Manifest is the commit marker; within a published directory it is last.
+        if directory.exists():
+            directory.rmdir()
+        os.rename(stage, directory)
     except BaseException:
-        for path in written:
-            try: path.unlink()
-            except FileNotFoundError: pass
+        import shutil
+        shutil.rmtree(stage, ignore_errors=True)
         raise
 
 
@@ -149,7 +166,11 @@ def write_artifact(output_base: Path, definition, result, *, run_id: str | None 
     """
     if output_base is None:
         raise TypeError("output_base is required")
-    root = Path(output_base).expanduser().resolve()
+    raw_root = Path(output_base).expanduser()
+    root = raw_root.resolve()
+    models_root = (Path(__file__).resolve().parents[2] / "models").resolve()
+    if root == models_root or models_root in root.parents:
+        raise ValueError("output base may not be inside models/")
     root.mkdir(parents=True, exist_ok=True)
     if run_id is None:
         run_id = str(uuid.uuid4())
@@ -171,11 +192,18 @@ def write_artifact(output_base: Path, definition, result, *, run_id: str | None 
                         state=np.asarray(result.state), state_rate=np.asarray(result.state_rate))
     npz_bytes = archive.getvalue()
     definition_bytes = json.dumps(data, sort_keys=True, allow_nan=False).encode()
+    canonical = lambda value: json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+    summary_bytes = json.dumps({"execution_outcome": str(getattr(result, "execution_outcome", "unknown"))}, sort_keys=True).encode() + b"\n"
+    events_bytes = b"[]\n"
+    commands_bytes = b"index,time_s,swa_rad,accelerator,brake\n"
     hashes = {
-        "definition_sha256": hashlib.sha256(definition_bytes).hexdigest(),
-        "calibration_sha256": hashlib.sha256(json.dumps(data.get("calibration"), sort_keys=True, allow_nan=False).encode()).hexdigest(),
-        "model_sha256": hashlib.sha256(json.dumps(data.get("vehicle"), sort_keys=True, allow_nan=False).encode()).hexdigest(),
+        "definition_sha256": hashlib.sha256(canonical(data)).hexdigest(),
+        "calibration_sha256": hashlib.sha256(canonical(data.get("calibration"))).hexdigest(),
+        "model_sha256": hashlib.sha256(canonical(data.get("vehicle"))).hexdigest(),
         "result_sha256": hashlib.sha256(npz_bytes).hexdigest(),
+        "summary_sha256": hashlib.sha256(summary_bytes).hexdigest(),
+        "events_sha256": hashlib.sha256(events_bytes).hexdigest(),
+        "commands_sha256": hashlib.sha256(commands_bytes).hexdigest(),
     }
     outcome = str(getattr(result, "execution_outcome", "unknown"))
     manifest = {"schema": ARTIFACT_SCHEMA, "version": 1, "definition": data,
@@ -220,6 +248,28 @@ def load_manifest(directory: Path) -> dict:
             raise ValueError("artifact schema/version mismatch")
         if manifest.get("definition", {}).get("schema") != "maneuver-v1":
             raise ValueError("definition schema mismatch")
+        hashes = manifest.get("hashes", {})
+        definition = manifest["definition"]
+        def canonical(value):
+            return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+        definition_file = json.loads((directory / "maneuver.json").read_text(encoding="utf-8"))
+        if definition_file != definition:
+            raise ValueError("manifest/definition mismatch")
+        for key, value in (("definition_sha256", definition_file),
+                           ("calibration_sha256", definition_file.get("calibration")),
+                           ("model_sha256", definition_file.get("vehicle"))):
+            if hashes.get(key) != hashlib.sha256(canonical(value)).hexdigest():
+                raise ValueError(f"{key} mismatch")
+        if manifest.get("calibration") != definition_file.get("calibration") or manifest.get("model") != definition_file.get("vehicle"):
+            raise ValueError("manifest model/calibration mismatch")
+        summary = json.loads((directory / "summary.json").read_text(encoding="utf-8"))
+        if summary.get("execution_outcome") != manifest.get("execution_outcome"):
+            raise ValueError("manifest/summary outcome mismatch")
+        for key, filename in (("summary_sha256", "summary.json"),
+                              ("events_sha256", "events.json"),
+                              ("commands_sha256", "commands.csv")):
+            if hashes.get(key) != hashlib.sha256((directory / filename).read_bytes()).hexdigest():
+                raise ValueError(f"{filename} corruption detected")
         for name in ("maneuver.json", "summary.json", "events.json", "commands.csv", "run_record.npz"):
             if not (directory / name).is_file():
                 raise ValueError(f"missing artifact {name}")

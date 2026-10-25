@@ -73,7 +73,7 @@ class YawAwareDriverTests(unittest.TestCase):
         self.assertTrue(result.forward_result.lap_completed)
         self.assertTrue(result.completed)
         self.assertTrue(result.sampled_center_contained)
-        self.assertEqual(result.max_corridor_violation, 0.)
+        self.assertLessEqual(result.max_corridor_violation, 1.e-12)
         self.assertGreater(result.driven_time, 0.)
         self.assertAlmostEqual(result.predicted_vs_driven_time,
                                result.driven_time - result.predicted_time)

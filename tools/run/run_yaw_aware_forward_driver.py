@@ -36,6 +36,46 @@ def prepare_output(path):
     return path
 
 
+def physical_map_speed_limit(point_mass_vehicle, *, search_limit_mps=500.):
+    """Return a finite upper speed for the map from straight-line drive capability.
+
+    The search uses the point-mass vehicle's actual maximum positive
+    acceleration envelope at zero curvature. The drivetrain's physical speed
+    limit bounds the search; a finite caller limit protects against malformed
+    models and is never treated as a fallback domain.
+    """
+    from simplified_vehicle_models.formulations.point_mass import (
+        maximum_acceleration_limit, maximum_vehicle_speed,
+    )
+
+    if not math.isfinite(search_limit_mps) or search_limit_mps <= 0:
+        raise ValueError("search_limit_mps must be finite and positive")
+    physical_limit = min(float(maximum_vehicle_speed(point_mass_vehicle)), search_limit_mps)
+    if not math.isfinite(physical_limit) or physical_limit <= 0:
+        raise ValueError("point-mass drivetrain has no finite positive speed limit")
+
+    def has_positive_drive(speed):
+        return maximum_acceleration_limit(point_mass_vehicle, speed, 0.) > 1.e-7
+
+    if not has_positive_drive(0.):
+        raise ValueError("point-mass vehicle has no feasible positive-drive straight-line speed")
+    if has_positive_drive(physical_limit):
+        # The motor speed ceiling itself is a real physical bound, not an
+        # arbitrary map cap. It also handles models whose drive remains
+        # feasible up to the no-load speed limit.
+        return physical_limit
+    low, high = 0., physical_limit
+    for _ in range(60):
+        middle = (low + high) / 2.
+        if has_positive_drive(middle):
+            low = middle
+        else:
+            high = middle
+    if low <= 0 or not math.isfinite(low):
+        raise ValueError("could not derive a finite positive-drive speed domain")
+    return low
+
+
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--track", type=Path, required=True, help="signed XY track XML with left/right edges")
@@ -45,7 +85,8 @@ def parse_args(argv=None):
     parser.add_argument("--yaw-speed-points", type=int, default=8)
     parser.add_argument("--yaw-ax-points", type=int, default=5)
     parser.add_argument("--yaw-ay-points", type=int, default=9)
-    parser.add_argument("--maximum-speed", type=float, default=30.)
+    parser.add_argument("--maximum-speed", type=float, default=None,
+                        help="optional explicit map/profile speed limiter in m/s")
     parser.add_argument("--lateral-margin", type=float, default=.15)
     parser.add_argument("--control-spacing", type=float, default=60.,
                         help="yaw-line spline control spacing in metres")
@@ -68,12 +109,14 @@ def parse_args(argv=None):
     parser.add_argument("--record-precision", choices=("float32", "float64"), default="float32")
     parser.add_argument("--frame-rate-note", default="")
     args = parser.parse_args(argv)
-    for name in ("maximum_speed", "lateral_margin", "control_spacing", "planning_grid_spacing",
+    for name in ("lateral_margin", "control_spacing", "planning_grid_spacing",
                  "duration", "wall_seconds", "maximum_step", "rtol", "preview_seconds",
                  "heading_gain", "lateral_gain", "speed_gain"):
         value = getattr(args, name)
         if not math.isfinite(value) or value <= 0:
             parser.error(f"--{name.replace('_','-')} must be finite and positive")
+    if args.maximum_speed is not None and (not math.isfinite(args.maximum_speed) or args.maximum_speed <= 0):
+        parser.error("--maximum-speed must be finite and positive")
     if args.lateral_margin > 1:
         parser.error("--lateral-margin must be at most 1")
     for name in ("yaw_speed_points", "yaw_ax_points", "yaw_ay_points"):
@@ -141,6 +184,9 @@ def record_metadata(args, track, vehicle, capability, plan, result):
             data_path = track_path.parent / data_path
         sources.append(data_path)
     settings = plan.settings if getattr(plan, "settings", None) is not None else None
+    speed_domain = float(capability.speed[-1])
+    speed_source = ("explicit_cli_limit" if args.maximum_speed is not None
+                    else "physical_straight_line_envelope")
     return _jsonable({
         "producer": {"tool": "tools/run/run_yaw_aware_forward_driver.py",
                      "python": platform.python_version(), "numpy": np.__version__,
@@ -158,8 +204,9 @@ def record_metadata(args, track, vehicle, capability, plan, result):
                            "grid": {"speed": capability.speed.tolist(),
                                     "longitudinal_acceleration": capability.longitudinal_acceleration.tolist(),
                                     "lateral_acceleration": capability.lateral_acceleration.tolist()}},
+        "speed_domain_source": speed_source, "speed_domain_mps": speed_domain,
         "planning": {"status": plan.status, "settings": asdict(settings) if settings is not None else None,
-                     "settings_used": {"maximum_speed": args.maximum_speed,
+                     "settings_used": {"maximum_speed": speed_domain,
                          "lateral_margin": args.lateral_margin, "control_spacing": args.control_spacing,
                          "planning_grid_spacing": args.planning_grid_spacing,
                          "planner_iterations": args.planner_iterations, "planner_passes": args.planner_passes},
@@ -199,8 +246,12 @@ def run(args):
     reference = ReferenceCurve(track)
     corridor = corridor_from_track(track, margin=0., policy=SIGNED_POLICY, reference=reference)
     pm = point_mass_view_of_planar(vehicle)
+    derived_speed = physical_map_speed_limit(pm)
+    speed_domain = min(derived_speed, args.maximum_speed) if args.maximum_speed is not None else derived_speed
+    speed_domain_source = ("explicit_cli_limit" if args.maximum_speed is not None
+                           else "physical_straight_line_envelope")
     grid = YawCapabilityGrid(
-        np.linspace(0., args.maximum_speed, args.yaw_speed_points),
+        np.linspace(0., speed_domain, args.yaw_speed_points),
         # Keep the map grid consistent with the independently probed MIS
         # low-speed forward/backward profile domain: braking needs more range
         # than the initial symmetric convenience grid supplied.
@@ -208,7 +259,7 @@ def run(args):
         np.linspace(-9.80665, 9.80665, args.yaw_ay_points),
     )
     capability = build_physical_yaw_map(pm, grid, yaw_inertia=vehicle.yaw_inertia)
-    settings = YawLineSettings(maximum_speed=args.maximum_speed, footprint_margin=0.,
+    settings = YawLineSettings(maximum_speed=speed_domain, footprint_margin=0.,
         buffer=args.lateral_margin, control_spacing=args.control_spacing,
         grid_spacing=args.planning_grid_spacing, optimizer_max_iterations=args.planner_iterations,
         maximum_outer_passes=args.planner_passes)
@@ -218,7 +269,8 @@ def run(args):
                line.y_east, line.heading, line.curvature)), delimiter=",", comments="",
                header="distance,reference_distance,x_north,y_east,heading,curvature")
     plan_doc = {
-        "status": plan.status, "map": {"source_kind": capability.source_kind,
+        "status": plan.status, "speed_domain_source": speed_domain_source,
+        "speed_domain_mps": speed_domain, "map": {"source_kind": capability.source_kind,
         "source_identity": capability.source_identity, "yaw_inertia": capability.yaw_inertia,
         "grid": {"speed": grid.speed.tolist(), "longitudinal_acceleration": grid.longitudinal_acceleration.tolist(),
                  "lateral_acceleration": grid.lateral_acceleration.tolist()}},

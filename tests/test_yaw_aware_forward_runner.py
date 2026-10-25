@@ -18,8 +18,23 @@ class YawAwareForwardRunnerTests(unittest.TestCase):
             args = runner.parse_args(["--track", "track.xml", "--output-dir", directory, "--map", "no-tv"])
         self.assertEqual(args.map, "no-tv")
         self.assertEqual(args.model, "planar-7dof")
+        self.assertIsNone(args.maximum_speed)
         self.assertGreater(args.control_spacing, 0.)
-        self.assertGreater(args.planning_grid_spacing, 0.)
+
+    def test_parser_accepts_explicit_positive_speed_limiter(self):
+        with tempfile.TemporaryDirectory() as directory:
+            args = runner.parse_args(["--track", "track.xml", "--output-dir", directory,
+                                     "--maximum-speed", "12.5"])
+        self.assertEqual(args.maximum_speed, 12.5)
+
+    def test_physical_speed_domain_uses_point_mass_drive_envelope(self):
+        vehicle = object()
+        with patch("simplified_vehicle_models.formulations.point_mass.maximum_vehicle_speed", return_value=20.), \
+             patch("simplified_vehicle_models.formulations.point_mass.maximum_acceleration_limit",
+                   side_effect=lambda _v, speed, _k: 1. if speed < 13.25 else 0.):
+            limit = runner.physical_map_speed_limit(vehicle)
+        self.assertTrue(__import__("math").isfinite(limit))
+        self.assertAlmostEqual(limit, 13.25, places=6)
 
     def test_prepare_output_refuses_existing_directory(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -69,6 +84,7 @@ class YawAwareForwardRunnerTests(unittest.TestCase):
                  patch("simplified_vehicle_models.tracks.line_trajectory.ReferenceCurve"), \
                  patch("simplified_vehicle_models.tracks.corridor.corridor_from_track"), \
                  patch("simplified_vehicle_models.formulations.point_mass.point_mass_view_of_planar"), \
+                 patch.object(runner, "physical_map_speed_limit", return_value=30.), \
                  patch("simplified_vehicle_models.formulations.yaw_capability.YawCapabilityGrid", return_value=SimpleNamespace(speed=__import__("numpy").array([0., 1.]), longitudinal_acceleration=__import__("numpy").array([-1., 1.]), lateral_acceleration=__import__("numpy").array([-2., 2.]))), \
                  patch("simplified_vehicle_models.formulations.yaw_capability.build_physical_yaw_map", return_value=SimpleNamespace(source_kind="physical", source_identity="test", yaw_inertia=3., speed=__import__("numpy").array([0., 1.]), longitudinal_acceleration=__import__("numpy").array([-1., 1.]), lateral_acceleration=__import__("numpy").array([-2., 2.]))), \
                  patch("simplified_vehicle_models.planning.yaw_aware_line.YawLineSettings", return_value=YawLineSettings()), \

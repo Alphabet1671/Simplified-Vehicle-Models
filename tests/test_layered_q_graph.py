@@ -47,6 +47,18 @@ class PackedGraphTests(unittest.TestCase):
         expected_closed = min(pair_cost[a,b]+pair_cost[b,c] for a,c in anchors for b in [2,3] if (a,b) in pair_cost and (b,c) in pair_cost)
         self.assertEqual(solve_closed_graph(cg, np.array(anchors))['time_seconds'], expected_closed)
 
+    def test_disconnected_graph_reports_actual_reachability_cut(self):
+        # Four layers. Start reaches layers 0 and 1; terminals co-reach layers 2
+        # and 3. No edge crosses 1 -> 2.
+        packed = pack_layered_q_graph(
+            np.array([1, 1, 1, 1]), np.array([0., 1., 2., 3.]),
+            np.array([0, 2]), np.array([1, 3]), np.array([1., 1.]),
+            max_nodes=4, max_edges=2,
+        )
+        result = solve_open_graph(packed, 0, np.array([3]))
+        self.assertEqual(result["status"], "disconnected")
+        self.assertEqual(result["disconnect_cut"], (1, 2))
+
     def test_disconnected_bands_and_positive_acceleration_edges_are_preserved(self):
         g = graph([[0,1], [2,3], [4,5]], [(0,2,1),(1,3,1),(2,4,1),(3,5,1)])
         r = solve_open_graph(g, 0, np.array([5]))

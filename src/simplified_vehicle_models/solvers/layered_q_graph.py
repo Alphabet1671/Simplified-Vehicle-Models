@@ -84,6 +84,18 @@ def pack_layered_q_graph(node_counts: np.ndarray, q_values: np.ndarray, edge_sou
     return LayeredQGraph(offsets, q, edge_offsets, tgt[order], cost[order])
 
 
+def _disconnect_cut(graph: LayeredQGraph, reach: np.ndarray,
+                    coreach: np.ndarray) -> tuple[int, int] | None:
+    reachable_layers = [k for k in range(graph.n_layers)
+                        if np.any(reach[graph.node_offsets[k]:graph.node_offsets[k + 1]])]
+    coreachable_layers = [k for k in range(graph.n_layers)
+                         if np.any(coreach[graph.node_offsets[k]:graph.node_offsets[k + 1]])]
+    if not reachable_layers or not coreachable_layers:
+        return None
+    left, right = max(reachable_layers), min(coreachable_layers)
+    return (left, right) if left < right else None
+
+
 def _result(status: str, path: list[int], time: float, reach: np.ndarray, coreach: np.ndarray, failed: int | None, **extra: Any) -> dict:
     return dict(status=status, node_ids=np.asarray(path, dtype=np.int64), time_seconds=float(time),
                 reachable_nodes=np.asarray(reach, dtype=np.int64), co_reachable_nodes=np.asarray(coreach, dtype=np.int64),
@@ -112,7 +124,10 @@ def _solve(graph: LayeredQGraph, start: int, terminals: set[int], max_nodes: int
         coreach[u] |= bool(np.any(coreach[graph.targets[a:b]]))
     live = reach & coreach
     if not np.any(live):
-        return _result("disconnected", [], np.inf, np.flatnonzero(reach), np.flatnonzero(coreach), 0)
+        reach_nodes = np.flatnonzero(reach)
+        coreach_nodes = np.flatnonzero(coreach)
+        return _result("disconnected", [], np.inf, reach_nodes, coreach_nodes, 0,
+                       disconnect_cut=_disconnect_cut(graph, reach, coreach))
     dist = np.full(graph.n_nodes, np.inf); pred = np.full(graph.n_nodes, -1, dtype=np.int64); dist[start] = 0.
     for u in range(graph.n_nodes):
         if not live[u] or not np.isfinite(dist[u]): continue
@@ -125,11 +140,18 @@ def _solve(graph: LayeredQGraph, start: int, terminals: set[int], max_nodes: int
                 dist[v] = cand; pred[v] = u
     best = min(terminals, key=lambda t: (dist[t], t))
     if not np.isfinite(dist[best]):
-        return _result("disconnected", [], np.inf, np.flatnonzero(reach), np.flatnonzero(coreach), 0)
+        reach_nodes = np.flatnonzero(reach)
+        coreach_nodes = np.flatnonzero(coreach)
+        return _result("disconnected", [], np.inf, reach_nodes, coreach_nodes, 0,
+                       disconnect_cut=_disconnect_cut(graph, reach, coreach))
     path = [best]
     while path[-1] != start:
         p = int(pred[path[-1]])
-        if p < 0: return _result("disconnected", [], np.inf, np.flatnonzero(reach), np.flatnonzero(coreach), 0)
+        if p < 0:
+            reach_nodes = np.flatnonzero(reach)
+            coreach_nodes = np.flatnonzero(coreach)
+            return _result("disconnected", [], np.inf, reach_nodes, coreach_nodes, 0,
+                           disconnect_cut=_disconnect_cut(graph, reach, coreach))
         path.append(p)
     path.reverse()
     return _result("ok", path, dist[best], np.flatnonzero(reach), np.flatnonzero(coreach), None,
@@ -150,7 +172,13 @@ def solve_closed_graph(graph: LayeredQGraph, seam_pairs: np.ndarray, *, max_node
     valid = [x for x in answers if x["status"] == "ok"]
     if not valid:
         if any(x["status"] == "budget_exceeded" for x in answers): return _result("budget_exceeded", [], np.inf, [], [], None)
-        return _result("disconnected", [], np.inf, [], [], 0, optimality="no matching anchored cycle in supplied graph")
+        reach = np.unique(np.concatenate([x["reachable_nodes"] for x in answers])) if answers else np.array([], dtype=np.int64)
+        coreach = np.unique(np.concatenate([x["co_reachable_nodes"] for x in answers])) if answers else np.array([], dtype=np.int64)
+        reach_mask = np.zeros(graph.n_nodes, dtype=bool); reach_mask[reach] = True
+        coreach_mask = np.zeros(graph.n_nodes, dtype=bool); coreach_mask[coreach] = True
+        return _result("disconnected", [], np.inf, reach, coreach, 0,
+                       disconnect_cut=_disconnect_cut(graph, reach_mask, coreach_mask),
+                       optimality="no matching anchored cycle in supplied graph")
     best = min(valid, key=lambda x: (x["time_seconds"], tuple(x["node_ids"])))
     best["optimality"] = "graph-optimal over enumerated matching anchors and supplied edges"
     return best

@@ -20,8 +20,13 @@ The reviewed safety gaps are addressed:
 ## Verification
 
 - `PYTHONPATH=src:. python3 -m unittest tests.test_maneuver_artifacts -v`: **5 passed**.
-- `PYTHONPATH=src:. python3 -m unittest tests.test_maneuver_artifacts tests.test_maneuver_runner -v`: **13 passed**, including atomic success publication and unsuccessful-stage cleanup regressions.
-- `PYTHONPATH=src:. python3 -m unittest discover -s tests -p 'test_maneuver*.py' -q`: **77 passed**.
+- `PYTHONPATH=src:. python3 -m unittest tests.test_maneuver_artifacts tests.test_maneuver_runner -v`: **14 passed**, including atomic success publication, unsuccessful-stage cleanup, TERM-ignoring descendant cleanup, and post-publish rollback regressions.
+- `PYTHONPATH=src:. python3 -m unittest discover -s tests -p 'test_maneuver_*.py' -q`: **78 passed**.
 - `git diff --check`: passed.
+
+## Fix round 3 — post-publication rollback
+
+- The runner performs normal fallible preparation before renaming validated stage evidence into `attempt/result`; it tracks the published result and removes it if a later exceptional path is reached before writing a rejection summary.
+- The fault-injection regression forces a post-publication failure and verifies that `summary.json` is failed while neither `result` nor a result-stage directory remains.
 
 No expensive plant integration was run; the runner's full child-plant execution path remains outside these test claims.

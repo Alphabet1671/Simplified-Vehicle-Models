@@ -97,6 +97,39 @@ class ArtifactTests(unittest.TestCase):
             self.assertEqual(json.loads((attempt/'summary.json').read_text())['execution_outcome'],'completed')
             self.assertFalse(observed['stage'].exists())
 
+    def test_post_publish_exception_removes_result_and_keeps_failure_summary(self):
+        from unittest.mock import patch
+        import os
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td); source=root/'definition.json'
+            payload=definition()
+            payload['vehicle']={'model':'models/formulations/iem24_murphy_real_planar_7dof.xml'}
+            source.write_text(json.dumps(payload))
+            observed={}
+            def fake_child(command, **kwargs):
+                stage=Path(command[-1]); observed['stage']=stage
+                d=validate_definition(json.loads(Path(command[-2]).read_text()))
+                result=SimpleNamespace(time_s=np.array([0.,.01]),state=np.zeros((2,2)),state_rate=np.ones((2,2)),
+                    events=(),applied_commands=(),execution_outcome='completed',termination_reason='duration')
+                write_artifacts(stage,d,result,{'execution_outcome':'completed'})
+                return 0
+            real_replace=os.replace
+            failed_once={'value':False}
+            def fail_summary_replace(src, dst):
+                if Path(dst).name == 'summary.json' and not failed_once['value']:
+                    failed_once['value']=True
+                    raise OSError('forced summary publish failure')
+                return real_replace(src, dst)
+            with patch('tools.maneuver_gui.runner.run_child', side_effect=fake_child), \
+                 patch('tools.maneuver_gui.runner.os.replace', side_effect=fail_summary_replace):
+                attempt=run_definition(source, root/'out')
+            summary=json.loads((attempt/'summary.json').read_text())
+            self.assertEqual(summary['execution_outcome'],'failed')
+            self.assertIn('forced summary publish failure',summary['error'])
+            self.assertFalse((attempt/'result').exists())
+            self.assertFalse(observed['stage'].exists())
+            self.assertEqual(list((root/'out').glob('*.result-stage')), [])
+
     def test_definition_invalid_rejected_without_child_physics(self):
         with tempfile.TemporaryDirectory() as td:
             source=Path(td)/'input.json'

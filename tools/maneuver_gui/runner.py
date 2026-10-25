@@ -158,6 +158,8 @@ def run_definition(definition_path: Path, output_root: Path, *, cancel=None, tim
     source = Path(definition_path).expanduser().resolve()
     stage = None
     source_copy = None
+    temp_summary = None
+    final = None
     try:
         from simplified_vehicle_models.controls.maneuvers.schema import load_definition
         definition = load_definition(source)  # strict validation before child execution
@@ -236,16 +238,27 @@ except BaseException as e:
         # directory entry; never copy files individually into the attempt.
         from tools.maneuver_gui.artifacts import load_manifest
         load_manifest(stage)
+        # Prepare every fallible summary operation and remove the source copy
+        # before publication. The result directory is the final success marker.
+        summary_bytes = (stage / "summary.json").read_bytes()
+        summary_doc = json.loads(summary_bytes)
+        if summary_doc.get("execution_outcome") != "completed":
+            raise ValueError("child result is not completed")
+        temp_summary = attempt / f".summary.{uuid.uuid4().hex}.tmp"
+        temp_summary.write_bytes(summary_bytes)
+        source_copy.unlink(missing_ok=True)
         final = attempt / "result"
         os.replace(stage, final)
         stage = None
-        source_copy.unlink(missing_ok=True)
-        summary_bytes = (final / "summary.json").read_bytes()
-        temp_summary = attempt / f".summary.{uuid.uuid4().hex}.tmp"
-        temp_summary.write_bytes(summary_bytes)
         os.replace(temp_summary, attempt / "summary.json")
         return attempt
     except Exception as exc:
+        import shutil
+        if final is not None:
+            shutil.rmtree(final, ignore_errors=True)
+        if stage is not None:
+            shutil.rmtree(stage, ignore_errors=True)
+            stage = None
         _rejection(attempt, exc)
         return attempt
     finally:
@@ -254,6 +267,8 @@ except BaseException as e:
             shutil.rmtree(stage, ignore_errors=True)
         if source_copy is not None:
             source_copy.unlink(missing_ok=True)
+        if temp_summary is not None:
+            temp_summary.unlink(missing_ok=True)
 
 
 def main(argv=None) -> int:

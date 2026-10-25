@@ -24,6 +24,8 @@ from tools.gui_common.files import protected_directory_problem
 from tools.sim_gui import REPOSITORY_ROOT
 from tools.sim_gui.execute import prepare_case, validate_case
 from tools.sim_gui.qt.model_panel import ModelPanel
+from tools.maneuver_gui.qt import ManeuverTab
+from tools.maneuver_gui.qt.controller import ManeuverController
 from tools.sim_gui.qt.queue import CaseQueue, QueueTable
 from tools.sim_gui.qt.settings_tab import SettingsTab
 from tools.sim_gui.qt.single_run_tab import SingleRunTab
@@ -66,6 +68,8 @@ class MainWindow(QMainWindow):
 
         self.model_panel = ModelPanel(parent=self)
         self.single_tab = SingleRunTab(self)
+        self.maneuver_tab = ManeuverTab(parent=self)
+        self.maneuver_controller = ManeuverController(self.maneuver_tab, output_root=self.output_root, parent=self)
         self.track_tab = TrackTab(self)
         self.settings_tab = SettingsTab(self)
         self.study_tab = None
@@ -74,6 +78,7 @@ class MainWindow(QMainWindow):
         self.log_view.setReadOnly(True)
         self.tabs = QTabWidget(self)
         self.tabs.addTab(self.single_tab, "Single Run")
+        self.tabs.addTab(self.maneuver_tab, "Maneuvers")
         self.tabs.addTab(self.track_tab, "Track")
         self.tabs.addTab(self.settings_tab, "Run Settings")
         self.tabs.addTab(self.queue_table, "Queue")
@@ -90,6 +95,9 @@ class MainWindow(QMainWindow):
         self.single_tab.stopRequested.connect(self.stop_cases)
         self.single_tab.modelSelected.connect(self._single_model_selected)
         self.single_tab.trackSelected.connect(self._single_track_selected)
+        self.maneuver_tab.runRequested.connect(self._run_maneuver)
+        self.maneuver_tab.stopRequested.connect(self.maneuver_controller.cancel)
+        self.maneuver_controller.busyChanged.connect(self._maneuver_busy_changed)
         self.track_tab.trackChanged.connect(self._track_changed)
         stored = self.settings_store.value("single_run_output")
         self.single_tab.set_export_folder(Path(stored) if stored else self.output_root)
@@ -156,10 +164,40 @@ class MainWindow(QMainWindow):
 
     def _configuration_changed(self, configuration) -> None:
         self.configuration = configuration
+        self.maneuver_tab.set_vehicle_configuration(self._maneuver_definition_seed(configuration))
         if self.study_tab is not None:
             self.study_tab.configuration = configuration
             self.study_tab.settings = self.settings_tab._settings
         self.settings_tab.set_model(configuration.model)
+        self._refresh_actions()
+
+    def _maneuver_definition_seed(self, configuration) -> dict:
+        """Create the initial simulation-only maneuver draft for a selected model."""
+        try:
+            model = configuration.source.resolve().relative_to(REPOSITORY_ROOT).as_posix()
+        except ValueError:
+            model = str(configuration.source)
+        return {
+            "schema": "maneuver-v1", "name": "maneuver", "preset": "step_steer",
+            "backend": "simulation", "vehicle": {"model": model},
+            "initial": {"speed_mps": 10.0, "x_m": 0.0, "y_m": 0.0, "heading_rad": 0.0},
+            "clock": {"controller_tick_s": 0.01},
+            "steering": {"mode": "peak_swa", "amplitude_rad": 0.1, "direction": 1},
+            "longitudinal": {"mode": "constant_accelerator", "accelerator": 0.1},
+            "profile": {"duration_s": 3.0}, "limits": {},
+            "termination": {"duration_s": 3.0}, "calibration": None, "csv": None,
+        }
+
+    def _run_maneuver(self, definition) -> None:
+        if self.configuration is None or self._run_mode is not None or self.maneuver_controller.is_running():
+            return
+        self._run_mode = "maneuver"
+        self._refresh_actions()
+        self.maneuver_controller.start(definition)
+
+    def _maneuver_busy_changed(self, busy: bool) -> None:
+        if not busy and self._run_mode == "maneuver":
+            self._run_mode = None
         self._refresh_actions()
 
     def _settings_changed(self, settings) -> None:
@@ -178,6 +216,7 @@ class MainWindow(QMainWindow):
         """Open a vehicle configuration and refresh dependent tabs."""
         self.configuration = VehicleConfiguration.open(path)
         self.model_panel.set_configuration(self.configuration)
+        self.maneuver_tab.set_vehicle_configuration(self._maneuver_definition_seed(self.configuration))
         self.settings_tab.set_model(self.configuration.model)
         try:
             current_settings = self.settings_tab.settings()
@@ -389,6 +428,9 @@ class MainWindow(QMainWindow):
 
     def stop_cases(self) -> None:
         """Stop the active run, cancelling validation when it has not started."""
+        if self._run_mode == "maneuver":
+            self.maneuver_controller.cancel()
+            return
         if self._run_mode == "single" and self._validation_thread is not None:
             self._cancel_validation()
             return
@@ -626,6 +668,15 @@ class MainWindow(QMainWindow):
         if self._validation_thread is not None:
             self._validation_thread.quit()
             self._validation_thread.wait(10000)
+        if self.maneuver_controller.is_running():
+            self.maneuver_controller.cancel()
+            maneuver_loop = QEventLoop()
+            self.maneuver_controller.finished.connect(maneuver_loop.quit)
+            QTimer.singleShot(10000, maneuver_loop.quit)
+            maneuver_loop.exec()
+            if self.maneuver_controller.is_running():
+                event.ignore()
+                return
         if self._running:
             answer = _confirm(self, "Stop the running cases and quit?", "Stop the running cases and quit?")
             if answer != QMessageBox.StandardButton.Yes:

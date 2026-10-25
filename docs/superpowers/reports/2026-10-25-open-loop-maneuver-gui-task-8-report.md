@@ -24,3 +24,9 @@ No subprocess orchestration, live hardware control, or physics evaluation is add
 Bound visible editor fields to the typed draft with preset/mode controls and CSV ownership disabling; connected Tab run requests to calibration/CSV freshness preflight; exposed full strict CSV mapping controls with inline loader failures; and rendered requested/applied SWA, accelerator, and brake traces in three shared-time QPainter panes.
 
 Verification after repair: Qt **8 passed**, draft **6 passed**, CSV **7 passed**, maneuver **92 passed**, and `git diff --check` passed.
+
+## Fix round 2 — mode completeness
+
+Added schema-backed path/radius target controls and additional profile controls. Blank optional numeric fields now create values in the draft. Offscreen regressions exercise every preset, CSV ownership, path/radius target editing, and optional field creation.
+
+Verification after repair: Qt **9 passed**, draft **6 passed**, CSV **7 passed**, maneuver **93 passed**, and `git diff --check` passed.

@@ -1,5 +1,6 @@
 """Minimal CSV source and column-mapping dialog."""
 from pathlib import Path
+from simplified_vehicle_models.controls.maneuvers.csv_source import CsvMapping, CsvSource
 
 from PyQt6.QtWidgets import QDialog, QFormLayout, QLineEdit, QDialogButtonBox, QLabel, QVBoxLayout
 

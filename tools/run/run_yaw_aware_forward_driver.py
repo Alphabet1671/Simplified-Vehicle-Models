@@ -128,7 +128,7 @@ def record_metadata(args, track, vehicle, capability, plan, result):
     try:
         import xml.etree.ElementTree as ElementTree
         root = ElementTree.parse(track_path).getroot()
-        data_paths = [track_path.parent / node.get("ref")
+        data_paths = [(track_path.parent / node.get("ref")).resolve()
                       for node in root.findall("./data") if node.get("ref")]
     except (OSError, ElementTree.ParseError):
         data_paths = []

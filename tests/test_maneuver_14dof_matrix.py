@@ -76,6 +76,28 @@ class Maneuver14DofMatrixTests(unittest.TestCase):
                     load_manifest(result)
         self._run(vertical_definition, inspect_result=verify_rejections)
 
+    def test_peak_ay_runner_freezes_real_trial_selection(self):
+        vertical = 'models/formulations/iem24_murphy_real_14dof_simple.xml'
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            definition = self._definition(vertical, self._calibration(vertical), duration=.12)
+            definition.update({'steering': {'mode': 'peak_ay', 'amplitude_mps2': 9.80665, 'direction': 1},
+                               'profile': {'lead_in_s': 0., 'rise_s': .02, 'hold_s': .08,
+                                           'release_s': .02, 'duration_s': .12},
+                               'limits': {'max_swa_rad': .12, 'max_swa_rate_rad_s': 2.},
+                               'termination': {'duration_s': .12}})
+            source = root / 'definition.json'; source.write_text(json.dumps(definition))
+            attempt = run_definition(source, root / 'out', timeout_s=300)
+            summary = json.loads((attempt / 'summary.json').read_text())
+            self.assertEqual(summary['execution_outcome'], 'completed', summary)
+            evidence = summary['peak_ay_calibration']
+            self.assertEqual(evidence['status'], 'matched')
+            self.assertGreater(evidence['amplitude_rad'], 0.)
+            self.assertGreaterEqual(len(evidence['trials']), 8)
+            source_record = json.loads((attempt / 'result' / 'manifest.json').read_text())['definition']
+            self.assertEqual(source_record['steering']['mode'], 'peak_swa')
+            self.assertEqual(source_record['steering']['amplitude_rad'], evidence['amplitude_rad'])
+
     def test_vertical_csv_playback_preserves_source_digest(self):
         vertical = 'models/formulations/iem24_murphy_real_14dof_simple.xml'
         with tempfile.TemporaryDirectory() as temporary:

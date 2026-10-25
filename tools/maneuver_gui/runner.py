@@ -192,10 +192,14 @@ def run_definition(definition_path: Path, output_root: Path, *, cancel=None, tim
         stage = attempt.parent / f".{attempt.name}.{uuid.uuid4().hex}.result-stage"
         stage.mkdir()
         helper = r'''import json, sys, traceback
+from copy import deepcopy
+from dataclasses import asdict
 from pathlib import Path
 from simplified_vehicle_models.controls.maneuvers.schema import load_definition
 from simplified_vehicle_models.controls.maneuvers.program import ManeuverProgram
 from simplified_vehicle_models.controls.maneuvers.csv_source import CsvMapping, load_csv_source
+from simplified_vehicle_models.controls.maneuvers.calibration import calibrate_peak_ay
+from simplified_vehicle_models.controls.maneuvers.types import ManeuverDefinition
 from simplified_vehicle_models.solvers.maneuver_planar import ActuatorCalibration, ManeuverPlanarPlant
 from simplified_vehicle_models.solvers.maneuver_vertical import VerticalManeuverPlant
 from simplified_vehicle_models.solvers.maneuver_simulation import SimulationSettings, simulate_maneuver
@@ -219,6 +223,27 @@ try:
     else:
         raise ValueError('maneuver runner supports planar-7dof or 14dof-simple only')
     initial=plant.initial_state(**{k:v for k,v in data['initial'].items() if k in ('speed_mps','x_m','y_m','heading_rad')})
+    # Peak-ay requests are never fed directly to the maneuver controller.  A
+    # bounded series of simulation-only trials selects one frozen SWA before
+    # the final run; its complete evidence is recorded in the final summary.
+    calibration_evidence=None
+    if data['steering']['mode']=='peak_ay':
+        trial_data=deepcopy(data)
+        direction=trial_data['steering'].get('direction',1)
+        def trial(swa_rad):
+            candidate=deepcopy(trial_data)
+            candidate['steering']={'mode':'peak_swa','amplitude_rad':abs(float(swa_rad)),'direction':direction}
+            candidate_definition=ManeuverDefinition.from_dict(candidate)
+            return simulate_maneuver(plant, ManeuverProgram(candidate_definition), initial,
+                                     SimulationSettings(tick_s=float(candidate['clock']['controller_tick_s']), max_wall_s=300.))
+        upper=min(float(data['limits'].get('max_swa_rad', actuator.maximum_swa_rad)), float(actuator.maximum_swa_rad))
+        selected=calibrate_peak_ay(d, trial, (0., upper))
+        calibration_evidence=asdict(selected)
+        if selected.status!='matched' or selected.amplitude_rad is None:
+            raise ValueError('peak-ay calibration did not match target: '+selected.status)
+        data=deepcopy(data)
+        data['steering']={'mode':'peak_swa','amplitude_rad':abs(float(selected.amplitude_rad)),'direction':direction}
+        d=ManeuverDefinition.from_dict(data)
     csv_source=None
     if data['preset']=='csv_playback':
         csv_config=data['csv']
@@ -235,6 +260,7 @@ try:
     outcome=result.execution_outcome
     summary={'execution_outcome':outcome,'input_fidelity':'exact','objective':'not_evaluated','termination_reason':result.termination_reason}
     if csv_source is not None: summary['csv_sha256']=csv_source.source_sha256
+    if calibration_evidence is not None: summary['peak_ay_calibration']=calibration_evidence
     write_artifacts(out,d,result,summary, model_kind=model_kind)
     print(json.dumps({'event':'complete','time_s':float(result.time_s[-1]),'fraction':1.0,'phase':result.termination_reason}), flush=True)
     sys.exit(0 if outcome == 'completed' else 2)

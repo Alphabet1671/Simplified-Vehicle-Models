@@ -1,6 +1,8 @@
 import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import unittest
+import tempfile
+from pathlib import Path
 
 try:
     from PyQt6.QtWidgets import QApplication
@@ -64,6 +66,39 @@ class ManeuverQtTests(unittest.TestCase):
         self.assertEqual(tab.preview.requested, requested)
         self.assertEqual(tab.preview.applied, applied)
         self.assertFalse(tab.hardware_arm_button.isEnabled())
+
+    def test_preview_trace_copies_inputs_and_keeps_requested_applied_distinct(self):
+        preview = PreviewWidget()
+        times = [0.0, 1.0]
+        requested = [{"steering": 0.2}, {"steering": 0.4}]
+        applied = [{"steering": 0.1}, {"steering": 0.3}]
+        preview.set_trace(times, requested, applied)
+        times[0] = 9.0
+        requested[0]["steering"] = 9.0
+        applied[0]["steering"] = 9.0
+        self.assertEqual(preview.time_s, [0.0, 1.0])
+        self.assertEqual(preview.requested_commands[0]["steering"], 0.2)
+        self.assertEqual(preview.applied_commands[0]["steering"], 0.1)
+        self.assertNotEqual(preview.requested_commands, preview.applied_commands)
+        self.assertIn("Requested trace", preview.requested_label.text())
+        self.assertIn("Applied trace", preview.applied_label.text())
+
+    def test_csv_dialog_source_valid_and_invalid(self):
+        from tools.maneuver_gui.qt import CsvDialog
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "commands.csv"
+            path.write_text("time,swa,accelerator,brake\n0,0,0.2,0\n1,0.1,0,0.3\n")
+            mapping = {"time": "time", "swa": "swa", "accelerator": "accelerator", "brake": "brake"}
+            dialog = CsvDialog(str(path), mapping)
+            source = dialog.source()
+            self.assertEqual(source.time_s, (0.0, 1.0))
+            self.assertEqual(len(source.commands), 2)
+            self.assertEqual(source.mapping.time, "time")
+            with self.assertRaises((AttributeError, TypeError)):
+                source.commands[0].accelerator = 0.8
+            invalid = CsvDialog(str(path), {**mapping, "swa": "missing"})
+            with self.assertRaises(ValueError):
+                invalid.source()
 
     def test_preview_keeps_requested_and_applied_distinct(self):
         preview = PreviewWidget()

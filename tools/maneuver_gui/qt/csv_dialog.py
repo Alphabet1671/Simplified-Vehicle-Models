@@ -1,6 +1,6 @@
 """Minimal CSV source and column-mapping dialog."""
 from pathlib import Path
-from simplified_vehicle_models.controls.maneuvers.csv_source import CsvMapping, CsvSource
+from simplified_vehicle_models.controls.maneuvers.csv_source import CsvMapping, load_csv_source
 
 from PyQt6.QtWidgets import QDialog, QFormLayout, QLineEdit, QDialogButtonBox, QLabel, QVBoxLayout
 
@@ -41,6 +41,23 @@ class CsvDialog(QDialog):
             errors["csv.mapping"] = "Column mapping required for: " + ", ".join(missing)
         self.error_label.setText("; ".join(errors.values()))
         return not errors, errors
+
+    def mapping(self):
+        ok, errors = self.validate()
+        if not ok:
+            raise ValueError(self.error_label.text() or "; ".join(errors.values()))
+        columns = self.values()["mapping"]
+        try:
+            return CsvMapping(columns["time"], columns["swa"], columns["accelerator"],
+                              columns["brake"], "s", "rad", "fraction", "hold")
+        except (TypeError, ValueError) as exc:
+            message = str(exc)
+            self.error_label.setText(message)
+            raise ValueError(message) from exc
+
+    def source(self):
+        mapping = self.mapping()
+        return load_csv_source(Path(self.source_edit.text().strip()), mapping)
 
     def accept(self):
         ok, _ = self.validate()

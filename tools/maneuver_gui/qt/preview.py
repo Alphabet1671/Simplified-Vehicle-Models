@@ -17,6 +17,16 @@ class PreviewWidget(QWidget):
         layout.addWidget(self.requested_label)
         layout.addWidget(self.applied_label)
 
+    def set_trace(self, time_s, requested_commands, applied_commands=None):
+        self.time_s = deepcopy(time_s)
+        self.requested_commands = deepcopy(requested_commands)
+        self.applied_commands = deepcopy(applied_commands)
+        self.requested = self.requested_commands
+        self.applied = self.applied_commands
+        self.requested_label.setText(f"Requested trace: {self.requested_commands}")
+        self.applied_label.setText(f"Applied trace: {self.applied_commands if self.applied_commands is not None else '—'}")
+        self.update()
+
     def set_state(self, requested, applied=None):
         self.requested = deepcopy(requested)
         self.applied = deepcopy(applied)
@@ -28,4 +38,4 @@ class PreviewWidget(QWidget):
         painter = QPainter(self)
         painter.setPen(Qt.GlobalColor.darkBlue)
         painter.drawText(self.rect().adjusted(4, 4, -4, -4), Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignRight,
-                         "requested / applied")
+                         f"Requested: {self.requested} / Applied: {self.applied if self.applied is not None else '—'}")

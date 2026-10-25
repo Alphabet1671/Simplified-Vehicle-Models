@@ -57,7 +57,9 @@ class CsvSource:
 
 def load_csv_source(path:Path,mapping:CsvMapping)->CsvSource:
     if not isinstance(mapping,CsvMapping):raise TypeError('mapping must be CsvMapping')
-    raw=Path(path).read_bytes()
+    path=Path(path)
+    if path.stat().st_size>_MAX_BYTES:raise ValueError('CSV exceeds 100 MiB limit')
+    raw=path.read_bytes()
     if len(raw)>_MAX_BYTES:raise ValueError('CSV exceeds 100 MiB limit')
     try:text=raw.decode('utf-8-sig')
     except UnicodeDecodeError as exc:raise ValueError('CSV must be UTF-8') from exc

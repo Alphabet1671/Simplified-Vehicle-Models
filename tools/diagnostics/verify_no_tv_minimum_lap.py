@@ -1429,9 +1429,36 @@ def _attempt_ladder_worker(request_path: str, result_path: str, artifact_path: s
 
 
 def run_bounded_worker(request: dict, output: Path) -> dict:
-    """Compatibility adapter to the shared hard-deadline supervisor."""
+    """Run the authoritative hard supervisor and attach bounded-attempt provenance."""
     from simplified_vehicle_models.solvers.minimum_time_run import run_request
-    return run_request(request, str(output))
+    result = run_request(request, str(output))
+    cap = request["wall_cap_s"]
+    status = result.get("status")
+    if status == "wall_timeout":
+        reason = "deadline_exhausted"
+    elif status == "worker_no_result":
+        reason = "worker_no_result"
+    elif status in {"worker_exit_failure", "worker_malformed_result", "worker_exception",
+                    "worker_start_failure", "supervisor_error", "cancelled"}:
+        reason = "worker_unresolved"
+    else:
+        reason = "worker_completed_unqualified"
+    evidence = {"schema": "bounded_attempt_v1", "parent_wall_cap_s": cap,
+                "terminal_reason": reason, "accepted": False,
+                "hard_supervisor": "separate_authoritative"}
+    result["bounded_attempt"] = evidence
+    root = Path(output)
+    for name in ("result.json", "timeout_result.json", "cancel_result.json", "supervisor_result.json"):
+        path = root / name
+        if path.is_file():
+            try:
+                persisted = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(persisted, dict):
+                    persisted["bounded_attempt"] = evidence
+                    _write_json_new_or_replace(path, persisted, initial=False)
+            except (OSError, ValueError, TypeError):
+                pass
+    return result
 
 
 def _rms_difference(left: Path, right: Path) -> dict:

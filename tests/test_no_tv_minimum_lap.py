@@ -1052,6 +1052,32 @@ class NoTvMinimumLapHarnessTest(unittest.TestCase):
             with self.assertRaises(FileExistsError):
                 harness.run_bounded_worker(request, output)
 
+    def test_bounded_worker_normal_completion_records_unqualified_attempt(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "attempt"
+            original = {"status": "Solve_Succeeded", "accepted": False,
+                        "solve_completed": True, "solver_succeeded": True,
+                        "evidence_complete": False}
+            def fake_supervisor(request, output_dir):
+                Path(output_dir).mkdir(parents=True)
+                (Path(output_dir) / "result.json").write_text(json.dumps(original), encoding="utf-8")
+                return dict(original)
+            with patch("simplified_vehicle_models.solvers.minimum_time_run.run_request",
+                       side_effect=fake_supervisor) as supervisor:
+                result = harness.run_bounded_worker({"wall_cap_s": 2.5}, output)
+            supervisor.assert_called_once()
+            self.assertEqual(result["bounded_attempt"], {
+                "schema": "bounded_attempt_v1", "parent_wall_cap_s": 2.5,
+                "terminal_reason": "worker_completed_unqualified", "accepted": False,
+                "hard_supervisor": "separate_authoritative"})
+            self.assertEqual(result["status"], "Solve_Succeeded")
+            self.assertTrue(result["solve_completed"])
+            self.assertTrue(result["solver_succeeded"])
+            self.assertFalse(result["evidence_complete"])
+            persisted = json.loads((output / "result.json").read_text(encoding="utf-8"))
+            self.assertEqual(persisted["bounded_attempt"], result["bounded_attempt"])
+            json.dumps(result, allow_nan=False)
+
     def test_timeout_terminates_and_persists_failure(self):
         class Process:
             exitcode = None
@@ -1084,6 +1110,12 @@ class NoTvMinimumLapHarnessTest(unittest.TestCase):
             timeout = json.loads((attempt / "timeout_result.json").read_text())
             self.assertEqual(worker_evidence["status"], "partial")
             self.assertEqual(timeout["error_type"], "TimeoutError")
+            self.assertEqual(result["bounded_attempt"]["terminal_reason"], "deadline_exhausted")
+            self.assertEqual(timeout["bounded_attempt"], result["bounded_attempt"])
+            self.assertEqual(worker_evidence["bounded_attempt"], result["bounded_attempt"])
+            self.assertEqual(result["status"], "wall_timeout")
+            self.assertFalse(result["accepted"])
+            json.dumps(timeout, allow_nan=False)
 
     def test_worker_exit_without_result_is_persisted_as_failure(self):
         class Process:
@@ -1101,6 +1133,11 @@ class NoTvMinimumLapHarnessTest(unittest.TestCase):
             self.assertEqual(result["status"], "worker_no_result")
             self.assertFalse(result["solver_succeeded"])
             self.assertFalse(result["accepted"])
+            self.assertEqual(result["bounded_attempt"]["terminal_reason"], "worker_no_result")
+            output = Path(directory) / "attempt"
+            persisted = json.loads((output / "result.json").read_text(encoding="utf-8"))
+            self.assertEqual(persisted["bounded_attempt"], result["bounded_attempt"])
+            json.dumps(result, allow_nan=False)
 
     def test_source_hashes_recursively_include_data_and_source_dependencies(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -28,8 +28,6 @@ def write_maneuver_run_record(path, definition, artifact_directory, *, model_kin
         raise ValueError("artifact must identify exact 14dof-simple model_kind")
     from simplified_vehicle_models.solvers.vertical_forward import VerticalForwardPlant
     names = tuple(VerticalForwardPlant.state_names)
-    if tuple(data.get("state_names", ())) != names:
-        raise ValueError("artifact definition must use canonical VerticalForwardPlant.state_names")
     time = np.asarray(arrays["time_s"])
     states, rates = np.asarray(arrays["state"]), np.asarray(arrays["state_rate"])
     if states.shape != (len(time), len(names)) or rates.shape != states.shape:

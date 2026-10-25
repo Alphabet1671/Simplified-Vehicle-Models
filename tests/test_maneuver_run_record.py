@@ -7,7 +7,7 @@ from types import MappingProxyType, SimpleNamespace
 
 import numpy as np
 
-from simplified_vehicle_models.controls.maneuvers.types import RobotCommand
+from simplified_vehicle_models.controls.maneuvers.types import RobotCommand, ManeuverDefinition
 from simplified_vehicle_models.results.maneuver_run_record import write_maneuver_run_record
 from simplified_vehicle_models.results.run_record import load_run_record
 from simplified_vehicle_models.solvers.vertical_forward import VerticalForwardPlant
@@ -17,10 +17,18 @@ from tools.maneuver_gui.artifacts import write_artifacts
 
 class ManeuverRunRecordTests(unittest.TestCase):
     def _artifact(self, directory):
-        names = tuple(VerticalForwardPlant.state_names)
-        definition = {"schema": "maneuver-v1", "maneuver_id": "synthetic",
-            "profile": {"duration_s": .5}, "state_names": names,
-            "vehicle": {"formulation": "models/formulations/iem24_murphy_real_14dof_simple.xml"}, "calibration": {}}
+        definition = {"schema": "maneuver-v1", "name": "synthetic", "preset": "step_steer",
+            "backend": "simulation", "vehicle": {"model": "models/formulations/iem24_murphy_real_14dof_simple.xml"},
+            "initial": {"speed_mps": 10., "x_m": 0., "y_m": 0., "heading_rad": 0.},
+            "clock": {"controller_tick_s": .01},
+            "steering": {"mode": "peak_swa", "amplitude_rad": .2, "direction": 1},
+            "longitudinal": {"mode": "constant_accelerator", "accelerator": .1},
+            "profile": {"lead_in_s": 0., "rise_s": .1, "hold_s": .2, "release_s": .1,
+                        "recovery_s": .1, "duration_s": .5},
+            "limits": {"max_swa_rad": 1., "max_swa_rate_rad_s": 2.},
+            "termination": {"duration_s": .5}, "calibration": None, "csv": None}
+        definition = ManeuverDefinition.from_dict(definition).to_dict()
+        assert "state_names" not in definition
         time = np.array([0., .25, .5]); state = np.arange(3*38, dtype=float).reshape(3, 38)/10
         rows = tuple(MappingProxyType({"position-x": [float(i)], "position-y": [float(2*i)], "speed": [float(5+i)]}) for i in range(3))
         result = SimpleNamespace(time_s=time, state=state, state_rate=-state,

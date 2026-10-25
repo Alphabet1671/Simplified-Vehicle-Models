@@ -134,7 +134,10 @@ def run(args):
     pm = point_mass_view_of_planar(vehicle)
     grid = YawCapabilityGrid(
         np.linspace(0., args.maximum_speed, args.yaw_speed_points),
-        np.linspace(-4., 2., args.yaw_ax_points),
+        # Keep the map grid consistent with the independently probed MIS
+        # low-speed forward/backward profile domain: braking needs more range
+        # than the initial symmetric convenience grid supplied.
+        np.linspace(-6., 3., args.yaw_ax_points),
         np.linspace(-9.80665, 9.80665, args.yaw_ay_points),
     )
     capability = build_physical_yaw_map(pm, grid, yaw_inertia=vehicle.yaw_inertia)

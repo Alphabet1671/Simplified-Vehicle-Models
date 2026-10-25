@@ -13,3 +13,11 @@
 - `test_maneuver_*.py`: 56 passed.
 - `test_planar_forward.py`: 9 passed.
 - `git diff --check`: passed.
+
+## Fix round — review findings
+
+- Fingerprinting now omits UI and recognized `output_path`/`output_directory` location metadata, but preserves semantic `output` fields at any depth. Regression asserts location/UI changes keep the digest stable while changing `model.output.torque_nm` changes it.
+- Skidpad `bracketed_physical_limit` and `limit_not_reached` require a configured positive target speed and at least three final speed samples all at or above 98% of target. Missing or inadequate evidence yields `not_established` and an intervention; unmet target speed also blocks both classifications.
+- Persistent invalidity requires a final run of three bad path-error samples. A bracket requires a valid sample before that run; first-sample invalid evidence reports `not_established` with both bracket speeds unset.
+- Added tests for metadata-vs-semantic fingerprint behavior, missing/short/unmet speed evidence, and first-sample persistent invalidity.
+- Fix-round verification: calibration 5 passed; analysis 8 passed; all maneuver tests 62 passed; `test_planar_forward.py` 9 passed; diff check passed. No plant evaluation added.

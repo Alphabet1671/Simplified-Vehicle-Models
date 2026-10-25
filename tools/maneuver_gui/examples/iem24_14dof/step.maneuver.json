@@ -57,10 +57,10 @@
   "name": "REQUESTED \u2014 FROZEN PEAK-AY CALIBRATION REQUIRED \u2014 IEM24 14DoF step steering, 1.0g at 60 km/h",
   "preset": "step_steer",
   "profile": {
-    "duration_s": 5.2,
-    "hold_s": 3.0,
+    "duration_s": 3.0,
+    "hold_s": 1.8,
     "lead_in_s": 1.0,
-    "recovery_s": 1.0,
+    "recovery_s": 0.0,
     "release_s": 0.1,
     "rise_s": 0.1
   },
@@ -71,7 +71,7 @@
     "mode": "peak_ay"
   },
   "termination": {
-    "duration_s": 5.2
+    "duration_s": 3.0
   },
   "vehicle": {
     "model": "models/formulations/iem24_murphy_real_14dof_simple.xml"

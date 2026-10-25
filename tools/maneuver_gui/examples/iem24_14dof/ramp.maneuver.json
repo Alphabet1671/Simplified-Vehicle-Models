@@ -57,11 +57,11 @@
   "name": "REQUESTED \u2014 FROZEN PEAK-AY CALIBRATION REQUIRED \u2014 IEM24 14DoF ramp steering, 1.0g at 60 km/h",
   "preset": "ramp_steer",
   "profile": {
-    "duration_s": 5.1,
-    "hold_s": 2.0,
+    "duration_s": 3.0,
+    "hold_s": 0.9,
     "lead_in_s": 1.0,
     "ramp_s": 1.0,
-    "recovery_s": 1.0,
+    "recovery_s": 0.0,
     "release_s": 0.1
   },
   "schema": "maneuver-v1",
@@ -71,7 +71,7 @@
     "mode": "peak_ay"
   },
   "termination": {
-    "duration_s": 5.1
+    "duration_s": 3.0
   },
   "vehicle": {
     "model": "models/formulations/iem24_murphy_real_14dof_simple.xml"

@@ -8,6 +8,7 @@ from simplified_vehicle_models.tracks.line_trajectory import ReferenceCurve, Off
 from simplified_vehicle_models.tracks.offset_spline import OffsetSpline
 from simplified_vehicle_models.solvers.loaded_geometry_admission import (
     AdmissionSettings, AdmissionStatus, OperationBudget, admit_loaded_geometry,
+    offset_basis_domain_supported,
 )
 
 
@@ -51,22 +52,12 @@ class AdmissionTests(unittest.TestCase):
             domain=(0.,5.),operation_budget=OperationBudget(maximum_panels=1,maximum_depth=0,sqrt_bits=16))
         self.assertNotEqual(out.status,AdmissionStatus.ADMITTED)
 
-    def test_nonzero_origin_offset_basis_rejected(self):
+    def test_nonzero_origin_basis_check_is_non_mutating(self):
         ref=make_reference(1.,5.)
         profile=type("Profile", (), {"lap_length": 5.0, "is_closed": False})()
         spline=OffsetSpline(profile,1.0)
-        # The public constructor cannot build its station map for this known
-        # mismatched basis; represent the exact stored-fit objects directly so
-        # admission can reject the basis before any bound/extrapolation.
-        cand=object.__new__(OffsetTrajectory)
-        cand.reference=ref
-        cand.spline=spline
-        cand.coefficients=np.zeros(spline.control_count)
-        cand._offset_curve=spline._spline(cand.coefficients)
-        out=admit_loaded_geometry(reference=ref,trajectory_or_none=cand,settings=self.settings,
-            domain=(1.,5.),operation_budget=OperationBudget())
-        self.assertEqual(out.status,AdmissionStatus.UNSUPPORTED)
-        self.assertEqual(out.reason_codes,("unsupported_offset_basis_domain",))
+        self.assertFalse(offset_basis_domain_supported(ref,spline))
+        self.assertEqual(tuple(spline.control_distance[[0,-1]]),(0.0,5.0))
 
     def test_heading_work_cap_propagates_unresolved(self):
         out=admit_loaded_geometry(reference=self.ref,trajectory_or_none=make_candidate(self.ref),

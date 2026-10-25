@@ -26,6 +26,13 @@ class AdmissionStatus(str, Enum):
     ADMITTED = "admitted"
 
 
+class EvidenceStatus(str, Enum):
+    NOT_REQUESTED = "not_requested"
+    ESTABLISHED = "established"
+    UNSUPPORTED = "unsupported"
+    UNRESOLVED = "unresolved"
+
+
 @dataclass(frozen=True, slots=True)
 class AdmissionSettings:
     fold_guard: Fraction | float
@@ -71,7 +78,7 @@ class OperationBudget:
 
 @dataclass(frozen=True, slots=True)
 class Evidence:
-    status: str
+    status: EvidenceStatus
     reason: str | None = None
     metric_interval: tuple[Fraction, Fraction] | None = None
     fold_interval: tuple[Fraction, Fraction] | None = None
@@ -96,6 +103,16 @@ class GeometryAdmission:
 
 def _bound_args(b: OperationBudget):
     return dict(maximum_panels=b.maximum_panels, maximum_depth=b.maximum_depth, sqrt_bits=b.sqrt_bits)
+
+
+def offset_basis_domain_supported(reference: ReferenceCurve, spline: OffsetSpline) -> bool:
+    """Check source/basis alignment without evaluating, mutating, or extrapolating."""
+    if type(reference) is not ReferenceCurve or type(spline) is not OffsetSpline:
+        raise TypeError("exact ReferenceCurve and OffsetSpline required")
+    knots = spline.control_distance
+    if knots.size < 2:
+        return False
+    return float(knots[0]) == reference.start and float(knots[-1]) == reference.end
 
 
 def admit_loaded_geometry(*, reference, trajectory_or_none, settings, domain, operation_budget):
@@ -128,16 +145,15 @@ def admit_loaded_geometry(*, reference, trajectory_or_none, settings, domain, op
             raise ValueError("candidate must reference the supplied ReferenceCurve instance")
         if type(t.spline) is not OffsetSpline:
             raise TypeError("candidate spline must be exact OffsetSpline")
-        xs=t._offset_curve.x
-        if float(xs[0]) != reference.start or float(xs[-1]) != reference.end:
+        if not offset_basis_domain_supported(reference, t.spline):
             return GeometryAdmission(AdmissionStatus.UNSUPPORTED, ("unsupported_offset_basis_domain",),
-                Evidence("not_requested"), Evidence("unsupported", "unsupported_offset_basis_domain"), settings, domain, operation_budget)
+                Evidence(EvidenceStatus.NOT_REQUESTED), Evidence(EvidenceStatus.UNSUPPORTED, "unsupported_offset_basis_domain"), settings, domain, operation_budget)
     try:
         rb=bound_reference_geometry(reference, domain, **_bound_args(operation_budget))
     except (RuntimeError, ValueError) as exc:
-        ev=Evidence("unresolved", str(exc))
+        ev=Evidence(EvidenceStatus.UNRESOLVED, str(exc))
         return GeometryAdmission(AdmissionStatus.UNRESOLVED, ("unresolved_reference_bound",), ev, None, settings, domain, operation_budget)
-    re=Evidence("established" if rb.metric_interval[0] > 0 else "unresolved",
+    re=Evidence(EvidenceStatus.ESTABLISHED if rb.metric_interval[0] > 0 else EvidenceStatus.UNRESOLVED,
                 None if rb.metric_interval[0] > 0 else "reference_metric_not_proven_positive", rb.metric_interval,
                 panel_count=rb.panel_count)
     if re.status != "established":
@@ -155,18 +171,18 @@ def admit_loaded_geometry(*, reference, trajectory_or_none, settings, domain, op
         return GeometryAdmission(AdmissionStatus.UNRESOLVED, ("unresolved_candidate_bound",), re, ce, settings, domain, operation_budget)
     reason=None
     if cb.heading_status is HeadingStatus.GUARD_VIOLATION:
-        reason="candidate_fold_guard_violation"
+        reason="unresolved_candidate_fold_guard_violation"
     elif cb.heading_status is not HeadingStatus.ESTABLISHED:
         reason="unresolved_heading_enclosure"
     elif cb.heading_limit_status is LimitStatus.VIOLATION or cb.heading_rate_limit_status is LimitStatus.VIOLATION:
-        reason="candidate_heading_or_rate_limit_violation"
+        reason="unresolved_candidate_heading_or_rate_limit_violation"
     elif cb.heading_limit_status is not LimitStatus.WITHIN_LIMIT or cb.heading_rate_limit_status is not LimitStatus.WITHIN_LIMIT:
         reason="unresolved_heading_or_rate_limit"
     elif cb.fold_interval[0] < settings.fold_guard:
         reason="unresolved_fold_guard"
     elif cb.metric_interval[0] <= 0:
         reason="unresolved_offset_metric"
-    status=AdmissionStatus.ADMITTED if reason is None else (AdmissionStatus.UNRESOLVED if reason.startswith("unresolved") else AdmissionStatus.UNSUPPORTED)
-    ce=Evidence("established" if status is AdmissionStatus.ADMITTED else status.value, reason,
+    status=AdmissionStatus.ADMITTED if reason is None else AdmissionStatus.UNRESOLVED
+    ce=Evidence(EvidenceStatus.ESTABLISHED if status is AdmissionStatus.ADMITTED else EvidenceStatus.UNRESOLVED, reason,
         cb.metric_interval, cb.fold_interval, cb.heading_error_interval, cb.heading_error_s_interval, cb.panel_count)
     return GeometryAdmission(status, (() if reason is None else (reason,)), re, ce, settings, domain, operation_budget)

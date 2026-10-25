@@ -287,6 +287,34 @@ class OffsetGeometryBoundsTests(unittest.TestCase):
         # established witness interval (the witness is deliberately wider).
         self.assertGreaterEqual(lo, lower)
         self.assertLessEqual(hi, upper)
+
+        # Independent rational pi witness gives a true-value bracket for
+        # atan(1)=pi/4; the implemented Machin enclosure must fit inside it.
+        pi_lo, pi_hi = Fraction(333, 106), Fraction(355, 113)
+        atan1_lo, atan1_hi = pi_lo / 4, pi_hi / 4
+        impl_lo, impl_hi = _atan_point(Fraction(1), 80, 32768, 8, [0, 10000], [0])
+        self.assertGreaterEqual(impl_lo, atan1_lo)
+        self.assertLessEqual(impl_hi, atan1_hi)
+
+        # Alternating-series witness for atan(1/2), transformed with the
+        # independent pi bracket to enclose atan(2)=pi/2-atan(1/2).
+        atan_half_lo, atan_half_hi = lower, upper
+        atan2_lo = pi_lo / 2 - atan_half_hi
+        atan2_hi = pi_hi / 2 - atan_half_lo
+        impl_lo, impl_hi = _atan_point(Fraction(2), 80, 32768, 8, [0, 10000], [0])
+        self.assertGreaterEqual(impl_lo, atan2_lo)
+        self.assertLessEqual(impl_hi, atan2_hi)
+
+        # Fixed anchor identity atan(3/4)=pi/4-atan(1/7), with an
+        # independent alternating-series enclosure of the small atan term.
+        anchor_x = Fraction(1, 7)
+        anchor_lo = sum(((-1)**j) * anchor_x**(2*j+1) / (2*j+1) for j in range(4))
+        anchor_hi = anchor_lo + anchor_x**9 / 9
+        atan34_lo = pi_lo / 4 - anchor_hi
+        atan34_hi = pi_hi / 4 - anchor_lo
+        impl_lo, impl_hi = _atan_point(Fraction(3, 4), 80, 32768, 8, [0, 10000], [0])
+        self.assertGreaterEqual(impl_lo, atan34_lo)
+        self.assertLessEqual(impl_hi, atan34_hi)
         for value in (Fraction(2, 3), Fraction(1), Fraction(2)):
             with self.subTest(reduction_value=value), self.assertRaisesRegex(RuntimeError, "reduction cap"):
                 _atan_point(value, 8, 128, 0, [0, 1000], [0])

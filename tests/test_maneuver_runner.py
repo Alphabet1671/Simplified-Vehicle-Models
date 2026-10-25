@@ -54,6 +54,49 @@ class ArtifactTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             _allowed_formulation("models/../../tmp/attacker.xml")
 
+    def test_unsuccessful_child_stage_is_removed_and_success_publish_is_directory_atomic(self):
+        import os
+        import subprocess
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td); source=root/'definition.json'
+            payload=definition()
+            payload['vehicle']={'model':'models/formulations/iem24_murphy_real_planar_7dof.xml'}
+            source.write_text(json.dumps(payload))
+            observed={}
+            def fake_child(command, **kwargs):
+                stage=Path(command[-1]); observed['stage']=stage
+                # A failed child may have partially written files; parent discards all.
+                (stage/'partial').write_text('incomplete')
+                return 7
+            with patch('tools.maneuver_gui.runner.run_child', side_effect=fake_child):
+                attempt=run_definition(source, root/'out')
+            self.assertEqual(json.loads((attempt/'summary.json').read_text())['execution_outcome'],'failed')
+            self.assertFalse((attempt/'result').exists())
+            self.assertFalse(observed['stage'].exists())
+            self.assertEqual(list((root/'out').glob('*.result-stage')), [])
+
+    def test_successful_result_directory_published_as_single_entry(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td); source=root/'definition.json'
+            payload=definition()
+            payload['vehicle']={'model':'models/formulations/iem24_murphy_real_planar_7dof.xml'}
+            source.write_text(json.dumps(payload))
+            observed={}
+            def fake_child(command, **kwargs):
+                stage=Path(command[-1]); observed['stage']=stage
+                d=validate_definition(json.loads(Path(command[-2]).read_text()))
+                result=SimpleNamespace(time_s=np.array([0.,.01]),state=np.zeros((2,2)),state_rate=np.ones((2,2)),
+                    events=(),applied_commands=(),execution_outcome='completed',termination_reason='duration')
+                write_artifacts(stage,d,result,{'execution_outcome':'completed'})
+                return 0
+            with patch('tools.maneuver_gui.runner.run_child', side_effect=fake_child):
+                attempt=run_definition(source, root/'out')
+            self.assertTrue((attempt/'result'/'manifest.json').is_file(), (attempt, list(attempt.iterdir()), (attempt/'summary.json').read_text()))
+            self.assertEqual(json.loads((attempt/'summary.json').read_text())['execution_outcome'],'completed')
+            self.assertFalse(observed['stage'].exists())
+
     def test_definition_invalid_rejected_without_child_physics(self):
         with tempfile.TemporaryDirectory() as td:
             source=Path(td)/'input.json'

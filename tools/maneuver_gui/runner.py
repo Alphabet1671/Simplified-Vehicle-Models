@@ -156,6 +156,8 @@ def run_definition(definition_path: Path, output_root: Path, *, cancel=None, tim
     """Validate and run a definition in an isolated Python child process."""
     attempt = create_attempt_directory(output_root)
     source = Path(definition_path).expanduser().resolve()
+    stage = None
+    source_copy = None
     try:
         from simplified_vehicle_models.controls.maneuvers.schema import load_definition
         definition = load_definition(source)  # strict validation before child execution
@@ -172,10 +174,10 @@ def run_definition(definition_path: Path, output_root: Path, *, cancel=None, tim
         if not formulation:
             raise ValueError("vehicle.model must name a planar-7dof formulation path")
         formulation_path = _allowed_formulation(str(formulation))
-        vehicle_spec["formulation"] = str(formulation_path)
+        vehicle_spec["model"] = str(formulation_path)
         source_copy = attempt / "maneuver-source.json"
         source_copy.write_text(json.dumps(data, indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8")
-        stage = attempt / ".result-stage"
+        stage = attempt.parent / f".{attempt.name}.{uuid.uuid4().hex}.result-stage"
         stage.mkdir()
         helper = r'''import json, sys, traceback
 from pathlib import Path
@@ -215,6 +217,9 @@ except BaseException as e:
         try:
             code = run_child(command, on_progress=forward_progress, cancel=cancel, timeout_s=timeout_s, env=env)
         except (KeyboardInterrupt, subprocess.TimeoutExpired):
+            import shutil
+            shutil.rmtree(stage, ignore_errors=True)
+            source_copy.unlink(missing_ok=True)
             _rejection(attempt, "simulation interrupted or timed out")
             return attempt
         if code < 0 or _cancel_requested(cancel):
@@ -227,17 +232,28 @@ except BaseException as e:
             shutil.rmtree(stage, ignore_errors=True)
             _rejection(attempt, f"simulation child exited {code}")
             return attempt
-        # Parent accepts only a successful, complete child publication.
+        # Validate in isolation then publish the complete result as one atomic
+        # directory entry; never copy files individually into the attempt.
         from tools.maneuver_gui.artifacts import load_manifest
         load_manifest(stage)
-        for item in stage.iterdir():
-            os.replace(item, attempt / item.name)
-        stage.rmdir()
+        final = attempt / "result"
+        os.replace(stage, final)
+        stage = None
         source_copy.unlink(missing_ok=True)
+        summary_bytes = (final / "summary.json").read_bytes()
+        temp_summary = attempt / f".summary.{uuid.uuid4().hex}.tmp"
+        temp_summary.write_bytes(summary_bytes)
+        os.replace(temp_summary, attempt / "summary.json")
         return attempt
     except Exception as exc:
         _rejection(attempt, exc)
         return attempt
+    finally:
+        if stage is not None:
+            import shutil
+            shutil.rmtree(stage, ignore_errors=True)
+        if source_copy is not None:
+            source_copy.unlink(missing_ok=True)
 
 
 def main(argv=None) -> int:

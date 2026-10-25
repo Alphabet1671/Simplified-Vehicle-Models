@@ -70,7 +70,30 @@ class TrackGeometryAuditTests(unittest.TestCase):
         self.assertEqual(result["claim"], "diagnostic_only")
         self.assertEqual(result["crossings"]["route_order_policy"]["identity"], "source_station")
         records=result["crossings"]["records"]
-        self.assertTrue(any(row["station_a_m"] != row["station_b_m"] for row in records))
+        def brackets_bind_coincident_nodes(record):
+            bracket_a = record["station_a_bracket_m"]
+            bracket_b = record["station_b_bracket_m"]
+            contains = lambda bracket, station: bracket[0] <= station <= bracket[1]
+            return (
+                contains(bracket_a, 50.0) and contains(bracket_b, 100.0)
+            ) or (
+                contains(bracket_a, 100.0) and contains(bracket_b, 50.0)
+            )
+
+        def stations_bind_coincident_nodes(record):
+            station_a, station_b = record["station_a_m"], record["station_b_m"]
+            return (np.isclose(station_a, 50.0) and np.isclose(station_b, 100.0)) or (
+                np.isclose(station_a, 100.0) and np.isclose(station_b, 50.0)
+            )
+
+        self.assertTrue(any(
+            brackets_bind_coincident_nodes(row) and stations_bind_coincident_nodes(row)
+            for row in records
+        ))
+        # Review-driven strengthening, not a claimed baseline RED: the old
+        # unequal-station assertion did not bind a record to the known
+        # coincident source nodes. Public output brackets are [50, 53.125] and
+        # [96.875, 100], with interpolated event stations 50 and 100.
         self.assertNotIn("status", result)
 
     def test_resampling_compares_route_facts_not_fit_invariance(self):

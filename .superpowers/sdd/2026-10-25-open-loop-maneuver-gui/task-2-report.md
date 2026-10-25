@@ -20,6 +20,10 @@ CSV tests verify exact original `source_bytes` equality and SHA-256; mocked over
 
 After reviewer feedback, added pre-read file-size protection and retained the post-read race-safe check. The expanded CSV suite now has 6 tests (including pre-read cap, row cap, source bytes/hash, mapping/header and input envelope cases). Re-ran CSV (6 passed), waveform (3 passed), and Task 1 schema regression (7 passed). `git diff --check` passed after removing trailing whitespace.
 
+## Round 2 re-review evidence
+
+Added direct malformed-input tests for a row with too few fields, an unterminated quoted CSV field (strict parser rejection), an empty mapped value, an invalid numeric token, and a nonfinite numeric token. The production parser already rejects each case; no production behavior change was needed. Verification: CSV suite 7 passed, waveform suite 3 passed, and schema regression suite 7 passed. `git diff --check` passed.
+
 ## Notes
 
 No Task 1 source files, planning documents, or dependencies were changed. Sine release is continuous by requiring integral cycles; the release field does not add a post-sine tail. The steering safety envelope is a fixed +/- pi rad input bound pending a later explicit envelope parameter/interface.

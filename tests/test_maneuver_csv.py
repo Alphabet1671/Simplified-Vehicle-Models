@@ -41,6 +41,17 @@ class CsvTests(unittest.TestCase):
             with self.assertRaises(ValueError): self.load('t,s,a,b\n0,0,0,0\n1,0,0,0\n',mapping)
         for content in ('t,s,a,b\n0,-181,0,0\n1,0,0,0\n','t,s,a,b\n0,0,-1,0\n1,0,0,0\n','t,s,a,b\n0,0,0,0\n1,0,0,101\n','t,s,a,a\n0,0,0,0\n1,0,0,0\n'):
             with self.subTest(content=content),self.assertRaises(ValueError):self.load(content)
+    def test_malformed_rows_and_numeric_values(self):
+        malformed = (
+            ('t,s,a,b\n0,0,0\n1,0,0,0\n', 'row width'),
+            ('t,s,a,b\n0,0,0,0\n1,0,0,"unterminated\n', 'quoting'),
+            ('t,s,a,b\n0,0,,0\n1,0,0,0\n', 'empty mapped value'),
+            ('t,s,a,b\n0,0,not-a-number,0\n1,0,0,0\n', 'invalid numeric'),
+            ('t,s,a,b\n0,0,inf,0\n1,0,0,0\n', 'nonfinite numeric'),
+        )
+        for content, label in malformed:
+            with self.subTest(case=label), self.assertRaises(ValueError):
+                self.load(content)
     def test_explicit_timebase(self):
         m=CsvMapping(None,'s','a','b','s','rad','fraction','hold',sample_dt_s=.5)
         _,s=self.load('s,a,b\n0,0,0\n1,0,0\n',m); self.assertEqual(tuple(s.time_s),(0,.5))

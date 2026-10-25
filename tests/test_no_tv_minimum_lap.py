@@ -46,7 +46,12 @@ class NoTvMinimumLapHarnessTest(unittest.TestCase):
 
     def test_observed_worker_stages_rejects_malformed_documents_and_events(self):
         malformed_documents = ["{", "[]", "{}", '{"events": null}']
-        invalid_events = [
+        valid_event = {"attempt": None, "stage": "setup", "started_monotonic": 1.0,
+                       "ended_monotonic": None}
+        missing_key_events = []
+        for key in ("attempt", "stage", "started_monotonic", "ended_monotonic"):
+            missing_key_events.append({name: value for name, value in valid_event.items() if name != key})
+        invalid_events = missing_key_events + [
             {"attempt": True, "stage": "setup", "started_monotonic": 1.0, "ended_monotonic": None},
             {"attempt": -1.5, "stage": "setup", "started_monotonic": 1.0, "ended_monotonic": None},
             {"attempt": None, "stage": "", "started_monotonic": 1.0, "ended_monotonic": None},

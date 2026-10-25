@@ -1439,10 +1439,12 @@ def _observed_worker_stages(root: Path) -> dict:
         document = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(document, dict) or not isinstance(document.get("events"), list):
             raise ValueError("stage document must contain an events list")
-        allowed = {"attempt", "stage", "started_monotonic", "ended_monotonic", "soft_budget_s"}
+        required = {"attempt", "stage", "started_monotonic", "ended_monotonic"}
+        allowed = required | {"soft_budget_s"}
         events = []
         for source in document["events"]:
-            if not isinstance(source, dict) or set(source) - allowed:
+            if (not isinstance(source, dict) or not required.issubset(source)
+                    or set(source) - allowed):
                 raise ValueError("unsupported stage event shape")
             attempt = source.get("attempt")
             stage = source.get("stage")

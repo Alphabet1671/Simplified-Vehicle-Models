@@ -30,7 +30,7 @@ def make_plan():
     capability = YawCapabilityMap(speed, ax, ay, np.full(shape, 1.e6), np.full(shape, 1.e6),
                                   np.ones(shape, bool), 1., "physical_no_tv_v1", "fixture")
     settings = YawLineSettings(control_spacing=90., grid_spacing=28., dense_subdivisions=1,
-                               optimizer_max_iterations=1, maximum_speed=20., seed_blends=(0.,))
+                               optimizer_max_iterations=1, maximum_outer_passes=1, maximum_speed=20.)
     return optimize_yaw_aware_line(track, None, capability, settings=settings)
 
 
@@ -71,11 +71,22 @@ class YawAwareDriverTests(unittest.TestCase):
         result = drive_yaw_aware_plan(plan, plant, driver, np.array([0., 0.]),
                                       duration=20., wall_seconds=10., maximum_step=.2)
         self.assertTrue(result.forward_result.lap_completed)
-        self.assertTrue(result.contained)
+        self.assertTrue(result.completed)
+        self.assertTrue(result.sampled_center_contained)
         self.assertEqual(result.max_corridor_violation, 0.)
         self.assertGreater(result.driven_time, 0.)
         self.assertAlmostEqual(result.predicted_vs_driven_time,
                                result.driven_time - result.predicted_time)
+
+    def test_incomplete_run_does_not_report_lap_time_comparison(self):
+        plan = self.plan
+        driver = PreviewDriver(plan.speed_plan, 2.5, .5, 2., 1000., speed_gain=.01)
+        plant = FakeForwardPlant(plan.speed_plan.distance[-1], 10.)
+        result = drive_yaw_aware_plan(plan, plant, driver, np.array([0., 0.]),
+                                      duration=.1, wall_seconds=10., maximum_step=.02)
+        self.assertFalse(result.completed)
+        self.assertIsNone(result.driven_time)
+        self.assertIsNone(result.predicted_vs_driven_time)
 
 
 if __name__ == "__main__":

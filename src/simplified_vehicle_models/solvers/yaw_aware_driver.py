@@ -22,31 +22,38 @@ from simplified_vehicle_models.solvers.forward_driver import (
 class YawAwareDriveResult:
     """Immutable result of driving and checking a yaw-aware plan.
 
-    ``max_corridor_violation`` is a nonnegative distance in metres (zero means
-    contained); ``worst_violation_station`` is physical path arclength. The
-    time delta is ``driven_time - predicted_time``.
+    ``completed`` reports whether the forward solver reached the finish event.
+    ``max_corridor_violation`` and ``sampled_center_contained`` summarize only
+    accepted output states, using the center point (not a footprint); they do
+    not establish between-step containment, periodicity, refinement, or full
+    Phase-4 acceptance. ``driven_time`` and the comparison are ``None`` unless
+    the finish event was reached. The station is physical path arclength.
     """
     forward_result: ForwardResult
     max_corridor_violation: float
     worst_violation_station: float
-    contained: bool
+    completed: bool
+    sampled_center_contained: bool
     predicted_time: float
-    driven_time: float
+    driven_time: float | None
 
     @property
-    def predicted_vs_driven_time(self) -> float:
-        """Return driven minus predicted duration, in seconds."""
+    def predicted_vs_driven_time(self) -> float | None:
+        """Return driven minus predicted duration, or None if incomplete."""
+        if not self.completed or self.driven_time is None:
+            return None
         return self.driven_time - self.predicted_time
 
 
 def trajectory_corridor_containment(plan: YawAwareLinePlan, path_distance,
                                     lateral_error) -> tuple[float, float, bool]:
-    """Measure worst accepted-state corridor violation.
+    """Measure sampled center-point containment at supplied accepted states.
 
     ``path_distance`` and ``lateral_error`` are equal-length vectors. Station
     mapping is performed via the plan's exact ``OffsetTrajectory.station_map``;
     no identity or resampled mapping between path and reference stations is
-    assumed. Corridor bounds are signed reference-frame offsets.
+    assumed. Corridor bounds are signed reference-frame offsets. This sampled
+    center-point check is not a footprint, between-step, or periodicity gate.
     """
     if not isinstance(plan, YawAwareLinePlan):
         raise TypeError("plan must be a YawAwareLinePlan")
@@ -81,7 +88,12 @@ def drive_yaw_aware_plan(plan: YawAwareLinePlan, plant: ForwardPlant,
                          duration=300., wall_seconds=290., maximum_step=0.02,
                          rtol=1.e-6, atol=1.e-8, method="Radau", **forward_options
                          ) -> YawAwareDriveResult:
-    """Drive a yaw-aware line and gate accepted states against its corridor.
+    """Drive a yaw-aware line and check sampled center-point containment.
+
+    ``completed`` distinguishes reaching the forward solver's finish event from
+    a duration-limited partial run. Only completed runs report a driven lap
+    time or predicted-versus-driven delta. This helper does not evaluate
+    periodicity, refinement, between-step containment, or vehicle footprint.
 
     The provided driver must track ``plan.speed_plan`` (normally by
     construction). Additional supported ``solve_forward`` keyword options,
@@ -98,9 +110,10 @@ def drive_yaw_aware_plan(plan: YawAwareLinePlan, plant: ForwardPlant,
     distance = np.asarray([item.distance for item in observations], float)
     lateral_error = np.asarray([item.lateral_error for item in observations], float)
     violation, station, contained = trajectory_corridor_containment(plan, distance, lateral_error)
-    driven_time = float(forward.time[-1])
+    completed = bool(forward.lap_completed)
+    driven_time = float(forward.time[-1]) if completed else None
     predicted_time = float(plan.profile.lap_time)
     if not math.isfinite(predicted_time) or predicted_time <= 0.:
         raise ValueError("plan predicted time must be finite and positive")
-    return YawAwareDriveResult(forward, violation, station, contained,
-                              predicted_time, driven_time)
+    return YawAwareDriveResult(forward, violation, station, completed,
+                              contained, predicted_time, driven_time)

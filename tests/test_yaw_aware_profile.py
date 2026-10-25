@@ -63,6 +63,23 @@ class YawProfileTests(unittest.TestCase):
         self.assertTrue(np.all(np.diff(result.speed) >= -1e-10))
         self.assertLessEqual(np.max(np.abs(result.longitudinal_acceleration)), 1. + 1e-8)
 
+    def test_lateral_axis_bound_precedes_speed_cap_scan_on_fine_grid(self):
+        distance = np.arange(0., 2.0001, .05)
+        curvature = np.linspace(.10, .15304, distance.size)
+        path = YawPath(distance, curvature, np.gradient(curvature, distance), False)
+        speed = np.linspace(0., 12., 49)
+        ax = np.array([-10., 0., 10.])
+        ay = np.linspace(-9.80665, 9.80665, 21)
+        shape = (speed.size, ax.size, ay.size)
+        cap = YawCapabilityMap(speed, ax, ay, np.full(shape, 1.e9),
+                               np.full(shape, 1.e9), np.ones(shape, bool), 1.,
+                               "physical_no_tv_v1", "synthetic-fsc-ay-limited")
+        result = yaw_aware_profile(path, cap, boundary="standing", maximum_speed=12.)
+        station_bound = np.sqrt(ay[-1] / curvature)
+        self.assertTrue(np.all(result.speed <= station_bound + 1e-8))
+        self.assertTrue(np.all(np.isfinite(result.speed)))
+        self.assertGreater(result.speed[-1], 0.)
+
     def test_clothoid_yaw_moment_caps_speed(self):
         distance = np.linspace(0., 20., 41)
         k = .002 * distance

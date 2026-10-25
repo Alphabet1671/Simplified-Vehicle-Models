@@ -142,8 +142,18 @@ def _ax_candidates(interp, speed, curvature):
 def _max_speed_cap(interp, curvature, curvature_rate, *, maximum_speed, speed_samples=80):
     axis = interp.axes[0]
     hi = min(float(axis[-1]), float(maximum_speed))
+    # Lateral-acceleration domain imposes a hard station speed bound. Applying
+    # it before sampling avoids scanning above the map's ay range and includes
+    # the exact boundary candidate (important when curvature changes gradually
+    # on a fine arclength grid).
+    ay_axis = interp.axes[2]
+    if curvature > 0.:
+        hi = min(hi, math.sqrt(max(0., float(ay_axis[-1]) / curvature)))
+    elif curvature < 0.:
+        hi = min(hi, math.sqrt(max(0., float(ay_axis[0]) / curvature)))
     # A descending scan avoids assuming feasibility is monotonic in speed.
     candidates = np.linspace(hi, float(axis[0]), max(2, int(speed_samples)))
+    candidates = np.r_[hi, candidates]
     for v in candidates:
         for ax in _ax_candidates(interp, float(v), curvature):
             if interp.yaw_feasible(float(v), ax, curvature, curvature_rate):

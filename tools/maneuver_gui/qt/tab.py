@@ -3,6 +3,7 @@ from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel, QPushButton
 from .editor import ManeuverEditor
 from .preview import PreviewWidget
+from tools.sim_gui.qt.maneuver_tab import ManeuverDraft
 
 class ManeuverTab(QWidget):
     runRequested = pyqtSignal(object)
@@ -12,6 +13,9 @@ class ManeuverTab(QWidget):
     def __init__(self, config=None, parent=None):
         super().__init__(parent)
         self.editor = None
+        self._calibration_context = None
+        self._csv_snapshot = None
+        self._preflight_error = ""
         self.backend_label = QLabel("Backend: simulation", self)
         self.status_label = QLabel("Ready", self)
         self.run_button = QPushButton("Run", self)
@@ -36,8 +40,23 @@ class ManeuverTab(QWidget):
         self._refresh_validity()
         return self.editor
 
+    def set_preflight_context(self, calibration=None, csv_snapshot=None):
+        """Set calibration metadata and loaded-CSV snapshot used before runs.
+
+        ``calibration`` may be a metadata dict containing status and fingerprint,
+        or ``None`` to use the calibration embedded in the maneuver definition.
+        """
+        self._calibration_context = calibration
+        self._csv_snapshot = csv_snapshot
+        self._preflight_error = ""
+        return self._refresh_validity()
+
     def _refresh_validity(self):
         definition, errors = self.editor.validate() if self.editor else (None, {"definition": "vehicle configuration required"})
+        if definition is None:
+            self.status_label.setText("; ".join(errors.values()))
+        else:
+            self.status_label.setText(self._preflight_error or "Ready")
         self.run_button.setEnabled(definition is not None and not getattr(self, "_busy", False))
         return definition, errors
 
@@ -60,8 +79,28 @@ class ManeuverTab(QWidget):
         self.status_label.setText(str(summary.get("status", "Complete")) if isinstance(summary, dict) else str(summary))
 
     def _run(self):
-        try: definition = self.definition()
-        except ValueError: return
+        try:
+            definition = self.definition()
+        except ValueError as exc:
+            self._preflight_error = str(exc)
+            self.status_label.setText(self._preflight_error)
+            self._refresh_validity()
+            return
+        context = self._calibration_context or {}
+        result = ManeuverDraft.from_dict(definition.to_dict()).preflight(
+            calibration_status=context.get("status"),
+            calibration_fingerprint=context.get("definition_sha256", context.get("fingerprint")),
+            expected_fingerprint=context.get("expected_fingerprint"),
+            csv_snapshot=self._csv_snapshot,
+        )
+        if not result.ok:
+            self._preflight_error = "; ".join(result.errors.values())
+            self.status_label.setText(self._preflight_error)
+            self.run_button.setEnabled(False)
+            return
+        self._preflight_error = ""
+        self.status_label.setText("Ready")
+        self.run_button.setEnabled(not getattr(self, "_busy", False))
         self.runRequested.emit(definition)
 
     def _calibrate(self):

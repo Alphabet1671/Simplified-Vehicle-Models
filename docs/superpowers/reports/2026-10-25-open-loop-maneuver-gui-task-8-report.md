@@ -18,3 +18,9 @@ No subprocess orchestration, live hardware control, or physics evaluation is add
 - `PYTHONPATH=src:. python3 -m unittest discover -s tests -p 'test_maneuver_tab.py' -q`: **6 passed**.
 - `QT_QPA_PLATFORM=offscreen PYTHONPATH=src:. python3 -m unittest discover -s tests -p 'test_maneuver_*.py' -q`: **90 passed**.
 - `git diff --check`: passed.
+
+## Fix round 1 — reviewed widget completeness
+
+Bound visible editor fields to the typed draft with preset/mode controls and CSV ownership disabling; connected Tab run requests to calibration/CSV freshness preflight; exposed full strict CSV mapping controls with inline loader failures; and rendered requested/applied SWA, accelerator, and brake traces in three shared-time QPainter panes.
+
+Verification after repair: Qt **8 passed**, draft **6 passed**, CSV **7 passed**, maneuver **92 passed**, and `git diff --check` passed.

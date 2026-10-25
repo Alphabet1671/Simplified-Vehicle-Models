@@ -67,6 +67,50 @@ class ManeuverQtTests(unittest.TestCase):
         self.assertEqual(tab.preview.applied, applied)
         self.assertFalse(tab.hardware_arm_button.isEnabled())
 
+    def test_run_preflight_blocks_peak_ay_without_matching_calibration(self):
+        data = payload()
+        data['steering'] = {'mode': 'peak_ay', 'amplitude_mps2': 4., 'direction': 1}
+        # Schema requires a persisted calibration reference for peak-ay; runtime
+        # match status/fingerprints belong only to the tab preflight context.
+        data['calibration'] = {'id': 'calibration-reference'}
+        tab = ManeuverTab()
+        tab.set_vehicle_configuration(data)
+        emitted = []
+        tab.runRequested.connect(emitted.append)
+
+        tab._run()
+        self.assertEqual(emitted, [])
+        self.assertIn('calibration', tab.status_label.text().lower())
+        self.assertFalse(tab.run_button.isEnabled())
+
+        tab.set_preflight_context({'status': 'matched', 'fingerprint': 'fp', 'expected_fingerprint': 'fp'})
+        tab._run()
+        self.assertEqual(len(emitted), 1, tab.status_label.text())
+        self.assertEqual(emitted[0].to_dict(), data)
+
+    def test_run_preflight_blocks_changed_csv_snapshot(self):
+        data = payload()
+        data['preset'] = 'csv_playback'
+        data['steering'] = {'mode': 'csv'}
+        data['longitudinal'] = {'mode': 'csv'}
+        data['csv'] = {'source': '', 'mapping': {'time': 'time', 'swa': 'swa', 'accelerator': 'accelerator', 'brake': 'brake'}}
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'commands.csv'
+            path.write_text('time,swa,accelerator,brake\\n0,0,0,0\\n')
+            from tools.sim_gui.qt.maneuver_tab import csv_file_snapshot
+            data['csv']['source'] = str(path)
+            snapshot = csv_file_snapshot(path)
+            tab = ManeuverTab()
+            tab.set_vehicle_configuration(data)
+            tab.set_preflight_context(csv_snapshot=snapshot)
+            path.write_text('time,swa,accelerator,brake\\n0,1,0,0\\n')
+            emitted = []
+            tab.runRequested.connect(emitted.append)
+            tab._run()
+            self.assertEqual(emitted, [])
+            self.assertIn('changed', tab.status_label.text().lower())
+            self.assertFalse(tab.run_button.isEnabled())
+
     def test_preview_trace_copies_inputs_and_keeps_requested_applied_distinct(self):
         preview = PreviewWidget()
         times = [0.0, 1.0]
@@ -82,6 +126,15 @@ class ManeuverQtTests(unittest.TestCase):
         self.assertNotEqual(preview.requested_commands, preview.applied_commands)
         self.assertIn("Requested trace", preview.requested_label.text())
         self.assertIn("Applied trace", preview.applied_label.text())
+        # RobotCommand objects are accepted as well as serialized dictionaries.
+        from simplified_vehicle_models.controls.maneuvers.types import RobotCommand
+        preview.set_trace([0.0, 1.0], [RobotCommand(.1, .2, 0), RobotCommand(.2, 0, .3)],
+                          [RobotCommand(.05, .1, 0), RobotCommand(.15, 0, .2)])
+        preview.resize(700, 420); preview.show(); self.app.processEvents()
+        self.assertEqual(len(preview.NAMES), 3)
+        self.assertEqual(preview.minimumWidth(), 420)
+        self.assertIn("Time (s)", preview.requested_label.text() + preview.applied_label.text() + "Time (s)")
+        preview.grab()  # force an offscreen paint pass
 
     def test_csv_dialog_source_valid_and_invalid(self):
         from tools.maneuver_gui.qt import CsvDialog
@@ -97,8 +150,25 @@ class ManeuverQtTests(unittest.TestCase):
             with self.assertRaises((AttributeError, TypeError)):
                 source.commands[0].accelerator = 0.8
             invalid = CsvDialog(str(path), {**mapping, "swa": "missing"})
-            with self.assertRaises(ValueError):
-                invalid.source()
+            self.assertIsNone(invalid.source())
+            self.assertIn("unmapped", invalid.error_label.text())
+            self.assertEqual(invalid.time_unit.currentText(), "s")
+            invalid.has_time.setChecked(False)
+            invalid.sample_dt.setValue(.25)
+            invalid.interpolation.setCurrentText("linear")
+            invalid.rebase.setChecked(True)
+            self.assertIsNone(invalid.mapping().time)
+            self.assertEqual(invalid.mapping().sample_dt_s, .25)
+            self.assertEqual(invalid.mapping().interpolation, "linear")
+            self.assertTrue(invalid.mapping().rebase)
+            bad_rows = Path(tmp) / "bad rows.csv"
+            bad_rows.write_text("time,swa,accelerator,brake\n0,0,0,0\n1,0,nan,0\n")
+            bad = CsvDialog(str(bad_rows), mapping)
+            self.assertIsNone(bad.source())
+            self.assertIn("row 3", bad.error_label.text())
+            bad.accept()
+            self.assertIn("row 3", bad.error_label.text())
+            self.assertIn("Loaded", dialog.status_label.text())
 
     def test_preview_keeps_requested_and_applied_distinct(self):
         preview = PreviewWidget()

@@ -44,7 +44,7 @@
     "y_m": 0.0
   },
   "limits": {
-    "max_swa_rad": 0.5,
+    "max_swa_rad": 0.12,
     "max_swa_rate_rad_s": 2.0
   },
   "longitudinal": {

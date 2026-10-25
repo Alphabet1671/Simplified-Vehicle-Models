@@ -12,6 +12,69 @@ from simplified_vehicle_models.solvers import input_preflight
 
 
 class NoTvMinimumLapHarnessTest(unittest.TestCase):
+    def test_observed_worker_stages_reads_ordered_literal_snapshot(self):
+        with tempfile.TemporaryDirectory() as directory:
+            stage_path = Path(directory) / "stage.json"
+            names = ["setup", "seed", "solve", "export", "validate"]
+            events = [{"attempt": 2, "stage": name, "started_monotonic": index + 1.0,
+                       "ended_monotonic": index + 1.5}
+                      for index, name in enumerate(names)]
+            stage_path.write_text(json.dumps({"events": events}), encoding="utf-8")
+            observed = harness._observed_worker_stages(Path(directory))
+        self.assertEqual(observed, {
+            "status": "observed",
+            "events": [{"attempt": 2, "stage": name, "started_monotonic": index + 1.0,
+                        "ended_monotonic": index + 1.5}
+                       for index, name in enumerate(names)],
+        })
+        self.assertNotIn("build", [event["stage"] for event in observed["events"]])
+        self.assertNotIn("search", [event["stage"] for event in observed["events"]])
+
+    def test_observed_worker_stages_rejects_unsupported_event_key(self):
+        with tempfile.TemporaryDirectory() as directory:
+            stage_path = Path(directory) / "stage.json"
+            event = {"attempt": 2, "stage": "setup", "started_monotonic": 1.0,
+                     "ended_monotonic": 1.5, "ignored": "unsupported"}
+            stage_path.write_text(json.dumps({"events": [event]}), encoding="utf-8")
+            observed = harness._observed_worker_stages(Path(directory))
+        self.assertEqual(observed, {"status": "malformed", "events": []})
+
+    def test_observed_worker_stages_missing_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            observed = harness._observed_worker_stages(Path(directory))
+        self.assertEqual(observed, {"status": "missing", "events": []})
+
+    def test_observed_worker_stages_rejects_malformed_documents_and_events(self):
+        malformed_documents = ["{", "[]", "{}", '{"events": null}']
+        invalid_events = [
+            {"attempt": True, "stage": "setup", "started_monotonic": 1.0, "ended_monotonic": None},
+            {"attempt": -1.5, "stage": "setup", "started_monotonic": 1.0, "ended_monotonic": None},
+            {"attempt": None, "stage": "", "started_monotonic": 1.0, "ended_monotonic": None},
+            {"attempt": None, "stage": "setup", "started_monotonic": True, "ended_monotonic": None},
+            {"attempt": None, "stage": "setup", "started_monotonic": float("inf"), "ended_monotonic": None},
+            {"attempt": None, "stage": "setup", "started_monotonic": float("nan"), "ended_monotonic": None},
+            {"attempt": None, "stage": "setup", "started_monotonic": 2.0, "ended_monotonic": 1.0},
+            {"attempt": None, "stage": "setup", "started_monotonic": 1.0, "ended_monotonic": True},
+            {"attempt": None, "stage": "setup", "started_monotonic": 1.0, "ended_monotonic": float("inf")},
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "stage.json"
+            for document in malformed_documents:
+                path.write_text(document, encoding="utf-8")
+                self.assertEqual(harness._observed_worker_stages(Path(directory)),
+                                 {"status": "malformed", "events": []})
+            for event in invalid_events:
+                path.write_text(json.dumps({"events": [event]}), encoding="utf-8")
+                self.assertEqual(harness._observed_worker_stages(Path(directory)),
+                                 {"status": "malformed", "events": []})
+            path.write_text(json.dumps({"events": [{"attempt": None, "stage": "setup",
+                                                     "started_monotonic": 1.0,
+                                                     "ended_monotonic": 1.0,
+                                                     "soft_budget_s": 2.0}]}), encoding="utf-8")
+            self.assertEqual(harness._observed_worker_stages(Path(directory)), {
+                "status": "observed", "events": [{"attempt": None, "stage": "setup",
+                    "started_monotonic": 1.0, "ended_monotonic": 1.0}]})
+
     def test_structured_numerical_options_roundtrip_and_validation(self):
         case = harness.default_cases()["acceleration"]
         base = dict(mesh_spacing_m=5.0, basis_spacing_m=35.0, maximum_iterations=1,
@@ -1098,10 +1161,17 @@ class NoTvMinimumLapHarnessTest(unittest.TestCase):
                        side_effect=fake_supervisor) as supervisor:
                 result = harness.run_bounded_worker({"wall_cap_s": 2.5}, output)
             supervisor.assert_called_once()
-            self.assertEqual(result["bounded_attempt"], {
-                "schema": "bounded_attempt_v1", "parent_wall_cap_s": 2.5,
-                "terminal_reason": "worker_completed_unqualified", "accepted": False,
-                "hard_supervisor": "separate_authoritative", "persistence_status": "persisted"})
+            bounded = result["bounded_attempt"]
+            self.assertEqual(bounded["schema"], "bounded_attempt_v1")
+            self.assertEqual(bounded["parent_wall_cap_s"], 2.5)
+            self.assertEqual(bounded["terminal_reason"], "worker_completed_unqualified")
+            self.assertFalse(bounded["accepted"])
+            self.assertEqual(bounded["hard_supervisor"], "separate_authoritative")
+            self.assertEqual(bounded["observed_worker_stages"], {"status": "missing", "events": []})
+            self.assertTrue(bounded["observed_stage_provenance_is_diagnostic_only"])
+            self.assertIn("not execution of the pure bounded controller", bounded["observed_stage_limitation"])
+            self.assertIn("physical feasibility, acceptance, or qualification", bounded["observed_stage_limitation"])
+            self.assertEqual(bounded["persistence_status"], "persisted")
             self.assertEqual(result["status"], "Solve_Succeeded")
             self.assertTrue(result["solve_completed"])
             self.assertTrue(result["solver_succeeded"])
@@ -1109,6 +1179,82 @@ class NoTvMinimumLapHarnessTest(unittest.TestCase):
             persisted = json.loads((output / "result.json").read_text(encoding="utf-8"))
             self.assertEqual(persisted["bounded_attempt"], result["bounded_attempt"])
             json.dumps(result, allow_nan=False)
+
+    def test_bounded_worker_observed_stage_provenance_matches_persisted_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "attempt"
+            original = {"status": "Solve_Succeeded", "accepted": False,
+                        "solve_completed": True, "solver_succeeded": True,
+                        "evidence_complete": False}
+            stage_events = [
+                {"attempt": 1, "stage": "setup", "started_monotonic": 1.0,
+                 "ended_monotonic": 1.1, "soft_budget_s": 0.5},
+                {"attempt": 1, "stage": "seed", "started_monotonic": 1.1,
+                 "ended_monotonic": 1.2},
+                {"attempt": 1, "stage": "solve", "started_monotonic": 1.2,
+                 "ended_monotonic": 1.3},
+                {"attempt": 1, "stage": "export", "started_monotonic": 1.3,
+                 "ended_monotonic": 1.4},
+                {"attempt": 1, "stage": "validate", "started_monotonic": 1.4,
+                 "ended_monotonic": 1.5},
+            ]
+            def fake_supervisor(request, output_dir):
+                worker_output = Path(output_dir)
+                worker_output.mkdir(parents=True)
+                (worker_output / "stage.json").write_text(
+                    json.dumps({"events": stage_events}), encoding="utf-8")
+                (worker_output / "result.json").write_text(json.dumps(original), encoding="utf-8")
+                return dict(original)
+            with patch("simplified_vehicle_models.solvers.minimum_time_run.run_request",
+                       side_effect=fake_supervisor) as supervisor:
+                result = harness.run_bounded_worker(
+                    {"wall_cap_s": 2.5, "soft_budget_s": 0.5}, output)
+
+            supervisor.assert_called_once()
+            bounded = result["bounded_attempt"]
+            self.assertEqual(bounded["observed_worker_stages"], {
+                "status": "observed",
+                "events": [{key: event[key] for key in (
+                    "attempt", "stage", "started_monotonic", "ended_monotonic")}
+                    for event in stage_events],
+            })
+            self.assertNotIn("soft_budget_s", json.dumps(bounded["observed_worker_stages"]))
+            observed_names = [event["stage"] for event in bounded["observed_worker_stages"]["events"]]
+            self.assertNotIn("build", observed_names)
+            self.assertNotIn("search", observed_names)
+            self.assertEqual(bounded["hard_supervisor"], "separate_authoritative")
+            self.assertTrue(bounded["observed_stage_provenance_is_diagnostic_only"])
+            self.assertFalse(result["accepted"])
+            persisted = json.loads((output / "result.json").read_text(encoding="utf-8"))
+            self.assertEqual(persisted["bounded_attempt"], bounded)
+
+    def test_bounded_worker_malformed_stage_provenance_is_diagnostic_only(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "attempt"
+            original = {"status": "Solve_Succeeded", "accepted": False,
+                        "solve_completed": True, "solver_succeeded": True,
+                        "evidence_complete": False}
+            def fake_supervisor(request, output_dir):
+                worker_output = Path(output_dir)
+                worker_output.mkdir(parents=True)
+                (worker_output / "stage.json").write_text('{"events": null}', encoding="utf-8")
+                (worker_output / "result.json").write_text(json.dumps(original), encoding="utf-8")
+                return dict(original)
+            with patch("simplified_vehicle_models.solvers.minimum_time_run.run_request",
+                       side_effect=fake_supervisor):
+                result = harness.run_bounded_worker({"wall_cap_s": 2.5}, output)
+            bounded = result["bounded_attempt"]
+            self.assertEqual(bounded["observed_worker_stages"], {
+                "status": "malformed", "events": []})
+            self.assertEqual(result["status"], "Solve_Succeeded")
+            self.assertEqual(bounded["terminal_reason"], "worker_completed_unqualified")
+            self.assertFalse(result["accepted"])
+            self.assertFalse(bounded["accepted"])
+            self.assertEqual(bounded["hard_supervisor"], "separate_authoritative")
+            persisted = json.loads((output / "result.json").read_text(encoding="utf-8"))
+            self.assertEqual(persisted["bounded_attempt"], bounded)
+            self.assertEqual(persisted["status"], "Solve_Succeeded")
+            self.assertFalse(persisted["accepted"])
 
     def test_timeout_terminates_and_persists_failure(self):
         class Process:

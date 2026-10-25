@@ -1430,6 +1430,46 @@ def _attempt_ladder_worker(request_path: str, result_path: str, artifact_path: s
     Path(result_path).write_text(json.dumps(result, sort_keys=True, allow_nan=False), encoding="utf-8")
 
 
+def _observed_worker_stages(root: Path) -> dict:
+    """Return a fail-closed diagnostic snapshot of worker stage events."""
+    path = Path(root) / "stage.json"
+    if not path.is_file():
+        return {"status": "missing", "events": []}
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(document, dict) or not isinstance(document.get("events"), list):
+            raise ValueError("stage document must contain an events list")
+        allowed = {"attempt", "stage", "started_monotonic", "ended_monotonic", "soft_budget_s"}
+        events = []
+        for source in document["events"]:
+            if not isinstance(source, dict) or set(source) - allowed:
+                raise ValueError("unsupported stage event shape")
+            attempt = source.get("attempt")
+            stage = source.get("stage")
+            started = source.get("started_monotonic")
+            ended = source.get("ended_monotonic")
+            if attempt is not None and (type(attempt) is not int):
+                raise ValueError("invalid stage attempt")
+            if type(stage) is not str or not stage:
+                raise ValueError("invalid stage name")
+            if (isinstance(started, bool) or not isinstance(started, (int, float))
+                    or not math.isfinite(started)):
+                raise ValueError("invalid stage start time")
+            if ended is not None and (isinstance(ended, bool) or not isinstance(ended, (int, float))
+                                      or not math.isfinite(ended) or ended < started):
+                raise ValueError("invalid stage end time")
+            if "soft_budget_s" in source:
+                budget = source["soft_budget_s"]
+                if budget is not None and (isinstance(budget, bool) or not isinstance(budget, (int, float))
+                                           or not math.isfinite(budget)):
+                    raise ValueError("invalid stage soft budget")
+            events.append({"attempt": attempt, "stage": stage,
+                           "started_monotonic": started, "ended_monotonic": ended})
+        return {"status": "observed", "events": events}
+    except (OSError, UnicodeError, ValueError, TypeError, OverflowError, RecursionError):
+        return {"status": "malformed", "events": []}
+
+
 def run_bounded_worker(request: dict, output: Path) -> dict:
     """Run the authoritative hard supervisor and attach bounded-attempt provenance."""
     from simplified_vehicle_models.solvers.minimum_time_run import run_request
@@ -1447,6 +1487,11 @@ def run_bounded_worker(request: dict, output: Path) -> dict:
     evidence = {"schema": "bounded_attempt_v1", "parent_wall_cap_s": cap,
                 "terminal_reason": reason, "accepted": False,
                 "hard_supervisor": "separate_authoritative",
+                "observed_worker_stages": _observed_worker_stages(output),
+                "observed_stage_provenance_is_diagnostic_only": True,
+                "observed_stage_limitation": (
+                    "Observed worker stages are not execution of the pure bounded controller "
+                    "and do not establish physical feasibility, acceptance, or qualification."),
                 "persistence_status": "persisted"}
     result["bounded_attempt"] = evidence
     root = Path(output)

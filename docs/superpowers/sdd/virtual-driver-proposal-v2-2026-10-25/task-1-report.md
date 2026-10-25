@@ -7,6 +7,12 @@
 - Added focused unit tests for grid ordering and speed bounds, defensive read-only fields, provenance and shape/bound validation, TV limit validation, and building all three source variants with ideal-vs-physical bound checks.
 - No existing `qss_*` OCP file was modified.
 
+## Round-1 review repair
+
+The first review correctly identified missing assembled drivetrain handling and weak map validation. The builder now reads driven wheels from `FullDrivetrainRuntime.drivetrain.transmission` and constrains undriven wheel forces to zero. It caps aggregate tractive force with the existing assembled `maximum_drive_force` envelope (or legacy torque/power envelope). It enforces the standard front/rear brake-bias split unless brake or regen vectoring is explicitly authorized; left/right torque vectoring bounds are omitted for an ideal-TV upper bound and controlled by `TvLimits` for physical TV. `regen_vectoring_allowed`/`brake_vectoring_allowed` now affect braking-cell constraints. Map construction now checks nonnegative speed and nonempty string provenance, and the steady view rejects grids without an exact zero-acceleration sample.
+
+Repair tests cover source variants and bounds, validated axis/provenance, exact steady-axis requirement, and braking-flag feasible-set monotonicity. The implementation remains an aggregate-envelope approximation: motor limits are applied to total tractive force, not a full per-wheel motor torque/power dispatch LP; regenerative power and per-wheel brake hardware limits are not independently modeled. It should be treated as conservative prototype capability rather than full powertrain validation.
+
 ## Test results
 
 `PYTHONPATH=src python3 -m unittest tests.test_yaw_capability -v` — 4 tests passed.

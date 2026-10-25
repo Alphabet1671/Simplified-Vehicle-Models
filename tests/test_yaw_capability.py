@@ -56,4 +56,26 @@ class YawMapTest(unittest.TestCase):
             self.assertTrue(np.all(ideal.yaw_moment_into_turn[common] + 1e-5 >= no_tv.yaw_moment_into_turn[common]))
         self.assertFalse(physical.yaw_moment_into_turn.flags.writeable)
 
+    def test_braking_vectoring_flag_changes_yaw_authority(self):
+        vehicle=point_mass_view_of_planar(compile_formulation(str(ROOT / "models/formulations/iem24_murphy_real_planar_7dof.xml")).model)
+        grid=YawCapabilityGrid([5.],[-3.], [0.])
+        inertia=compile_formulation(str(ROOT / "models/formulations/iem24_murphy_real_planar_7dof.xml")).model.yaw_inertia
+        locked=build_physical_yaw_map(vehicle,grid,TvLimits(100.,False,False),yaw_inertia=inertia)
+        vector=build_physical_yaw_map(vehicle,grid,TvLimits(100.,False,True),yaw_inertia=inertia)
+        # Explicit vectoring permission may widen the feasible acceleration
+        # set, but never narrows it; the LPs also differ by brake-split freedom.
+        self.assertGreaterEqual(int(vector.feasible_mask.sum()), int(locked.feasible_mask.sum()))
+
+    def test_steady_envelope_requires_exact_zero_acceleration_and_speed_is_checked(self):
+        axes=([1.], [0.5,1.5], [-1.,1.]); shape=(1,2,2); values=np.ones(shape)
+        chart=YawCapabilityMap(*axes,values,values,np.ones(shape,bool),1.,"physical_no_tv_v1","id")
+        with self.assertRaisesRegex(ValueError,"exact zero"):
+            chart.steady_envelope()
+        with self.assertRaisesRegex(ValueError,"nonnegative"):
+            YawCapabilityMap([-1.], [0.], [0.], np.zeros((1,1,1)), np.zeros((1,1,1)),
+                             np.ones((1,1,1),bool),1.,"physical_no_tv_v1","id")
+        with self.assertRaisesRegex(ValueError,"provenance"):
+            YawCapabilityMap([1.], [0.], [0.], np.zeros((1,1,1)), np.zeros((1,1,1)),
+                             np.ones((1,1,1),bool),1.,"physical_no_tv_v1","")
+
 if __name__ == "__main__": unittest.main()

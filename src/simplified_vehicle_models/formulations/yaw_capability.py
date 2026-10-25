@@ -8,8 +8,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
-from typing import Literal
-
 import numpy as np
 
 from simplified_vehicle_models.core.types import FloatArray
@@ -18,6 +16,10 @@ from simplified_vehicle_models.formulations.point_mass import (
 )
 from simplified_vehicle_models.formulations.point_mass_capability import capability_hash
 from simplified_vehicle_models.parameters.vehicle import PointMassVehicleParameters
+from simplified_vehicle_models.powertrain.assembly import FullDrivetrainRuntime
+from simplified_vehicle_models.powertrain.motor_envelope import MotorEnvelopeParameters
+from simplified_vehicle_models.powertrain.energy_storage import StorageState
+from simplified_vehicle_models.powertrain.assembly import maximum_drive_force
 
 
 SOURCE_KINDS = ("physical_no_tv_v1", "physical_tv_v1", "physical_ideal_tv_v1")
@@ -75,6 +77,8 @@ class YawCapabilityMap:
     def __post_init__(self):
         for name in ("speed", "longitudinal_acceleration", "lateral_acceleration"):
             value = _axis(getattr(self, name), name)
+            if name == "speed" and np.any(value < 0):
+                raise ValueError("speed must be nonnegative")
             object.__setattr__(self, name, value)
         shape = (len(self.speed), len(self.longitudinal_acceleration), len(self.lateral_acceleration))
         for name in ("yaw_moment_into_turn", "yaw_moment_out_of_turn"):
@@ -88,14 +92,18 @@ class YawCapabilityMap:
             raise ValueError(f"feasible_mask must have shape {shape}")
         if not math.isfinite(self.yaw_inertia) or self.yaw_inertia <= 0:
             raise ValueError("yaw_inertia must be finite and positive")
-        if self.source_kind not in SOURCE_KINDS or not self.source_identity:
+        if (self.source_kind not in SOURCE_KINDS or not isinstance(self.source_identity, str)
+                or not self.source_identity.strip()):
             raise ValueError("invalid source provenance")
         mask.setflags(write=False)
         object.__setattr__(self, "feasible_mask", mask)
 
     def steady_envelope(self) -> tuple[FloatArray, FloatArray]:
-        """Return (speed, lateral acceleration) samples feasible at ax=0."""
-        zero = int(np.argmin(np.abs(self.longitudinal_acceleration)))
+        """Return (speed, lateral acceleration) samples feasible at exact ax=0."""
+        matches = np.flatnonzero(np.isclose(self.longitudinal_acceleration, 0.0, atol=1e-12, rtol=0.0))
+        if matches.size == 0:
+            raise ValueError("steady envelope requires an exact zero longitudinal-acceleration grid cell")
+        zero = int(matches[0])
         valid = self.feasible_mask[:, zero, :]
         return self.speed, np.where(valid, self.lateral_acceleration[None, :], np.nan)
 
@@ -132,24 +140,49 @@ def _cell_lp(vehicle, speed, ax, ay, tv_limits, direction, *, ideal=False):
             row[i] = math.cos(theta) / max(float(capx[i]), 1e-30)
             row[4+axle] = share * math.sin(theta) / max(float(capy[i]), 1e-30)
             aub.append(row); bub.append(math.cos(math.pi/16))
-    # Wheel drive/brake force constraints (force caps are a conservative
-    # reduction of the available motor envelope for this point-mass model).
-    drive_shares = None
+    # Resolve driven wheels from the assembled transmission (or legacy model).
     drivetrain = vehicle.drivetrain
-    if hasattr(drivetrain, "driven_wheels"):
-        driven = set(drivetrain.driven_wheels)
-        for i, label in enumerate(("fl", "fr", "rl", "rr")):
-            if label not in driven:
-                row=np.zeros(n); row[i]=1; aeq.append(row); beq.append(0.)
+    runtime = isinstance(drivetrain, FullDrivetrainRuntime)
+    driven = (set(drivetrain.drivetrain.transmission.driven_wheels) if runtime
+              else set(("fl", "fr", "rl", "rr")))
+    for i, label in enumerate(("fl", "fr", "rl", "rr")):
+        if label not in driven:
+            row=np.zeros(n); row[i]=1; aeq.append(row); beq.append(0.)
+    # Recover conservative total drive limit for every acceleration cell.
+    if runtime:
+        from simplified_vehicle_models.formulations.point_mass import _default_motor_shares
+        shares = _default_motor_shares(drivetrain.powertrain.power_plant, drivetrain.drivetrain.transmission)
+        drive_limit = maximum_drive_force(drivetrain.powertrain, drivetrain.drivetrain, speed,
+            StorageState(drivetrain.powertrain.energy_storage.initial_state_of_charge),
+            effective_radius=vehicle.tire.effective_radius, wheel_shares=shares).maximum_drive_force
+    else:
+        drive_limit = drivetrain.motor_count * drivetrain.peak_motor_torque * drivetrain.gear_ratio * drivetrain.efficiency / vehicle.tire.effective_radius
+        if speed > 1e-9:
+            drive_limit = min(drive_limit, drivetrain.power_limit * drivetrain.efficiency / speed)
+    braking = target_x < 0.0
+    if not braking:
+        # Aggregate motor envelope cap (conservative: no per-motor allocation credit).
+        row=np.zeros(n); row[:4]=1.; aub.append(row); bub.append(drive_limit)
+    else:
+        # The fixed hydraulic brake bias is an equality unless a vectoring
+        # actuator is explicitly enabled. Rear/front totals follow the bias.
+        if tv_limits is None or not (tv_limits.regen_vectoring_allowed or tv_limits.brake_vectoring_allowed):
+            row=np.zeros(n); row[0]=row[1]=1-vehicle.brake_bias; row[2]=row[3]=-vehicle.brake_bias
+            aeq.append(row); beq.append(0.)
     if tv_limits is None:
         for left, right in ((0,1),(2,3)):
             row=np.zeros(n); row[left]=1; row[right]=-1; aeq.append(row); beq.append(0.)
-    else:
-        if not ideal:
-            torque = tv_limits.max_delta_torque / max(vehicle.tire.effective_radius, 1e-12)
+    elif not ideal:
+        # Bound left/right longitudinal force split by declared torque authority.
+        torque = tv_limits.max_delta_torque / max(vehicle.tire.effective_radius, 1e-12)
+        vectoring = (not braking or tv_limits.regen_vectoring_allowed or tv_limits.brake_vectoring_allowed)
+        if vectoring:
             for left,right in ((0,1),(2,3)):
                 row=np.zeros(n); row[left]=1; row[right]=-1
                 aub.extend((row,-row)); bub.extend((torque,torque))
+        else:
+            for left,right in ((0,1),(2,3)):
+                row=np.zeros(n); row[left]=1; row[right]=-1; aeq.append(row); beq.append(0.)
     # Moment convention: x-front/rear lateral forces and lateral arms for Fx.
     front_arm = vehicle.wheelbase * (1 - vehicle.front_mass_fraction)
     rear_arm = vehicle.wheelbase * vehicle.front_mass_fraction

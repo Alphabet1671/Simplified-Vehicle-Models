@@ -47,8 +47,8 @@ class ActuatorCalibration:
         ai, ao = table(payload['ackermann_inner_angle_rad'], payload['ackermann_outer_offset_rad'], 'Ackermann')
         at, af = table(payload['accelerator_travel'], payload['accelerator_force_n'], 'accelerator')
         bt, bf = table(payload['brake_travel'], payload['brake_force_n'], 'brake')
-        if at[0] > 0 or at[-1] < 1 or bt[0] > 0 or bt[-1] < 1 or af[0] < 0 or bf[0] < 0:
-            raise ValueError("pedal maps must cover travel [0,1] with nonnegative force")
+        if at[0] != 0 or at[-1] != 1 or bt[0] != 0 or bt[-1] != 1 or np.any(at < 0) or np.any(at > 1) or np.any(bt < 0) or np.any(bt > 1) or af[0] != 0 or bf[0] != 0:
+            raise ValueError("pedal maps must use travel axes within [0,1], span the full range, and start at zero force")
         return cls(*scalars, ai, ao, at, af, bt, bf)
 
     def _map(self, travel, x, y):
@@ -65,13 +65,9 @@ class ActuatorCalibration:
             self.rack_travel_per_revolution_m, self.steer_arm_length_m,
             min(self.maximum_road_wheel_angle_rad, vehicle.steering_maximum_angle),
             AckermannTable(self.ackermann_inner_angle_rad, self.ackermann_outer_offset_rad))
-        # Keep the calibration's left/right wheel channels stable across signs;
-        # the measured Ackermann offset is applied symmetrically to the pair.
-        angles = np.array(result.wheel_angles, copy=True)
-        offset = float(np.interp(abs(result.reference_angle), self.ackermann_inner_angle_rad, self.ackermann_outer_offset_rad))
-        magnitude = min(abs(result.reference_angle), self.maximum_road_wheel_angle_rad, vehicle.steering_maximum_angle)
-        inner, outer = magnitude, max(magnitude - offset, 0.)
-        return np.asarray([np.sign(swa) * outer, np.sign(swa) * inner, 0., 0.])
+        # steering_angles already preserves physical FL/FR convention:
+        # positive/right => FR inner; negative/left => FL inner.
+        return np.asarray(result.wheel_angles, dtype=float).copy()
 
 
 class ManeuverPlanarPlant:
@@ -82,6 +78,12 @@ class ManeuverPlanarPlant:
         if not isinstance(calibration, ActuatorCalibration):
             raise CapabilityError("a separate explicit ActuatorCalibration artifact is required")
         self.vehicle, self.calibration = vehicle, calibration
+        # The forward closure consumes normalized throttle fractions. The
+        # calibrated N-equivalent map must span exactly its declared physical
+        # command scale rather than being silently renormalized to its own max.
+        expected_force = float(vehicle.controller.maximum_drive_motor_torque_nm)
+        if not np.isclose(calibration.accelerator_force_n[-1], expected_force, rtol=1e-9, atol=1e-9):
+            raise CapabilityError("accelerator force map endpoint must equal vehicle maximum drive motor torque")
         transmission = vehicle.drivetrain.drivetrain.transmission
         idx = {n:i for i,n in enumerate(("fl","fr","rl","rr"))}
         self.driven = np.array([idx[n] for n in transmission.driven_wheels])
@@ -101,10 +103,12 @@ class ManeuverPlanarPlant:
         s[6:10] = speed_mps / radius
         return s
 
-    def observe(self, time_s, state=None):
+    def observe(self, time_s, state=None, command=None):
         if state is None: state, time_s = time_s, 0.
-        rate = getattr(self, '_accepted_rate', np.zeros(12))
-        ax, ay = rate[3] - state[5]*state[4], rate[4] + state[5]*state[3]
+        if command is None:
+            command = RobotCommand(0., 0., 0.)
+        rate = self._evaluate(time_s, state, command).solve()
+        ay = rate[4] + state[5]*state[3]
         return Observation(float(time_s), *map(float, (state[0],state[1],state[2],np.hypot(state[3],state[4]),state[5],state[11],ay)))
 
     def _evaluate(self, time_s, state, command):
@@ -131,7 +135,7 @@ class ManeuverPlanarPlant:
         r[0]=s[3]*np.cos(h)-s[4]*np.sin(h); r[1]=s[3]*np.sin(h)+s[4]*np.cos(h); r[2]=s[5]
         r[3:6]=[d.longitudinal_acceleration,d.lateral_acceleration,d.yaw_acceleration]; r[6:10]=d.wheel_accelerations
         r[10]=-p.current/self.vehicle.storage.pack_capacity; r[11]=swa_rate
-        self._accepted_rate=r.copy(); self._last=(d,p,wheels,target,swa_rate,throttle,brake)
+        self._last=(d,p,wheels,target,swa_rate,throttle,brake)
         return RateSystem(r)
 
     def evaluate(self,time_s,state,command): return self._evaluate(time_s,state,command)
@@ -139,4 +143,4 @@ class ManeuverPlanarPlant:
     def accepted_outputs(self,time_s,state,command):
         self._evaluate(time_s,state,command)
         d,p,wheels,target,rate,throttle,brake=self._last
-        return {'time_s':float(time_s),'swa_rad':float(state[11]),'requested_swa_rad':target,'swa_rate_rad_s':rate,'road_wheel_angles_rad':np.array(wheels,copy=True),'accelerator_force_n':self.calibration.accelerator_force(command.accelerator),'brake_force_n':brake,'throttle_fraction':throttle,'wheel_torques_nm':np.array(p.wheel_torques,copy=True)}
+        return {'time_s':float(time_s),'swa_rad':float(state[11]),'requested_swa_rad':target,'swa_rate_rad_s':rate,'road_wheel_angles_rad':np.array(wheels,copy=True),'accelerator_force_n':self.calibration.accelerator_force(command.accelerator),'brake_force_n':brake,'throttle_fraction':throttle,'wheel_torques_nm':np.array(p.wheel_torques,copy=True),'longitudinal_acceleration_mps2':float(d.longitudinal_acceleration),'lateral_acceleration_mps2':float(d.lateral_acceleration),'yaw_acceleration_rad_s2':float(d.yaw_acceleration),'ay_mps2':float(d.lateral_acceleration+state[5]*state[3])}

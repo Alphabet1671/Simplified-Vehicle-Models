@@ -33,7 +33,10 @@ class ManeuverPlanarTests(unittest.TestCase):
         self.assertNotEqual(pos[0], pos[1])
         self.assertEqual(pos[2], 0.)
         self.assertEqual(pos[3], 0.)
-        np.testing.assert_allclose(neg, -pos)
+        self.assertGreater(pos[1], pos[0])  # right turn: FR inner
+        self.assertGreater(abs(neg[0]), abs(neg[1]))  # left turn: FL inner
+        self.assertLess(pos[0], pos[1])
+        self.assertLess(neg[0], neg[1])
 
     def test_swa_servo_rate_and_bounds(self):
         s = self.plant.initial_state(10.)
@@ -45,6 +48,34 @@ class ManeuverPlanarTests(unittest.TestCase):
         self.assertLess(self.calibration.accelerator_force(.2), self.calibration.accelerator_force(.8))
         with self.assertRaises((ValueError, Exception)):
             ManeuverPlanarPlant(self.vehicle, None)
+
+    def test_trial_rhs_does_not_poison_observation(self):
+        accepted = self.plant.initial_state(10.)
+        trial = accepted.copy(); trial[3:6] = [7., 2., .4]
+        cmd = RobotCommand(0., 0., 0.)
+        self.plant.evaluate(0., trial, cmd)
+        obs1 = self.plant.observe(0., accepted, cmd)
+        self.plant.evaluate(0., trial, cmd)
+        obs2 = self.plant.observe(0., accepted, cmd)
+        self.assertEqual(obs1, obs2)
+
+    def test_pedal_axes_must_stay_in_unit_interval(self):
+        payload = {'maximum_swa_rad': 8., 'maximum_swa_rate_rad_s': 2.,
+            'rack_travel_per_revolution_m': .04, 'steer_arm_length_m': .1,
+            'maximum_road_wheel_angle_rad': self.vehicle.steering_maximum_angle,
+            'ackermann_inner_angle_rad': [.0, .6], 'ackermann_outer_offset_rad': [.0, .1],
+            'accelerator_travel': [-.1, 1.], 'accelerator_force_n': [0., self.vehicle.controller.maximum_drive_motor_torque_nm],
+            'brake_travel': [0., 1.], 'brake_force_n': [0., self.vehicle.maximum_pedal_force]}
+        with self.assertRaises(ValueError): ActuatorCalibration.from_dict(payload)
+
+    def test_absolute_accelerator_map_scale_is_not_renormalized(self):
+        payload = {'maximum_swa_rad': 8., 'maximum_swa_rate_rad_s': 2.,
+            'rack_travel_per_revolution_m': .04, 'steer_arm_length_m': .1,
+            'maximum_road_wheel_angle_rad': self.vehicle.steering_maximum_angle,
+            'ackermann_inner_angle_rad': [.0, .6], 'ackermann_outer_offset_rad': [.0, .1],
+            'accelerator_travel': [0., 1.], 'accelerator_force_n': [0., 100.],
+            'brake_travel': [0., 1.], 'brake_force_n': [0., self.vehicle.maximum_pedal_force]}
+        with self.assertRaises(Exception): ManeuverPlanarPlant(self.vehicle, ActuatorCalibration.from_dict(payload))
 
     def test_world_heading_unconstrained(self):
         s = self.plant.initial_state(10., heading_rad=2.)

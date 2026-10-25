@@ -25,6 +25,16 @@ def _domain(path, capability, maximum_speed):
     return bounds,interp
 
 
+def _rotate_closed_path(path, rotation):
+    """Rotate unique closed stations and preserve every original edge length."""
+    m=len(path.distance)-1
+    order=np.r_[np.arange(rotation,m),np.arange(0,rotation+1)]
+    edge=np.diff(path.distance)
+    lengths=np.r_[edge[rotation:],edge[:rotation]]
+    distance=np.r_[0.,np.cumsum(lengths)]
+    return YawPath(distance,path.curvature[order],path.curvature_rate[order],True),order
+
+
 def solve_coupled_profile(path, capability, *, boundary, maximum_speed,
                           settings: CoupledProfileSettings, warm_start_q=None) -> dict:
     """Find a strictly validated sampled profile; graph optimality is over generated edges."""
@@ -36,6 +46,15 @@ def solve_coupled_profile(path, capability, *, boundary, maximum_speed,
     if boundary == "flying" and not path.is_closed:
         raise YawProfileSolveError("invalid_boundary","flying requires closed path",{})
     if not math.isfinite(maximum_speed) or maximum_speed <= 0: raise ValueError("maximum_speed must be positive")
+    original_path=path
+    rotation=0
+    rotate_order=np.arange(len(path.distance))
+    if boundary=="flying":
+        original_domains,_=_domain(path,capability,maximum_speed)
+        rotation=min(range(len(original_domains)-1),key=lambda i:(original_domains[i][1],i))
+        path,rotate_order=_rotate_closed_path(path,rotation)
+        if warm_start_q is not None:
+            warm_start_q=np.asarray(warm_start_q,float)[rotate_order]
     n=len(path.distance); segs=n-1
     domains,interp=_domain(path,capability,maximum_speed)
     warm=None if warm_start_q is None else np.asarray(warm_start_q,float)
@@ -51,14 +70,27 @@ def solve_coupled_profile(path, capability, *, boundary, maximum_speed,
         if boundary == "standing" and i==0: qs=[0.]
         qs=sorted(set(q for q in qs if lo<=q<=hi))
         layers.append(qs)
+    tested_anchors=[]
     if boundary == "flying":
-        # The duplicated endpoint represents one periodic station; intersect its domain/candidates.
-        common=sorted(set(layers[0]).intersection(layers[-1]))
-        if not common:
-            low=max(domains[0][0],domains[-1][0]); high=min(domains[0][1],domains[-1][1])
-            common=list(np.linspace(low,high,min(8,settings.max_seam_anchors))) if high>=low else []
-        layers[0]=layers[-1]=common
+        low=max(domains[0][0],domains[-1][0]); high=min(domains[0][1],domains[-1][1])
+        if high<low:
+            raise YawProfileSolveError("no_path_at_resolution","closed seam domains do not overlap",{"seam_rotation":rotation})
+        initial_anchor_cap=min(8,settings.max_seam_anchors)
+        anchor_set=set(np.linspace(low,high,initial_anchor_cap).tolist())
+        anchor_set.update(float(v*v) for v in capability.speed if low<=v*v<=high and v<=maximum_speed)
+        anchors=sorted(anchor_set)[:initial_anchor_cap]
+        tested_anchors.extend(anchors)
+        layers[0]=layers[-1]=anchors.copy()
     refinement_rounds=0; incumbent=None; previous_time=None; stable=0; budget_reason=None; graph_result=None
+    interval_cache={}; work_queue=[]; refinement_radius=32
+    cache_identity=(tuple(map(float,path.distance)),tuple(map(float,path.curvature)),tuple(map(float,path.curvature_rate)),
+                    capability.source_identity,tuple(map(float,capability.speed)),tuple(map(float,capability.longitudinal_acceleration)),
+                    tuple(map(float,capability.lateral_acceleration)),settings)
+    def intervals_for(i,fixed,direction,bounds):
+        key=(cache_identity,int(i),direction,float(fixed).hex())
+        if key not in interval_cache:
+            interval_cache[key]=transition_intervals(path,capability,i,float(fixed),direction,bounds,settings=settings)
+        return interval_cache[key]
     for round_index in range(settings.max_refinement_rounds):
         refinement_rounds=round_index+1
         counts=np.array([len(x) for x in layers],dtype=np.int64)
@@ -69,7 +101,7 @@ def solve_coupled_profile(path, capability, *, boundary, maximum_speed,
             src_layer=layers[i]; dst=layers[i+1]
             for j,q0 in enumerate(src_layer):
                 try:
-                    intervals=transition_intervals(path,capability,i,q0,"forward",domains[i+1],settings=settings)
+                    intervals=intervals_for(i,q0,"forward",domains[i+1])
                 except ValueError as exc:
                     if "nonnegative" in str(exc):
                         continue
@@ -108,7 +140,11 @@ def solve_coupled_profile(path, capability, *, boundary, maximum_speed,
                 break
             validation=validate_profile(path,capability,candidate_speed,maximum_speed=maximum_speed,boundary=boundary,settings=settings)
             if validation.valid:
-                incumbent=(candidate_speed.copy(),float(validation.recomputed_time),validation)
+                if incumbent is None or float(validation.recomputed_time) <= incumbent[1]*(1.+1e-10):
+                    incumbent=(candidate_speed.copy(),float(validation.recomputed_time),validation)
+                else:
+                    candidate_speed=incumbent[0].copy()
+                    validation=incumbent[2]
                 if previous_time is not None and abs(previous_time-incumbent[1]) <= settings.refinement_time_relative_tolerance*max(1.,previous_time) and np.max(np.abs(candidate_speed-prev_speed)) < settings.refinement_speed_tolerance: stable+=1
                 else: stable=0
                 previous_time=incumbent[1]; prev_speed=candidate_speed.copy()
@@ -137,19 +173,59 @@ def solve_coupled_profile(path, capability, *, boundary, maximum_speed,
                         for q in (iv.lower,(iv.lower+iv.upper)/2,iv.upper):
                             if q not in layers[i+1]: layers[i+1].append(q); changed=True
                 for q1 in downstream:
-                    for iv in transition_intervals(path,capability,i,float(q1),"backward",domains[i][0:2],settings=settings):
+                    for iv in intervals_for(i,q1,"backward",domains[i][0:2]):
                         for q in (iv.lower,(iv.lower+iv.upper)/2,iv.upper):
                             if q not in layers[i]: layers[i].append(q); changed=True
+            if boundary=="flying" and round_index < settings.max_refinement_rounds-1:
+                # Add deterministic anchors adjacent to current best seam or failed frontiers.
+                current=sorted(set(layers[0]))
+                if current and len(current)<settings.max_seam_anchors:
+                    center=(incumbent[0][0]**2 if incumbent is not None else current[len(current)//2])
+                    neighbors=sorted(current,key=lambda a:(abs(a-center),a))[:2]
+                    additions=[]
+                    for a in neighbors:
+                        pos=int(np.searchsorted(current,a))
+                        if pos>0: additions.append((current[pos-1]+a)*.5)
+                        if pos+1<len(current): additions.append((a+current[pos+1])*.5)
+                    for a in sorted(set(additions)):
+                        if len(current)>=settings.max_seam_anchors: break
+                        if a not in current: current.append(a); tested_anchors.append(a)
+                    layers[0]=layers[-1]=sorted(current)
+                    changed=True
+            # Localize candidate additions to a deterministic window around the
+            # first reachability/co-reachability frontier; wrap on flying laps.
+            failed=graph_result.get("failed_layer") if graph_result else None
+            if failed is not None:
+                center=min(segs-1,max(0,int(failed)))
+                selected={(center+offset)%segs for offset in range(-refinement_radius,refinement_radius+1)} if boundary=="flying" else set(range(max(0,center-refinement_radius),min(segs,center+refinement_radius+1)))
+                for i in range(segs):
+                    if i not in selected:
+                        # Retain only initial/previous nodes outside the active window.
+                        pass
+                if refinement_radius < segs: refinement_radius=min(segs,refinement_radius*2)
+            work_queue=sorted({(i,d,float(q).hex()) for i,d,q in ((i,"forward",q) for i,layer in enumerate(layers[:-1]) for q in layer)})
             for x in layers: x.sort()
             if not changed: break
     if incumbent is None:
-        status="budget_exceeded" if budget_reason else "no_path_at_resolution"
+        status = ("strict_validation_failed" if budget_reason == "strict_validation_failed"
+                  else "budget_exceeded" if budget_reason
+                  else "no_path_at_resolution")
         raise YawProfileSolveError(status,"coupled yaw profile has no validated sampled path",{
             "graph_status":None if graph_result is None else graph_result.get("status"),"refinement_rounds":refinement_rounds,
-            "candidate_counts":tuple(map(len,layers)),"budget_reason":budget_reason,"stopping_uncertainty":"candidate resolution not converged"})
+            "candidate_counts":tuple(map(len,layers)),"budget_reason":budget_reason,
+            "closed_seam_rotation":rotation,"tested_seam_anchors":tuple(tested_anchors),
+            "interval_cache_entries":len(interval_cache),"interval_work_queue_entries":len(work_queue),
+            "refinement_radius":refinement_radius,
+            "stopping_uncertainty":"candidate resolution not converged"})
     q,time_seconds,validation=incumbent
+    if rotation:
+        restored=np.empty_like(q)
+        # rotated order maps each rotated station to its original unique station
+        for rotated,original in enumerate(rotate_order[:-1]): restored[original]=q[rotated]
+        restored[-1]=restored[0]
+        q=restored
     return {"q":q*q,"time_seconds":time_seconds,"refinement_rounds":refinement_rounds,
             "diagnostics":{"status":"feasible_sampled","resolution_converged":stable>=2,"budget_reason":budget_reason,
                 "candidate_counts":tuple(map(len,layers)),"graph_status":"ok","validation":validation,
                 "stopping_uncertainty":None if stable>=2 else "sampled candidate resolution remains unproven",
-                "edge_density":None if packed is None else len(packed.targets)/max(1,packed.n_nodes),"closed_seam_rotation":0}}
+                "edge_density":None if packed is None else len(packed.targets)/max(1,packed.n_nodes),"closed_seam_rotation":rotation,"tested_seam_anchors":tuple(tested_anchors),"interval_cache_entries":len(interval_cache),"interval_work_queue_entries":len(work_queue),"refinement_radius":refinement_radius}}

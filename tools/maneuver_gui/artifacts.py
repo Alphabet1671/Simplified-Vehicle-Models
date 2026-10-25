@@ -71,7 +71,7 @@ def create_attempt_directory(output_root: Path, *, overwrite: bool = False) -> P
     raise FileExistsError("could not allocate a unique attempt directory")
 
 
-def write_artifacts(directory: Path, definition, result, summary: dict) -> None:
+def write_artifacts(directory: Path, definition, result, summary: dict, *, model_kind: str | None = None) -> None:
     """Atomically persist a validated definition, evidence NPZ and manifest.
 
     Existing destinations are rejected, preventing accidental mixing of runs.
@@ -128,6 +128,8 @@ def write_artifacts(directory: Path, definition, result, summary: dict) -> None:
     manifest = {"schema": ARTIFACT_SCHEMA, "version": 1, "definition": data,
                 "calibration": data.get("calibration"), "model": data.get("vehicle"),
                 "hashes": hashes, "execution_outcome": summary_doc["execution_outcome"]}
+    if model_kind is not None:
+        manifest["model_kind"] = str(model_kind)
     manifest_bytes = json.dumps(manifest, sort_keys=True, indent=2, allow_nan=False).encode() + b"\n"
     payloads = {"maneuver.json": definition_bytes, "summary.json": summary_bytes,
                 "events.json": events_bytes, "commands.csv": command_bytes,

@@ -39,7 +39,7 @@ _ALLOWED = {
  'profile': {'lead_in_s','rise_s','ramp_s','hold_s','release_s','recovery_s','duration_s','cycles','settle_s','sweep_start_mps','sweep_end_mps','sweep_rate_mps2'},
  'limits': {'max_swa_rad','max_swa_rate_rad_s','max_speed_mps','max_distance_m'},
  'termination': {'duration_s','speed_mps','distance_m','travel_limit_s'},
- 'calibration': {'id','identifier','source','revision','units','operating_envelope','expires','expires_at','artifact','kind'}, 'csv': {'mapping','interpolation','time_unit','swa_unit','accelerator_unit','brake_unit','endpoint','sha256','source'},
+ 'calibration': {'id','identifier','source','revision','units','operating_envelope','expires','expires_at','artifact','kind','maximum_swa_rad','maximum_swa_rate_rad_s','rack_travel_per_revolution_m','steer_arm_length_m','maximum_road_wheel_angle_rad','ackermann_inner_angle_rad','ackermann_outer_offset_rad','accelerator_travel','accelerator_force_n','brake_travel','brake_force_n'}, 'csv': {'mapping','interpolation','time_unit','swa_unit','accelerator_unit','brake_unit','endpoint','sha256','source'},
  'calibration.operating_envelope': {'min_speed_mps','max_speed_mps','max_swa_rad','max_swa_rate_rad_s','max_accelerator','max_brake'},
  'csv.mapping': {'time','swa','accelerator','brake'},
 }

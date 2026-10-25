@@ -71,6 +71,25 @@ class DefinitionTests(unittest.TestCase):
         with self.assertRaises(ValueError): ManeuverDefinition.from_dict(bad)
         bad = fixture(); bad['calibration'] = {'operating_envelope': ['not', 'an', 'object']}
         with self.assertRaises(ValueError): ManeuverDefinition.from_dict(bad)
+        # Simulation calibration artifact is flat under calibration: the strict
+        # schema rejects nested artifact objects and arbitrary keys but allows
+        # the known actuator calibration fields consumed by ActuatorCalibration.
+        actuator = {'maximum_swa_rad': 8., 'maximum_swa_rate_rad_s': 2.,
+                    'rack_travel_per_revolution_m': .04, 'steer_arm_length_m': .10,
+                    'maximum_road_wheel_angle_rad': .5,
+                    'ackermann_inner_angle_rad': [.0, .6],
+                    'ackermann_outer_offset_rad': [.0, .1],
+                    'accelerator_travel': [0., 1.], 'accelerator_force_n': [0., 100.],
+                    'brake_travel': [0., .5, 1.], 'brake_force_n': [0., 137., 420.]}
+        flat = fixture(); flat['calibration'] = {'id': 'cal-1', **actuator}
+        validated = ManeuverDefinition.from_dict(flat).to_dict()
+        self.assertEqual(validated['calibration']['id'], 'cal-1')
+        bad = fixture(); bad['calibration'] = {'unexpected_actuator_field': 3.}
+        with self.assertRaisesRegex(ValueError, 'unknown key'):
+            ManeuverDefinition.from_dict(bad)
+        bad = fixture(); bad['calibration'] = {'artifact': actuator}
+        with self.assertRaisesRegex(ValueError, 'unexpected nested object'):
+            ManeuverDefinition.from_dict(bad)
         bad = fixture('csv_playback'); bad['csv'] = {'mapping': ['invalid']}; bad['steering']['mode'] = bad['longitudinal']['mode'] = 'csv'
         with self.assertRaises(ValueError): ManeuverDefinition.from_dict(bad)
         valid = fixture('csv_playback'); valid['csv'] = {'mapping': {'time': 't_sec', 'swa': 'steer_col', 'accelerator': 'gas_col', 'brake': 'brake_col'}}

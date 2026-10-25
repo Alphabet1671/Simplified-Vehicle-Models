@@ -186,8 +186,11 @@ from pathlib import Path
 from simplified_vehicle_models.controls.maneuvers.schema import load_definition
 from simplified_vehicle_models.controls.maneuvers.program import ManeuverProgram
 from simplified_vehicle_models.solvers.maneuver_planar import ActuatorCalibration, ManeuverPlanarPlant
+from simplified_vehicle_models.solvers.maneuver_vertical import VerticalManeuverPlant
 from simplified_vehicle_models.solvers.maneuver_simulation import SimulationSettings, simulate_maneuver
 from simplified_vehicle_models.compiler.compile import compile_formulation
+from simplified_vehicle_models.formulations.vertical_14dof import VerticalVehicleParameters
+from simplified_vehicle_models.parameters.vehicle import PlanarVehicleParameters
 from tools.maneuver_gui.artifacts import write_artifacts
 p=Path(sys.argv[1]); out=Path(sys.argv[2]); d=load_definition(p); data=d.to_dict()
 try:
@@ -196,15 +199,23 @@ try:
     if not formulation: raise ValueError('vehicle.model must name a planar-7dof formulation path')
     model=compile_formulation(formulation).model
     actuator=ActuatorCalibration.from_dict(artifact)
-    plant=ManeuverPlanarPlant(model, actuator); initial=plant.initial_state(**{k:v for k,v in data['initial'].items() if k in ('speed_mps','x_m','y_m','heading_rad')})
+    if isinstance(model, VerticalVehicleParameters):
+        model_kind='14dof-simple'
+        plant=VerticalManeuverPlant(model, actuator)
+    elif isinstance(model, PlanarVehicleParameters):
+        model_kind='planar-7dof'
+        plant=ManeuverPlanarPlant(model, actuator)
+    else:
+        raise ValueError('maneuver runner supports planar-7dof or 14dof-simple only')
+    initial=plant.initial_state(**{k:v for k,v in data['initial'].items() if k in ('speed_mps','x_m','y_m','heading_rad')})
     program=ManeuverProgram(d)
     result=simulate_maneuver(plant, program, initial, SimulationSettings(tick_s=float(data['clock']['controller_tick_s']), max_wall_s=300.))
     outcome=result.execution_outcome
     summary={'execution_outcome':outcome,'input_fidelity':'exact','objective':'not_evaluated','termination_reason':result.termination_reason}
-    write_artifacts(out,d,result,summary)
+    write_artifacts(out,d,result,summary, model_kind=model_kind)
     print(json.dumps({'event':'complete','time_s':float(result.time_s[-1]),'fraction':1.0,'phase':result.termination_reason}), flush=True)
     sys.exit(0 if outcome == 'completed' else 2)
-except BaseException as e:
+except Exception as e:
     summary={'execution_outcome':'failed','input_fidelity':'envelope_rejected','objective':'not_evaluated','error':str(e)}
     (out/'summary.json').write_text(json.dumps(summary,indent=2,sort_keys=True)+'\n')
     traceback.print_exc(); sys.exit(2)

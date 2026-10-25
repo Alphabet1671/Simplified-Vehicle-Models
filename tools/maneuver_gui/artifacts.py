@@ -130,6 +130,7 @@ def write_artifacts(directory: Path, definition, result, summary: dict, *, model
                 "hashes": hashes, "execution_outcome": summary_doc["execution_outcome"]}
     if model_kind is not None:
         manifest["model_kind"] = str(model_kind)
+        hashes["model_kind_sha256"] = hashlib.sha256(canonical(manifest["model_kind"])).hexdigest()
     manifest_bytes = json.dumps(manifest, sort_keys=True, indent=2, allow_nan=False).encode() + b"\n"
     payloads = {"maneuver.json": definition_bytes, "summary.json": summary_bytes,
                 "events.json": events_bytes, "commands.csv": command_bytes,
@@ -250,6 +251,29 @@ def load_manifest(directory: Path) -> dict:
             raise ValueError("artifact schema/version mismatch")
         if manifest.get("definition", {}).get("schema") != "maneuver-v1":
             raise ValueError("definition schema mismatch")
+        model_kind = manifest.get("model_kind")
+        if model_kind is not None:
+            if not isinstance(model_kind, str) or model_kind not in {"planar-7dof", "14dof-simple"}:
+                raise ValueError("unsupported model_kind")
+            vehicle = manifest["definition"].get("vehicle", {})
+            formulation = vehicle.get("formulation") or vehicle.get("model")
+            if not isinstance(formulation, str):
+                raise ValueError("model_kind has no formulation identity")
+            repo = Path(__file__).resolve().parents[2]
+            models = (repo / "models").resolve()
+            candidate = Path(formulation).expanduser()
+            resolved = candidate.resolve() if candidate.is_absolute() else (repo / candidate).resolve()
+            if resolved.suffix.lower() != ".xml" or models not in resolved.parents or not resolved.is_file():
+                raise ValueError("model_kind formulation is not a checked-in model")
+            from simplified_vehicle_models.compiler.compile import compile_formulation
+            from simplified_vehicle_models.formulations.vertical_14dof import VerticalVehicleParameters
+            from simplified_vehicle_models.parameters.vehicle import PlanarVehicleParameters
+            compiled = compile_formulation(resolved).model
+            expected_kind = ("14dof-simple" if isinstance(compiled, VerticalVehicleParameters)
+                             else "planar-7dof" if isinstance(compiled, PlanarVehicleParameters)
+                             else None)
+            if model_kind != expected_kind:
+                raise ValueError("model_kind does not match compiled formulation identity")
         hashes = manifest.get("hashes", {})
         definition = manifest["definition"]
         def canonical(value):
@@ -262,6 +286,9 @@ def load_manifest(directory: Path) -> dict:
                            ("model_sha256", definition_file.get("vehicle"))):
             if hashes.get(key) != hashlib.sha256(canonical(value)).hexdigest():
                 raise ValueError(f"{key} mismatch")
+        if model_kind is not None:
+            if hashes.get("model_kind_sha256") != hashlib.sha256(canonical(model_kind)).hexdigest():
+                raise ValueError("model_kind integrity mismatch")
         if manifest.get("calibration") != definition_file.get("calibration") or manifest.get("model") != definition_file.get("vehicle"):
             raise ValueError("manifest model/calibration mismatch")
         summary = json.loads((directory / "summary.json").read_text(encoding="utf-8"))

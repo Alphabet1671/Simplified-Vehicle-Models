@@ -49,6 +49,40 @@ class ManeuverDraftTests(unittest.TestCase):
         data['steering'] = {'mode': 'csv'}; data['longitudinal'] = {'mode': 'csv'}
         self.assertTrue(ManeuverDraft.from_dict(data).enabled_fields()['csv'])
 
+    def test_preset_policy_disables_incompatible_fields_and_preserves_modes(self):
+        cases = {
+            'step_steer': ('steering.target_heading_rad', 'steering.amplitude_rad', 'Steering waveform'),
+            'ramp_steer': ('steering.target_heading_rad', 'steering.amplitude_rad', 'Steering waveform'),
+            'sine_steer': ('steering.target_heading_rad', 'steering.amplitude_rad', 'Steering waveform'),
+            'straight_maintain': ('steering.amplitude_rad', 'steering.target_heading_rad', 'Straight'),
+            'straight_accel_brake': ('steering.amplitude_rad', 'steering.target_heading_rad', 'profile'),
+            'circular_skidpad': ('steering.amplitude_rad', 'steering.target_radius_m', 'Radius'),
+        }
+        for preset, (disabled_path, enabled_path, label) in cases.items():
+            with self.subTest(preset=preset):
+                data = payload(); data['preset'] = preset
+                if preset in ('straight_maintain', 'straight_accel_brake'):
+                    data['steering'] = {'mode': 'path_pid', 'target_heading_rad': 0.}
+                elif preset == 'circular_skidpad':
+                    data['steering'] = {'mode': 'radius_pid', 'target_radius_m': 10.}
+                draft = ManeuverDraft.from_dict(data)
+                fields = draft.enabled_fields(); policy = draft.preset_policy()
+                self.assertIn(disabled_path, policy['disabled'])
+                self.assertIn(enabled_path, policy['allowed'])
+                self.assertTrue(fields[enabled_path])
+                self.assertIn(label.lower(), policy['owner'].lower())
+                self.assertEqual(draft.to_dict()['steering']['mode'], data['steering']['mode'])
+                self.assertEqual(draft.to_dict()['longitudinal']['mode'], data['longitudinal']['mode'])
+        with self.subTest(preset='csv_playback'):
+            data = payload(); data['preset'] = 'csv_playback'
+            data['csv'] = {'mapping': {'time': 't', 'swa': 's', 'accelerator': 'a', 'brake': 'b'}}
+            data['steering'] = {'mode': 'csv'}; data['longitudinal'] = {'mode': 'csv'}
+            draft = ManeuverDraft.from_dict(data)
+            fields = draft.enabled_fields()
+            self.assertTrue(fields['csv'])
+            self.assertTrue(all(not fields[key] for key in fields if key != 'csv'))
+            self.assertEqual(draft.preset_policy()['owner'], 'CSV owns SWA, accelerator, and brake.')
+
     def test_preflight_calibration_fingerprint_and_physical_backend(self):
         data = payload(); data['steering'] = {'mode': 'peak_ay', 'amplitude_mps2': 4., 'direction': 1}
         data['calibration'] = {'id': 'cal'}

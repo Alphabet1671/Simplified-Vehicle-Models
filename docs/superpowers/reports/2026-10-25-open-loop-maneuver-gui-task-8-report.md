@@ -36,3 +36,9 @@ Verification after repair: Qt **9 passed**, draft **6 passed**, CSV **7 passed**
 Added direct state assertions for path/radius target mutual exclusion, locked-SWA and peak-ay target behavior, non-CSV ownership labels, and CSV channel/mode disablement with its ownership label.
 
 Verification after repair: Qt **10 passed**, draft **6 passed**, CSV **7 passed**, maneuver **94 passed**, and `git diff --check` passed.
+
+## Fix round 4 — preset guidance with mode preservation
+
+Added an explicit presentation policy for every advertised preset and test coverage for its guidance, while preserving schema-valid selected controller modes: non-CSV input enablement is mode-owned, so choosing a preset cannot silently hide a valid path/radius/longitudinal controller. CSV remains the only hard three-channel owner. The editor now displays each preset guidance label alongside mode ownership.
+
+Verification after repair: Qt **10 passed**, draft **7 passed**, CSV **7 passed**, maneuver **95 passed**, and `git diff --check` passed.

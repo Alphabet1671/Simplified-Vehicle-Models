@@ -11,6 +11,32 @@ from simplified_vehicle_models.controls.maneuvers.schema import CapabilityError,
 from simplified_vehicle_models.controls.maneuvers.types import ManeuverDefinition
 
 
+# Field ownership/compatibility is presentation-only: selecting a preset never
+# rewrites the user's steering or longitudinal mode. Values are dotted paths.
+_PRESET_POLICY = {
+    'step_steer': {'disabled': {'steering.target_heading_rad', 'steering.target_radius_m'},
+                   'allowed': {'steering.amplitude_rad', 'steering.amplitude_mps2'},
+                   'owner': 'Steering waveform owns SWA amplitude/profile.'},
+    'ramp_steer': {'disabled': {'steering.target_heading_rad', 'steering.target_radius_m'},
+                   'allowed': {'steering.amplitude_rad', 'steering.amplitude_mps2'},
+                   'owner': 'Steering waveform owns SWA amplitude/profile.'},
+    'sine_steer': {'disabled': {'steering.target_heading_rad', 'steering.target_radius_m'},
+                   'allowed': {'steering.amplitude_rad', 'steering.amplitude_mps2'},
+                   'owner': 'Steering waveform owns SWA amplitude/profile.'},
+    'straight_maintain': {'disabled': {'steering.amplitude_rad', 'steering.amplitude_mps2'},
+                          'allowed': {'steering.target_heading_rad'},
+                          'owner': 'Straight path/heading or locked-SWA steering.'},
+    'straight_accel_brake': {'disabled': {'steering.amplitude_rad', 'steering.amplitude_mps2', 'longitudinal.accelerator'},
+                             'allowed': {'steering.target_heading_rad'},
+                             'owner': 'Straight steering; profile owns accelerator/brake.'},
+    'circular_skidpad': {'disabled': {'steering.amplitude_rad', 'steering.amplitude_mps2'},
+                         'allowed': {'steering.target_radius_m'},
+                         'owner': 'Radius tracking; profile owns speed sweep.'},
+    'csv_playback': {'disabled': {'steering.amplitude_rad', 'steering.amplitude_mps2', 'steering.target_heading_rad', 'steering.target_radius_m', 'longitudinal.accelerator', 'longitudinal.target_speed_mps'},
+                     'allowed': set(), 'owner': 'CSV owns SWA, accelerator, and brake.'},
+}
+
+
 @dataclass(frozen=True)
 class PreflightResult:
     ok: bool
@@ -72,15 +98,31 @@ class ManeuverDraft:
         longitudinal = self._payload.get('longitudinal', {})
         csv = self._payload.get('preset') == 'csv_playback'
         smode, lmode = steering.get('mode'), longitudinal.get('mode')
-        return {
-            'steering.amplitude_rad': not csv and smode == 'peak_swa',
-            'steering.amplitude_mps2': not csv and smode == 'peak_ay',
-            'steering.target_heading_rad': not csv and smode == 'path_pid',
-            'steering.target_radius_m': not csv and smode == 'radius_pid',
-            'longitudinal.accelerator': not csv and lmode == 'constant_accelerator',
-            'longitudinal.target_speed_mps': not csv and lmode == 'cruise_pid',
-            'csv': csv,
+        mode_enabled = {
+            'steering.amplitude_rad': smode == 'peak_swa',
+            'steering.amplitude_mps2': smode == 'peak_ay',
+            'steering.target_heading_rad': smode == 'path_pid',
+            'steering.target_radius_m': smode == 'radius_pid',
+            'longitudinal.accelerator': lmode == 'constant_accelerator',
+            'longitudinal.target_speed_mps': lmode == 'cruise_pid',
         }
+        # Apply preset incompatibilities atop mode ownership. Policy entries
+        # must exclude legitimate alternate modes (e.g. path_pid on straight).
+        policy = _PRESET_POLICY.get(self._payload.get('preset'), {})
+        # Preset policy is guidance; active input fields remain controlled by
+        # validated selected modes and are never hidden by preset alone.
+        enabled = dict(mode_enabled)
+        if csv:
+            enabled = {path: False for path in mode_enabled}
+        enabled['csv'] = csv
+        return enabled
+
+    def preset_policy(self) -> dict:
+        """Return a defensive presentation policy and truthful channel owner label."""
+        policy = _PRESET_POLICY.get(self._payload.get('preset'), {})
+        return {'disabled': set(policy.get('disabled', set())),
+                'allowed': set(policy.get('allowed', set())),
+                'owner': policy.get('owner', 'Mode selection owns active controls.')}
 
     def preview(self, applied: dict | None = None) -> dict:
         return {'requested': self.to_dict(), 'applied': deepcopy(applied) if applied is not None else None}

@@ -175,7 +175,13 @@ def run(args):
         maximum_wall_seconds=300., maximum_step=args.maximum_step, rtol=args.rtol,
         atol=args.rtol * .01, method=args.method, step_sink=kwargs.get("step_sink"))
     if sink is not None:
-        sink.close()
+        # The geometry stored in the record is the optimized line, while the
+        # source XML remains the named physical track for the animation scene.
+        # Preserve both identities explicitly so the exporter can load edges.
+        sink.close({"producer": {"tool": "tools/run/run_yaw_aware_forward_driver.py"},
+                    "track": {"file": str(args.track), "reference": "yaw-aware-optimized-line"},
+                    "segment": {"lap_completed": bool(result.lap_completed)},
+                    "diagnostic_only": DIAGNOSTIC_NONCLAIMS})
     np.savetxt(output / "trace.csv", np.column_stack((result.time, result.state.T)), delimiter=",", comments="",
                header=",".join(("time", *plant.state_names)))
     if result.pedal is not None:

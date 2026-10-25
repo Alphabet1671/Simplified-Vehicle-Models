@@ -58,7 +58,7 @@ class ManeuverQtTests(unittest.TestCase):
                 self.assertFalse(editor.fields['longitudinal.accelerator'].isEnabled())
                 self.assertFalse(editor.steering_mode.isEnabled())
                 self.assertIn('csv owns', editor.ownership_label.text().lower())
-                self.assertIn('pid disabled', editor.ownership_label.text().lower())
+                self.assertIn('preset guidance', editor.ownership_label.text().lower())
             else:
                 editor.set_draft({**payload(), 'preset':preset})
                 self.assertEqual(editor.preset.currentText(), preset)
@@ -66,6 +66,18 @@ class ManeuverQtTests(unittest.TestCase):
                 self.assertTrue(editor.steering_mode.isEnabled())
                 self.assertIn('steering mode', editor.ownership_label.text().lower())
                 self.assertNotIn('csv owns', editor.ownership_label.text().lower())
+        # Alternate schema-valid modes stay enabled irrespective of preset.
+        alternate_modes = (
+            ('step_steer', {'mode': 'path_pid', 'target_heading_rad': 0.}, 'steering.target_heading_rad'),
+            ('straight_maintain', {'mode': 'peak_swa', 'amplitude_rad': .2, 'direction': 1}, 'steering.amplitude_rad'),
+            ('circular_skidpad', {'mode': 'path_pid', 'target_heading_rad': 0.}, 'steering.target_heading_rad'),
+        )
+        for preset, steering, field in alternate_modes:
+            with self.subTest(alternate_preset=preset):
+                alternate = {**payload(), 'preset': preset, 'steering': steering}
+                editor.set_draft(alternate)
+                self.assertTrue(editor.fields[field].isEnabled())
+                self.assertEqual(editor.to_dict()['steering']['mode'], steering['mode'])
         # Leave CSV ownership before exercising selectable steering modes.
         editor.set_draft(payload())
         for mode,path in [('path_pid','steering.target_heading_rad'),('radius_pid','steering.target_radius_m')]:
@@ -113,7 +125,7 @@ class ManeuverQtTests(unittest.TestCase):
                 self.assertFalse(editor.fields[path].isEnabled())
         label = editor.ownership_label.text().lower()
         self.assertIn('csv owns', label)
-        self.assertIn('pid disabled', label)
+        self.assertIn('preset guidance', label)
 
     def test_tab_public_api_busy_and_result(self):
         data = payload()

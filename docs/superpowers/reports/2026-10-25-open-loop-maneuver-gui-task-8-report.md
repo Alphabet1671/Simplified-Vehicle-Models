@@ -47,4 +47,4 @@ Verification after repair: Qt **10 passed**, draft **7 passed**, CSV **7 passed*
 
 Renamed preset metadata to explicit non-enforcing guidance and added mode-preservation semantics. Regressions prove schema-valid alternate controller modes remain available under non-CSV presets; only CSV hard-disables the three command channels.
 
-Verification after repair: Qt **10 passed**, draft **7 passed**, CSV **7 passed**, maneuver **95 passed**, and `git diff --check` passed.
+Verification after repair: Qt **11 passed**, draft **7 passed**, CSV **7 passed**, maneuver **100 passed**, and `git diff --check` passed.

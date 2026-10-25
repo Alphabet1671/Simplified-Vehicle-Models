@@ -54,6 +54,7 @@ class ManeuverDraftTests(unittest.TestCase):
             'step_steer': 'Steering waveform', 'ramp_steer': 'Steering waveform',
             'sine_steer': 'Steering waveform', 'straight_maintain': 'Straight',
             'straight_accel_brake': 'Straight', 'circular_skidpad': 'Radius',
+            'csv_playback': 'CSV supplies',
         }
         for preset, expected_guidance in guidance.items():
             with self.subTest(preset=preset):
@@ -61,7 +62,10 @@ class ManeuverDraftTests(unittest.TestCase):
                 draft = ManeuverDraft.from_dict(data)
                 policy = draft.preset_policy()
                 self.assertIn(expected_guidance.lower(), policy['guidance'].lower())
-                self.assertIn('does not disable', policy['mode_preservation'])
+                self.assertIn('does not disable schema-valid modes', policy['mode_preservation'])
+                self.assertIn('owner', policy)
+                self.assertNotIn('disabled', policy)
+                self.assertNotIn('allowed', policy)
                 self.assertEqual(draft.to_dict()['steering']['mode'], data['steering']['mode'])
         # Preset guidance cannot hide valid controller modes: the schema allows
         # these alternate non-CSV combinations, and mode ownership enables them.
@@ -73,7 +77,9 @@ class ManeuverDraftTests(unittest.TestCase):
         for preset, (steering, active_field) in alternate_modes.items():
             with self.subTest(alternate=preset):
                 data = payload(); data['preset'] = preset; data['steering'] = steering
-                self.assertTrue(ManeuverDraft.from_dict(data).enabled_fields()[active_field])
+                draft = ManeuverDraft.from_dict(data)
+                self.assertIsNotNone(draft.validate()[0])
+                self.assertTrue(draft.enabled_fields()[active_field])
         with self.subTest(preset='csv_playback'):
             data = payload(); data['preset'] = 'csv_playback'
             data['csv'] = {'mapping': {'time': 't', 'swa': 's', 'accelerator': 'a', 'brake': 'b'}}

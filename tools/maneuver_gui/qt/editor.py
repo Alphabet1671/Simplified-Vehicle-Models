@@ -97,9 +97,9 @@ class ManeuverEditor(QWidget):
         self.steering_mode.setEnabled(not is_csv); self.longitudinal_mode.setEnabled(not is_csv)
         policy = self.draft.preset_policy()
         if is_csv:
-            label = 'Channel ownership: CSV owns SWA, accelerator, and brake; PID disabled.'
+            label = f"Channel ownership: CSV owns SWA, accelerator, and brake. Preset guidance: {policy['guidance']}"
         else:
-            label = f"Channel ownership: steering mode / longitudinal mode. Preset guidance: {policy['owner']}"
+            label = f"Channel ownership: steering mode / longitudinal mode. Preset guidance: {policy['guidance']} {policy['owner']}"
         self.ownership_label.setText(label)
         return definition,errors
     def to_dict(self): return self.draft.to_dict()

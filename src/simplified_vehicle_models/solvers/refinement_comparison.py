@@ -184,10 +184,6 @@ def compare_strategies(records: Any) -> ComparisonResult:
                     raise ValueError("independent_validation must use typed validation evidence")
             attempts.append(_attempt_dict(a))
         normalized[r.name] = {"identity": _normal(r.identity), "attempts": attempts}
-    for field in required:
-        values = [_canonical(normalized[name]["identity"][field]) for name in sorted(expected)]
-        if values[1:] != values[:-1]:
-            return ComparisonResult(ComparisonStatus.INCOMPARABLE, normalized, None, f"identity mismatch: {field}", [])
     feasible = []
     for record in records:
         for attempt in record.attempts:
@@ -195,6 +191,10 @@ def compare_strategies(records: Any) -> ComparisonResult:
             if attempt.terminal is Terminal.INDEPENDENTLY_FEASIBLE and iv is not None and iv.status is Terminal.INDEPENDENTLY_FEASIBLE:
                 feasible.append(record.name)
                 break
+    for field in required:
+        values = [_canonical(normalized[name]["identity"][field]) for name in sorted(expected)]
+        if values[1:] != values[:-1]:
+            return ComparisonResult(ComparisonStatus.INCOMPARABLE, normalized, None, f"identity mismatch: {field}", feasible)
     candidates = feasible
     if len(candidates) == 1:
         best = candidates[0]

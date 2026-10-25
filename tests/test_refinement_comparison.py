@@ -40,6 +40,22 @@ class ComparisonTests(unittest.TestCase):
             self.assertIsNone(result.diagnostic_best)
             self.assertIn(field, result.reason)
 
+    def test_incomparable_preserves_qualifying_candidates_without_best(self):
+        iv = IndependentValidation(Terminal.INDEPENDENTLY_FEASIBLE, {"validator": "independent-v1"})
+        altered = dict(IDENTITY)
+        altered["initial_seed"] = {"id": "other"}
+        result = compare_strategies([
+            StrategyRecord("exchange", altered, (attempt(Terminal.INDEPENDENTLY_FEASIBLE, iv),)),
+            StrategyRecord("uniform", dict(IDENTITY), (attempt(Terminal.INDEPENDENTLY_FEASIBLE, iv),)),
+            StrategyRecord("localized", dict(IDENTITY), ()),
+        ])
+        self.assertEqual(result.status, ComparisonStatus.INCOMPARABLE)
+        self.assertIsNone(result.diagnostic_best)
+        self.assertEqual(result.diagnostic_candidates, ["exchange", "uniform"])
+        self.assertFalse(result.accepted)
+        self.assertFalse(result.physical_feasibility_certified)
+        self.assertTrue(result.comparison_is_not_qualification)
+
     def test_no_progress_and_unresolved_validation_cannot_win(self):
         r = compare_strategies(records(attempts={"exchange": [attempt(Terminal.NO_PROGRESS)]}))
         self.assertIsNone(r.diagnostic_best)

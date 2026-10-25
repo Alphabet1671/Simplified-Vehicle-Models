@@ -10,6 +10,7 @@ import argparse
 import hashlib
 import json
 import re
+from collections.abc import Mapping
 from pathlib import Path
 import time
 
@@ -21,6 +22,19 @@ from tools.run import run_yaw_aware_forward_driver as runner
 def _hash_array(array):
     array = np.ascontiguousarray(array)
     return hashlib.sha256(array.view(np.uint8)).hexdigest()
+
+
+def _jsonable(value):
+    """Convert immutable diagnostic evidence to strict JSON-compatible values."""
+    if isinstance(value, Mapping):
+        return {str(key): _jsonable(item) for key, item in value.items()}
+    if isinstance(value, np.ndarray):
+        return [_jsonable(item) for item in value.tolist()]
+    if isinstance(value, (tuple, list)):
+        return [_jsonable(item) for item in value]
+    if isinstance(value, np.generic):
+        return _jsonable(value.item())
+    return value
 
 
 def _sample_geometry(track, geometry, spacing):
@@ -82,7 +96,7 @@ def run(args):
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
     # Persist a useful reproduction even if the legacy profile raises.
-    args.output.write_text(json.dumps(doc, indent=2, allow_nan=False) + "\n")
+    args.output.write_text(json.dumps(_jsonable(doc), indent=2, allow_nan=False) + "\n")
     started = time.perf_counter()
     try:
         boundary = "flying" if path.is_closed else "standing"
@@ -93,12 +107,14 @@ def run(args):
         # explicit segment integer carried by the legacy exception message.
         message = str(error)
         match = re.search(r"\bsegment\s+(\d+)\b", message)
-        failed_segment = int(match.group(1)) if match else None
+        diagnostics = getattr(error, "diagnostics", None)
+        failed_segment = (int(diagnostics["segment_index"]) if diagnostics is not None
+                          else (int(match.group(1)) if match else None))
         doc["profile"] = {"status": "failed", "exception": type(error).__name__, "message": message,
-                         "failed_segment": failed_segment, "segment_evidence": None,
-                         "segment_evidence_note": "segment parsed from exception message; legacy profile exposes no further failed-segment diagnostics"}
+                         "failed_segment": failed_segment, "segment_evidence": diagnostics,
+                         "segment_evidence_note": ("structured legacy transition diagnostics" if diagnostics is not None else "segment parsed from exception message; no structured transition diagnostics")}
     doc["profile_seconds"] = time.perf_counter() - started
-    args.output.write_text(json.dumps(doc, indent=2, allow_nan=False) + "\n")
+    args.output.write_text(json.dumps(_jsonable(doc), indent=2, allow_nan=False) + "\n")
     return doc
 
 

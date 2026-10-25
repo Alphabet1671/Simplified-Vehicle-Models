@@ -3,7 +3,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
+from types import MappingProxyType, SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
@@ -32,7 +32,7 @@ class ProbeArtifactTests(unittest.TestCase):
                  patch("simplified_vehicle_models.formulations.yaw_capability.YawCapabilityGrid") as grid_type, \
                  patch("simplified_vehicle_models.formulations.yaw_capability.build_physical_yaw_map", return_value=capability), \
                  patch("simplified_vehicle_models.solvers.yaw_aware_profile._MapInterpolator"), \
-                 patch("simplified_vehicle_models.solvers.yaw_aware_profile.yaw_aware_profile", side_effect=ValueError("no forward-feasible transition on segment 3")):
+                 patch("simplified_vehicle_models.solvers.yaw_aware_profile.yaw_aware_profile", side_effect=type("Error", (ValueError,), {"diagnostics": MappingProxyType({"segment_index": 3, "candidates": (MappingProxyType({"required_ax": np.float64(-1.)}),)})})("no forward-feasible transition on segment 3")):
                 grid_type.return_value.speed = np.array([0., 10.])
                 grid_type.return_value.longitudinal_acceleration = np.array([-1., 1.])
                 grid_type.return_value.lateral_acceleration = np.array([-2., 2.])
@@ -42,7 +42,8 @@ class ProbeArtifactTests(unittest.TestCase):
         self.assertTrue(artifact["path"]["distance"])
         self.assertTrue(artifact["map"]["feasible_mask"])
         self.assertEqual(artifact["profile"]["failed_segment"], 3)
-        self.assertIn("parsed from exception", artifact["profile"]["segment_evidence_note"])
+        self.assertIn("structured legacy", artifact["profile"]["segment_evidence_note"])
+        self.assertEqual(artifact["profile"]["segment_evidence"]["candidates"][0]["required_ax"], -1.)
 
 
 if __name__ == "__main__":

@@ -34,8 +34,13 @@ class PeakAyCalibrationTests(unittest.TestCase):
     def test_canonical_peak_ay_steering_field_is_accepted(self):
         payload = definition(); payload.pop('peak_ay_mps2')
         payload['steering']['amplitude_mps2'] = 2.
-        result = calibrate_peak_ay(payload, lambda a: Result(a * 2.), (0., 2.))
+        payload['steering']['direction'] = -1
+        calls = []
+        result = calibrate_peak_ay(payload, lambda a: calls.append(a) or Result(abs(a) * 2.), (0., 2.))
         self.assertEqual(result.status, 'matched')
+        self.assertLess(result.amplitude_rad, 0.)
+        self.assertLess(result.target_mps2, 0.)
+        self.assertTrue(all(value <= 0. for value in calls))
 
     def test_unreachable_nonmonotone_and_model_limit_never_match(self):
         unreachable = calibrate_peak_ay(definition(), lambda a: Result(a), (0., 1.))

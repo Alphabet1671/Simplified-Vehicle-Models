@@ -89,19 +89,29 @@ def calibrate_peak_ay(definition, run_trial: Callable[[float], object],
         raise ValueError('amplitude bounds must be finite, nonnegative, increasing')
     payload = definition.to_dict() if hasattr(definition, 'to_dict') else definition
     target = None
+    canonical_target = False
+    steering = None
     if isinstance(payload, dict):
         target = payload.get('peak_ay_mps2', payload.get('target_ay_mps2'))
         if target is None and isinstance(payload.get('steering'), dict):
-            # ``amplitude_mps2`` is the canonical maneuver-v1 peak-ay field;
-            # the aliases retain compatibility with pre-GUI trial definitions.
+            # ``amplitude_mps2`` is the canonical maneuver-v1 *magnitude*;
+            # its direction is separately represented by steering.direction.
             steering = payload['steering']
             target = steering.get('amplitude_mps2', steering.get('peak_ay_mps2'))
+            canonical_target = 'amplitude_mps2' in steering
     if target is None:
         raise ValueError('definition must specify peak_ay_mps2')
     target = float(target)
     if not math.isfinite(target) or target == 0:
         raise ValueError('peak_ay_mps2 must be finite and nonzero')
-    target_abs, sign = abs(target), math.copysign(1., target)
+    target_abs = abs(target)
+    direction = steering.get('direction', 1) if canonical_target else math.copysign(1., target)
+    if direction not in (-1, 1):
+        raise ValueError('steering.direction must be -1 or +1')
+    sign = float(direction)
+    # Canonical definition amplitude is magnitude; expose a signed request in
+    # this calibration record so residual and selected SWA preserve direction.
+    target = sign * target_abs
     fingerprint = definition_fingerprint(payload)
     trials: list[tuple[float, float]] = []
 

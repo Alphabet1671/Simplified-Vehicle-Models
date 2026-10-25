@@ -7,8 +7,8 @@ from simplified_vehicle_models.tracks.types import PathCoordinates, TrackProfile
 from simplified_vehicle_models.tracks.line_trajectory import ReferenceCurve, OffsetTrajectory
 from simplified_vehicle_models.tracks.offset_spline import OffsetSpline
 from simplified_vehicle_models.solvers.loaded_geometry_admission import (
-    AdmissionSettings, AdmissionStatus, OperationBudget, admit_loaded_geometry,
-    offset_basis_domain_supported,
+    AdmissionSettings, AdmissionStatus, EvidenceStatus, OperationBudget,
+    admit_loaded_geometry, offset_basis_domain_supported,
 )
 
 
@@ -65,6 +65,20 @@ class AdmissionTests(unittest.TestCase):
             operation_budget=OperationBudget(atan_terms=1,atan_work_cap=1))
         self.assertEqual(out.status,AdmissionStatus.UNRESOLVED)
         self.assertIn("unresolved", out.reason_codes[0])
+
+    def test_real_candidate_policy_nonadmission_is_unresolved(self):
+        profile=type("Profile", (), {"lap_length": 5, "is_closed": False})()
+        spline=OffsetSpline(profile,1.0)
+        coeff=np.zeros(spline.control_count)
+        coeff[0]=0.1
+        candidate=OffsetTrajectory(self.ref,spline,coeff)
+        settings=AdmissionSettings(Fraction(1,2),Fraction(1,10**9),Fraction(1,10**9))
+        out=admit_loaded_geometry(reference=self.ref,trajectory_or_none=candidate,settings=settings,
+            domain=(0.,5.),operation_budget=OperationBudget())
+        self.assertIs(out.status,AdmissionStatus.UNRESOLVED)
+        self.assertIsNot(out.status,AdmissionStatus.UNSUPPORTED)
+        self.assertIs(out.candidate.status,EvidenceStatus.UNRESOLVED)
+        self.assertFalse(out.physical_feasibility_certified)
 
     def test_same_reference_identity_required(self):
         with self.assertRaises(ValueError):

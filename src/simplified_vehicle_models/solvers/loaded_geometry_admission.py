@@ -156,7 +156,7 @@ def admit_loaded_geometry(*, reference, trajectory_or_none, settings, domain, op
     re=Evidence(EvidenceStatus.ESTABLISHED if rb.metric_interval[0] > 0 else EvidenceStatus.UNRESOLVED,
                 None if rb.metric_interval[0] > 0 else "reference_metric_not_proven_positive", rb.metric_interval,
                 panel_count=rb.panel_count)
-    if re.status != "established":
+    if re.status is not EvidenceStatus.ESTABLISHED:
         return GeometryAdmission(AdmissionStatus.UNRESOLVED, ("unresolved_reference_metric",), re, None, settings, domain, operation_budget)
     if trajectory_or_none is None:
         return GeometryAdmission(AdmissionStatus.ADMITTED, (), re, None, settings, domain, operation_budget)
@@ -167,7 +167,7 @@ def admit_loaded_geometry(*, reference, trajectory_or_none, settings, domain, op
             maximum_heading_rate=settings.maximum_curvature_rate, atan_work_cap=b.atan_work_cap,
             atan_terms=b.atan_terms, atan_bit_cap=b.atan_bit_cap, atan_reduction_steps=b.atan_reduction_steps)
     except (RuntimeError, ValueError) as exc:
-        ce=Evidence("unresolved", str(exc))
+        ce=Evidence(EvidenceStatus.UNRESOLVED, str(exc))
         return GeometryAdmission(AdmissionStatus.UNRESOLVED, ("unresolved_candidate_bound",), re, ce, settings, domain, operation_budget)
     reason=None
     if cb.heading_status is HeadingStatus.GUARD_VIOLATION:

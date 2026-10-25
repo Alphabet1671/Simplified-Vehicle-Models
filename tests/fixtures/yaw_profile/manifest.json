@@ -1,0 +1,8 @@
+{
+  "task": "Task 1 frozen yaw-profile evidence",
+  "generation_command": "PYTHONPATH=src:. python3 -m unittest tests.test_yaw_aware_profile.YawProfileTests.test_explicit_lower_speed_witness_passes_strict_oracle_on_fine_grid -v",
+  "model_revision": "4a4e4befefc115e50b4481839ba632145a714452",
+  "fixtures": [{"file": "task1-synthetic-window.json", "sha256": "ce57b45cdc4970dddcebd539813ead77b58dea9d2fdb60b5861eea83296fdc08", "geometry_identity": "synthetic open path; not raw-centerline or zero-offset physical geometry", "anchoring_alone_removes_failure": null}],
+  "physical_fixture_status": "not generated: physical map cache is a dense speed x acceleration x lateral volume, and the required per-track runs (two geometry modes x original/anchored axes) were not completed in this bounded Task 1 implementation; no physical failure is asserted or claimed",
+  "interpretation": "Synthetic fixture is a feasible witness only; it does not establish a coupling regression or physical-track failure."
+}

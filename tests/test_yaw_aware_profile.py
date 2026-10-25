@@ -63,6 +63,30 @@ class YawProfileTests(unittest.TestCase):
         self.assertTrue(np.all(np.diff(result.speed) >= -1e-10))
         self.assertLessEqual(np.max(np.abs(result.longitudinal_acceleration)), 1. + 1e-8)
 
+    def test_explicit_lower_speed_witness_passes_strict_oracle_on_fine_grid(self):
+        from simplified_vehicle_models.solvers.yaw_aware_profile import _MapInterpolator, _segment_acceleration
+        distance = np.arange(0., .5001, .05)
+        curvature = np.linspace(.01, .08, distance.size)
+        rate = np.gradient(curvature, distance)
+        path = YawPath(distance, curvature, rate, False)
+        speed = np.linspace(0., 8., 17)
+        ax = np.linspace(-2., 2., 9)
+        ay = np.linspace(-2., 2., 17)
+        shape = (speed.size, ax.size, ay.size)
+        # Lateral support shrinks with speed, while a slower explicit profile
+        # remains inside the map. This is a witness, not a claim about the old
+        # greedy profile's physical failure modes.
+        mask = np.ones(shape, dtype=bool)
+        for i, v in enumerate(speed):
+            allowed = max(.25, 1.25 - .12 * v)
+            mask[i, :, np.abs(ay) > allowed] = False
+        capability = YawCapabilityMap(speed, ax, ay, np.full(shape, 1.e6),
+            np.full(shape, 1.e6), mask, 1., "physical_no_tv_v1", "shrinking-lateral-support")
+        witness = np.sqrt(2. * .5 * distance)
+        oracle = _MapInterpolator(capability)
+        for i, ds in enumerate(np.diff(distance)):
+            self.assertTrue(_segment_acceleration(oracle, path, witness[i], witness[i + 1], i, ds), i)
+
     def test_lateral_axis_bound_precedes_speed_cap_scan_on_fine_grid(self):
         distance = np.arange(0., 2.0001, .05)
         curvature = np.linspace(.10, .15304, distance.size)

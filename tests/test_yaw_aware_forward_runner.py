@@ -13,6 +13,23 @@ from simplified_vehicle_models.planning.yaw_aware_line import YawLineSettings
 
 
 class YawAwareForwardRunnerTests(unittest.TestCase):
+    def test_anchored_axes_contain_exact_zero_and_are_strictly_ordered(self):
+        import numpy as np
+        for count in (5, 7, 9, 13):
+            with self.subTest(count=count):
+                for bounds in ((-6., 3.), (-9.80665, 9.80665)):
+                    axis = runner.anchored_axis(*bounds, count)
+                    self.assertTrue(np.all(np.isfinite(axis)))
+                    self.assertTrue(np.all(np.diff(axis) > 0.))
+                    self.assertIn(0.0, axis)
+                    self.assertEqual(float(axis[np.flatnonzero(axis == 0.)[0]]), 0.0)
+                    self.assertGreaterEqual(len(axis), count)
+
+    def test_anchored_axis_rejects_invalid_domain_and_count(self):
+        for lower, upper, count in ((0., 1., 5), (-1., 0., 5), (-1., 1., 1)):
+            with self.subTest(lower=lower, upper=upper, count=count):
+                with self.assertRaises(ValueError):
+                    runner.anchored_axis(lower, upper, count)
     def test_parser_accepts_no_tv(self):
         with tempfile.TemporaryDirectory() as directory:
             args = runner.parse_args(["--track", "track.xml", "--output-dir", directory, "--map", "no-tv"])

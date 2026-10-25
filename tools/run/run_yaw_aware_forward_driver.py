@@ -36,6 +36,17 @@ def prepare_output(path):
     return path
 
 
+def anchored_axis(lower: float, upper: float, count: int) -> np.ndarray:
+    """Build a finite ordered axis that preserves its base count and exact zero.
+
+    Anchoring may add one element when the requested linspace does not already
+    contain zero; callers should record both ``count`` and ``len(axis)``.
+    """
+    if not lower < 0 < upper or count < 2:
+        raise ValueError('axis must straddle zero and count must be >= 2')
+    return np.unique(np.r_[np.linspace(lower, upper, count), 0.0])
+
+
 def physical_map_speed_limit(point_mass_vehicle, *, search_limit_mps=None):
     """Return a finite upper speed for the map from straight-line drive capability.
 
@@ -252,14 +263,14 @@ def run(args):
     speed_domain = min(derived_speed, args.maximum_speed) if args.maximum_speed is not None else derived_speed
     speed_domain_source = ("explicit_cli_limit" if args.maximum_speed is not None
                            else "physical_straight_line_envelope")
-    grid = YawCapabilityGrid(
-        np.linspace(0., speed_domain, args.yaw_speed_points),
-        # Keep the map grid consistent with the independently probed MIS
-        # low-speed forward/backward profile domain: braking needs more range
-        # than the initial symmetric convenience grid supplied.
-        np.linspace(-6., 3., args.yaw_ax_points),
-        np.linspace(-9.80665, 9.80665, args.yaw_ay_points),
-    )
+    speed_axis = np.linspace(0., speed_domain, args.yaw_speed_points)
+    # Keep the map grid consistent with the independently probed MIS
+    # low-speed forward/backward profile domain: braking needs more range
+    # than the initial symmetric convenience grid supplied. Exact zero is a
+    # required support slice for both signed acceleration dimensions.
+    ax_axis = anchored_axis(-6., 3., args.yaw_ax_points)
+    ay_axis = anchored_axis(-9.80665, 9.80665, args.yaw_ay_points)
+    grid = YawCapabilityGrid(speed_axis, ax_axis, ay_axis)
     capability = build_physical_yaw_map(pm, grid, yaw_inertia=vehicle.yaw_inertia)
     settings = YawLineSettings(maximum_speed=speed_domain, footprint_margin=0.,
         buffer=args.lateral_margin, control_spacing=args.control_spacing,

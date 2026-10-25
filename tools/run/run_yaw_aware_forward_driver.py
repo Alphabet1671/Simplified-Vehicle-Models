@@ -47,6 +47,14 @@ def parse_args(argv=None):
     parser.add_argument("--yaw-ay-points", type=int, default=9)
     parser.add_argument("--maximum-speed", type=float, default=30.)
     parser.add_argument("--lateral-margin", type=float, default=.15)
+    parser.add_argument("--control-spacing", type=float, default=60.,
+                        help="yaw-line spline control spacing in metres")
+    parser.add_argument("--planning-grid-spacing", type=float, default=8.,
+                        help="physical yaw-profile station spacing in metres")
+    parser.add_argument("--planner-iterations", type=int, default=2,
+                        help="bounded Powell iterations per corner complex")
+    parser.add_argument("--planner-passes", type=int, default=1,
+                        help="bounded outer line/profile passes")
     parser.add_argument("--preview-seconds", type=float, default=.15)
     parser.add_argument("--heading-gain", type=float, default=1.5)
     parser.add_argument("--lateral-gain", type=float, default=1.5)
@@ -60,8 +68,9 @@ def parse_args(argv=None):
     parser.add_argument("--record-precision", choices=("float32", "float64"), default="float32")
     parser.add_argument("--frame-rate-note", default="")
     args = parser.parse_args(argv)
-    for name in ("maximum_speed", "lateral_margin", "duration", "wall_seconds", "maximum_step", "rtol",
-                 "preview_seconds", "heading_gain", "lateral_gain", "speed_gain"):
+    for name in ("maximum_speed", "lateral_margin", "control_spacing", "planning_grid_spacing",
+                 "duration", "wall_seconds", "maximum_step", "rtol", "preview_seconds",
+                 "heading_gain", "lateral_gain", "speed_gain"):
         value = getattr(args, name)
         if not math.isfinite(value) or value <= 0:
             parser.error(f"--{name.replace('_','-')} must be finite and positive")
@@ -70,6 +79,9 @@ def parse_args(argv=None):
     for name in ("yaw_speed_points", "yaw_ax_points", "yaw_ay_points"):
         if getattr(args, name) < 2:
             parser.error(f"--{name.replace('_','-')} must be at least 2")
+    for name in ("planner_iterations", "planner_passes"):
+        if getattr(args, name) < 1:
+            parser.error(f"--{name.replace('_','-')} must be at least 1")
     if args.model != "planar-7dof":
         parser.error("vertical-14dof is not implemented; this initial runner is planar only")
     if args.map != "no-tv":
@@ -126,7 +138,10 @@ def run(args):
         np.linspace(-9.80665, 9.80665, args.yaw_ay_points),
     )
     capability = build_physical_yaw_map(pm, grid, yaw_inertia=vehicle.yaw_inertia)
-    settings = YawLineSettings(maximum_speed=args.maximum_speed, footprint_margin=0., buffer=args.lateral_margin)
+    settings = YawLineSettings(maximum_speed=args.maximum_speed, footprint_margin=0.,
+        buffer=args.lateral_margin, control_spacing=args.control_spacing,
+        grid_spacing=args.planning_grid_spacing, optimizer_max_iterations=args.planner_iterations,
+        maximum_outer_passes=args.planner_passes)
     plan = optimize_yaw_aware_line(track, corridor, capability, settings=settings)
     line = path_coordinates_from_yaw_line(plan)
     np.savetxt(output / "line.csv", np.column_stack((line.distance, line.reference_distance, line.x_north,

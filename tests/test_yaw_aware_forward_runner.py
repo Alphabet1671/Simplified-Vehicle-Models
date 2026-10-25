@@ -15,6 +15,8 @@ class YawAwareForwardRunnerTests(unittest.TestCase):
             args = runner.parse_args(["--track", "track.xml", "--output-dir", directory, "--map", "no-tv"])
         self.assertEqual(args.map, "no-tv")
         self.assertEqual(args.model, "planar-7dof")
+        self.assertGreater(args.control_spacing, 0.)
+        self.assertGreater(args.planning_grid_spacing, 0.)
 
     def test_prepare_output_refuses_existing_directory(self):
         with tempfile.TemporaryDirectory() as directory:

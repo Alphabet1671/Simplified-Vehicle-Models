@@ -30,3 +30,9 @@ Verification after repair: Qt **8 passed**, draft **6 passed**, CSV **7 passed**
 Added schema-backed path/radius target controls and additional profile controls. Blank optional numeric fields now create values in the draft. Offscreen regressions exercise every preset, CSV ownership, path/radius target editing, and optional field creation.
 
 Verification after repair: Qt **9 passed**, draft **6 passed**, CSV **7 passed**, maneuver **93 passed**, and `git diff --check` passed.
+
+## Fix round 3 — state and ownership coverage
+
+Added direct state assertions for path/radius target mutual exclusion, locked-SWA and peak-ay target behavior, non-CSV ownership labels, and CSV channel/mode disablement with its ownership label.
+
+Verification after repair: Qt **10 passed**, draft **6 passed**, CSV **7 passed**, maneuver **94 passed**, and `git diff --check` passed.

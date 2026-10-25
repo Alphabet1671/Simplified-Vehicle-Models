@@ -57,10 +57,15 @@ class ManeuverQtTests(unittest.TestCase):
                 self.assertFalse(editor.fields['steering.amplitude_rad'].isEnabled())
                 self.assertFalse(editor.fields['longitudinal.accelerator'].isEnabled())
                 self.assertFalse(editor.steering_mode.isEnabled())
+                self.assertIn('csv owns', editor.ownership_label.text().lower())
+                self.assertIn('pid disabled', editor.ownership_label.text().lower())
             else:
                 editor.set_draft({**payload(), 'preset':preset})
+                self.assertEqual(editor.preset.currentText(), preset)
                 self.assertTrue(editor.fields['steering.amplitude_rad'].isEnabled())
-                self.assertTrue(editor.fields['profile.rise_s'].isEnabled())
+                self.assertTrue(editor.steering_mode.isEnabled())
+                self.assertIn('steering mode', editor.ownership_label.text().lower())
+                self.assertNotIn('csv owns', editor.ownership_label.text().lower())
         # Leave CSV ownership before exercising selectable steering modes.
         editor.set_draft(payload())
         for mode,path in [('path_pid','steering.target_heading_rad'),('radius_pid','steering.target_radius_m')]:
@@ -74,6 +79,41 @@ class ManeuverQtTests(unittest.TestCase):
         editor.fields['profile.rise_s'].setText('0.3')
         editor.fields['profile.rise_s'].textEdited.emit('0.3')
         self.assertEqual(editor.to_dict()['profile']['rise_s'],0.3)
+
+    def test_mode_and_csv_ownership_enabled_states(self):
+        editor = ManeuverEditor(payload())
+        heading = editor.fields['steering.target_heading_rad']
+        radius = editor.fields['steering.target_radius_m']
+        expected = {
+            'path_pid': (True, False),
+            'radius_pid': (False, True),
+            'locked_swa': (False, False),
+            'peak_ay': (False, False),
+        }
+        for mode, (heading_enabled, radius_enabled) in expected.items():
+            with self.subTest(mode=mode):
+                editor.set_draft({**payload(), 'steering': {'mode': mode, 'amplitude_mps2': 4., 'direction': 1,
+                                                            'target_heading_rad': .2, 'target_radius_m': 10.}})
+                self.assertEqual(heading.isEnabled(), heading_enabled)
+                self.assertEqual(radius.isEnabled(), radius_enabled)
+                self.assertIn('steering mode', editor.ownership_label.text().lower())
+                self.assertNotIn('csv owns', editor.ownership_label.text().lower())
+
+        csv_data = payload()
+        csv_data.update(preset='csv_playback',
+                        steering={'mode': 'csv'},
+                        longitudinal={'mode': 'csv'},
+                        csv={'source': '', 'mapping': {'time': 't', 'swa': 's', 'accelerator': 'a', 'brake': 'b'}})
+        editor.set_draft(csv_data)
+        self.assertFalse(editor.steering_mode.isEnabled())
+        self.assertFalse(editor.longitudinal_mode.isEnabled())
+        for path in ('steering.amplitude_rad', 'longitudinal.accelerator',
+                     'steering.target_heading_rad', 'steering.target_radius_m'):
+            with self.subTest(csv_field=path):
+                self.assertFalse(editor.fields[path].isEnabled())
+        label = editor.ownership_label.text().lower()
+        self.assertIn('csv owns', label)
+        self.assertIn('pid disabled', label)
 
     def test_tab_public_api_busy_and_result(self):
         data = payload()

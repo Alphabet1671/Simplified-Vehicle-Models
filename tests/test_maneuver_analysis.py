@@ -62,6 +62,24 @@ class ManeuverAnalysisTests(unittest.TestCase):
         self.assertEqual(summary['objective']['last_valid_speed_mps'], 5.)
         self.assertEqual(summary['objective']['first_invalid_speed_mps'], 5.)
 
+    def test_short_speed_evidence_cannot_bracket_path_error(self):
+        full = result(radial=[0., 0., .2, .2, .2])
+        full.observations = full.observations[:3]
+        summary = analyze_maneuver(skidpad(), full)
+        self.assertEqual(summary['objective']['limit_status'], 'not_established')
+        self.assertIsNone(summary['objective']['last_valid_speed_mps'])
+        self.assertIsNone(summary['objective']['first_invalid_speed_mps'])
+        self.assertIn('evidence_misaligned', [x['kind'] for x in summary['interventions']])
+
+    def test_short_speed_evidence_cannot_report_clean_limit_not_reached(self):
+        full = result(radial=[0.] * 5)
+        full.observations = full.observations[:3]
+        summary = analyze_maneuver(skidpad(), full)
+        self.assertEqual(summary['objective']['limit_status'], 'not_established')
+        self.assertIsNone(summary['objective']['last_valid_speed_mps'])
+        self.assertIsNone(summary['objective']['first_invalid_speed_mps'])
+        self.assertIn('evidence_misaligned', [x['kind'] for x in summary['interventions']])
+
     def test_saturation_speed_or_model_failure_is_not_physical_limit(self):
         saturated = analyze_maneuver(skidpad(), result(radial=[.2] * 5, saturated=True))
         low_speed = analyze_maneuver(skidpad(), result(radial=[.2] * 5, speeds=[2.] * 5))

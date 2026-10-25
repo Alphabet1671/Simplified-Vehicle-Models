@@ -138,6 +138,13 @@ def analyze_maneuver(definition, result) -> dict:
                 path_err = candidate
                 break
         target_speed = steer.get('target_speed_mps', longitudinal.get('target_speed_mps'))
+        # Limit classifications require speed and path-error observations on the
+        # same accepted sample timeline as valid time/state evidence. A shorter
+        # observation series must never be implicitly paired with path samples.
+        evidence_aligned = bool(valid and speeds is not None and speeds.size == t.size and
+                                path_err is not None and path_err.size == t.size)
+        if not evidence_aligned:
+            interventions.append({'kind': 'evidence_misaligned'})
         speed_met = None
         speed_window = None
         if speeds is not None and target_speed is not None:
@@ -168,7 +175,7 @@ def analyze_maneuver(definition, result) -> dict:
         elif speed_met is None:
             interventions.append({'kind': 'target_speed_evidence_insufficient'})
         model_failed = termination in {'model_error', 'model_limit', 'nonfinite_state'} or outcome == 'failed'
-        evidence_ok = speed_met is True
+        evidence_ok = speed_met is True and evidence_aligned
         bracket = persistent is True and not saturated and evidence_ok and not model_failed
         clean_sweep = (persistent is False and path_err is not None and not np.any(np.abs(path_err) > max(float(steer.get('path_tolerance_m', .1)), 0.))
                        and not saturated and evidence_ok and not model_failed)

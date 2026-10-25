@@ -40,9 +40,11 @@ class YawLineSettings:
     lap_time_tolerance: float = 0.001
     corner_quiet_curvature: float = 0.002
     corner_min_length: float = 18.0
+    corner_quiet_padding: float = 25.0
+    qp_tolerance: float = 1.e-9
 
     def __post_init__(self):
-        for name in ("control_spacing", "grid_spacing", "optimizer_x_tolerance", "optimizer_f_tolerance", "maximum_speed", "lap_time_tolerance", "corner_min_length"):
+        for name in ("control_spacing", "grid_spacing", "optimizer_x_tolerance", "optimizer_f_tolerance", "maximum_speed", "lap_time_tolerance", "corner_min_length", "corner_quiet_padding", "qp_tolerance"):
             value = float(getattr(self, name))
             if not np.isfinite(value) or value <= 0:
                 raise ValueError(f"{name} must be finite and positive")
@@ -116,35 +118,79 @@ def _shape_metrics(path, profile, trajectory):
             "minimum_speed_distance": float(distance[slow])}
 
 
-def _corner_complexes(track, threshold, min_length):
-    """Return contiguous non-quiet source-station windows; join across closed seam."""
-    distance, curvature = np.asarray(track.distance), np.abs(np.asarray(track.curvature))
-    active = curvature >= threshold
-    # Fill short quiet gaps, keeping chicanes/S-bends in one complex.
-    for i in range(1, len(active)-1):
-        if not active[i] and active[i-1] and active[i+1]:
-            active[i] = True
-    edges = np.flatnonzero(np.diff(np.r_[False, active, False].astype(int)))
-    windows = [(float(distance[a]), float(distance[min(b, len(distance)-1)])) for a,b in zip(edges[::2],edges[1::2])]
-    windows = [(a,b) for a,b in windows if b-a >= min_length]
-    if track.is_closed and len(windows) > 1 and windows[0][0] == distance[0] and windows[-1][1] == distance[-1]:
-        windows = [(windows[-1][0], windows[0][1] + (distance[-1]-distance[0]))] + windows[1:-1]
-    return windows
+def _corner_complexes(track, threshold, min_length, quiet_padding=25.):
+    """Group opposing turns across short straights; include braking/exit quiet runs."""
+    distance = np.asarray(track.distance, dtype=float)
+    curvature = np.asarray(track.curvature, dtype=float)
+    active = np.abs(curvature) >= threshold
+    # Join adjacent turn sections unless the intervening low-curvature straight
+    # is long enough to constitute an independent braking complex.
+    raw = np.flatnonzero(np.diff(np.r_[False, active, False].astype(int)))
+    windows = [(float(distance[a]), float(distance[min(b, len(distance)-1)]))
+               for a,b in zip(raw[::2], raw[1::2])]
+    if not windows:
+        return []
+    grouped = [list(windows[0])]
+    for start, end in windows[1:]:
+        gap = start - grouped[-1][1]
+        if gap <= 2.*quiet_padding:
+            grouped[-1][1] = end
+        else:
+            grouped.append([start, end])
+    padded = [(max(float(distance[0]), a-quiet_padding),
+               min(float(distance[-1]), b+quiet_padding)) for a,b in grouped
+              if b-a >= min_length]
+    if track.is_closed and len(padded) > 1:
+        if padded[0][0] == distance[0] and padded[-1][1] == distance[-1]:
+            padded = [(padded[-1][0], padded[0][1]+(distance[-1]-distance[0]))] + padded[1:-1]
+    return padded
 
 
-def _smooth_curvature_seed(spline, reference, blend):
-    """Deterministic linearized quadratic curvature/length surrogate seed.
+def _qp_seed(spline, reference, blend, lower, upper, tolerance=1.e-9):
+    """Solve the deterministic convex discrete offset seed QP.
 
-    Curvature is minimized by moving away from the turn (``n`` opposite κ);
-    increasing epsilon favors inward offset/shorter radius.  The resulting
-    stationwise target is projected into the declared bounds then smoothed by
-    the existing cubic OffsetSpline basis, a constrained numerical-QP surrogate.
+    Objective: ``(1-eps)||K(c)-k_ref||_W^2 + eps/2 ||W B1 c||^2`` where
+    ``K(c)`` is the linearized offset curvature ``k_ref + A c`` about the
+    reference (A is obtained by deterministic central perturbations of the
+    analytic trajectory), D2 smoothness regularizes the Hessian, and the second
+    term is the quadratic small-slope path-length surrogate. This yields a
+    signed, reference-dependent linear term, so epsilon seeds need not collapse
+    to the zero solution. Box bounds are imposed directly; SLSQP uses analytic
+    gradient, fixed tolerance and fixed zero initial point.
     """
-    k = np.asarray(reference.evaluate(spline.control_distance).curvature, dtype=float)
-    scale = np.maximum(np.abs(k), 1.e-5)
-    curvature_target = -np.sign(k) * np.minimum(2.0, 0.25 / scale)
-    length_target = np.sign(k) * np.minimum(1.0, 0.08 / scale)
-    return (1.0-blend) * curvature_target + blend * length_target
+    count = spline.control_count
+    eye = np.eye(count)
+    if spline.is_closed:
+        D2 = np.roll(eye, 1, axis=1) - 2.*eye + np.roll(eye, -1, axis=1)
+    else:
+        D2 = np.diff(eye, n=2, axis=0)
+    ds = float(spline.track.lap_length) / max(1, count if spline.is_closed else count-1)
+    grid = np.linspace(0., spline.track.lap_length, max(40, 4*count)+1)
+    _, B0, B2 = spline.basis(grid)
+    k_ref = np.asarray(reference.evaluate(grid).curvature, dtype=float)
+    # Linearized offset curvature from analytic trajectory perturbations at the
+    # origin. Central differences keep this deterministic and independent of
+    # any optimizer-internal finite-difference policy.
+    eps_fd = 1.e-3
+    A = np.empty((grid.size, count))
+    for j in range(count):
+        unit = np.zeros(count); unit[j] = eps_fd
+        kp = np.asarray(OffsetTrajectory(reference, spline, unit).evaluate(grid).curvature)
+        km = np.asarray(OffsetTrajectory(reference, spline, -unit).evaluate(grid).curvature)
+        A[:, j] = (kp-km)/(2.*eps_fd)
+    # The curvature map is locally quadraticized by its linearization; offset
+    # second-difference smoothness is the regularizer and length is quadratic.
+    target = -k_ref
+    weights = np.full(grid.size, ds * count / max(grid.size-1, 1))
+    curvature_Q = A.T @ (weights[:, None] * A) + D2.T @ D2 * 1.e-4
+    length_Q = B2.T @ (weights[:, None] * B2) * (ds*ds)
+    Q = 2.*((1.-blend)*curvature_Q + blend*length_Q) + np.eye(count)*1.e-10
+    q = 2.*(1.-blend)*(A.T @ (weights*target))
+    def fun(c): return .5*float(c@Q@c) + float(q@c)
+    def jac(c): return Q@c + q
+    result = minimize(fun, np.zeros(count), jac=jac, method="SLSQP",
+        bounds=list(zip(lower, upper)), options={"ftol": tolerance, "maxiter": 100, "disp": False})
+    return np.clip(np.asarray(result.x, dtype=float), lower, upper), bool(result.success), int(result.nit), float(result.fun)
 
 
 def optimize_yaw_aware_line(track: TrackProfile, corridor: Corridor | None,
@@ -183,9 +229,16 @@ def optimize_yaw_aware_line(track: TrackProfile, corridor: Corridor | None,
     high = np.interp(spline.control_distance, shrunk.distance, shrunk.maximum)
     bounds = list(zip(low.tolist(), high.tolist()))
     seeds = [np.zeros(spline.control_count)]
+    seed_solver_diagnostics = []
     for blend in settings.seed_blends:
-        seeds.append(np.clip(_smooth_curvature_seed(spline, reference, blend), low, high))
-    corners = _corner_complexes(track, settings.corner_quiet_curvature, settings.corner_min_length)
+        seed, success, iterations, objective_value = _qp_seed(
+            spline, reference, blend, low, high, settings.qp_tolerance)
+        seeds.append(seed)
+        seed_solver_diagnostics.append({"epsilon": blend, "success": success,
+                                        "iterations": iterations, "objective": objective_value,
+                                        "method": "SLSQP_box_constrained_convex_QP"})
+    corners = _corner_complexes(track, settings.corner_quiet_curvature,
+                                settings.corner_min_length, settings.corner_quiet_padding)
     records = []
 
     def evaluate(coeff, seed_index, stage):
@@ -222,10 +275,10 @@ def optimize_yaw_aware_line(track: TrackProfile, corridor: Corridor | None,
     best_eval = None
     previous_time = None
     pass_summary = []
+    selected_optimizer_success = True
+    selected_optimizer_attempts = []
     for outer in range(1, min(3, settings.maximum_outer_passes)+1):
         for idx, seed in enumerate(seeds):
-            if settings.optimizer_max_iterations <= 1 and idx > 1:
-                continue
             if outer > 1 and best_eval is not None:
                 seed = best_coeff.copy()
             rec, item = evaluate(seed, idx, f"pass_{outer}_seed")
@@ -237,8 +290,6 @@ def optimize_yaw_aware_line(track: TrackProfile, corridor: Corridor | None,
             # Optimize one corner complex at a time; controls outside the window
             # are fixed, with smooth fixed blending supplied by the spline basis.
             for ci, (start, end) in enumerate(corners):
-                if settings.optimizer_max_iterations <= 1:
-                    break
                 active = np.flatnonzero((spline.control_distance >= start) & (spline.control_distance <= min(end, track.lap_length)))
                 if track.is_closed and end > track.lap_length:
                     active = np.unique(np.r_[active, np.flatnonzero(spline.control_distance <= end-track.lap_length)])
@@ -257,8 +308,10 @@ def optimize_yaw_aware_line(track: TrackProfile, corridor: Corridor | None,
                 recx, evalx = evaluate(candidate, idx, f"pass_{outer}_corner_{ci}_result")
                 recx.update(optimizer_success=bool(result.success), optimizer_iterations=int(result.nit))
                 records.append(recx)
+                selected_optimizer_attempts.append(bool(result.success))
                 if evalx and (best_eval is None or evalx[2].lap_time < best_eval[2].lap_time):
                     best_coeff, best_eval = candidate, evalx
+                    selected_optimizer_success = bool(result.success)
         current = None if best_eval is None else best_eval[2].lap_time
         pass_summary.append({"pass": outer, "lap_time": current, "corner_complexes": len(corners)})
         if previous_time is not None and current is not None and abs(previous_time-current) < settings.lap_time_tolerance:
@@ -268,13 +321,22 @@ def optimize_yaw_aware_line(track: TrackProfile, corridor: Corridor | None,
         raise YawLineOptimizationError("all yaw-aware line candidates rejected", records)
     trajectory, path, profile = best_eval
     speed_plan = to_speed_plan(path, profile)
-    status = "converged" if (len(pass_summary) == 1 or (len(pass_summary) > 1 and abs(pass_summary[-2]["lap_time"]-pass_summary[-1]["lap_time"]) < settings.lap_time_tolerance)) else "iteration_limit"
+    if len(pass_summary) == 1:
+        status = "single_pass"
+    elif selected_optimizer_attempts and not all(selected_optimizer_attempts):
+        status = "iteration_limit"
+    elif abs(pass_summary[-2]["lap_time"]-pass_summary[-1]["lap_time"]) < settings.lap_time_tolerance:
+        status = "converged"
+    else:
+        status = "iteration_limit"
     shape = _shape_metrics(path, profile, trajectory)
     diagnostics = {"candidate_evaluations": tuple(records), "selected_coefficients": best_coeff.tolist(),
         "map_source_kind": capability.source_kind, "map_source_identity": capability.source_identity,
         "containment_check": "dense_empirical_v1", "optimizer": "bounded_Powell",
-        "seed_family": "curvature_energy_length_epsilon_0_0.25_0.5_0.75",
+        "seed_family": "convex_discrete_curvature_energy_and_quadratic_length_QP",
+        "seed_qp_objectives": tuple(seed_solver_diagnostics),
         "corner_complexes": tuple(corners), "outer_passes": tuple(pass_summary),
+        "optimizer_success": selected_optimizer_success,
         "converged": status == "converged"}
     return YawAwareLinePlan(trajectory, profile, speed_plan, shrunk, best_coeff,
                             profile.lap_time, status, diagnostics, shape)

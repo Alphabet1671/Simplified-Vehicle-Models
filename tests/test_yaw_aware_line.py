@@ -21,11 +21,11 @@ def circle_track(radius=24., count=25, pinch=False):
                         True, "synthetic circle/corner", coordinates, left, right, "assumed")
 
 
-def capability(moment=1.e6):
+def capability(moment=1.e6, source_kind="physical_tv_v1"):
     speed, ax, ay = np.linspace(0., 24., 7), np.array([-8., 0., 8.]), np.linspace(-18., 18., 5)
     shape = (len(speed), len(ax), len(ay))
     return YawCapabilityMap(speed, ax, ay, np.full(shape, moment), np.full(shape, moment),
-                            np.ones(shape, bool), 1., "physical_tv_v1", f"synthetic-{moment}")
+                            np.ones(shape, bool), 1., source_kind, f"synthetic-{source_kind}-{moment}")
 
 
 class YawAwareLineTests(unittest.TestCase):
@@ -78,15 +78,39 @@ class YawAwareLineTests(unittest.TestCase):
         self.assertTrue(caught.exception.diagnostics)
         self.assertTrue(all(row["reason"] for row in caught.exception.diagnostics))
 
-    def test_yaw_authority_changes_profile_or_line_shape(self):
-        track = circle_track()
-        weak = optimize_yaw_aware_line(track, None, capability(.08), settings=self.settings())
-        strong = optimize_yaw_aware_line(track, None, capability(1.e6), settings=self.settings())
-        self.assertLessEqual(strong.lap_time, weak.lap_time + 1e-8)
-        self.assertNotEqual(weak.profile.diagnostics["map_source_identity"],
-                            strong.profile.diagnostics["map_source_identity"])
-        self.assertNotEqual(weak.status, "error")
-        self.assertNotEqual(strong.status, "error")
+    def test_tv_no_tv_ordering_on_hairpin_and_90_corner(self):
+        for radius in (18., 10.):  # broad 90-degree-like arc and tighter hairpin
+            track = circle_track(radius=radius, count=25)
+            no_tv = optimize_yaw_aware_line(track, None, capability(1.e8, "physical_no_tv_v1"),
+                                            settings=self.settings())
+            # High yaw authority must genuinely lift yaw-rate-change feasibility;
+            # retain equal steady lateral envelope but increase directional moment.
+            tv_map = capability(1.e8, "physical_tv_v1")
+            object.__setattr__(tv_map, "yaw_moment_into_turn", np.full_like(tv_map.yaw_moment_into_turn, 1.e12))
+            object.__setattr__(tv_map, "yaw_moment_out_of_turn", np.full_like(tv_map.yaw_moment_out_of_turn, 1.e12))
+            tv = optimize_yaw_aware_line(track, None, tv_map, settings=self.settings())
+            # Current fixed-path profile does not guarantee a shape ordering on
+            # symmetric circle fixtures; preserve the direct time comparison and
+            # map provenance while recording that L50 ordering remains unresolved.
+            self.assertLessEqual(tv.lap_time, no_tv.lap_time + 1e-8)
+            self.assertEqual(tv.diagnostics["map_source_kind"], "physical_tv_v1")
+            self.assertEqual(no_tv.diagnostics["map_source_kind"], "physical_no_tv_v1")
+
+    def test_negative_curvature_fold_guard_shrinks_right_bounds(self):
+        # Circle's sign is reversed by mirroring east, giving a left-turn path.
+        positive = circle_track(radius=16., count=25)
+        coords = positive.path_coordinates
+        mirrored = PathCoordinates(coords.distance, coords.x_north, -coords.y_east,
+                                   -coords.heading, -coords.curvature, True)
+        track = TrackProfile(positive.distance, positive.segment_length, positive.radius,
+                             -positive.curvature, True, "negative curvature", mirrored,
+                             positive.half_width_left, positive.half_width_right, "assumed")
+        result = optimize_yaw_aware_line(track, None, capability(), settings=self.settings())
+        fitted_k = np.asarray(result.trajectory.reference.evaluate(positive.distance).curvature)
+        negative_turn = fitted_k < 0.
+        self.assertTrue(np.any(negative_turn))
+        self.assertTrue(np.all(result.corridor.minimum[negative_turn] > -positive.half_width_left[negative_turn]))
+        self.assertTrue(np.all(result.corridor.maximum[negative_turn] == positive.half_width_right[negative_turn] - 0.15))
 
 
 if __name__ == "__main__":

@@ -1,7 +1,7 @@
 # Phase 3 task report: yaw-aware line optimizer
 
-**Date:** 2026-10-25  
-**Branch:** `feature/yaw-aware-virtual-driver`  
+**Date:** 2026-10-25
+**Branch:** `feature/yaw-aware-virtual-driver`
 **Base Phase 1/2 commits:** `fe9b2f1`, `16796d6`, `9f6366f`
 
 ## Delivered
@@ -23,8 +23,8 @@
 ## Repair round 1 (review findings)
 
 - Default corridor construction now uses `SIGNED_POLICY` with the fitted `ReferenceCurve`; footprint/buffer-shrunk signed bounds are returned as the plan corridor, with the turn-side fold guard reapplied and dense candidate fold checks retained.
-- Replaced the prior sinusoidal stand-in with deterministic epsilon-family seeds `(0, .25, .5, .75)`, generated from signed curvature-energy/shorter-radius station targets and projected onto the offset controls.
-- Added curvature-quiet complex detection, per-complex bounded Powell optimization with controls outside each complex fixed, and outer reprofile/reoptimization passes (maximum three, 1 ms convergence criterion).
-- Plan status distinguishes `converged` from `iteration_limit`; failed proposals retain explicit gate reasons. Apex offset is evaluated through the physical station map at the peak-curvature path station.
-- Expanded tests to exercise asymmetric width pinch/corner complex detection, exact speed-plan projection, explicit candidate failure, and yaw authority sensitivity. The full vehicle-specific V/ U time-ordering remains an acceptance test for later realistic asymmetric corner fixtures; these synthetic checks do not claim that trend universally.
+- Replaced the prior heuristic stand-in with a deterministic box-constrained convex discrete seed QP for epsilon `(0, .25, .5, .75)`: `(1-eps)||K(c)-k_ref||_W^2 + eps/2||W B1 c||^2`, with `K` a finite-difference linearization of exact offset curvature at the reference, and `B1` the cubic offset derivative basis. Bounded SLSQP uses analytic gradient, fixed zero initialization, `ftol=1e-9`, and max 100 iterations; per-epsilon success/iterations/objective are retained.
+- Added curvature-quiet complex detection with quiet-run padding/grouping, per-complex bounded Powell optimization with controls outside each complex fixed, and outer reprofile/reoptimization passes (maximum three, 1 ms convergence criterion).
+- Plan status distinguishes `single_pass`, `converged`, and `iteration_limit`; failed proposals retain explicit gate reasons. Apex offset is evaluated through the physical station map at peak curvature.
+- Expanded tests for asymmetric width pinch/corner complex detection, exact speed-plan projection, explicit rejection, negative-curvature fold guard at affected turn-side stations, and distinct TV/no-TV map labels with time comparison on circle proxies. **Unresolved:** synthetic tests do not demonstrate the required TV-shorter-L50 ordering on 90-degree/hairpin fixtures; the actual profile/optimizer has not produced that behavioral evidence, so do not interpret this phase as passing the proposal's decisive experiment.
 - Dense corridor containment remains an empirical check, not a continuous certificate. QSS OCPs remain unchanged.

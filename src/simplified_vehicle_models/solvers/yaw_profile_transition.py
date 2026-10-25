@@ -19,6 +19,51 @@ class QInterval:
     support_id: tuple[int, ...]
 
 
+def _real_roots_unit(poly, *, scale, tolerance, diagnostics):
+    """Isolate all real roots on [0,1] by recursively splitting at derivative roots."""
+    p = Polynomial(poly.coef)
+    while p.degree() > 0 and abs(p.coef[-1]) <= np.finfo(float).eps * max(1., np.max(np.abs(p.coef))):
+        p = Polynomial(p.coef[:-1])
+    if p.degree() <= 0:
+        return []
+    if p.degree() == 1:
+        root = -p.coef[0] / p.coef[1]
+        if -tolerance <= root <= 1+tolerance:
+            root = min(1., max(0., float(root)))
+            if abs(float(p(root))) > tolerance * scale:
+                raise YawProfileSolveError("interval_oracle_unresolved", "linear root residual unresolved", diagnostics)
+            return [root]
+        return []
+    critical = _real_roots_unit(p.deriv(), scale=max(1., np.max(np.abs(p.deriv().coef))),
+                                tolerance=tolerance, diagnostics=diagnostics)
+    knots = sorted(set([0., *critical, 1.]))
+    roots = []
+    for x in knots:
+        fx = float(p(x))
+        if abs(fx) <= tolerance * scale:
+            roots.append(x)  # includes even-multiplicity/tangent roots
+    for a, b in zip(knots[:-1], knots[1:]):
+        fa, fb = float(p(a)), float(p(b))
+        if fa == 0. or fb == 0. or fa * fb > 0.:
+            continue
+        left, right = a, b
+        for _ in range(100):
+            mid = left + (right-left)*.5
+            fm = float(p(mid))
+            if abs(fm) <= tolerance*scale or np.nextafter(left,right) >= right:
+                left = right = mid
+                break
+            if fa*fm <= 0.:
+                right, fb = mid, fm
+            else:
+                left, fa = mid, fm
+        root = (left+right)*.5
+        if abs(float(p(root))) > tolerance*scale:
+            raise YawProfileSolveError("interval_oracle_unresolved", "bracketed root residual unresolved", diagnostics)
+        roots.append(root)
+    return sorted(set(roots))
+
+
 def _segment(path, capability, segment_index):
     if not isinstance(segment_index, int) or isinstance(segment_index, bool) or not 0 <= segment_index < len(path.distance)-1:
         raise ValueError("segment_index out of range")
@@ -86,14 +131,9 @@ def transition_intervals(path, capability, segment_index: int, fixed_q: float, d
         for axis,val in zip(axes,(mid,axmid,k*mid*mid)):
             j=int(np.searchsorted(axis,val,side='right')-1); j=max(0,min(j,len(axis)-2)); indices.append(j)
         i,j,l=indices
-        # Build the true strict-oracle support. Knot-pinned axes have a single
-        # active corner face; do not require masked zero-weight neighbors.
-        active=[]
-        for axis,val,ix in zip(axes,(mid,axmid,k*mid*mid),indices):
-            if val == axis[ix]: active.append(((ix,Polynomial([1.])),))
-            elif val == axis[ix+1]: active.append(((ix+1,Polynomial([1.])),))
-            else: active.append(((ix,None),(ix+1,None)))
-        if not query(mid)['reason'].value == 'supported': continue
+        # Query strict support directly; at exact pinned faces, the strict
+        # interpolator correctly ignores zero-weight neighboring corners.
+        if query(mid)['reason'].value != 'supported': continue
         U=Polynomial([0.,1.]); vals=(U, (U*U-fixed_q)/ds if direction=='forward' else (fixed_q-U*U)/ds, k*U*U)
         weights=[]
         for axis,val,ix in zip(axes,vals,indices):
@@ -110,24 +150,14 @@ def transition_intervals(path, capability, segment_index: int, fixed_q: float, d
         margins=(moments[0]-dem,moments[1]+dem)
         roots=[a,b]
         for margin_index,p in enumerate(margins):
-            # Roots over finite cell; normalize for conditioning. A numerically
-            # unresolved near-real root is a hard failure, never an omitted cut.
+            # Normalize each finite cell to [0,1]. Derivative-root partitioning
+            # brackets sign changes and explicitly captures repeated/tangent roots.
             z=Polynomial([a,b-a]); pn=p(z)
-            for r in pn.roots():
-                if abs(r.imag)<1e-8:
-                    if 0 < r.real < 1:
-                        rr=float(a+(b-a)*r.real)
-                        residual=abs(float(p(rr)))
-                        scale=max(1.,float(np.max(np.abs(p.coef))))
-                        if residual > settings.yaw_moment_tolerance*scale:
-                            raise YawProfileSolveError("interval_oracle_unresolved", "root residual exceeds tolerance", {
-                                "segment_index":segment_index,"cell":tuple(indices),"margin_index":margin_index,
-                                "root":rr,"residual":residual,"capability_identity":capability.source_identity})
-                        roots.append(rr)
-                elif abs(r.imag) <= 1e-5 and -1e-8 <= r.real <= 1+1e-8:
-                    raise YawProfileSolveError("interval_oracle_unresolved", "ambiguous near-real margin root", {
-                        "segment_index":segment_index,"cell":tuple(indices),"margin_index":margin_index,
-                        "root":(float(r.real),float(r.imag)),"capability_identity":capability.source_identity})
+            rdiag={"segment_index":segment_index,"cell":tuple(indices),"margin_index":margin_index,
+                   "polynomial_coefficients":tuple(map(float,pn.coef)),"capability_identity":capability.source_identity}
+            for r in _real_roots_unit(pn, scale=max(1.,float(np.max(np.abs(pn.coef)))),
+                                      tolerance=max(settings.yaw_moment_tolerance,1e-12), diagnostics=rdiag):
+                if 0 < r < 1: roots.append(float(a+(b-a)*r))
         roots=sorted(set(roots))
         for witness in [a,b,*roots,*[(x+y)/2 for x,y in zip(roots[:-1],roots[1:])]]:
             ev=query(witness)
@@ -178,18 +208,46 @@ def transition_intervals(path, capability, segment_index: int, fixed_q: float, d
                                q if direction == 'forward' else fixed_q,
                                settings=settings)
             return bool(ev['feasible'])
-        # Guard against cancellation in inverse q->u mapping: the algebraic
-        # endpoint may be a few ulps inside although its strict query is out.
-        for _ in range(16):
-            if low >= high or q_feasible(low): break
-            low = float(np.nextafter(low, high))
-        for _ in range(16):
-            if low >= high or q_feasible(high): break
-            high = float(np.nextafter(high, low))
-        if low>high+tol: continue
-        item=QInterval(low,high,q_feasible(low),q_feasible(high),support)
-        if result and item.lower <= result[-1].upper+tol and feasible(math.sqrt((fixed_q+max(item.lower,result[-1].upper))/2)):
-            prev=result.pop(); result.append(QInterval(prev.lower,max(prev.upper,item.upper),prev.lower_included,item.upper_included,prev.support_id if prev.support_id==item.support_id else ()))
+        # A returned numeric bound itself must be strict-feasible. If root
+        # rounding produced an infeasible endpoint, isolate the nearest
+        # representable feasible value toward a known feasible interior point.
+        qmid = low+(high-low)*.5
+        if not q_feasible(qmid):
+            # The u-midpoint and q-midpoint are not identical under the
+            # nonlinear transform; locate an actual strict witness before
+            # retaining this piece, or fail closed as unresolved.
+            candidates=np.linspace(low,high,33)[1:-1]
+            qmid=next((float(q) for q in candidates if q_feasible(float(q))), math.nan)
+            if not math.isfinite(qmid):
+                continue
+        if not q_feasible(low):
+            bad, good = low, qmid
+            for _ in range(128):
+                midq = bad+(good-bad)*.5
+                if midq == bad or midq == good: break
+                if q_feasible(midq): good=midq
+                else: bad=midq
+            low=good
+        if not q_feasible(high):
+            good, bad = qmid, high
+            for _ in range(128):
+                midq = good+(bad-good)*.5
+                if midq == good or midq == bad: break
+                if q_feasible(midq): good=midq
+                else: bad=midq
+            high=good
+        if low>high: continue
+        item=QInterval(low,high,True,True,support)
+        # Merge only on actual numeric overlap and only when the connecting
+        # endpoint itself passes the strict edge oracle. Tolerance-near gaps
+        # may be masked holes and must remain disconnected.
+        if result and item.lower <= result[-1].upper:
+            prev=result[-1]
+            if q_feasible(item.lower):
+                result[-1]=QInterval(prev.lower,max(prev.upper,item.upper),True,True,
+                                     prev.support_id if prev.support_id==item.support_id else ())
+            else:
+                result.append(item)
         else: result.append(item)
     return tuple(result)
 
@@ -203,6 +261,8 @@ def edge_evidence(path, capability, segment_index: int, q_left: float, q_right: 
     evidence=_MapInterpolator(capability).query_evidence(u,ax,ay)
     out={"segment_index":segment_index,"q_left":float(q_left),"q_right":float(q_right),"midpoint_speed":u,"longitudinal_acceleration":ax,"lateral_acceleration":ay,**evidence}
     out['capability_identity'] = capability.source_identity
+    out['strict_query_model'] = "_MapInterpolator.query_evidence; zero-weight masked corners excluded"
+    out['strict_feasibility_tolerance'] = 1e-9
     if evidence.get('moments') is not None:
         into,outer=evidence['moments']; demand=sign*capability.yaw_inertia*(ax*k+u*u*kp)
         out.update(yaw_demand=demand,into_margin=into-demand,out_margin=outer+demand,feasible=(into-demand>=-1e-9 and outer+demand>=-1e-9))

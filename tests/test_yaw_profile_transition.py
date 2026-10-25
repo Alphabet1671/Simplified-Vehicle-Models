@@ -47,14 +47,20 @@ class TransitionIntervalTests(unittest.TestCase):
         self.assertEqual(transition_intervals(self.path,cap,0,401.,'forward',(0.,1000.),settings=self.settings),())
 
     def test_masked_hole_and_exact_knot_face(self):
-        mask=np.ones((3,3,3),dtype=bool)
-        # Mask all but the speed=10 face. Strict knot query remains supported.
-        mask[0,:,:]=False; mask[2,:,:]=False
-        cap=make_map(mask=mask)
-        e=edge_evidence(self.path,cap,0,100.,100.,settings=self.settings)
+        mask=np.ones((7,3,3),dtype=bool)
+        mask[3,:,:]=False  # isolated masked speed plane creates a true hole
+        cap=YawCapabilityMap(np.array([0.,5.,10.,15.,20.,30.,40.]),np.array([-10.,0.,10.]),np.array([-20.,0.,20.]),
+            np.full((7,3,3),100.),np.full((7,3,3),100.),mask,1.,"physical_ideal_tv_v1","test-hole")
+        long_path=YawPath(np.array([0.,100.,200.]),np.zeros(3),np.zeros(3),False)
+        # A supported speed face (u=5) has feasible strict nonzero corners;
+        # the unsupported speed=10 plane remains a separate hole in the sweep.
+        e=edge_evidence(long_path,cap,0,25.,25.,settings=self.settings)
         self.assertTrue(e['feasible'])
-        iv=transition_intervals(self.path,cap,0,100.,'forward',(0.,400.),settings=self.settings)
-        self.assertTrue(any(x.lower <= 100. <= x.upper for x in iv))
+        iv=transition_intervals(long_path,cap,0,100.,'forward',(0.,1600.),settings=self.settings)
+        self.assertGreaterEqual(len(iv),2)
+        for item in iv:
+            for q in (item.lower,item.upper,np.nextafter(item.lower,item.upper),np.nextafter(item.upper,item.lower)):
+                self.assertTrue(edge_evidence(long_path,cap,0,100.,float(q),settings=self.settings)['feasible'])
 
     def test_asymmetric_yaw_and_signed_curvature(self):
         cap=make_map(into=3.,out=7.)
@@ -65,6 +71,85 @@ class TransitionIntervalTests(unittest.TestCase):
                 for q in (item.lower,item.upper,(item.lower+item.upper)/2):
                     left,right=(100.,q) if direction=='forward' else (q,100.)
                     self.assertTrue(edge_evidence(path,cap,0,left,right,settings=self.settings)['feasible'])
+
+    def test_empty_domain_and_standing_launch(self):
+        cap=make_map()
+        self.assertEqual(transition_intervals(self.path,cap,0,100.,'forward',(500.,600.),settings=self.settings),())
+        iv=transition_intervals(self.path,cap,0,0.,'forward',(0.,100.),settings=self.settings)
+        self.assertTrue(iv)
+        self.assertTrue(any(x.lower == 0. for x in iv))
+        self.assertTrue(edge_evidence(self.path,cap,0,0.,0.,settings=self.settings)['feasible'])
+
+    def test_masked_hole_yields_disconnected_supported_regions(self):
+        mask=np.ones((3,3,3),dtype=bool)
+        mask[:,1,:]=False
+        mask[:,0,1]=True
+        mask[1,1,1]=True
+        cap=make_map(mask=mask)
+        iv=transition_intervals(self.path,cap,0,100.,'forward',(0.,400.),settings=self.settings)
+        self.assertGreaterEqual(len(iv),2)
+        for x in iv:
+            for q in (x.lower,x.upper,np.nextafter(x.lower,x.upper),np.nextafter(x.upper,x.lower)):
+                self.assertTrue(edge_evidence(self.path,cap,0,100.,float(q),settings=self.settings)['feasible'])
+
+    def test_exact_pinned_acceleration_and_lateral_faces(self):
+        cap=make_map()
+        # Fixed q and selected endpoint make ax exactly a grid knot; likewise
+        # zero curvature pins ay at its exact grid face.
+        q=100.+2*self.path.distance[1]*2.
+        ev=edge_evidence(self.path,cap,0,100.,q,settings=self.settings)
+        self.assertTrue(ev['feasible'])
+        self.assertAlmostEqual(ev['longitudinal_acceleration'],2.,places=12)
+        self.assertEqual(ev['lateral_acceleration'],0.)
+        # The exact (ax=0, ay=0) query has one strict nonzero support
+        # corner. Keep that corner feasible while masking only zero-weight
+        # neighbors; strict map support semantics remain unchanged.
+        mask=np.zeros((3,3,3),dtype=bool)
+        mask[:,1,1]=True
+        facecap=make_map(mask=mask)
+        self.assertTrue(edge_evidence(self.path,facecap,0,100.,100.,settings=self.settings)['feasible'])
+
+    def test_near_tangent_margin_root(self):
+        # The exact tangent occurs at u=10: demand=20 and constant margin=20.
+        # A tiny downward offset retains a single near-tangent feasible point.
+        cap=make_map(into=20.,out=100.)
+        path=YawPath(np.array([0.,.05,.1]),np.array([0.,0.,0.]),np.array([.2,.2,.2]),False)
+        iv=transition_intervals(path,cap,0,100.,'forward',(0.,400.),settings=self.settings)
+        self.assertTrue(iv)
+        for x in iv:
+            self.assertTrue(edge_evidence(path,cap,0,100.,x.lower,settings=self.settings)['feasible'])
+            self.assertTrue(edge_evidence(path,cap,0,100.,x.upper,settings=self.settings)['feasible'])
+
+    def test_backward_dense_oracle_membership(self):
+        cap=make_map(into=8.,out=5.)
+        path=YawPath(np.array([0.,.05,.1]),np.array([-.03,-.03,-.03]),np.array([.02,.02,.02]),False)
+        iv=transition_intervals(path,cap,0,100.,'backward',(0.,400.),settings=self.settings)
+        for q in np.linspace(0.,400.,601):
+            strict=edge_evidence(path,cap,0,float(q),100.,settings=self.settings)['feasible']
+            represented=any(x.lower <= q <= x.upper for x in iv)
+            self.assertEqual(represented,strict)
+
+    def test_random_dense_membership_nonrectangular_maps(self):
+        rng=np.random.default_rng(71341)
+        for case in range(100):
+            base=make_map()
+            into=rng.uniform(.2,30.,size=(3,3,3)); out=rng.uniform(.2,30.,size=(3,3,3))
+            mask=rng.random((3,3,3))>.16
+            mask[1,1,1]=True
+            cap=YawCapabilityMap(base.speed,base.longitudinal_acceleration,base.lateral_acceleration,
+                into,out,mask,1.,"physical_ideal_tv_v1",f"random-{case}")
+            path=YawPath(np.array([0.,.05,.1]),rng.uniform(-.03,.03,3),rng.uniform(-.04,.04,3),False)
+            fixed=float(rng.uniform(1.,380.)); direction="forward" if case%2==0 else "backward"
+            iv=transition_intervals(path,cap,0,fixed,direction,(0.,400.),settings=self.settings)
+            for q in np.linspace(0.,400.,151):
+                left,right=(fixed,float(q)) if direction=="forward" else (float(q),fixed)
+                strict=edge_evidence(path,cap,0,left,right,settings=self.settings)['feasible']
+                represented=any(x.lower <= q <= x.upper for x in iv)
+                self.assertEqual(represented,strict,(case,direction,q,iv))
+            for item in iv:
+                for q in (item.lower,item.upper,np.nextafter(item.lower,item.upper),np.nextafter(item.upper,item.lower)):
+                    left,right=(fixed,float(q)) if direction=="forward" else (float(q),fixed)
+                    self.assertTrue(edge_evidence(path,cap,0,left,right,settings=self.settings)['feasible'],(case,item,q))
 
     def test_random_dense_membership_constant_rectangles(self):
         rng=np.random.default_rng(1729); cap=make_map()

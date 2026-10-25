@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from fractions import Fraction
 import math
+from decimal import Decimal
 import unittest
 
 import numpy as np
@@ -10,7 +11,9 @@ import numpy as np
 from simplified_vehicle_models.tracks.types import PathCoordinates, TrackProfile
 from simplified_vehicle_models.tracks.line_trajectory import ReferenceCurve, OffsetTrajectory
 from simplified_vehicle_models.tracks.offset_spline import OffsetSpline
-from simplified_vehicle_models.solvers.offset_geometry_bounds import bound_offset_geometry, _atan_point
+from simplified_vehicle_models.solvers.offset_geometry_bounds import (
+    HeadingStatus, LimitStatus, _atan_point, bound_offset_geometry,
+)
 from simplified_vehicle_models.solvers.reference_spline_bounds import bound_reference_derivatives
 
 
@@ -207,7 +210,33 @@ class OffsetGeometryBoundsTests(unittest.TestCase):
 
     def test_heading_requires_explicit_positive_fold_guard(self):
         with self.assertRaises(ValueError):
-            bound_offset_geometry(self.trajectory, (0., 5.), heading_fold_guard=0)
+            bound_offset_geometry(self.trajectory, (0., 5.), heading_fold_guard=0.)
+
+    def test_heading_unresolved_preserves_full_legacy_geometry_union(self):
+        t = self.trajectory
+        legacy = bound_offset_geometry(t, (0., 5.))
+        folded = bound_offset_geometry(t, (0., 5.), heading_fold_guard=Fraction(2))
+        for name in ("offset_interval", "fold_interval", "metric_interval", "curvature_interval"):
+            with self.subTest(field=name):
+                self.assertEqual(getattr(folded, name), getattr(legacy, name))
+        self.assertIs(folded.heading_status, HeadingStatus.GUARD_VIOLATION)
+
+    def test_heading_policy_representations_and_closed_guard_statuses(self):
+        t = self.trajectory
+        z = OffsetTrajectory(t.reference, t.spline, np.zeros(t.spline.control_count))
+        for name, bad in (("heading_fold_guard", np.float64(.5)),
+                          ("maximum_heading", Decimal("0.1")),
+                          ("maximum_heading_rate", 1)):
+            kwargs = {"heading_fold_guard": .5, name: bad}
+            with self.subTest(name=name, bad=bad), self.assertRaises(TypeError):
+                bound_offset_geometry(z, (0., 5.), **kwargs)
+        # Fold is exactly one; gamma=1 is established while gamma>1 is a
+        # candidate guard violation, not a physical failure.
+        equal = bound_offset_geometry(z, (0., 5.), heading_fold_guard=Fraction(1))
+        self.assertIs(equal.heading_status, HeadingStatus.ESTABLISHED)
+        violated = bound_offset_geometry(z, (0., 5.), heading_fold_guard=Fraction(2))
+        self.assertIs(violated.heading_status, HeadingStatus.GUARD_VIOLATION)
+        self.assertIsNone(violated.heading_error_interval)
 
     def test_heading_legacy_caps_status_limits_and_unresolved(self):
         t = self.trajectory
@@ -215,33 +244,33 @@ class OffsetGeometryBoundsTests(unittest.TestCase):
         legacy = bound_offset_geometry(z, (0., 5.))
         self.assertIsNone(legacy.heading_error_interval)
         self.assertIsNone(legacy.heading_error_s_interval)
-        self.assertEqual(legacy.heading_status, "not_requested")
+        self.assertIs(legacy.heading_status, HeadingStatus.NOT_REQUESTED)
         with self.assertRaises(ValueError):
             bound_offset_geometry(z, (0., 5.), heading_fold_guard=Fraction(1,2), atan_terms=0)
         exhausted = bound_offset_geometry(z, (0., 5.), heading_fold_guard=Fraction(1,2), atan_work_cap=1)
-        self.assertEqual(exhausted.heading_status, "unresolved_transcendental_budget")
+        self.assertIs(exhausted.heading_status, HeadingStatus.UNRESOLVED_TRANSCENDENTAL_BUDGET)
         self.assertIsNone(exhausted.heading_error_interval)
         self.assertIsNone(exhausted.heading_error_s_interval)
         self.assertEqual(exhausted.atan_work_cap, 1)
-        self.assertGreater(exhausted.atan_work_used, exhausted.atan_work_cap)
+        self.assertEqual(exhausted.atan_work_used, exhausted.atan_work_cap)
         self.assertEqual(exhausted.atan_reductions_used, 0)
         folded = bound_offset_geometry(z, (0., 5.), heading_fold_guard=Fraction(2))
-        self.assertEqual(folded.heading_status, "unresolved_fold_guard")
+        self.assertIs(folded.heading_status, HeadingStatus.GUARD_VIOLATION)
         self.assertIsNone(folded.heading_error_interval)
         self.assertIsNone(folded.heading_error_s_interval)
         self.assertIsNone(folded.heading_limit_status)
         self.assertIsNone(folded.heading_rate_limit_status)
         within = bound_offset_geometry(z, (0., 5.), heading_fold_guard=Fraction(1,2), maximum_heading=.1, maximum_heading_rate=.1)
-        self.assertEqual(within.heading_limit_status, "within_limit")
-        self.assertEqual(within.heading_rate_limit_status, "within_limit")
+        self.assertIs(within.heading_limit_status, LimitStatus.WITHIN_LIMIT)
+        self.assertIs(within.heading_rate_limit_status, LimitStatus.WITHIN_LIMIT)
         self.assertEqual(within.maximum_heading_limit, Fraction.from_float(.1))
         # Nonzero derivative on a straight reference has exact psi_s=n_ss/(1+n_s^2).
         coeff = np.zeros(t.spline.control_count)
         coeff[0] = .1
         nonzero = OffsetTrajectory(t.reference, t.spline, coeff)
         violated = bound_offset_geometry(nonzero, (0., 5.), heading_fold_guard=Fraction(1,2), maximum_heading=1e-9, maximum_heading_rate=1e-9)
-        self.assertEqual(violated.heading_limit_status, "unresolved_straddle")
-        self.assertEqual(violated.heading_rate_limit_status, "unresolved_straddle")
+        self.assertIs(violated.heading_limit_status, LimitStatus.UNRESOLVED_STRADDLE)
+        self.assertIs(violated.heading_rate_limit_status, LimitStatus.UNRESOLVED_STRADDLE)
         with self.assertRaisesRegex(ValueError, "initial union panels exceed panel budget"):
             bound_offset_geometry(t, (0., 5.), maximum_panels=1, heading_fold_guard=Fraction(1,2), maximum_heading=.1)
 

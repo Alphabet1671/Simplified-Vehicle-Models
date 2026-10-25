@@ -229,6 +229,12 @@ try:
     calibration_evidence=None
     if data['steering']['mode']=='peak_ay':
         trial_data=deepcopy(data)
+        # Calibration is a separate, bounded excitation.  It preserves the
+        # selected waveform family and longitudinal ownership but does not
+        # replay the full requested maneuver for every scan point.
+        trial_data['preset']='step_steer'
+        trial_data['profile']={'lead_in_s':0., 'release_s':.02, 'duration_s':.18}
+        trial_data['termination']={'duration_s':.18}
         direction=trial_data['steering'].get('direction',1)
         def trial(swa_rad):
             candidate=deepcopy(trial_data)

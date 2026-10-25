@@ -40,6 +40,19 @@ Map explicit time, SWA, accelerator, and brake columns. Select time and steering
 
 CSV samples are immutable. The GUI snapshots source SHA-256, size, and mtime; a changed file must be reloaded before Run. Irregular knots remain source knots; there is no extrapolation or controller overlay.
 
+## IEM24 14DoF simulation evidence and animation
+
+The headless runner selects the IEM24 vertical 14DoF path from its compiled parameter type, not a formulation filename. Completed 14DoF artifacts record canonical world-pose channels (`position-x`, `position-y`, `heading-world`), which permit an accepted-evidence-only animation export:
+
+```bash
+PYTHONPATH=src:. python3 -m tools.maneuver_gui.export_animation \
+  --artifact <completed-artifact-dir> --output <case>.mp4 --frame-rate 30
+```
+
+The export bridge verifies the artifact manifest, hashes, completed outcome, exact `14dof-simple` model kind, canonical state width, commands, and pose channels before writing a RunRecord. It never replays plant physics. Existing media, RunRecord, or nonempty PNG destinations fail closed rather than being overwritten. The straight display track and vehicle geometry in the RunRecord are presentation-only; the vertical maneuver adapter is a straight-reference simulation, not track path following.
+
+For a `peak_ay` simulation definition, the runner first performs bounded **simulation-only** pre-run trials, records their accepted ay evidence, requires a matched SWA selection, freezes that SWA into the final artifact definition, and retains the trial record in the summary. This is model calibration evidence—not measured vehicle validation, commissioning evidence, or authorization for physical output.
+
 ## Preview, artifacts, and cancellation
 
 The preview separates requested and applied SWA, accelerator, and brake traces on a shared time scale. Simulation outcomes record accepted samples, observations, requested/applied commands, events, termination reason, and summary. Artifact directories publish a manifest, definition, summary, and NPZ evidence atomically; loaders verify hashes.

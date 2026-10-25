@@ -55,7 +55,7 @@
   "name": "REQUESTED \u2014 IEM24 14DoF locked-steering provisional 60 kgf / 0.5 brake travel",
   "preset": "straight_accel_brake",
   "profile": {
-    "duration_s": 5.0
+    "duration_s": 1.2
   },
   "schema": "maneuver-v1",
   "steering": {
@@ -63,7 +63,7 @@
     "target_heading_rad": 0.0
   },
   "termination": {
-    "duration_s": 5.0
+    "duration_s": 1.2
   },
   "vehicle": {
     "model": "models/formulations/iem24_murphy_real_14dof_simple.xml"

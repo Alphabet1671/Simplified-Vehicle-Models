@@ -37,24 +37,23 @@ def _json_value(value):
     raise TypeError(f"provenance contains non-JSON value {type(value).__name__}")
 
 
-def _artifact_digest(manifest):
-    """Return the SHA-256 of the source artifact, without hashing converted data."""
+def _validated_artifact(manifest, definition, model_kind):
+    """Check the validated maneuver-artifact manifest identity and result digest."""
     manifest = _mapping(manifest)
-    # Manifest spellings used by artifact producers; accept only explicit SHA-256.
-    hashes = manifest.get("hashes", {})
-    if not isinstance(hashes, Mapping):
-        hashes = {}
-    for key in ("sha256", "source_sha256", "artifact_sha256", "result_sha256"):
-        value = manifest.get(key, hashes.get(key))
-        if isinstance(value, str) and value.startswith("sha256:"):
-            return value
-        if isinstance(value, str) and len(value) == 64:
-            try:
-                int(value, 16)
-                return "sha256:" + value.lower()
-            except ValueError:
-                pass
-    raise ValueError("source_manifest must provide a SHA-256 digest")
+    if manifest.get("schema") != "maneuver-artifacts-v1" or manifest.get("version") != 1:
+        raise ValueError("source_manifest must be a maneuver-artifacts-v1 version 1 manifest")
+    if manifest.get("execution_outcome") not in {"completed", "stopped"}:
+        raise ValueError("source_manifest execution_outcome must be completed or stopped")
+    if model_kind != "14dof-simple" or manifest.get("model_kind") != model_kind:
+        raise ValueError("source_manifest and model_kind must identify 14dof-simple")
+    if _json_value(manifest.get("definition")) != _json_value(definition):
+        raise ValueError("source_manifest definition does not match definition argument")
+    hashes = manifest.get("hashes")
+    digest = hashes.get("result_sha256") if isinstance(hashes, Mapping) else None
+    if (not isinstance(digest, str) or len(digest) != 64
+            or any(ch not in "0123456789abcdefABCDEF" for ch in digest)):
+        raise ValueError("source_manifest hashes.result_sha256 must be a SHA-256 hex digest")
+    return "sha256:" + digest.lower()
 
 
 def write_maneuver_run_record(path, definition, result, *, model_kind, source_manifest) -> Path:
@@ -65,32 +64,32 @@ def write_maneuver_run_record(path, definition, result, *, model_kind, source_ma
     """
     data = _mapping(definition)
     source = _mapping(source_manifest)
-    digest = _artifact_digest(source)
+    from simplified_vehicle_models.solvers.vertical_forward import VerticalForwardPlant
+    names = tuple(VerticalForwardPlant.state_names)
+    if model_kind != "14dof-simple":
+        raise ValueError("model_kind must be exactly '14dof-simple'")
+    digest = _validated_artifact(source, data, model_kind)
     time = np.asarray(result.time_s)
     states = np.asarray(result.state)
     rates = np.asarray(result.state_rate)
     commands = tuple(result.applied_commands)
     channels = tuple(result.channels)
-    names = tuple(source.get("state_names", ()))
-    if not names:
-        names = tuple(data.get("state_names", ()))
-    if not names:
-        # The accepted 14-DoF ordering is defined by the vertical plant class;
-        # accessing its static names does not construct/evaluate it.
-        from simplified_vehicle_models.solvers.vertical_forward import VerticalForwardPlant
-        names = tuple(VerticalForwardPlant.state_names)
-    if len(names) != 38 or states.shape != (len(time), len(names)) or rates.shape != states.shape:
-        raise ValueError("maneuver result must contain matching 38-state accepted samples")
+    if tuple(source.get("state_names", names)) != names or tuple(data.get("state_names", names)) != names:
+        raise ValueError("definition and source manifest must use canonical VerticalForwardPlant.state_names")
+    if states.shape != (len(time), len(names)) or rates.shape != states.shape:
+        raise ValueError("maneuver result must contain matching canonical 38-state accepted samples")
     if len(commands) != len(time) or len(channels) != len(time):
         raise ValueError("commands and channels must have one entry per accepted sample")
     channel_names = tuple(name for name in CHANNEL_CATALOGUE
-                          if any(isinstance(row, dict) and name in row for row in channels))
+                          if any(isinstance(row, Mapping) and name in row for row in channels))
     recorder = RunRecorder(path, state_names=names,
                            state_units=tuple(state_unit(name) for name in names),
                            control_names=CONTROL_NAMES, control_units=CONTROL_UNITS,
                            channel_names=channel_names, precision="float64")
     for i, (t, state, rate, command, supplied) in enumerate(zip(
             time, states, rates, commands, channels)):
+        if not isinstance(supplied, Mapping):
+            raise ValueError("each accepted channel row must be a mapping")
         values = (command.swa_rad, command.accelerator, command.brake)
         recorder.append(t, i, state, rate, values,
                         {name: supplied[name] for name in channel_names if name in supplied})

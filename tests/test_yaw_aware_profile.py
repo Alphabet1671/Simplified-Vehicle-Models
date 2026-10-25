@@ -52,12 +52,23 @@ class YawProfileTests(unittest.TestCase):
         self.assertEqual(diag["direction"], "forward")
         self.assertEqual(diag["segment_index"], 0)
         self.assertEqual(diag["fixed_speed"], 0.)
+        self.assertEqual(diag["q0"], diag["fixed_speed"])
         self.assertGreater(len(diag["candidate_endpoint_speeds"]), 0)
+        domain = diag["attempted_endpoint_domain"]
+        self.assertEqual(domain["min"], min(diag["candidate_endpoint_speeds"]))
+        self.assertEqual(domain["max"], max(diag["candidate_endpoint_speeds"]))
+        self.assertEqual(domain["count"], len(diag["candidate_endpoint_speeds"]))
         self.assertEqual(diag["ds"], 1.)
         self.assertEqual(diag["midpoint_curvature"], 0.)
         self.assertEqual(diag["midpoint_curvature_rate"], 0.)
         self.assertTrue(all("required_ax" in row and "reason" in row for row in diag["candidates"]))
-        self.assertTrue(any(row["reason"] == "masked_support" for row in diag["candidates"]))
+        self.assertTrue(all(isinstance(row["yaw_margin_available"], bool) for row in diag["candidates"]))
+        self.assertTrue(any(row["reason"] == "masked_support" and
+                            row["yaw_margin_unavailable_reason"] == "masked_support" and
+                            not row["yaw_margin_available"] for row in diag["candidates"]))
+        self.assertTrue(any(row["reason"] == "out_of_domain" and
+                            row["yaw_margin_unavailable_reason"] == "out_of_domain" and
+                            not row["yaw_margin_available"] for row in diag["candidates"]))
         with self.assertRaises(TypeError):
             diag["direction"] = "backward"
         with self.assertRaises(AttributeError):

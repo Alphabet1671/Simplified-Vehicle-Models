@@ -40,6 +40,8 @@ class YawPath:
             raise ValueError("is_closed must be boolean")
         if self.is_closed and not np.isclose(k[0], k[-1], rtol=0., atol=1e-8):
             raise ValueError("closed yaw path curvature must agree at duplicated seam")
+        if self.is_closed and not np.isclose(kp[0], kp[-1], rtol=0., atol=1e-12):
+            raise ValueError("closed yaw path curvature rate must agree at duplicated seam")
         for name, value in (("distance", d), ("curvature", k), ("curvature_rate", kp)):
             value.setflags(write=False)
             object.__setattr__(self, name, value)
@@ -90,101 +92,8 @@ class YawProfileTransitionError(ValueError):
         object.__setattr__(self, name, value)
 
 
-class _MapInterpolator:
-    """Strict trilinear map query; infeasible support is never interpolated through."""
-    def __init__(self, capability: YawCapabilityMap):
-        if not isinstance(capability, YawCapabilityMap):
-            raise TypeError("capability must be a YawCapabilityMap")
-        self.map = capability
-        self.axes = tuple(np.asarray(v, dtype=float) for v in
-                          (capability.speed, capability.longitudinal_acceleration,
-                           capability.lateral_acceleration))
-        self.fields = (np.asarray(capability.yaw_moment_into_turn),
-                       np.asarray(capability.yaw_moment_out_of_turn))
-
-    def query(self, speed, ax, ay):
-        q = (float(speed), float(ax), float(ay))
-        brackets = []
-        for axis, value in zip(self.axes, q):
-            if not math.isfinite(value) or value < axis[0] - 1e-12 or value > axis[-1] + 1e-12:
-                return None
-            value = min(float(axis[-1]), max(float(axis[0]), value))
-            hi = int(np.searchsorted(axis, value, side="right"))
-            if hi == 0:
-                brackets.append(((0, 1.0),))
-            elif hi >= axis.size:
-                brackets.append(((axis.size - 1, 1.0),))
-            else:
-                lo = hi - 1
-                f = (value - axis[lo]) / (axis[hi] - axis[lo])
-                brackets.append(((lo, 1. - f), (hi, f)))
-        into = out = 0.0
-        mask = self.map.feasible_mask
-        for i, wi in brackets[0]:
-            for j, wj in brackets[1]:
-                for k, wk in brackets[2]:
-                    w = wi * wj * wk
-                    if w <= 1e-14:
-                        continue
-                    if not mask[i, j, k]:
-                        return None
-                    into += w * self.fields[0][i, j, k]
-                    out += w * self.fields[1][i, j, k]
-        return into, out
-
-    def query_evidence(self, speed, ax, ay):
-        """Return query domain, positive-weight support and masked-corner evidence."""
-        q = tuple(float(v) for v in (speed, ax, ay))
-        brackets = []
-        for axis, value in zip(self.axes, q):
-            if not math.isfinite(value) or value < axis[0] - 1e-12 or value > axis[-1] + 1e-12:
-                return {"query": q, "in_domain": False, "reason": "out_of_domain",
-                        "axes_bounds": tuple((float(a[0]), float(a[-1])) for a in self.axes),
-                        "support": (), "masked_corners": ()}
-            value = min(float(axis[-1]), max(float(axis[0]), value))
-            hi = int(np.searchsorted(axis, value, side="right"))
-            if hi == 0:
-                brackets.append(((0, 1.0),))
-            elif hi >= axis.size:
-                brackets.append(((axis.size - 1, 1.0),))
-            else:
-                lo = hi - 1
-                f = (value - axis[lo]) / (axis[hi] - axis[lo])
-                brackets.append(((lo, 1. - f), (hi, f)))
-        support, masked = [], []
-        into = out = 0.0
-        for i, wi in brackets[0]:
-            for j, wj in brackets[1]:
-                for k, wk in brackets[2]:
-                    weight = wi * wj * wk
-                    if weight <= 1e-14:
-                        continue
-                    item = (int(i), int(j), int(k), float(weight), bool(self.map.feasible_mask[i, j, k]))
-                    support.append(item)
-                    if not item[-1]:
-                        masked.append(item)
-                    else:
-                        into += weight * self.fields[0][i, j, k]
-                        out += weight * self.fields[1][i, j, k]
-        return {"query": q, "in_domain": True,
-                "reason": "masked_support" if masked else "supported",
-                "support": tuple(support), "masked_corners": tuple(masked),
-                "moments": None if masked else (float(into), float(out))}
-
-    def yaw_feasible(self, speed, ax, curvature, curvature_rate, *, acceleration=None):
-        ay = speed * speed * curvature if acceleration is None else float(acceleration)
-        moments = self.query(speed, ax, ay)
-        if moments is None:
-            return False
-        into, out = moments
-        # Directional moments are relative to the turn. On a zero-curvature
-        # point, use the curvature-rate sign for a deterministic limiting side.
-        direction = math.copysign(1., curvature if abs(curvature) > 1e-12 else
-                                  (curvature_rate if abs(curvature_rate) > 1e-12 else 1.))
-        yaw_accel = ax * curvature + speed * speed * curvature_rate
-        demand = direction * self.map.yaw_inertia * yaw_accel
-        return -out - 1e-9 <= demand <= into + 1e-9
-
+# Compatibility alias: strict map querying now lives in yaw_profile_map.
+from simplified_vehicle_models.solvers.yaw_profile_map import _MapInterpolator
 
 def _ax_candidates(interp, speed, curvature):
     ay = speed * speed * curvature
@@ -229,11 +138,19 @@ def _transition_failure(interp, path, index, fixed_speed, ds, *, direction, cand
             into, out = query["moments"]
             sign = math.copysign(1., k if abs(k) > 1e-12 else (kp if abs(kp) > 1e-12 else 1.))
             demand = sign * interp.map.yaw_inertia * (ax*k + vm*vm*kp)
-            item.update(yaw_demand=float(demand), into_margin=float(into-demand),
-                        out_margin=float(out+demand))
+            item.update(yaw_margin_available=True, yaw_demand=float(demand),
+                        into_margin=float(into-demand), out_margin=float(out+demand))
+        else:
+            item.update(yaw_margin_available=False,
+                        yaw_margin_unavailable_reason=query.get("reason"))
         evidence.append(MappingProxyType(item))
+    endpoints = tuple(map(float, candidates))
+    attempted_domain = ({"min": min(endpoints), "max": max(endpoints), "count": len(endpoints)}
+                        if endpoints else None)
     diag = {"direction": direction, "segment_index": int(index),
-            "fixed_speed": float(fixed_speed), "candidate_endpoint_speeds": tuple(map(float, candidates)),
+            "fixed_speed": float(fixed_speed), "q0": float(fixed_speed),
+            "candidate_endpoint_speeds": endpoints,
+            "attempted_endpoint_domain": attempted_domain,
             "ds": float(ds), "midpoint_curvature": float(k),
             "midpoint_curvature_rate": float(kp), "candidates": tuple(evidence)}
     return YawProfileTransitionError(f"no {direction}-feasible transition on segment {index}", diag)

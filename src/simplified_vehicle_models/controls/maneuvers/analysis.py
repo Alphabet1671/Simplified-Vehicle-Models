@@ -157,10 +157,23 @@ def analyze_maneuver(definition, result) -> dict:
             interventions.append({'kind': 'actuator_saturation'})
         if speed_met is False:
             interventions.append({'kind': 'target_speed_unmet'})
-        bracket = persistent is True and not saturated and speed_met is not False and termination not in {'model_error','model_limit'}
-        objective.update({'last_valid_speed_mps': float(speeds[-1]) if bracket and speeds is not None and speeds.size else None,
-                          'first_invalid_speed_mps': float(speeds[np.flatnonzero(np.abs(path_err) > max(float(steer.get('path_tolerance_m', .1)), 0.))[0]]) if bracket and speeds is not None and speeds.size == path_err.size else None,
-                          'limit_status': 'bracketed_physical_limit' if bracket else 'not_established',
+        model_failed = termination in {'model_error', 'model_limit', 'nonfinite_state'} or outcome == 'failed'
+        bracket = persistent is True and not saturated and speed_met is not False and not model_failed
+        clean_sweep = (persistent is False and path_err is not None and not np.any(np.abs(path_err) > max(float(steer.get('path_tolerance_m', .1)), 0.))
+                       and not saturated and speed_met is not False and not model_failed)
+        if bracket and speeds is not None and speeds.size == path_err.size:
+            bad_indices = np.flatnonzero(np.abs(path_err) > max(float(steer.get('path_tolerance_m', .1)), 0.))
+            first_bad = int(bad_indices[0])
+            last_valid = float(speeds[max(first_bad - 1, 0)])
+            first_invalid = float(speeds[first_bad])
+        elif clean_sweep and speeds is not None and speeds.size:
+            last_valid, first_invalid = float(speeds[-1]), None
+        else:
+            last_valid, first_invalid = None, None
+        objective.update({'last_valid_speed_mps': last_valid,
+                          'first_invalid_speed_mps': first_invalid,
+                          'limit_status': ('bracketed_physical_limit' if bracket else
+                                           'limit_not_reached' if clean_sweep else 'not_established'),
                           'persistent_path_error': persistent,
                           'target_speed_met': speed_met})
     return {'execution': execution, 'input_fidelity': inputs, 'objective': objective,

@@ -29,6 +29,12 @@ def skidpad(**steering):
 
 
 class ManeuverAnalysisTests(unittest.TestCase):
+    def test_clean_sweep_reports_limit_not_reached(self):
+        summary = analyze_maneuver(skidpad(), result(radial=[0.] * 5))
+        self.assertEqual(summary['objective']['limit_status'], 'limit_not_reached')
+        self.assertEqual(summary['objective']['last_valid_speed_mps'], 5.)
+        self.assertIsNone(summary['objective']['first_invalid_speed_mps'])
+
     def test_transient_spike_is_not_physical_limit(self):
         summary = analyze_maneuver(skidpad(), result(radial=[0., .5, 0., 0., 0.]))
         self.assertEqual(summary['objective']['limit_status'], 'not_established')

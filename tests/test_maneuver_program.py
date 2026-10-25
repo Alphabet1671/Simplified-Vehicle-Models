@@ -47,6 +47,23 @@ class ManeuverProgramTests(unittest.TestCase):
             c=p.tick(self.obs(x_m=11.,y_m=0.,speed_mps=10.),.1)
             self.assertEqual(math.copysign(1,c.swa_rad),direction)
 
+    def test_path_pid_derivative_responds_to_changing_path_error(self):
+        data=payload('straight_maintain', {'mode':'path_pid','target_heading_rad':0.,'kp':0.,'ki':0.,'kd':1.,'minimum_speed_mps':1.}, {'mode':'constant_accelerator','accelerator':.1})
+        p=ManeuverProgram(ManeuverDefinition.from_dict(data))
+        a=p.tick(self.obs(y_m=0.),.1)
+        b=p.tick(self.obs(y_m=1.),.1)
+        self.assertNotEqual(a.swa_rad,b.swa_rad)
+
+    def test_profile_records_declared_phases_and_releases_to_zero(self):
+        data=payload('straight_accel_brake', longitudinal={'mode':'profile','start_accelerator':0.,'end_accelerator':.8,'start_brake':0.,'end_brake':0.})
+        p=ManeuverProgram(ManeuverDefinition.from_dict(data))
+        expected=[(0.,'rise'),(1.,'ramp'),(2.,'hold'),(3.,'release'),(4.,'complete')]
+        for time,phase in expected:
+            command=p.tick(self.obs(time_s=time),.1)
+            self.assertEqual(p._last_phase,phase)
+            self.assertFalse(command.accelerator and command.brake)
+        self.assertEqual(p.tick(self.obs(time_s=4.),.1).accelerator,0.)
+
     def test_csv_owns_all_channels_and_duration_termination(self):
         data=payload('csv_playback', {'mode':'csv'}, {'mode':'csv'})
         data['csv']={'mapping':{},'interpolation':'hold'}

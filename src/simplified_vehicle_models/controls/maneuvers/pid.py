@@ -29,7 +29,7 @@ class SampledPid:
             raise ValueError('target, measurement, and positive dt must be finite numbers')
         c=self.config; error=float(target)-float(measured)
         if self._previous_measurement is not None:
-            raw=(float(measured)-self._previous_measurement)
+            raw=(float(measured)-self._previous_measurement)/dt_s
             alpha=dt_s/(c.derivative_tau_s+dt_s) if c.derivative_tau_s else 1.
             self._derivative += alpha*(raw-self._derivative)
         self._previous_measurement=float(measured)

@@ -13,7 +13,20 @@ class SampledPidTests(unittest.TestCase):
         pid = SampledPid(PidConfig(0., 0., 1., .02, -100., 100.))
         self.assertEqual(pid.update(0., 0., .01), 0.)
         self.assertEqual(pid.update(10., 0., .01), 0.)
-        self.assertAlmostEqual(pid.update(10., 1., .01), -1/3)
+        self.assertAlmostEqual(pid.update(10., 1., .01), -100/3)
+        self.assertAlmostEqual(pid.update(20., 1., .01), -200/9)
+
+    def test_measurement_rate_is_invariant_to_sample_interval(self):
+        for dt in (.01, .02):
+            pid = SampledPid(PidConfig(0., 0., 1., 0., -1000., 1000.))
+            pid.update(0., 0., dt)
+            self.assertAlmostEqual(pid.update(0., 2*dt, dt), -2.)
+
+    def test_filtered_measurement_rate_uses_actual_dt(self):
+        pid = SampledPid(PidConfig(0., 0., 1., .02, -1000., 1000.))
+        pid.update(0., 0., .01)
+        pid.update(0., 1., .01)
+        self.assertAlmostEqual(pid.update(0., 3., .02), -200/3)
 
     def test_invalid_dt_rejected(self):
         pid = SampledPid(PidConfig(1., 0., 0., 0., -1., 1.))

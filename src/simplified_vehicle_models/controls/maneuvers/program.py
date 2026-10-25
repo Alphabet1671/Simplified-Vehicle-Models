@@ -39,7 +39,7 @@ class ManeuverProgram:
             error = _wrap(float(s.get('target_heading_rad',0.))-o.heading_rad) - math.atan2(o.y_m, max(abs(o.speed_mps)*float(s.get('preview_distance_m',1.)),1e-9))
             if abs(o.speed_mps) >= float(s.get('minimum_speed_mps',0.)):
                 # Convert desired heading correction to lateral-error-like PID input.
-                val=self._steer_pid.update(error,0.,dt)
+                val=self._steer_pid.update(0.,-error,dt)
             else:
                 val=max(-limit,min(limit,float(s.get('kp',0))*error))
             return max(-limit,min(limit,val))
@@ -70,12 +70,22 @@ class ManeuverProgram:
             a=float(l.get('start_accelerator',l.get('accelerator',0))); b=float(l.get('start_brake',0))
             return max(0.,min(1.,a)),max(0.,min(1.,b))
         if mode=='profile':
-            p=self.data['profile']; t=o.time_s-float(p.get('lead_in_s',0)); rise=float(p.get('rise_s',1)); ramp=float(p.get('ramp_s',1)); hold=float(p.get('hold_s',1))
-            phase='lead' if t<0 else 'rise' if t<rise else 'ramp' if t<rise+ramp else 'hold'
+            p=self.data['profile']; t=float(o.time_s)
+            lead=float(p.get('lead_in_s',0)); rise=float(p.get('rise_s',0)); ramp=float(p.get('ramp_s',0)); hold=float(p.get('hold_s',0)); release=float(p.get('release_s',0)); recovery=float(p.get('recovery_s',0))
+            bounds=(lead,lead+rise,lead+rise+ramp,lead+rise+ramp+hold,lead+rise+ramp+hold+release,lead+rise+ramp+hold+release+recovery)
+            names=('lead','rise','ramp','hold','release','recovery')
+            idx=next((i for i,bound in enumerate(bounds) if t<bound),len(bounds)-1)
+            phase=names[idx] if t<bounds[-1] else 'complete'
             self._last_phase=phase
-            alpha=0. if t<0 else min(1.,max(0.,t/max(rise,1e-9)))
-            a=float(l.get('start_accelerator',0))*(1-alpha)+float(l.get('end_accelerator',0))*alpha
-            b=float(l.get('start_brake',0))*(1-alpha)+float(l.get('end_brake',0))*alpha
+            start_a=float(l.get('start_accelerator',0)); end_a=float(l.get('end_accelerator',0)); start_b=float(l.get('start_brake',0)); end_b=float(l.get('end_brake',0))
+            def blend(alpha): return start_a+(end_a-start_a)*alpha, start_b+(end_b-start_b)*alpha
+            if phase=='lead': a,b=start_a,start_b
+            elif phase=='rise': a,b=blend((t-lead)/max(rise,1e-12))
+            elif phase in ('ramp','hold'): a,b=end_a,end_b
+            elif phase=='release': a,b=blend(max(0.,1-(t-bounds[3])/max(release,1e-12)))
+            elif phase=='recovery': a,b=start_a,start_b
+            else: a,b=0.,0.
+            a=max(0.,min(1.,a)); b=max(0.,min(1.,b))
             if a>0 and b>0: return (a,0.) if a>=b else (0.,b)
             return a,b
         return 0.,0.

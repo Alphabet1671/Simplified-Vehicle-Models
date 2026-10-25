@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 import os
 from pathlib import Path
 import re
@@ -17,7 +18,7 @@ ARTIFACT_SCHEMA = "maneuver-artifacts-v1"
 def _jsonable(value):
     if hasattr(value, "to_dict"):
         return _jsonable(value.to_dict())
-    if isinstance(value, dict):
+    if isinstance(value, Mapping):
         return {str(k): _jsonable(v) for k, v in value.items()}
     if isinstance(value, (tuple, list)):
         return [_jsonable(v) for v in value]
@@ -80,7 +81,7 @@ def write_artifacts(directory: Path, definition, result, summary: dict, *, model
     directory = Path(directory).resolve()
     if not directory.is_dir():
         raise FileNotFoundError(directory)
-    names = ("maneuver.json", "summary.json", "events.json", "commands.csv", "run_record.npz", "manifest.json")
+    names = ("maneuver.json", "summary.json", "events.json", "commands.csv", "run_record.npz", "channels.json", "manifest.json")
     if any((directory / name).exists() for name in names):
         raise FileExistsError(f"artifacts already exist in {directory}")
     data = _jsonable(definition)
@@ -116,6 +117,8 @@ def write_artifacts(directory: Path, definition, result, summary: dict, *, model
         time_value = float(result.time_s[min(index, len(result.time_s)-1)])
         commands.append(f"{index},{time_value:.17g},{float(row[0]):.17g},{float(row[1]):.17g},{float(row[2]):.17g}")
     command_bytes = ("\n".join(commands) + "\n").encode()
+    channels = getattr(result, "channels", ())
+    channels_bytes = (json.dumps(_jsonable(channels), sort_keys=True, allow_nan=False, separators=(",", ":")).encode() + b"\n")
     npz_bytes = buf.getvalue()
     canonical = lambda value: json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
     hashes = {"definition_sha256": hashlib.sha256(canonical(data)).hexdigest(),
@@ -124,7 +127,8 @@ def write_artifacts(directory: Path, definition, result, summary: dict, *, model
               "result_sha256": hashlib.sha256(npz_bytes).hexdigest(),
               "summary_sha256": hashlib.sha256(summary_bytes).hexdigest(),
               "events_sha256": hashlib.sha256(events_bytes).hexdigest(),
-              "commands_sha256": hashlib.sha256(command_bytes).hexdigest()}
+              "commands_sha256": hashlib.sha256(command_bytes).hexdigest(),
+              "channels_sha256": hashlib.sha256(channels_bytes).hexdigest()}
     manifest = {"schema": ARTIFACT_SCHEMA, "version": 1, "definition": data,
                 "calibration": data.get("calibration"), "model": data.get("vehicle"),
                 "hashes": hashes, "execution_outcome": summary_doc["execution_outcome"]}
@@ -134,7 +138,8 @@ def write_artifacts(directory: Path, definition, result, summary: dict, *, model
     manifest_bytes = json.dumps(manifest, sort_keys=True, indent=2, allow_nan=False).encode() + b"\n"
     payloads = {"maneuver.json": definition_bytes, "summary.json": summary_bytes,
                 "events.json": events_bytes, "commands.csv": command_bytes,
-                "run_record.npz": npz_bytes, "manifest.json": manifest_bytes}
+                "run_record.npz": npz_bytes, "channels.json": channels_bytes,
+                "manifest.json": manifest_bytes}
     # Publish through a same-filesystem sibling directory. A UUID destination is
     # reserved with mkdir (never reused); readers only see a complete directory.
     parent = directory.parent
@@ -198,7 +203,18 @@ def write_artifact(output_base: Path, definition, result, *, run_id: str | None 
     canonical = lambda value: json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
     summary_bytes = json.dumps({"execution_outcome": str(getattr(result, "execution_outcome", "unknown"))}, sort_keys=True).encode() + b"\n"
     events_bytes = b"[]\n"
-    commands_bytes = b"index,time_s,swa_rad,accelerator,brake\n"
+    commands = ["index,time_s,swa_rad,accelerator,brake"]
+    for i, item in enumerate(getattr(result, "applied_commands", ())):
+        v = item.get("applied", item.get("command", item)) if isinstance(item, Mapping) else item
+        if hasattr(v, "swa_rad"):
+            row = (v.swa_rad, v.accelerator, v.brake)
+        elif isinstance(v, (tuple, list, np.ndarray)) and len(v) >= 3:
+            row = tuple(v[:3])
+        else:
+            continue
+        commands.append(f"{i},{float(result.time_s[min(i, len(result.time_s)-1)]):.17g},{float(row[0]):.17g},{float(row[1]):.17g},{float(row[2]):.17g}")
+    commands_bytes = ("\n".join(commands) + "\n").encode()
+    channels_bytes = (json.dumps(_jsonable(getattr(result, "channels", ())), sort_keys=True, allow_nan=False, separators=(",", ":")).encode() + b"\n")
     hashes = {
         "definition_sha256": hashlib.sha256(canonical(data)).hexdigest(),
         "calibration_sha256": hashlib.sha256(canonical(data.get("calibration"))).hexdigest(),
@@ -207,6 +223,7 @@ def write_artifact(output_base: Path, definition, result, *, run_id: str | None 
         "summary_sha256": hashlib.sha256(summary_bytes).hexdigest(),
         "events_sha256": hashlib.sha256(events_bytes).hexdigest(),
         "commands_sha256": hashlib.sha256(commands_bytes).hexdigest(),
+        "channels_sha256": hashlib.sha256(channels_bytes).hexdigest(),
     }
     outcome = str(getattr(result, "execution_outcome", "unknown"))
     manifest = {"schema": ARTIFACT_SCHEMA, "version": 1, "definition": data,
@@ -217,11 +234,12 @@ def write_artifact(output_base: Path, definition, result, *, run_id: str | None 
         _atomic_bytes(run_dir / "summary.json", (json.dumps({"execution_outcome": outcome}, sort_keys=True) + "\n").encode())
         _atomic_bytes(run_dir / "events.json", b"[]\n")
         _atomic_bytes(run_dir / "commands.csv", b"index,time_s,swa_rad,accelerator,brake\n")
+        _atomic_bytes(run_dir / "channels.json", channels_bytes)
         _atomic_bytes(run_dir / "run_record.npz", npz_bytes)
         _atomic_bytes(run_dir / "manifest.json",
                       (json.dumps(manifest, sort_keys=True, indent=2, allow_nan=False) + "\n").encode())
     except BaseException:
-        for name in ("maneuver.json", "summary.json", "events.json", "commands.csv", "run_record.npz", "manifest.json"):
+        for name in ("maneuver.json", "summary.json", "events.json", "commands.csv", "run_record.npz", "channels.json", "manifest.json"):
             try:
                 (run_dir / name).unlink()
             except FileNotFoundError:
@@ -240,6 +258,17 @@ def load_artifact(directory: Path) -> tuple[dict, dict[str, np.ndarray]]:
     except (OSError, ValueError, KeyError) as exc:
         raise ValueError(f"invalid maneuver result NPZ: {exc}") from exc
     return manifest, arrays
+
+
+def load_artifact_evidence(directory: Path) -> tuple[dict, dict[str, np.ndarray], list]:
+    """Load validated result arrays and hash-covered accepted channel rows."""
+    manifest, arrays = load_artifact(directory)
+    channels = json.loads((Path(directory).resolve() / "channels.json").read_text(encoding="utf-8"))
+    if not isinstance(channels, list) or len(channels) != len(arrays["time_s"]):
+        raise ValueError("channels.json must contain one accepted row per sample")
+    if any(not isinstance(row, dict) for row in channels):
+        raise ValueError("channels.json rows must be mappings")
+    return manifest, arrays, channels
 
 
 def load_manifest(directory: Path) -> dict:
@@ -294,12 +323,18 @@ def load_manifest(directory: Path) -> dict:
         summary = json.loads((directory / "summary.json").read_text(encoding="utf-8"))
         if summary.get("execution_outcome") != manifest.get("execution_outcome"):
             raise ValueError("manifest/summary outcome mismatch")
-        for key, filename in (("summary_sha256", "summary.json"),
-                              ("events_sha256", "events.json"),
-                              ("commands_sha256", "commands.csv")):
+        integrity_files = [("summary_sha256", "summary.json"),
+                           ("events_sha256", "events.json"),
+                           ("commands_sha256", "commands.csv")]
+        if "channels_sha256" in hashes:
+            integrity_files.append(("channels_sha256", "channels.json"))
+        for key, filename in integrity_files:
             if hashes.get(key) != hashlib.sha256((directory / filename).read_bytes()).hexdigest():
                 raise ValueError(f"{filename} corruption detected")
-        for name in ("maneuver.json", "summary.json", "events.json", "commands.csv", "run_record.npz"):
+        required_files = ["maneuver.json", "summary.json", "events.json", "commands.csv", "run_record.npz"]
+        if "channels_sha256" in hashes:
+            required_files.append("channels.json")
+        for name in required_files:
             if not (directory / name).is_file():
                 raise ValueError(f"missing artifact {name}")
         expected = manifest.get("hashes", {}).get("result_sha256")

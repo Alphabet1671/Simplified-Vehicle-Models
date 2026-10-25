@@ -8,7 +8,7 @@
 
 ## Verification
 
-- `test_maneuver_calibration.py`: 3 passed.
+- `test_maneuver_calibration.py`: 4 passed, including canonical maneuver-v1 `steering.amplitude_mps2` peak-ay target extraction.
 - `test_maneuver_analysis.py`: 4 passed.
 - `test_maneuver_*.py`: 56 passed.
 - `test_planar_forward.py`: 9 passed.

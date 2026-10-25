@@ -91,8 +91,11 @@ def calibrate_peak_ay(definition, run_trial: Callable[[float], object],
     target = None
     if isinstance(payload, dict):
         target = payload.get('peak_ay_mps2', payload.get('target_ay_mps2'))
-        if target is None:
-            target = payload.get('steering', {}).get('peak_ay_mps2') if isinstance(payload.get('steering'), dict) else None
+        if target is None and isinstance(payload.get('steering'), dict):
+            # ``amplitude_mps2`` is the canonical maneuver-v1 peak-ay field;
+            # the aliases retain compatibility with pre-GUI trial definitions.
+            steering = payload['steering']
+            target = steering.get('amplitude_mps2', steering.get('peak_ay_mps2'))
     if target is None:
         raise ValueError('definition must specify peak_ay_mps2')
     target = float(target)

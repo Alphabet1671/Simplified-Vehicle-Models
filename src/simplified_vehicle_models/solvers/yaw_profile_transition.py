@@ -219,7 +219,26 @@ def transition_intervals(path, capability, segment_index: int, fixed_q: float, d
             candidates=np.linspace(low,high,33)[1:-1]
             qmid=next((float(q) for q in candidates if q_feasible(float(q))), math.nan)
             if not math.isfinite(qmid):
-                continue
+                probe_evidence = []
+                for probe in candidates:
+                    ev = edge_evidence(path, capability, segment_index,
+                                       fixed_q if direction == 'forward' else float(probe),
+                                       float(probe) if direction == 'forward' else fixed_q,
+                                       settings=settings)
+                    probe_evidence.append({"q_free": float(probe), "feasible": bool(ev['feasible']),
+                                           "reason": ev['reason'].value,
+                                           "midpoint_speed": ev['midpoint_speed'],
+                                           "longitudinal_acceleration": ev['longitudinal_acceleration'],
+                                           "lateral_acceleration": ev['lateral_acceleration'],
+                                           "into_margin": ev.get('into_margin'),
+                                           "out_margin": ev.get('out_margin')})
+                raise YawProfileSolveError("interval_oracle_unresolved",
+                    "candidate piece has no feasible midpoint or fixed probes; a narrow feasible component may be missed",
+                    {"segment_index": segment_index, "cell": support,
+                     "capability_identity": capability.source_identity,
+                     "direction": direction, "fixed_q": float(fixed_q),
+                     "candidate_q_interval": (float(low), float(high)),
+                     "candidate_probes": tuple(probe_evidence)})
         if not q_feasible(low):
             bad, good = low, qmid
             for _ in range(128):

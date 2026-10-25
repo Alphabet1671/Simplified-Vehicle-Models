@@ -101,6 +101,14 @@ class TransitionIntervalTests(unittest.TestCase):
         self.assertTrue(ev['feasible'])
         self.assertAlmostEqual(ev['longitudinal_acceleration'],2.,places=12)
         self.assertEqual(ev['lateral_acceleration'],0.)
+        # Test exact interior acceleration face ax=0 with a singleton q-domain;
+        # the ax=2 outer map edge above remains a direct strict-query check.
+        accel_intervals = transition_intervals(self.path, cap, 0, 100., 'forward',
+                                               (100., 100.), settings=self.settings)
+        self.assertTrue(any(x.lower <= 100. <= x.upper for x in accel_intervals), accel_intervals)
+        lateral_intervals = transition_intervals(self.path, cap, 0, 100., 'forward',
+                                                 (100., 100.), settings=self.settings)
+        self.assertTrue(any(x.lower <= 100. <= x.upper for x in lateral_intervals), lateral_intervals)
         # The exact (ax=0, ay=0) query has one strict nonzero support
         # corner. Keep that corner feasible while masking only zero-weight
         # neighbors; strict map support semantics remain unchanged.
@@ -108,6 +116,19 @@ class TransitionIntervalTests(unittest.TestCase):
         mask[:,1,1]=True
         facecap=make_map(mask=mask)
         self.assertTrue(edge_evidence(self.path,facecap,0,100.,100.,settings=self.settings)['feasible'])
+
+    def test_repeated_tangent_margin_root_is_feasible_point(self):
+        # With fixed Q=0, zero curvature and kp=.2, constant zero into-moment
+        # yields M_into-D = -.2*u^2: a repeated root at u=0, feasible only
+        # at the standing point. The oracle must preserve that zero-width set.
+        cap=make_map(into=0.,out=100.)
+        path=YawPath(np.array([0.,.05,.1]),np.zeros(3),np.array([.2,.2,.2]),False)
+        iv=transition_intervals(path,cap,0,0.,'forward',(0.,400.),settings=self.settings)
+        self.assertTrue(any(x.lower == 0. and x.upper == 0. for x in iv), iv)
+        self.assertTrue(edge_evidence(path,cap,0,0.,0.,settings=self.settings)['feasible'])
+        for item in iv:
+            self.assertTrue(edge_evidence(path,cap,0,0.,item.lower,settings=self.settings)['feasible'])
+            self.assertTrue(edge_evidence(path,cap,0,0.,item.upper,settings=self.settings)['feasible'])
 
     def test_near_tangent_margin_root(self):
         # The exact tangent occurs at u=10: demand=20 and constant margin=20.

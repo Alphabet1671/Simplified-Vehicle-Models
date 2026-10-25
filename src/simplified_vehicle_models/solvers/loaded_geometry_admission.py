@@ -115,7 +115,8 @@ def offset_basis_domain_supported(reference: ReferenceCurve, spline: OffsetSplin
     return float(knots[0]) == reference.start and float(knots[-1]) == reference.end
 
 
-def admit_loaded_geometry(*, reference, trajectory_or_none, settings, domain, operation_budget):
+def admit_loaded_geometry(*, reference, trajectory_or_none, settings, domain, operation_budget,
+                          offset_spline_or_none=None):
     """Admit only when every exact stored-fit enclosure establishes its policy bound."""
     if type(settings) is not AdmissionSettings:
         raise TypeError("settings must be exact AdmissionSettings")
@@ -125,6 +126,11 @@ def admit_loaded_geometry(*, reference, trajectory_or_none, settings, domain, op
         raise TypeError("reference must be exact ReferenceCurve")
     if trajectory_or_none is not None and type(trajectory_or_none) is not OffsetTrajectory:
         raise TypeError("trajectory must be exact OffsetTrajectory or None")
+    if offset_spline_or_none is not None:
+        if type(offset_spline_or_none) is not OffsetSpline:
+            raise TypeError("offset_spline_or_none must be exact OffsetSpline or None")
+        if trajectory_or_none is not None:
+            raise ValueError("preconstruction spline and trajectory are mutually exclusive")
     if not isinstance(domain, (tuple, list)) or len(domain) != 2:
         raise TypeError("domain must be a station pair")
     vals=[]
@@ -145,9 +151,10 @@ def admit_loaded_geometry(*, reference, trajectory_or_none, settings, domain, op
             raise ValueError("candidate must reference the supplied ReferenceCurve instance")
         if type(t.spline) is not OffsetSpline:
             raise TypeError("candidate spline must be exact OffsetSpline")
-        if not offset_basis_domain_supported(reference, t.spline):
-            return GeometryAdmission(AdmissionStatus.UNSUPPORTED, ("unsupported_offset_basis_domain",),
-                Evidence(EvidenceStatus.NOT_REQUESTED), Evidence(EvidenceStatus.UNSUPPORTED, "unsupported_offset_basis_domain"), settings, domain, operation_budget)
+    admission_spline = trajectory_or_none.spline if trajectory_or_none is not None else offset_spline_or_none
+    if admission_spline is not None and not offset_basis_domain_supported(reference, admission_spline):
+        return GeometryAdmission(AdmissionStatus.UNSUPPORTED, ("unsupported_offset_basis_domain",),
+            Evidence(EvidenceStatus.NOT_REQUESTED), Evidence(EvidenceStatus.UNSUPPORTED, "unsupported_offset_basis_domain"), settings, domain, operation_budget)
     try:
         rb=bound_reference_geometry(reference, domain, **_bound_args(operation_budget))
     except (RuntimeError, ValueError) as exc:

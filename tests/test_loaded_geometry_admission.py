@@ -45,6 +45,11 @@ class AdmissionTests(unittest.TestCase):
     def test_invalid_strict_types_and_unresolved_budget(self):
         with self.assertRaises(TypeError):
             AdmissionSettings(np.float64(.5),Fraction(1,4),Fraction(1,4))
+        candidate=make_candidate(self.ref)
+        with self.assertRaises(ValueError):
+            admit_loaded_geometry(reference=self.ref,trajectory_or_none=candidate,
+                offset_spline_or_none=candidate.spline,settings=self.settings,domain=(0.,5.),
+                operation_budget=OperationBudget())
         with self.assertRaises(TypeError):
             admit_loaded_geometry(reference=object(),trajectory_or_none=None,settings=self.settings,
                                   domain=(0.,1.),operation_budget=OperationBudget())
@@ -52,12 +57,24 @@ class AdmissionTests(unittest.TestCase):
             domain=(0.,5.),operation_budget=OperationBudget(maximum_panels=1,maximum_depth=0,sqrt_bits=16))
         self.assertNotEqual(out.status,AdmissionStatus.ADMITTED)
 
-    def test_nonzero_origin_basis_check_is_non_mutating(self):
+    def test_nonzero_origin_candidate_admission_is_unsupported(self):
         ref=make_reference(1.,5.)
         profile=type("Profile", (), {"lap_length": 5.0, "is_closed": False})()
         spline=OffsetSpline(profile,1.0)
-        self.assertFalse(offset_basis_domain_supported(ref,spline))
+        out=admit_loaded_geometry(reference=ref,trajectory_or_none=None,
+            offset_spline_or_none=spline,settings=self.settings,domain=(1.,5.),
+            operation_budget=OperationBudget())
+        self.assertIs(out.status,AdmissionStatus.UNSUPPORTED)
+        self.assertEqual(out.reason_codes, ("unsupported_offset_basis_domain",))
+        self.assertIs(out.candidate.status,EvidenceStatus.UNSUPPORTED)
+        self.assertEqual(out.candidate.reason, "unsupported_offset_basis_domain")
+        self.assertIs(out.reference.status,EvidenceStatus.NOT_REQUESTED)
+        self.assertFalse(out.physical_feasibility_certified)
         self.assertEqual(tuple(spline.control_distance[[0,-1]]),(0.0,5.0))
+        with self.assertRaises(TypeError):
+            admit_loaded_geometry(reference=ref,trajectory_or_none=None,
+                offset_spline_or_none=object(),settings=self.settings,domain=(1.,5.),
+                operation_budget=OperationBudget())
 
     def test_heading_work_cap_propagates_unresolved(self):
         out=admit_loaded_geometry(reference=self.ref,trajectory_or_none=make_candidate(self.ref),

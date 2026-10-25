@@ -34,6 +34,37 @@ class TransitionIntervalTests(unittest.TestCase):
         cap=make_map(); e=edge_evidence(self.path,cap,0,25.,25.,settings=self.settings)
         self.assertTrue(e['feasible'])
         self.assertEqual(e['reason'].value,'supported')
+        self.assertEqual(e['capability_identity'], cap.source_identity)
+        with self.assertRaises(TypeError):
+            edge_evidence(self.path,cap,0,25.,25.,settings=None)
+
+    def test_map_endpoint_bounds_are_intersected(self):
+        cap=make_map()
+        forward=transition_intervals(self.path,cap,0,0.,'forward',(0.,1000.),settings=self.settings)
+        self.assertTrue(all(x.upper <= 400. for x in forward))
+        backward=transition_intervals(self.path,cap,0,400.,'backward',(0.,1000.),settings=self.settings)
+        self.assertTrue(all(x.upper <= 400. for x in backward))
+        self.assertEqual(transition_intervals(self.path,cap,0,401.,'forward',(0.,1000.),settings=self.settings),())
+
+    def test_masked_hole_and_exact_knot_face(self):
+        mask=np.ones((3,3,3),dtype=bool)
+        # Mask all but the speed=10 face. Strict knot query remains supported.
+        mask[0,:,:]=False; mask[2,:,:]=False
+        cap=make_map(mask=mask)
+        e=edge_evidence(self.path,cap,0,100.,100.,settings=self.settings)
+        self.assertTrue(e['feasible'])
+        iv=transition_intervals(self.path,cap,0,100.,'forward',(0.,400.),settings=self.settings)
+        self.assertTrue(any(x.lower <= 100. <= x.upper for x in iv))
+
+    def test_asymmetric_yaw_and_signed_curvature(self):
+        cap=make_map(into=3.,out=7.)
+        path=YawPath(np.array([0.,.05,.1]),np.array([.02,.02,.02]),np.array([-.01,-.01,-.01]),False)
+        for direction in ('forward','backward'):
+            iv=transition_intervals(path,cap,0,100.,direction,(0.,400.),settings=self.settings)
+            for item in iv:
+                for q in (item.lower,item.upper,(item.lower+item.upper)/2):
+                    left,right=(100.,q) if direction=='forward' else (q,100.)
+                    self.assertTrue(edge_evidence(path,cap,0,left,right,settings=self.settings)['feasible'])
 
     def test_random_dense_membership_constant_rectangles(self):
         rng=np.random.default_rng(1729); cap=make_map()

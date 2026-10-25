@@ -40,11 +40,18 @@ def transition_intervals(path, capability, segment_index: int, fixed_q: float, d
     if not (math.isfinite(lo) and math.isfinite(hi)) or lo<0 or hi<lo: raise ValueError("invalid free_q_bounds")
     axes=(np.asarray(capability.speed),np.asarray(capability.longitudinal_acceleration),np.asarray(capability.lateral_acceleration))
     interp=_MapInterpolator(capability)
-    # q is squared speed. Map the free endpoint range to midpoint speed.
-    if direction=='forward': ulo2=(fixed_q+lo)/2.; uhi2=(fixed_q+hi)/2.
-    else: ulo2=(fixed_q+lo)/2.; uhi2=(fixed_q+hi)/2.
-    ulo=max(float(axes[0][0]),math.sqrt(max(0.,ulo2))); uhi=min(float(axes[0][-1]),math.sqrt(max(0.,uhi2)))
-    # Also intersect endpoint and acceleration/lateral domains via partitioned strict queries.
+    # Map free endpoint q to midpoint-speed squared. Independently intersect
+    # endpoint speed domain: both endpoint q values must lie in the map domain.
+    ulo2=(fixed_q+lo)/2.; uhi2=(fixed_q+hi)/2.
+    speed_lo, speed_hi = map(float, axes[0][[0,-1]])
+    endpoint_lo, endpoint_hi = speed_lo**2, speed_hi**2
+    if fixed_q < endpoint_lo or fixed_q > endpoint_hi:
+        return ()
+    lo=max(lo, endpoint_lo); hi=min(hi, endpoint_hi)
+    if lo > hi: return ()
+    ulo=max(speed_lo,math.sqrt(max(0.,(fixed_q+lo)/2.)))
+    uhi=min(speed_hi,math.sqrt(max(0.,(fixed_q+hi)/2.)))
+    # Also intersect acceleration/lateral domains via partitioned strict queries.
     if uhi<ulo: return ()
     cuts=[ulo,uhi]
     for knot in axes[0]:
@@ -79,7 +86,14 @@ def transition_intervals(path, capability, segment_index: int, fixed_q: float, d
         for axis,val in zip(axes,(mid,axmid,k*mid*mid)):
             j=int(np.searchsorted(axis,val,side='right')-1); j=max(0,min(j,len(axis)-2)); indices.append(j)
         i,j,l=indices
-        if not all(capability.feasible_mask[x,y,z] for x in (i,i+1) for y in (j,j+1) for z in (l,l+1)): continue
+        # Build the true strict-oracle support. Knot-pinned axes have a single
+        # active corner face; do not require masked zero-weight neighbors.
+        active=[]
+        for axis,val,ix in zip(axes,(mid,axmid,k*mid*mid),indices):
+            if val == axis[ix]: active.append(((ix,Polynomial([1.])),))
+            elif val == axis[ix+1]: active.append(((ix+1,Polynomial([1.])),))
+            else: active.append(((ix,None),(ix+1,None)))
+        if not query(mid)['reason'].value == 'supported': continue
         U=Polynomial([0.,1.]); vals=(U, (U*U-fixed_q)/ds if direction=='forward' else (fixed_q-U*U)/ds, k*U*U)
         weights=[]
         for axis,val,ix in zip(axes,vals,indices):
@@ -95,12 +109,38 @@ def transition_intervals(path, capability, segment_index: int, fixed_q: float, d
         axp=vals[1]; dem=sign*capability.yaw_inertia*(axp*k+U*U*kp)
         margins=(moments[0]-dem,moments[1]+dem)
         roots=[a,b]
-        for p in margins:
-            # Roots over finite cell; normalize for conditioning.
+        for margin_index,p in enumerate(margins):
+            # Roots over finite cell; normalize for conditioning. A numerically
+            # unresolved near-real root is a hard failure, never an omitted cut.
             z=Polynomial([a,b-a]); pn=p(z)
             for r in pn.roots():
-                if abs(r.imag)<1e-8 and 0<r.real<1: roots.append(float(a+(b-a)*r.real))
+                if abs(r.imag)<1e-8:
+                    if 0 < r.real < 1:
+                        rr=float(a+(b-a)*r.real)
+                        residual=abs(float(p(rr)))
+                        scale=max(1.,float(np.max(np.abs(p.coef))))
+                        if residual > settings.yaw_moment_tolerance*scale:
+                            raise YawProfileSolveError("interval_oracle_unresolved", "root residual exceeds tolerance", {
+                                "segment_index":segment_index,"cell":tuple(indices),"margin_index":margin_index,
+                                "root":rr,"residual":residual,"capability_identity":capability.source_identity})
+                        roots.append(rr)
+                elif abs(r.imag) <= 1e-5 and -1e-8 <= r.real <= 1+1e-8:
+                    raise YawProfileSolveError("interval_oracle_unresolved", "ambiguous near-real margin root", {
+                        "segment_index":segment_index,"cell":tuple(indices),"margin_index":margin_index,
+                        "root":(float(r.real),float(r.imag)),"capability_identity":capability.source_identity})
         roots=sorted(set(roots))
+        for witness in [a,b,*roots,*[(x+y)/2 for x,y in zip(roots[:-1],roots[1:])]]:
+            ev=query(witness)
+            if ev['reason'].value != 'supported':
+                continue
+            exact=ev['moments']
+            approx=(float(margins[0](witness)+sign*capability.yaw_inertia*(((witness*witness-fixed_q)/ds if direction=='forward' else (fixed_q-witness*witness)/ds)*k+witness*witness*kp)),
+                    float(margins[1](witness)-sign*capability.yaw_inertia*(((witness*witness-fixed_q)/ds if direction=='forward' else (fixed_q-witness*witness)/ds)*k+witness*witness*kp)))
+            err=max(abs(exact[0]-approx[0]),abs(exact[1]-approx[1]))
+            if err > settings.yaw_moment_tolerance*max(1.,*map(abs,exact)):
+                raise YawProfileSolveError("interval_oracle_unresolved", "polynomial and strict evidence disagree", {
+                    "segment_index":segment_index,"cell":tuple(indices),"query":(witness,),"error":err,
+                    "capability_identity":capability.source_identity})
         for x,y in zip(roots[:-1],roots[1:]):
             if feasible((x+y)/2): pieces.append((x,y,tuple(indices)))
         for r in roots:
@@ -125,7 +165,7 @@ def transition_intervals(path, capability, segment_index: int, fixed_q: float, d
                 if feasible(bb): break
                 bb = float(np.nextafter(bb, aa))
         qa=2*aa*aa-fixed_q; qb=2*bb*bb-fixed_q
-        if direction=='backward': qa=2*a*a-fixed_q; qb=2*b*b-fixed_q
+        if direction=='backward': qa=2*aa*aa-fixed_q; qb=2*bb*bb-fixed_q
         low,high=sorted((qa,qb)); low=max(lo,low); high=min(hi,high)
         amin,amax=float(axes[1][0]),float(axes[1][-1])
         if direction == 'forward':
@@ -155,11 +195,14 @@ def transition_intervals(path, capability, segment_index: int, fixed_q: float, d
 
 
 def edge_evidence(path, capability, segment_index: int, q_left: float, q_right: float, *, settings: CoupledProfileSettings) -> dict:
+    if not isinstance(settings, CoupledProfileSettings):
+        raise TypeError("settings must be CoupledProfileSettings")
     ds,k,kp,sign=_segment(path,capability,segment_index)
     if min(q_left,q_right)<0 or not all(map(math.isfinite,(q_left,q_right))): raise ValueError("q endpoints must be finite and nonnegative")
     u=math.sqrt((q_left+q_right)/2); ax=(q_right-q_left)/(2*ds); ay=k*u*u
     evidence=_MapInterpolator(capability).query_evidence(u,ax,ay)
     out={"segment_index":segment_index,"q_left":float(q_left),"q_right":float(q_right),"midpoint_speed":u,"longitudinal_acceleration":ax,"lateral_acceleration":ay,**evidence}
+    out['capability_identity'] = capability.source_identity
     if evidence.get('moments') is not None:
         into,outer=evidence['moments']; demand=sign*capability.yaw_inertia*(ax*k+u*u*kp)
         out.update(yaw_demand=demand,into_margin=into-demand,out_margin=outer+demand,feasible=(into-demand>=-1e-9 and outer+demand>=-1e-9))

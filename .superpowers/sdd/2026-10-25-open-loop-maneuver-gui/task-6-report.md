@@ -21,3 +21,10 @@
 - Persistent invalidity requires a final run of three bad path-error samples. A bracket requires a valid sample before that run; first-sample invalid evidence reports `not_established` with both bracket speeds unset.
 - Added tests for metadata-vs-semantic fingerprint behavior, missing/short/unmet speed evidence, and first-sample persistent invalidity.
 - Fix-round verification: calibration 5 passed; analysis 8 passed; all maneuver tests 62 passed; `test_planar_forward.py` 9 passed; diff check passed. No plant evaluation added.
+
+## Fix round 2 — aligned skidpad evidence
+
+- A physical-limit bracket or clean `limit_not_reached` outcome now requires finite, valid accepted evidence aligned on the same sample timeline: `speeds.size == path_err.size == time_s.size`.
+- Misaligned evidence remains `not_established`, leaves bracket speeds unset, and records an `evidence_misaligned` intervention.
+- Regressions cover persistent trailing path error paired with too-short high-speed evidence and a clean path paired with too-short speed evidence; neither may make a limit claim.
+- Verification: calibration 5 passed; analysis 10 passed; all maneuver tests 64 passed; `test_planar_forward.py` 9 passed; diff check passed.

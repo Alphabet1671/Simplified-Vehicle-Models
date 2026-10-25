@@ -10,7 +10,7 @@ import numpy as np
 from simplified_vehicle_models.tracks.types import PathCoordinates, TrackProfile
 from simplified_vehicle_models.tracks.line_trajectory import ReferenceCurve, OffsetTrajectory
 from simplified_vehicle_models.tracks.offset_spline import OffsetSpline
-from simplified_vehicle_models.solvers.offset_geometry_bounds import bound_offset_geometry
+from simplified_vehicle_models.solvers.offset_geometry_bounds import bound_offset_geometry, _atan_point
 from simplified_vehicle_models.solvers.reference_spline_bounds import bound_reference_derivatives
 
 
@@ -197,6 +197,64 @@ class OffsetGeometryBoundsTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             bound_offset_geometry(t,interval,maximum_depth=0,
                                   maximum_panel_curvature_width=width)
+
+    def test_opt_in_heading_and_rate_enclose_straight_zero_offset(self):
+        t = self.trajectory
+        z = OffsetTrajectory(t.reference, t.spline, np.zeros(t.spline.control_count))
+        out = bound_offset_geometry(z, (0., 5.), heading_fold_guard=Fraction(1, 2))
+        self.assertEqual(out.heading_error_interval, (Fraction(0), Fraction(0)))
+        self.assertEqual(out.heading_error_s_interval, (Fraction(0), Fraction(0)))
+
+    def test_heading_requires_explicit_positive_fold_guard(self):
+        with self.assertRaises(ValueError):
+            bound_offset_geometry(self.trajectory, (0., 5.), heading_fold_guard=0)
+
+    def test_heading_legacy_caps_status_limits_and_unresolved(self):
+        t = self.trajectory
+        z = OffsetTrajectory(t.reference, t.spline, np.zeros(t.spline.control_count))
+        legacy = bound_offset_geometry(z, (0., 5.))
+        self.assertIsNone(legacy.heading_error_interval)
+        self.assertIsNone(legacy.heading_error_s_interval)
+        self.assertEqual(legacy.heading_status, "not_requested")
+        with self.assertRaises(ValueError):
+            bound_offset_geometry(z, (0., 5.), heading_fold_guard=Fraction(1,2), atan_terms=0)
+        exhausted = bound_offset_geometry(z, (0., 5.), heading_fold_guard=Fraction(1,2), atan_work_cap=1)
+        self.assertEqual(exhausted.heading_status, "unresolved_transcendental_budget")
+        self.assertIsNone(exhausted.heading_error_interval)
+        self.assertIsNone(exhausted.heading_error_s_interval)
+        self.assertEqual(exhausted.atan_work_cap, 1)
+        self.assertGreater(exhausted.atan_work_used, exhausted.atan_work_cap)
+        self.assertEqual(exhausted.atan_reductions_used, 0)
+        folded = bound_offset_geometry(z, (0., 5.), heading_fold_guard=Fraction(2))
+        self.assertEqual(folded.heading_status, "unresolved_fold_guard")
+        self.assertIsNone(folded.heading_error_interval)
+        self.assertIsNone(folded.heading_error_s_interval)
+        self.assertIsNone(folded.heading_limit_status)
+        self.assertIsNone(folded.heading_rate_limit_status)
+        within = bound_offset_geometry(z, (0., 5.), heading_fold_guard=Fraction(1,2), maximum_heading=.1, maximum_heading_rate=.1)
+        self.assertEqual(within.heading_limit_status, "within_limit")
+        self.assertEqual(within.heading_rate_limit_status, "within_limit")
+        self.assertEqual(within.maximum_heading_limit, Fraction.from_float(.1))
+        # Nonzero derivative on a straight reference has exact psi_s=n_ss/(1+n_s^2).
+        coeff = np.zeros(t.spline.control_count)
+        coeff[0] = .1
+        nonzero = OffsetTrajectory(t.reference, t.spline, coeff)
+        violated = bound_offset_geometry(nonzero, (0., 5.), heading_fold_guard=Fraction(1,2), maximum_heading=1e-9, maximum_heading_rate=1e-9)
+        self.assertEqual(violated.heading_limit_status, "unresolved_straddle")
+        self.assertEqual(violated.heading_rate_limit_status, "unresolved_straddle")
+        with self.assertRaisesRegex(ValueError, "initial union panels exceed panel budget"):
+            bound_offset_geometry(t, (0., 5.), maximum_panels=1, heading_fold_guard=Fraction(1,2), maximum_heading=.1)
+
+    def test_direct_rational_atan_containment_and_reduction(self):
+        for x in (Fraction(0), Fraction(1,2), Fraction(1), Fraction(2)):
+            work = [0, 10000]
+            lo, hi = _atan_point(x, 80, 32768, 8, work, [0])
+            self.assertLessEqual(lo, hi)
+            if x == 0:
+                self.assertEqual((lo, hi), (Fraction(0), Fraction(0)))
+            elif x == 1:
+                # Machin π interval encloses π; atan(1)=π/4.
+                self.assertGreater(hi, lo)
 
     def test_sources_and_stored_offset_coefficients_are_unchanged(self):
         t=self.trajectory

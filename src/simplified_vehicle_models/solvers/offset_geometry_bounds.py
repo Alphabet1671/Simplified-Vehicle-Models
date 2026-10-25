@@ -37,6 +37,19 @@ class OffsetGeometryBounds:
     max_accepted_panel_curvature_width: Fraction
     exact_rational_enclosure: bool = True
     physical_feasibility_certified: bool = False
+    heading_error_interval: Interval | None = None
+    heading_error_s_interval: Interval | None = None
+    heading_status: str = "not_requested"
+    heading_limit_status: str | None = None
+    atan_terms_per_evaluation: int = 160
+    atan_bit_cap: int = 32768
+    atan_work_cap: int = 200000
+    atan_reduction_cap: int = 8
+    atan_work_used: int = 0
+    atan_reductions_used: int = 0
+    maximum_heading_limit: Fraction | None = None
+    maximum_heading_rate_limit: Fraction | None = None
+    heading_rate_limit_status: str | None = None
 
 
 def _f(v: object) -> Fraction:
@@ -79,6 +92,69 @@ def _reference(reference: ReferenceCurve, a: float, b: float, bits: int):
     ks_num = _sub(_mul(dx, dddy), _mul(dy, dddx))
     ks = _sub(_div_positive(ks_num, h3), _div_positive(_mul((Fraction(3), Fraction(3)), _mul(k, hs)), h))
     return h, hs, k, ks
+
+
+def _atan_small(x: Fraction, terms: int, bit_cap: int, work: list[int]) -> Interval:
+    """Alternating rational atan bounds; caller proves |x| <= 1/2."""
+    if x < 0:
+        lo, hi = _atan_small(-x, terms, bit_cap, work)
+        return -hi, -lo
+    if x > Fraction(1, 2):
+        raise RuntimeError("unresolved atan reduction")
+    total = Fraction(0)
+    xx = x*x
+    power = x
+    for j in range(terms):
+        term = power / (2*j+1)
+        total += term if j % 2 == 0 else -term
+        power *= xx
+        work[0] += 1
+        if work[0] > work[1]:
+            raise RuntimeError("unresolved atan work cap")
+        if max(total.numerator.bit_length(), total.denominator.bit_length(), power.numerator.bit_length(), power.denominator.bit_length()) > bit_cap:
+            raise RuntimeError("unresolved atan bit cap")
+    rem = power / (2*terms+1)
+    return (total, total+rem) if terms % 2 == 0 else (total-rem, total)
+
+
+def _atan_point(x: Fraction, terms: int, bit_cap: int, reduction_cap: int, work: list[int], reductions: list[int]) -> Interval:
+    if x < 0:
+        lo, hi = _atan_point(-x, terms, bit_cap, reduction_cap, work, reductions)
+        return -hi, -lo
+    if x > 1:
+        reductions[0] += 1
+        if reductions[0] > reduction_cap:
+            raise RuntimeError("unresolved atan reduction cap")
+        p = _pi_interval(terms, bit_cap, work)
+        lo, hi = _atan_point(1/x, terms, bit_cap, reduction_cap, work, reductions)
+        return p[0]/2-hi, p[1]/2-lo
+    if x == 1:
+        reductions[0] += 1
+        if reductions[0] > reduction_cap:
+            raise RuntimeError("unresolved atan reduction cap")
+        p = _pi_interval(terms, bit_cap, work)
+        return p[0]/4, p[1]/4
+    if x > Fraction(1, 2):
+        reductions[0] += 1
+        if reductions[0] > reduction_cap:
+            raise RuntimeError("unresolved atan reduction cap")
+        p = _pi_interval(terms, bit_cap, work)
+        r = (x-1)/(x+1)
+        lo, hi = _atan_small(r, terms, bit_cap, work)
+        return p[0]/4+lo, p[1]/4+hi
+    return _atan_small(x, terms, bit_cap, work)
+
+
+def _pi_interval(terms: int, bit_cap: int, work: list[int]) -> Interval:
+    a = _atan_small(Fraction(1,5), terms, bit_cap, work)
+    b = _atan_small(Fraction(1,239), terms, bit_cap, work)
+    return 16*a[0]-4*b[1], 16*a[1]-4*b[0]
+
+
+def _atan_interval(x: Interval, terms: int, bit_cap: int, reduction_cap: int,
+                    work: list[int], reductions: list[int]) -> Interval:
+    return (_atan_point(x[0], terms, bit_cap, reduction_cap, work, reductions)[0],
+            _atan_point(x[1], terms, bit_cap, reduction_cap, work, reductions)[1])
 
 
 def _validate(trajectory: object, interval: object, maximum_panels: int,
@@ -127,13 +203,59 @@ def _validate(trajectory: object, interval: object, maximum_panels: int,
 def bound_offset_geometry(trajectory: OffsetTrajectory, station_interval: object, *,
                           maximum_panels: int = 4096, maximum_depth: int = 24,
                           sqrt_bits: int = 80,
-                          maximum_panel_curvature_width: Real | None = None) -> OffsetGeometryBounds:
+                          maximum_panel_curvature_width: Real | None = None,
+                          heading_fold_guard: Real | None = None,
+                          maximum_heading: Real | None = None,
+                          maximum_heading_rate: Real | None = None,
+                          atan_work_cap: int = 200000,
+                          atan_terms: int = 160,
+                          atan_bit_cap: int = 32768,
+                          atan_reduction_steps: int = 8) -> OffsetGeometryBounds:
     """Enclose offset, fold, metric and actual path curvature over source station.
 
     Budgets count every evaluated panel.  The optional curvature-width goal is
     per accepted panel; the returned global union can be wider due to variation.
     No samples, refits, or fallback approximations are used.
     """
+    heading_requested = heading_fold_guard is not None or maximum_heading is not None or maximum_heading_rate is not None
+    if heading_requested:
+        for name, value, minimum, maximum in (("atan_terms", atan_terms, 1, 1024),
+                                             ("atan_work_cap", atan_work_cap, 1, 1000000),
+                                             ("atan_bit_cap", atan_bit_cap, 64, 65536),
+                                             ("atan_reduction_steps", atan_reduction_steps, 0, 16)):
+            if isinstance(value, bool) or not isinstance(value, int) or not minimum <= value <= maximum:
+                raise ValueError(f"{name} must be an integer from {minimum} through {maximum}")
+    if heading_requested and heading_fold_guard is None:
+        raise ValueError("heading requires an explicit positive fold guard")
+    gamma = None
+    if heading_requested:
+        if isinstance(heading_fold_guard, bool) or not isinstance(heading_fold_guard, Real):
+            raise TypeError("heading_fold_guard must be a positive finite real")
+        gf = float(heading_fold_guard)
+        if not math.isfinite(gf) or gf <= 0:
+            raise ValueError("heading_fold_guard must be positive and finite")
+        gamma = Fraction(heading_fold_guard) if isinstance(heading_fold_guard, Fraction) else _f(gf)
+        if maximum_heading_rate is not None:
+            if isinstance(maximum_heading_rate, bool) or not isinstance(maximum_heading_rate, Real):
+                raise TypeError("maximum_heading_rate must be a positive finite real")
+            hr = float(maximum_heading_rate)
+            if not math.isfinite(hr) or hr <= 0:
+                raise ValueError("maximum_heading_rate must be positive and finite")
+            rate_limit = _f(hr)
+        else:
+            rate_limit = None
+        if maximum_heading is not None:
+            if isinstance(maximum_heading, bool) or not isinstance(maximum_heading, Real):
+                raise TypeError("maximum_heading must be a positive finite real")
+            mh = float(maximum_heading)
+            if not math.isfinite(mh) or mh <= 0:
+                raise ValueError("maximum_heading must be positive and finite")
+            heading_limit = _f(mh)
+        else:
+            heading_limit = None
+    else:
+        heading_limit = None
+        rate_limit = None
     lo, hi, width = _validate(trajectory, station_interval, maximum_panels,
                               maximum_depth, sqrt_bits, maximum_panel_curvature_width)
     loq, hiq = _f(lo), _f(hi)
@@ -149,8 +271,12 @@ def bound_offset_geometry(trajectory: OffsetTrajectory, station_interval: object
     if len(initial) > maximum_panels:
         raise ValueError("initial union panels exceed panel budget")
     pending = list(initial)
-    accepted: list[tuple[Interval, Interval, Interval, Interval]] = []
+    accepted: list[tuple[Interval, Interval, Interval, Interval, Interval | None, Interval | None]] = []
     evals = 0
+    atan_work = [0, atan_work_cap]
+    atan_reductions = [0]
+    fold_unresolved = False
+    atan_unresolved = False
     while pending:
         a,b,depth = pending.pop()
         if evals >= maximum_panels:
@@ -172,6 +298,7 @@ def bound_offset_geometry(trajectory: OffsetTrajectory, station_interval: object
         if geom is not None:
             h, hs, k, ks = geom
             fold = _sub((Fraction(1), Fraction(1)), _mul(k,n))
+            fold_panel_unresolved = heading_requested and fold[0] < gamma
             A, B = _mul(h,fold), ns
             As = _sub(_mul(hs,fold), _mul(h, _add(_mul(ks,n), _mul(k,ns))))
             g2 = _add(_square(A), _square(B))
@@ -180,11 +307,30 @@ def bound_offset_geometry(trajectory: OffsetTrajectory, station_interval: object
                 if g[0] > 0:
                     psi_s = _div_positive(_sub(_mul(A,nss), _mul(B,As)), g2)
                     path_k = _div_positive(_add(_mul(h,k),psi_s),g)
-                    result = n,fold,g,path_k
-        if result is not None and (width is None or result[3][1]-result[3][0] <= width):
+                    psi = None
+                    if heading_requested and fold[0] >= gamma and not atan_unresolved:
+                        try:
+                            psi = _atan_interval(_div_positive(B,A), atan_terms, atan_bit_cap,
+                                                 atan_reduction_steps, atan_work, atan_reductions)
+                        except RuntimeError:
+                            atan_unresolved = True
+                            psi = None
+                    rate = psi_s if heading_requested and fold[0] >= gamma and not atan_unresolved else None
+                    result = n,fold,g,path_k,psi,rate
+        if result is not None and (not heading_requested or result[4] is not None or fold_panel_unresolved or atan_unresolved) and (width is None or result[3][1]-result[3][0] <= width):
             accepted.append(result)
+            if fold_panel_unresolved:
+                fold_unresolved = True
+                break
+            if atan_unresolved:
+                break
             continue
         if depth >= maximum_depth:
+            if heading_requested:
+                if fold_unresolved:
+                    break
+                if atan_unresolved:
+                    break
             raise RuntimeError("unresolved tangent or curvature width at maximum depth")
         m = float((a+b)/2)
         if not float(a) < m < float(b):
@@ -196,5 +342,41 @@ def bound_offset_geometry(trajectory: OffsetTrajectory, station_interval: object
     def union(i: int) -> Interval:
         return min(p[i][0] for p in accepted), max(p[i][1] for p in accepted)
     max_width = max((p[3][1]-p[3][0] for p in accepted), default=Fraction(0))
+    heading_union = (min(p[4][0] for p in accepted), max(p[4][1] for p in accepted)) if heading_requested and not fold_unresolved and not atan_unresolved else None
+    rate_union = (min(p[5][0] for p in accepted), max(p[5][1] for p in accepted)) if heading_requested and not fold_unresolved and not atan_unresolved else None
+    heading_status = "established" if heading_requested else "not_requested"
+    heading_limit_status = None
+    rate_limit_status = None
+    if heading_limit is not None:
+        abslo = Fraction(0) if heading_union[0] <= 0 <= heading_union[1] else min(abs(heading_union[0]), abs(heading_union[1]))
+        abshi = max(abs(heading_union[0]), abs(heading_union[1]))
+        heading_limit_status = ("within_limit" if abshi <= heading_limit else
+                                "violation" if abslo > heading_limit else "unresolved_straddle")
+    if rate_limit is not None:
+        abslo = Fraction(0) if rate_union[0] <= 0 <= rate_union[1] else min(abs(rate_union[0]), abs(rate_union[1]))
+        abshi = max(abs(rate_union[0]), abs(rate_union[1]))
+        rate_limit_status = ("within_limit" if abshi <= rate_limit else
+                             "violation" if abslo > rate_limit else "unresolved_straddle")
+    if heading_requested and fold_unresolved:
+        heading_status = "unresolved_fold_guard"
+        heading_union = rate_union = None
+        heading_limit_status = rate_limit_status = None
+    elif heading_requested and atan_unresolved:
+        heading_status = "unresolved_transcendental_budget"
+        heading_union = rate_union = None
+        heading_limit_status = rate_limit_status = None
     return OffsetGeometryBounds(union(0), union(1), union(2), union(3),
-                                (lo,hi), evals, sqrt_bits, width, max_width)
+                                (lo,hi), evals, sqrt_bits, width, max_width,
+                                heading_error_interval=heading_union,
+                                heading_error_s_interval=rate_union,
+                                heading_status=heading_status,
+                                heading_limit_status=heading_limit_status,
+                                atan_terms_per_evaluation=atan_terms,
+                                atan_bit_cap=atan_bit_cap,
+                                atan_work_cap=atan_work_cap,
+                                atan_reduction_cap=atan_reduction_steps,
+                                atan_work_used=atan_work[0],
+                                atan_reductions_used=atan_reductions[0],
+                                maximum_heading_limit=heading_limit,
+                                maximum_heading_rate_limit=rate_limit,
+                                heading_rate_limit_status=rate_limit_status)

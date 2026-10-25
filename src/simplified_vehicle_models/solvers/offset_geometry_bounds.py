@@ -66,6 +66,58 @@ def _check_fraction_bits(value: Fraction, bit_cap: int) -> Fraction:
     return value
 
 
+def _bounded_add(a: Fraction, b: Fraction, bit_cap: int) -> Fraction:
+    _check_fraction_bits(a, bit_cap); _check_fraction_bits(b, bit_cap)
+    # Reduce the shared denominator before constructing the numerator sum.
+    g = math.gcd(a.denominator, b.denominator)
+    am, bm = b.denominator // g, a.denominator // g
+    if (a.numerator.bit_length() + am.bit_length() > bit_cap + 1
+            or b.numerator.bit_length() + bm.bit_length() > bit_cap + 1
+            or a.denominator.bit_length() + am.bit_length() > bit_cap + 1):
+        raise RuntimeError("unresolved atan bit cap")
+    return _check_fraction_bits(Fraction(a.numerator * am + b.numerator * bm,
+                                          a.denominator * am), bit_cap)
+
+
+def _bounded_mul(a: Fraction, b: Fraction, bit_cap: int) -> Fraction:
+    _check_fraction_bits(a, bit_cap); _check_fraction_bits(b, bit_cap)
+    # Cross-cancel before multiplying to bound intermediate integer sizes.
+    g1 = math.gcd(abs(a.numerator), b.denominator)
+    g2 = math.gcd(abs(b.numerator), a.denominator)
+    an, bd = a.numerator // g1, b.denominator // g1
+    bn, ad = b.numerator // g2, a.denominator // g2
+    if an.bit_length()+bn.bit_length() > bit_cap+1 or ad.bit_length()+bd.bit_length() > bit_cap+1:
+        raise RuntimeError("unresolved atan bit cap")
+    return _check_fraction_bits(Fraction(an*bn, ad*bd), bit_cap)
+
+
+def _bounded_neg(a: Fraction, bit_cap: int) -> Fraction:
+    _check_fraction_bits(a, bit_cap)
+    return -a
+
+
+def _bounded_sub(a: Fraction, b: Fraction, bit_cap: int) -> Fraction:
+    return _bounded_add(a, _bounded_neg(b, bit_cap), bit_cap)
+
+
+def _bounded_scale(a: Fraction, factor: int, bit_cap: int) -> Fraction:
+    _check_fraction_bits(a, bit_cap)
+    return _bounded_mul(a, Fraction(factor), bit_cap)
+
+
+def _bounded_recip(a: Fraction, bit_cap: int) -> Fraction:
+    _check_fraction_bits(a, bit_cap)
+    if a == 0:
+        raise ZeroDivisionError
+    # The prospective numerator/denominator are the existing denominator/numerator.
+    return _check_fraction_bits(Fraction(a.denominator, a.numerator), bit_cap)
+
+
+def _bounded_div(a: Fraction, b: Fraction, bit_cap: int) -> Fraction:
+    _check_fraction_bits(b, bit_cap)
+    return _bounded_mul(a, _bounded_recip(b, bit_cap), bit_cap)
+
+
 @dataclass(frozen=True, slots=True)
 class OffsetGeometryBounds:
     offset_interval: Interval
@@ -140,57 +192,61 @@ def _atan_small(x: Fraction, terms: int, bit_cap: int, work: list[int]) -> Inter
     """Alternating rational atan bounds; caller proves |x| <= 1/2."""
     _check_fraction_bits(x, bit_cap)
     if x < 0:
-        lo, hi = _atan_small(-x, terms, bit_cap, work)
-        return -hi, -lo
+        lo, hi = _atan_small(_bounded_neg(x, bit_cap), terms, bit_cap, work)
+        return _bounded_neg(hi, bit_cap), _bounded_neg(lo, bit_cap)
     if x > Fraction(1, 2):
         raise RuntimeError("unresolved atan reduction")
     total = Fraction(0)
-    xx = _check_fraction_bits(x*x, bit_cap)
+    xx = _bounded_mul(x, x, bit_cap)
     power = x
     for j in range(terms):
         if work[0] >= work[1]:
             raise RuntimeError("unresolved atan work cap")
-        term = _check_fraction_bits(power / (2*j+1), bit_cap)
-        total = _check_fraction_bits(total + (term if j % 2 == 0 else -term), bit_cap)
-        power = _check_fraction_bits(power * xx, bit_cap)
+        term = _bounded_div(power, Fraction(2*j+1), bit_cap)
+        total = _bounded_add(total, term if j % 2 == 0 else _bounded_neg(term, bit_cap), bit_cap)
+        power = _bounded_mul(power, xx, bit_cap)
         work[0] += 1
-    rem = _check_fraction_bits(power / (2*terms+1), bit_cap)
-    lo, hi = ((total, total+rem) if terms % 2 == 0 else (total-rem, total))
-    return _check_fraction_bits(lo, bit_cap), _check_fraction_bits(hi, bit_cap)
+    rem = _bounded_div(power, Fraction(2*terms+1), bit_cap)
+    lo, hi = ((total, _bounded_add(total,rem,bit_cap)) if terms % 2 == 0 else (_bounded_add(total,_bounded_neg(rem, bit_cap),bit_cap), total))
+    return lo, hi
 
 
 def _atan_point(x: Fraction, terms: int, bit_cap: int, reduction_cap: int, work: list[int], reductions: list[int]) -> Interval:
+    _check_fraction_bits(x, bit_cap)
     if x < 0:
-        lo, hi = _atan_point(-x, terms, bit_cap, reduction_cap, work, reductions)
-        return -hi, -lo
+        lo, hi = _atan_point(_bounded_neg(x, bit_cap), terms, bit_cap, reduction_cap, work, reductions)
+        return _bounded_neg(hi, bit_cap), _bounded_neg(lo, bit_cap)
     if x > 1:
-        reductions[0] += 1
-        if reductions[0] > reduction_cap:
+        if reductions[0] >= reduction_cap:
             raise RuntimeError("unresolved atan reduction cap")
+        reductions[0] += 1
         p = _pi_interval(terms, bit_cap, work)
-        lo, hi = _atan_point(1/x, terms, bit_cap, reduction_cap, work, reductions)
-        return p[0]/2-hi, p[1]/2-lo
+        lo, hi = _atan_point(_bounded_recip(x, bit_cap), terms, bit_cap, reduction_cap, work, reductions)
+        return (_bounded_sub(_bounded_div(p[0], Fraction(2), bit_cap), hi, bit_cap),
+                _bounded_sub(_bounded_div(p[1], Fraction(2), bit_cap), lo, bit_cap))
     if x == 1:
-        reductions[0] += 1
-        if reductions[0] > reduction_cap:
+        if reductions[0] >= reduction_cap:
             raise RuntimeError("unresolved atan reduction cap")
+        reductions[0] += 1
         p = _pi_interval(terms, bit_cap, work)
-        return p[0]/4, p[1]/4
+        return _bounded_div(p[0], Fraction(4), bit_cap), _bounded_div(p[1], Fraction(4), bit_cap)
     if x > Fraction(1, 2):
-        reductions[0] += 1
-        if reductions[0] > reduction_cap:
+        if reductions[0] >= reduction_cap:
             raise RuntimeError("unresolved atan reduction cap")
+        reductions[0] += 1
         p = _pi_interval(terms, bit_cap, work)
-        r = (x-1)/(x+1)
+        r = _bounded_div(_bounded_sub(x, Fraction(1), bit_cap), _bounded_add(x, Fraction(1), bit_cap), bit_cap)
         lo, hi = _atan_small(r, terms, bit_cap, work)
-        return p[0]/4+lo, p[1]/4+hi
+        return (_bounded_add(_bounded_div(p[0], Fraction(4), bit_cap), lo, bit_cap),
+                _bounded_add(_bounded_div(p[1], Fraction(4), bit_cap), hi, bit_cap))
     return _atan_small(x, terms, bit_cap, work)
 
 
 def _pi_interval(terms: int, bit_cap: int, work: list[int]) -> Interval:
     a = _atan_small(Fraction(1,5), terms, bit_cap, work)
     b = _atan_small(Fraction(1,239), terms, bit_cap, work)
-    return 16*a[0]-4*b[1], 16*a[1]-4*b[0]
+    return (_bounded_sub(_bounded_scale(a[0], 16, bit_cap), _bounded_scale(b[1], 4, bit_cap), bit_cap),
+            _bounded_sub(_bounded_scale(a[1], 16, bit_cap), _bounded_scale(b[0], 4, bit_cap), bit_cap))
 
 
 def _atan_interval(x: Interval, terms: int, bit_cap: int, reduction_cap: int,

@@ -275,15 +275,39 @@ class OffsetGeometryBoundsTests(unittest.TestCase):
             bound_offset_geometry(t, (0., 5.), maximum_panels=1, heading_fold_guard=Fraction(1,2), maximum_heading=.1)
 
     def test_direct_rational_atan_containment_and_reduction(self):
-        for x in (Fraction(0), Fraction(1,2), Fraction(1), Fraction(2)):
+        # Independently enclose atan(1/2) using the first four alternating
+        # series terms; the implementation's wider/tighter result must contain
+        # this known rational bracket, not merely be ordered.
+        x = Fraction(1, 2)
+        lower = sum(((-1)**j) * x**(2*j+1) / (2*j+1) for j in range(4))
+        upper = lower + x**9 / 9
+        work = [0, 10000]
+        lo, hi = _atan_point(x, 80, 32768, 8, work, [0])
+        # The implementation enclosure is contained by the independently
+        # established witness interval (the witness is deliberately wider).
+        self.assertGreaterEqual(lo, lower)
+        self.assertLessEqual(hi, upper)
+        for value in (Fraction(2, 3), Fraction(1), Fraction(2)):
+            with self.subTest(reduction_value=value), self.assertRaisesRegex(RuntimeError, "reduction cap"):
+                _atan_point(value, 8, 128, 0, [0, 1000], [0])
+        for value in (Fraction(2), Fraction(3, 4), Fraction(1)):
             work = [0, 10000]
-            lo, hi = _atan_point(x, 80, 32768, 8, work, [0])
-            self.assertLessEqual(lo, hi)
-            if x == 0:
-                self.assertEqual((lo, hi), (Fraction(0), Fraction(0)))
-            elif x == 1:
-                # Machin π interval encloses π; atan(1)=π/4.
-                self.assertGreater(hi, lo)
+            reductions = [0]
+            _atan_point(value, 8, 512, 8, work, reductions)
+            self.assertLessEqual(reductions[0], 8)
+        # Bit-cap exhaustion is exercised independently at reduction anchors,
+        # reciprocal reduction, and Machin pi endpoint combinations.
+        for value, cap in ((Fraction(3, 4), 64), (Fraction(2), 64), (Fraction(1), 64)):
+            with self.subTest(value=value), self.assertRaisesRegex(RuntimeError, "bit cap"):
+                _atan_point(value, 80, cap, 8, [0, 10000], [0])
+        # Reciprocal identity: atan(2)=pi/2-atan(1/2); independently combine
+        # a Machin enclosure with the rational atan(1/2) witness interval.
+        for value in (Fraction(0), Fraction(1), Fraction(2), Fraction(-1,2), Fraction(-2)):
+            work = [0, 10000]
+            a, b = _atan_point(value, 80, 32768, 8, work, [0])
+            self.assertLessEqual(a, b)
+        self.assertEqual(_atan_point(Fraction(0), 80, 32768, 8, [0,10000], [0]),
+                         (Fraction(0), Fraction(0)))
 
     def test_sources_and_stored_offset_coefficients_are_unchanged(self):
         t=self.trajectory

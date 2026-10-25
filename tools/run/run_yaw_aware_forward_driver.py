@@ -36,7 +36,7 @@ def prepare_output(path):
     return path
 
 
-def physical_map_speed_limit(point_mass_vehicle, *, search_limit_mps=500.):
+def physical_map_speed_limit(point_mass_vehicle, *, search_limit_mps=None):
     """Return a finite upper speed for the map from straight-line drive capability.
 
     The search uses the point-mass vehicle's actual maximum positive
@@ -48,9 +48,11 @@ def physical_map_speed_limit(point_mass_vehicle, *, search_limit_mps=500.):
         maximum_acceleration_limit, maximum_vehicle_speed,
     )
 
-    if not math.isfinite(search_limit_mps) or search_limit_mps <= 0:
-        raise ValueError("search_limit_mps must be finite and positive")
-    physical_limit = min(float(maximum_vehicle_speed(point_mass_vehicle)), search_limit_mps)
+    physical_limit = float(maximum_vehicle_speed(point_mass_vehicle))
+    if search_limit_mps is not None:
+        if not math.isfinite(search_limit_mps) or search_limit_mps <= 0:
+            raise ValueError("search_limit_mps must be finite and positive")
+        physical_limit = min(physical_limit, search_limit_mps)
     if not math.isfinite(physical_limit) or physical_limit <= 0:
         raise ValueError("point-mass drivetrain has no finite positive speed limit")
 

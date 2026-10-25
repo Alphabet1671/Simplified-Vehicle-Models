@@ -62,9 +62,20 @@ class YawMapTest(unittest.TestCase):
         inertia=compile_formulation(str(ROOT / "models/formulations/iem24_murphy_real_planar_7dof.xml")).model.yaw_inertia
         locked=build_physical_yaw_map(vehicle,grid,TvLimits(100.,False,False),yaw_inertia=inertia)
         vector=build_physical_yaw_map(vehicle,grid,TvLimits(100.,False,True),yaw_inertia=inertia)
-        # Explicit vectoring permission may widen the feasible acceleration
-        # set, but never narrows it; the LPs also differ by brake-split freedom.
+        regen=build_physical_yaw_map(vehicle,grid,TvLimits(100.,True,False),yaw_inertia=inertia)
+        np.testing.assert_allclose(regen.yaw_moment_into_turn,locked.yaw_moment_into_turn)
         self.assertGreaterEqual(int(vector.feasible_mask.sum()), int(locked.feasible_mask.sum()))
+
+    def test_legacy_drivetrain_is_rejected(self):
+        from dataclasses import replace
+        from simplified_vehicle_models.parameters.drivetrain import DrivetrainParameters
+        model=compile_formulation(str(ROOT / "models/formulations/iem24_murphy_real_planar_7dof.xml")).model
+        vehicle=point_mass_view_of_planar(model)
+        runtime=vehicle.drivetrain
+        legacy=DrivetrainParameters(runtime.motor_count,runtime.gear_ratio,runtime.peak_motor_torque,
+                                    runtime.power_limit,runtime.efficiency,runtime.maximum_motor_speed)
+        with self.assertRaisesRegex(TypeError,"FullDrivetrainRuntime"):
+            build_physical_yaw_map(replace(vehicle,drivetrain=legacy),YawCapabilityGrid([5.],[0.],[0.]),yaw_inertia=model.yaw_inertia)
 
     def test_steady_envelope_requires_exact_zero_acceleration_and_speed_is_checked(self):
         axes=([1.], [0.5,1.5], [-1.,1.]); shape=(1,2,2); values=np.ones(shape)

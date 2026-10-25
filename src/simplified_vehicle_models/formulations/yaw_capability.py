@@ -124,12 +124,13 @@ def _cell_lp(vehicle, speed, ax, ay, tv_limits, direction, *, ideal=False):
     capx, capy = tire_force_capacities(vehicle, loads)
     _, drag = aerodynamic_forces(vehicle, speed)
     target_x, target_y = vehicle.total_mass * ax + drag, vehicle.total_mass * ay
-    # variables: four wheel Fx and two axle Fy. Lateral axle force is shared
-    # over its wheels in proportion to normal load.
-    n = 6
+    # Variables: four nonnegative drive forces, four nonnegative regen
+    # magnitudes, four nonnegative hydraulic brake magnitudes, two axle Fy.
+    # Net wheel force = drive - regen - hydraulic.
+    n = 14
     aub, bub, aeq, beq = [], [], [], []
-    aeq.append([1,1,1,1,0,0]); beq.append(target_x)
-    aeq.append([0,0,0,0,1,1]); beq.append(target_y)
+    aeq.append([1]*4 + [-1]*8 + [0,0]); beq.append(target_x)
+    aeq.append([0]*12 + [1,1]); beq.append(target_y)
     # 16-sided inscribed friction polygon at each tire.
     for i in range(4):
         axle = 0 if i < 2 else 1
@@ -138,16 +139,23 @@ def _cell_lp(vehicle, speed, ax, ay, tv_limits, direction, *, ideal=False):
         for theta in np.arange(16) * (2 * math.pi / 16):
             row = np.zeros(n)
             row[i] = math.cos(theta) / max(float(capx[i]), 1e-30)
-            row[4+axle] = share * math.sin(theta) / max(float(capy[i]), 1e-30)
+            row[4+i] = -math.cos(theta) / max(float(capx[i]), 1e-30)
+            row[8+i] = -math.cos(theta) / max(float(capx[i]), 1e-30)
+            row[12+axle] = share * math.sin(theta) / max(float(capy[i]), 1e-30)
             aub.append(row); bub.append(math.cos(math.pi/16))
     # Resolve driven wheels from the assembled transmission (or legacy model).
     drivetrain = vehicle.drivetrain
     runtime = isinstance(drivetrain, FullDrivetrainRuntime)
-    driven = (set(drivetrain.drivetrain.transmission.driven_wheels) if runtime
-              else set(("fl", "fr", "rl", "rr")))
+    if not runtime:
+        raise TypeError("physical yaw maps require a FullDrivetrainRuntime with explicit driven wheels")
+    driven = set(drivetrain.drivetrain.transmission.driven_wheels)
     for i, label in enumerate(("fl", "fr", "rl", "rr")):
         if label not in driven:
-            row=np.zeros(n); row[i]=1; aeq.append(row); beq.append(0.)
+            for offset in (0, 4):
+                row=np.zeros(n); row[offset+i]=1; aeq.append(row); beq.append(0.)
+    # Regen is conservatively disabled until a charge-power limit is modeled.
+    for i in range(4):
+        row=np.zeros(n); row[4+i]=1; aeq.append(row); beq.append(0.)
     # Recover conservative total drive limit for every acceleration cell.
     if runtime:
         from simplified_vehicle_models.formulations.point_mass import _default_motor_shares
@@ -155,43 +163,61 @@ def _cell_lp(vehicle, speed, ax, ay, tv_limits, direction, *, ideal=False):
         drive_limit = maximum_drive_force(drivetrain.powertrain, drivetrain.drivetrain, speed,
             StorageState(drivetrain.powertrain.energy_storage.initial_state_of_charge),
             effective_radius=vehicle.tire.effective_radius, wheel_shares=shares).maximum_drive_force
-    else:
-        drive_limit = drivetrain.motor_count * drivetrain.peak_motor_torque * drivetrain.gear_ratio * drivetrain.efficiency / vehicle.tire.effective_radius
-        if speed > 1e-9:
-            drive_limit = min(drive_limit, drivetrain.power_limit * drivetrain.efficiency / speed)
+    # Each driven wheel receives an equal conservative share of aggregate
+    # motor torque/power capability; no motoring force is permitted elsewhere.
+    share = 1.0 / len(driven)
+    for i in range(4):
+        row=np.zeros(n); row[i]=1.; aub.append(row); bub.append(drive_limit*share if ("fl","fr","rl","rr")[i] in driven else 0.)
+    for i in range(4):
+        row=np.zeros(n); row[4+i]=1.; aeq.append(row); beq.append(0.)
+    for i in range(4):
+        if ("fl","fr","rl","rr")[i] not in driven:
+            row=np.zeros(n); row[8+i]=1.; aeq.append(row); beq.append(0.)
+    # Nonnegative motor drive, zero regen, nonnegative hydraulic braking.
+    bounds=[(0,None)]*12 + [(None,None)]*2
     braking = target_x < 0.0
-    if not braking:
-        # Aggregate motor envelope cap (conservative: no per-motor allocation credit).
-        row=np.zeros(n); row[:4]=1.; aub.append(row); bub.append(drive_limit)
+    # Avoid simultaneous motoring and hydraulic braking in this LP cell.
+    if target_x >= 0.0:
+        for i in range(4):
+            row=np.zeros(n); row[8+i]=1.; aeq.append(row); beq.append(0.)
     else:
-        # The fixed hydraulic brake bias is an equality unless a vectoring
-        # actuator is explicitly enabled. Rear/front totals follow the bias.
-        if tv_limits is None or not (tv_limits.regen_vectoring_allowed or tv_limits.brake_vectoring_allowed):
-            row=np.zeros(n); row[0]=row[1]=1-vehicle.brake_bias; row[2]=row[3]=-vehicle.brake_bias
-            aeq.append(row); beq.append(0.)
-    if tv_limits is None:
-        for left, right in ((0,1),(2,3)):
+        for i in range(4):
+            row=np.zeros(n); row[i]=1.; aeq.append(row); beq.append(0.)
+    # Hydraulic brake bias is axle-total equality unless hydraulic TV is enabled.
+    if not (tv_limits is not None and tv_limits.brake_vectoring_allowed and not ideal):
+        row=np.zeros(n); row[8:10]=1-vehicle.brake_bias; row[10:12]=-vehicle.brake_bias
+        aeq.append(row); beq.append(0.)
+    # Each axle's hydraulic braking is left/right equal absent hydraulic TV.
+    if not (tv_limits is not None and tv_limits.brake_vectoring_allowed and not ideal):
+        for left,right in ((0,1),(2,3)):
+            row=np.zeros(n); row[8+left]=1; row[8+right]=-1; aeq.append(row); beq.append(0.)
+    # Regen vectoring flag does not unlock hydraulic force; regen is currently zero.
+    # Motor torque vectoring is bounded by max_delta_torque; absent a TV
+    # configuration, motor force remains equal left/right. Hydraulic vectoring
+    # is independently enabled and cannot be authorized by regen_vectoring.
+    torque = (tv_limits.max_delta_torque / max(vehicle.tire.effective_radius, 1e-12)
+              if tv_limits is not None else 0.0)
+    for left,right in ((0,1),(2,3)):
+        if tv_limits is None:
             row=np.zeros(n); row[left]=1; row[right]=-1; aeq.append(row); beq.append(0.)
-    elif not ideal:
-        # Bound left/right longitudinal force split by declared torque authority.
-        torque = tv_limits.max_delta_torque / max(vehicle.tire.effective_radius, 1e-12)
-        vectoring = (not braking or tv_limits.regen_vectoring_allowed or tv_limits.brake_vectoring_allowed)
-        if vectoring:
-            for left,right in ((0,1),(2,3)):
-                row=np.zeros(n); row[left]=1; row[right]=-1
-                aub.extend((row,-row)); bub.extend((torque,torque))
-        else:
-            for left,right in ((0,1),(2,3)):
-                row=np.zeros(n); row[left]=1; row[right]=-1; aeq.append(row); beq.append(0.)
-    # Moment convention: x-front/rear lateral forces and lateral arms for Fx.
+        elif not ideal:
+            row=np.zeros(n); row[left]=1; row[right]=-1
+            aub.extend((row,-row)); bub.extend((torque,torque))
+        if not (tv_limits is not None and tv_limits.brake_vectoring_allowed and not ideal):
+            row=np.zeros(n); row[8+left]=1; row[8+right]=-1; aeq.append(row); beq.append(0.)
+        elif not ideal:
+            row=np.zeros(n); row[8+left]=1; row[8+right]=-1
+            aub.extend((row,-row)); bub.extend((torque,torque))
+    # Moment convention: net Fx = drive - regen - hydraulic. Lateral force
+    # moment uses the two axle-force variables and SAE x-axis lever arms.
     front_arm = vehicle.wheelbase * (1 - vehicle.front_mass_fraction)
     rear_arm = vehicle.wheelbase * vehicle.front_mass_fraction
     y = vehicle.track_width / 2
-    c = np.array([y*direction, -y*direction, y*direction, -y*direction,
-                  -front_arm*direction, rear_arm*direction])
-    bounds = [(None,None)]*n
-    # torque vectoring constraints apply only to powered/allowed direction
-    # all cells have physical tire bounds; optimize the signed directional extreme.
+    lateral_arms = np.array([y, -y, y, -y])
+    c = np.concatenate((lateral_arms, -lateral_arms, -lateral_arms,
+                        [-front_arm, rear_arm])) * direction
+    # Torque vectoring constraints apply only to permitted components; all
+    # components remain subject to tire friction polygons.
     result = linprog(-c, A_ub=np.asarray(aub) if aub else None, b_ub=np.asarray(bub) if bub else None,
                      A_eq=np.asarray(aeq), b_eq=np.asarray(beq), bounds=bounds, method="highs")
     if not result.success:

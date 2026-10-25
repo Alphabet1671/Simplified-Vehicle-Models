@@ -29,3 +29,13 @@ The comparison is for zero pedal input. Its physical pedal maps yield zero force
 - `git diff --check` — PASS.
 
 No production code was changed, and no existing forward-run semantics were changed.
+
+## Fix round 1 — fail-closed animation export bridge
+
+- Refuse export when the media path, derived `.runrec` path, or PNG sequence destination already exists; collision checks run before record creation and animator invocation. Dry-run performs the same checks and reports the intended destination without writing.
+- `--png-sequence` no longer needs a dummy `--output`; its record is deterministically placed at `PNG_DIRECTORY/animation-run-record.npz`. `--output` is explicitly MP4-only and cannot be combined with PNG mode.
+- Added regressions proving existing record, MP4, and nonempty PNG destination bytes remain unchanged; verified a later animator/encoder failure retains the newly written record. PNG smoke test exercises no-dummy-output semantics.
+
+## Verification
+
+- `MPLCONFIGDIR=/tmp/mplcfg PYTHONPATH=src:. python3 -m unittest tests.test_maneuver_animation_export -v` — PASS, 7 tests.

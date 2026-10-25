@@ -13,6 +13,7 @@ from simplified_vehicle_models.controls.maneuvers.types import RobotCommand
 from simplified_vehicle_models.solvers.vertical_forward import VerticalForwardPlant
 from tools.maneuver_gui.artifacts import write_artifacts
 from tools.maneuver_gui.export_animation import main
+from tools.anim import export_animation as animator
 
 
 class ManeuverAnimationBridgeTests(unittest.TestCase):
@@ -66,12 +67,60 @@ class ManeuverAnimationBridgeTests(unittest.TestCase):
 
     def test_png_sequence_smoke(self):
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary); artifact = self.artifact(root); output = root / "placeholder.mp4"; frames = root / "frames"
-            code = main(["--artifact", str(artifact), "--output", str(output), "--png-sequence", str(frames),
+            root = Path(temporary); artifact = self.artifact(root); frames = root / "frames"
+            code = main(["--artifact", str(artifact), "--png-sequence", str(frames),
                          "--frame-rate", "2", "--width", "320", "--height", "180"])
             self.assertEqual(code, 0)
-            self.assertTrue((root / "placeholder.runrec").is_file())
+            self.assertTrue((frames / "animation-run-record.npz").is_file())
             self.assertTrue(any(frames.glob("*.png")))
+
+    def _collision_case(self, target_kind):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); artifact = self.artifact(root)
+            output = root / "video.mp4"; record = root / "video.runrec"; frames = root / "frames"
+            argv = ["--artifact", str(artifact), "--output", str(output)]
+            target = {"record": record, "media": output, "png": frames}[target_kind]
+            if target_kind == "png":
+                argv = ["--artifact", str(artifact), "--png-sequence", str(frames)]
+                frames.mkdir(); (frames / "keep.bin").write_bytes(b"existing-png-data")
+            else:
+                target.write_bytes(b"existing-bytes")
+            before = target.read_bytes() if target.is_file() else (target / "keep.bin").read_bytes()
+            with contextlib.redirect_stderr(io.StringIO()):
+                code = main(argv)
+            self.assertNotEqual(code, 0)
+            after = target.read_bytes() if target.is_file() else (target / "keep.bin").read_bytes()
+            self.assertEqual(after, before)
+            if target_kind == "media":
+                self.assertFalse(record.exists())
+            if target_kind == "record":
+                self.assertFalse(output.exists())
+
+    def test_existing_run_record_fails_closed(self):
+        self._collision_case("record")
+
+    def test_existing_media_fails_closed(self):
+        self._collision_case("media")
+
+    def test_nonempty_png_directory_fails_closed(self):
+        self._collision_case("png")
+
+    def test_encoder_failure_preserves_created_record(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); artifact = self.artifact(root); output = root / "video.mp4"
+            def fail(_command):
+                output.write_bytes(b"partial-media")
+                return 1
+            original = animator.main
+            animator.main = fail
+            try:
+                with contextlib.redirect_stderr(io.StringIO()):
+                    code = main(["--artifact", str(artifact), "--output", str(output)])
+            finally:
+                animator.main = original
+            self.assertEqual(code, 1)
+            self.assertTrue((root / "video.runrec").is_file())
+            self.assertEqual(output.read_bytes(), b"partial-media")
 
 
 if __name__ == "__main__":

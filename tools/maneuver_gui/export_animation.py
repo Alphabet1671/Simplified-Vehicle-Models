@@ -41,7 +41,7 @@ def _definition(artifact: Path) -> dict:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--artifact", required=True, type=Path)
-    parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--output", type=Path, help="MP4 output path (required unless --png-sequence is used)")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--png-sequence", type=Path)
     parser.add_argument("--frame-rate", type=animator.positive_float, default=120.)
@@ -53,13 +53,20 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv=None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    if args.png_sequence is not None and not args.dry_run:
-        output = args.png_sequence
-    else:
-        output = args.output
-    run_record = _record_path(args.output)
+    if args.png_sequence is None and args.output is None:
+        parser.error("--output is required unless --png-sequence is used")
+    if args.png_sequence is not None and args.output is not None:
+        parser.error("--output cannot be combined with --png-sequence")
+    output = args.output if args.png_sequence is None else args.png_sequence
+    run_record = _record_path(args.output) if args.output is not None else args.png_sequence / "animation-run-record.npz"
     try:
         definition = _definition(args.artifact)
+        if output.exists():
+            raise ValueError(f"output destination already exists: {output}")
+        if args.png_sequence is not None and output.is_dir():
+            raise ValueError(f"PNG sequence destination already exists: {output}")
+        if run_record.exists():
+            raise ValueError(f"run record destination already exists: {run_record}")
         command = ["--record", str(run_record), "--output", str(args.output),
                    "--frame-rate", str(args.frame_rate), "--width", str(args.width),
                    "--height", str(args.height)]
@@ -70,6 +77,7 @@ def main(argv=None) -> int:
         if args.dry_run:
             print(f"artifact: {args.artifact}")
             print(f"run record: {run_record}")
+            print(f"output destination: {output}")
             print("animator command: python -m tools.anim.export_animation " + " ".join(command))
             return 0
         write_maneuver_run_record(run_record, definition, args.artifact)

@@ -1,5 +1,7 @@
 """Qt-free value types for maneuver control."""
 from dataclasses import dataclass
+from copy import deepcopy
+from types import MappingProxyType
 import numpy as np
 
 
@@ -29,10 +31,34 @@ class RobotCommand:
         object.__setattr__(self, "brake", float(values[2]))
 
 
-@dataclass(frozen=True, slots=True)
+def _freeze(value):
+    if isinstance(value, dict):
+        return MappingProxyType({key: _freeze(item) for key, item in value.items()})
+    if isinstance(value, list):
+        return tuple(_freeze(item) for item in value)
+    return value
+
+
+def _thaw(value):
+    if isinstance(value, MappingProxyType):
+        return {key: _thaw(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return [_thaw(item) for item in value]
+    return deepcopy(value)
+
+
+@dataclass(frozen=True, slots=True, init=False)
 class ManeuverDefinition:
-    """Validated JSON-compatible maneuver definition with immutable boundary copy."""
-    _data: dict
+    """Validated definition held in a recursively immutable representation."""
+    __data: object
+
+    def __init__(self, data):
+        object.__setattr__(self, '_ManeuverDefinition__data', _freeze(data))
+
+    @property
+    def _data(self):
+        """Read-only compatibility view; internal storage cannot be replaced."""
+        return self.__data
 
     @classmethod
     def from_dict(cls, payload: dict) -> "ManeuverDefinition":
@@ -40,5 +66,4 @@ class ManeuverDefinition:
         return cls(validate_definition(payload))
 
     def to_dict(self) -> dict:
-        from copy import deepcopy
-        return deepcopy(self._data)
+        return _thaw(self.__data)

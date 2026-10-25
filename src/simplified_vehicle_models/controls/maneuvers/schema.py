@@ -40,6 +40,8 @@ _ALLOWED = {
  'limits': {'max_swa_rad','max_swa_rate_rad_s','max_speed_mps','max_distance_m'},
  'termination': {'duration_s','speed_mps','distance_m','travel_limit_s'},
  'calibration': {'id','identifier','source','revision','units','operating_envelope','expires','expires_at','artifact','kind'}, 'csv': {'mapping','interpolation','time_unit','swa_unit','accelerator_unit','brake_unit','endpoint','sha256','source'},
+ 'calibration.operating_envelope': {'min_speed_mps','max_speed_mps','max_swa_rad','max_swa_rate_rad_s','max_accelerator','max_brake'},
+ 'csv.mapping': {'time','swa','accelerator','brake'},
 }
 
 def _finite_numbers(value, path=''):
@@ -57,6 +59,37 @@ def _keys(obj, allowed, path):
     unknown = set(obj) - allowed
     if unknown: raise ValueError(f'unknown key(s) in {path}: {sorted(unknown)}')
 
+
+_NESTED_OBJECTS = {
+    'calibration.operating_envelope': _ALLOWED['calibration.operating_envelope'],
+    'csv.mapping': _ALLOWED['csv.mapping'],
+}
+
+def _validate_objects(value, path=''):
+    """Validate each object against its owning schema; nested objects are explicit."""
+    if not isinstance(value, dict):
+        return
+    allowed = _ALLOWED.get(path)
+    if allowed is None:
+        allowed = _NESTED_OBJECTS.get(path)
+    if allowed is None:
+        raise ValueError(f'unexpected nested object at {path or "definition"}')
+    _keys(value, allowed, path)
+    for key, child in value.items():
+        child_path = f'{path}.{key}' if path else key
+        if child_path in _NESTED_OBJECTS and not isinstance(child, dict):
+            raise ValueError(f'{child_path} must be an object')
+        if isinstance(child, dict):
+            _validate_objects(child, child_path)
+        elif isinstance(child, list):
+            for index, item in enumerate(child):
+                if isinstance(item, (dict, list)):
+                    raise ValueError(f'unexpected nested structure at {child_path}[{index}]')
+    if path == 'csv.mapping':
+        for key, column in value.items():
+            if not isinstance(column, str) or not column:
+                raise ValueError(f'{path}.{key} must be a nonempty column name string')
+
 def validate_definition(payload):
     if not isinstance(payload, dict): raise ValueError('definition must be an object')
     _keys(payload, _TOP, 'definition')
@@ -67,23 +100,30 @@ def validate_definition(payload):
     if not isinstance(data['name'], str) or not data['name'].strip(): raise ValueError('name must be nonempty')
     if data['preset'] not in _PRESETS: raise ValueError('unsupported preset')
     if data['backend'] not in ('simulation','fake','physical'): raise ValueError('unsupported backend')
-    for key, allowed in _ALLOWED.items():
-        value=data[key]
+    for key in _TOP - {'schema', 'name', 'preset', 'backend'}:
+        value = data[key]
         if value is None:
-            if key not in ('calibration','csv'): raise ValueError(f'{key} cannot be null')
-        elif allowed is not None: _keys(value, allowed, key)
-    if data['csv'] is not None and isinstance(data['csv'].get('mapping'), dict):
-        _keys(data['csv']['mapping'], {'time','swa','accelerator','brake'}, 'csv.mapping')
+            if key not in ('calibration', 'csv'):
+                raise ValueError(f'{key} cannot be null')
+        else:
+            _keys(value, _ALLOWED[key], key)
+            _validate_objects(value, key)
     if data['calibration'] is not None and not isinstance(data['calibration'], dict):
         raise ValueError('calibration must be an object or null')
     if data['csv'] is not None and not isinstance(data['csv'], dict):
         raise ValueError('csv must be an object or null')
+    positive_time_keys = {'duration_s','controller_tick_s','rise_s','ramp_s','hold_s','release_s','settle_s','travel_limit_s'}
+    nonnegative_time_keys = {'lead_in_s','recovery_s','derivative_tau_s'}
     for section in ('initial','clock','steering','longitudinal','profile','limits','termination'):
-        for key,value in data[section].items():
-            if isinstance(value,bool): raise ValueError(f'{section}.{key} must not be boolean')
-            if isinstance(value,(int,float)):
-                if key.endswith('_s') and key in ('duration_s','controller_tick_s','rise_s','ramp_s','hold_s','release_s','settle_s','travel_limit_s') and value <= 0: raise ValueError(f'{section}.{key} must be positive')
-                if key in ('lead_in_s','recovery_s') and value < 0: raise ValueError(f'{section}.{key} must be nonnegative')
+        for key, value in data[section].items():
+            timing = key in positive_time_keys | nonnegative_time_keys or key == 'sweep_rate_mps2'
+            if timing:
+                if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+                    raise ValueError(f'{section}.{key} must be a finite number')
+                if key in positive_time_keys or key == 'sweep_rate_mps2':
+                    if value <= 0: raise ValueError(f'{section}.{key} must be positive')
+                elif key in nonnegative_time_keys:
+                    if value < 0: raise ValueError(f'{section}.{key} must be nonnegative')
     if data['clock'].get('controller_tick_s',0) <= 0: raise ValueError('controller_tick_s must be positive')
     direction=data['steering'].get('direction',1)
     if direction not in (-1,1): raise ValueError('direction must be -1 or +1')

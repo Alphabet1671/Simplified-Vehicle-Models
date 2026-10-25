@@ -54,6 +54,9 @@ class DefinitionTests(unittest.TestCase):
             self.assertEqual(ManeuverDefinition.from_dict(definition.to_dict()), definition)
             payload['vehicle']['model'] = 'changed'
             self.assertEqual(definition.to_dict()['vehicle']['model'], 'planar-7dof')
+            with self.assertRaises((AttributeError, TypeError)):
+                definition._data = {'schema': 'corrupted'}
+            self.assertEqual(definition.to_dict()['schema'], 'maneuver-v1')
 
     def test_strict_keys_types_and_modes(self):
         bad = fixture(); bad['surprise'] = 1
@@ -64,10 +67,29 @@ class DefinitionTests(unittest.TestCase):
         with self.assertRaises(ValueError): ManeuverDefinition.from_dict(bad)
         bad = fixture(); bad['calibration'] = ['unexpected']
         with self.assertRaises(ValueError): ManeuverDefinition.from_dict(bad)
+        bad = fixture(); bad['calibration'] = {'operating_envelope': {'unexpected': {'deep': 1}}}
+        with self.assertRaises(ValueError): ManeuverDefinition.from_dict(bad)
+        bad = fixture(); bad['calibration'] = {'operating_envelope': ['not', 'an', 'object']}
+        with self.assertRaises(ValueError): ManeuverDefinition.from_dict(bad)
+        bad = fixture('csv_playback'); bad['csv'] = {'mapping': ['invalid']}; bad['steering']['mode'] = bad['longitudinal']['mode'] = 'csv'
+        with self.assertRaises(ValueError): ManeuverDefinition.from_dict(bad)
+        valid = fixture('csv_playback'); valid['csv'] = {'mapping': {'time': 't_sec', 'swa': 'steer_col', 'accelerator': 'gas_col', 'brake': 'brake_col'}}
+        valid['steering']['mode'] = valid['longitudinal']['mode'] = 'csv'
+        self.assertEqual(ManeuverDefinition.from_dict(valid).to_dict()['csv']['mapping']['swa'], 'steer_col')
+        bad = fixture(); bad['vehicle']['components'] = {'engine': {'unrecognized': True}}
+        with self.assertRaises(ValueError): ManeuverDefinition.from_dict(bad)
+        bad = fixture('csv_playback'); bad['csv'] = {'mapping': {'swa': {'column': 'x'}}, 'interpolation': 'hold'}
+        bad['steering']['mode'] = bad['longitudinal']['mode'] = 'csv'
+        with self.assertRaises(ValueError): ManeuverDefinition.from_dict(bad)
         bad = fixture(); bad['steering']['mode'] = 'peak_ay'; bad['steering']['amplitude_mps2'] = 4.; bad['steering']['amplitude_rad'] = None
         with self.assertRaises(CapabilityError): ManeuverDefinition.from_dict(bad)
         bad = fixture(); bad['profile']['hold_s'] = True
         with self.assertRaises(ValueError): ManeuverDefinition.from_dict(bad)
+        for section, key, value in [('longitudinal', 'derivative_tau_s', -0.1), ('clock', 'controller_tick_s', 0), ('profile', 'recovery_s', -1), ('profile', 'sweep_rate_mps2', 0), ('profile', 'duration_s', float('nan'))]:
+            bad = fixture(); bad[section][key] = value
+            with self.subTest(section=section, key=key), self.assertRaises(ValueError): ManeuverDefinition.from_dict(bad)
+        allowed_physical = fixture(); allowed_physical['limits']['max_swa_rate_rad_s'] = 3.0
+        self.assertIsNotNone(ManeuverDefinition.from_dict(allowed_physical))
 
     def test_timing_cycles_direction_and_exclusive_modes(self):
         for key, value in [('lead_in_s', -1), ('rise_s', 0), ('duration_s', float('inf'))]:

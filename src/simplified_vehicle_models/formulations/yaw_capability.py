@@ -54,10 +54,16 @@ class TvLimits:
     max_delta_torque: float
     regen_vectoring_allowed: bool = False
     brake_vectoring_allowed: bool = False
+    # Maximum left/right hydraulic wheel-force difference, in N. Independent
+    # of motor torque authority; zero means no hydraulic brake vectoring.
+    max_hydraulic_force_difference: float = 0.0
 
     def __post_init__(self):
         if not math.isfinite(self.max_delta_torque) or self.max_delta_torque < 0:
             raise ValueError("max_delta_torque must be finite and nonnegative")
+        if (not math.isfinite(self.max_hydraulic_force_difference)
+                or self.max_hydraulic_force_difference < 0):
+            raise ValueError("max_hydraulic_force_difference must be finite and nonnegative")
         if not isinstance(self.regen_vectoring_allowed, bool) or not isinstance(self.brake_vectoring_allowed, bool):
             raise ValueError("vectoring flags must be bool")
 
@@ -188,6 +194,7 @@ def _cell_lp(vehicle, speed, ax, ay, tv_limits, direction, *, ideal=False):
         row=np.zeros(n); row[8:10]=1-vehicle.brake_bias; row[10:12]=-vehicle.brake_bias
         aeq.append(row); beq.append(0.)
     # Each axle's hydraulic braking is left/right equal absent hydraulic TV.
+    # When enabled, the dedicated force-difference cap below is applied.
     if not (tv_limits is not None and tv_limits.brake_vectoring_allowed and not ideal):
         for left,right in ((0,1),(2,3)):
             row=np.zeros(n); row[8+left]=1; row[8+right]=-1; aeq.append(row); beq.append(0.)
@@ -197,6 +204,8 @@ def _cell_lp(vehicle, speed, ax, ay, tv_limits, direction, *, ideal=False):
     # is independently enabled and cannot be authorized by regen_vectoring.
     torque = (tv_limits.max_delta_torque / max(vehicle.tire.effective_radius, 1e-12)
               if tv_limits is not None else 0.0)
+    hydraulic_difference = (tv_limits.max_hydraulic_force_difference
+                            if tv_limits is not None else 0.0)
     for left,right in ((0,1),(2,3)):
         if tv_limits is None:
             row=np.zeros(n); row[left]=1; row[right]=-1; aeq.append(row); beq.append(0.)
@@ -207,7 +216,7 @@ def _cell_lp(vehicle, speed, ax, ay, tv_limits, direction, *, ideal=False):
             row=np.zeros(n); row[8+left]=1; row[8+right]=-1; aeq.append(row); beq.append(0.)
         elif not ideal:
             row=np.zeros(n); row[8+left]=1; row[8+right]=-1
-            aub.extend((row,-row)); bub.extend((torque,torque))
+            aub.extend((row,-row)); bub.extend((hydraulic_difference,hydraulic_difference))
     # Moment convention: net Fx = drive - regen - hydraulic. Lateral force
     # moment uses the two axle-force variables and SAE x-axis lever arms.
     front_arm = vehicle.wheelbase * (1 - vehicle.front_mass_fraction)

@@ -37,6 +37,8 @@ class YawMapTest(unittest.TestCase):
     def test_tv_limit_validation(self):
         with self.assertRaises(ValueError): TvLimits(float("nan"))
         with self.assertRaises(ValueError): TvLimits(-1.)
+        with self.assertRaises(ValueError): TvLimits(0., max_hydraulic_force_difference=float("inf"))
+        with self.assertRaises(ValueError): TvLimits(0., max_hydraulic_force_difference=-1.)
 
     def test_builder_variants_and_ideal_upper_bound(self):
         model=compile_formulation(str(ROOT / "models/formulations/iem24_murphy_real_planar_7dof.xml")).model
@@ -56,15 +58,32 @@ class YawMapTest(unittest.TestCase):
             self.assertTrue(np.all(ideal.yaw_moment_into_turn[common] + 1e-5 >= no_tv.yaw_moment_into_turn[common]))
         self.assertFalse(physical.yaw_moment_into_turn.flags.writeable)
 
-    def test_braking_vectoring_flag_changes_yaw_authority(self):
-        vehicle=point_mass_view_of_planar(compile_formulation(str(ROOT / "models/formulations/iem24_murphy_real_planar_7dof.xml")).model)
-        grid=YawCapabilityGrid([5.],[-3.], [0.])
-        inertia=compile_formulation(str(ROOT / "models/formulations/iem24_murphy_real_planar_7dof.xml")).model.yaw_inertia
-        locked=build_physical_yaw_map(vehicle,grid,TvLimits(100.,False,False),yaw_inertia=inertia)
-        vector=build_physical_yaw_map(vehicle,grid,TvLimits(100.,False,True),yaw_inertia=inertia)
-        regen=build_physical_yaw_map(vehicle,grid,TvLimits(100.,True,False),yaw_inertia=inertia)
-        np.testing.assert_allclose(regen.yaw_moment_into_turn,locked.yaw_moment_into_turn)
-        self.assertGreaterEqual(int(vector.feasible_mask.sum()), int(locked.feasible_mask.sum()))
+    def test_hydraulic_vectoring_uses_only_explicit_force_limit(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from simplified_vehicle_models.formulations import yaw_capability
+        model=compile_formulation(str(ROOT / "models/formulations/iem24_murphy_real_planar_7dof.xml")).model
+        vehicle=point_mass_view_of_planar(model)
+        observed=[]
+        def fake_linprog(*args, **kwargs):
+            observed.append((kwargs["A_ub"].copy(), kwargs["b_ub"].copy()))
+            return SimpleNamespace(success=True, fun=0.)
+        with patch.object(yaw_capability, "_require_linprog", return_value=fake_linprog):
+            for force_limit in (0., 500.):
+                yaw_capability._cell_lp(vehicle, 5., -3., 0.,
+                    TvLimits(100., False, True,
+                             max_hydraulic_force_difference=force_limit), 1.)
+        # Difference rows contain one +1 and one -1 in the hydraulic [8:12]
+        # variables. The motor torque cap is identical in both LPs; the
+        # hydraulic difference allowance changes from zero to 500 N.
+        def limits(pair):
+            a,b=pair
+            return [float(bound) for row,bound in zip(a,b)
+                    if np.count_nonzero(row[8:12]) == 2
+                    and np.count_nonzero(row[:8]) == 0
+                    and np.count_nonzero(row[12:]) == 0]
+        self.assertEqual(limits(observed[0]), [0., 0., 0., 0.])
+        self.assertEqual(limits(observed[1]), [500., 500., 500., 500.])
 
     def test_legacy_drivetrain_is_rejected(self):
         from dataclasses import replace

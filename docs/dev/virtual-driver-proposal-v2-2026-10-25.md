@@ -71,7 +71,7 @@ flowchart LR
 - `feasible_mask`, `yaw_inertia`;
 - `source_kind`, `source_identity`. Kinds: `physical_no_tv_v1`, `physical_tv_v1`, and later `fmu_closed_loop_v1`.
 
-**Physical source:** `build_physical_yaw_map(vehicle, grid, tv_limits) -> YawCapabilityMap`. Setting `tv_limits=None` gives no-TV, and `TvLimits(max_delta_torque, regen_vectoring_allowed, brake_vectoring_allowed)` gives physical TV. It solves one small LP per grid cell and direction (SciPy HiGHS). For a fixed (v, a_x, a_y):
+**Physical source:** `build_physical_yaw_map(vehicle, grid, tv_limits) -> YawCapabilityMap`. Setting `tv_limits=None` gives no-TV, and `TvLimits(max_delta_torque, regen_vectoring_allowed, brake_vectoring_allowed, max_hydraulic_force_difference=0.0)` gives physical TV. The hydraulic parameter is a finite nonnegative left/right wheel-force difference in N, independent of motor torque. It solves one small LP per grid cell and direction (SciPy HiGHS). For a fixed (v, a_x, a_y):
 
 - **Variables:** the four longitudinal forces, plus front and rear axle lateral forces. Each axle's lateral force is shared between left and right in proportion to load, like the existing point-mass allocation. The LP therefore does not get a free left/right lateral split it couldn't realize.
 - **Loads:** from the existing `normal_loads(vehicle, v, a_x, a_y)`.
@@ -83,7 +83,7 @@ flowchart LR
   - brake bias.
 - **Configuration constraints:**
   - **No-TV:** equal left/right drive torque, and the fixed brake bias split equally left/right.
-  - **Physical TV:** left/right torque free within `max_delta_torque`, `regen_vectoring_allowed` and `brake_vectoring_allowed`. These are explicit, versioned parameters, set to represent the *algorithm's* authority. The ideal unconstrained TV map is the upper bound, kept for sanity checks.
+  - **Physical TV:** left/right motor drive force difference is bounded by `max_delta_torque / effective_tire_radius`; `regen_vectoring_allowed` controls regen vectoring; hydraulic left/right wheel-force difference is independently bounded by `max_hydraulic_force_difference` (N) only when `brake_vectoring_allowed`. The hydraulic limit defaults to 0.0, so enabling brake vectoring alone grants no differential authority. These are explicit parameters, set to represent the *algorithm's* authority. The ideal unconstrained TV map is the upper bound, kept for sanity checks.
 - **Objective:** maximize, then minimize, the yaw moment M_z = Σ(x_i·F_y,i − y_i·F_x,i).
 - **Assumption:** steering and sideslip can realize any front/rear lateral force split inside the friction limits. This is slightly optimistic, and equally so for every configuration.
 

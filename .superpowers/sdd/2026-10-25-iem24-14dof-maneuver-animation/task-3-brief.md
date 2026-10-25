@@ -35,4 +35,3 @@ Expected: PASS.
 - [x] **Step 6: Commit**
 
 Completed across initial implementation and repair commits; round 2 repair recorded in task-3-report.md.
-

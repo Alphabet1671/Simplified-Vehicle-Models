@@ -62,13 +62,15 @@ class ComparisonResult:
     strategies: Any
     diagnostic_best: str | None
     reason: str | None
+    diagnostic_candidates: Any = ()
     accepted: bool = False
     physical_feasibility_certified: bool = False
     comparison_is_not_qualification: bool = True
 
     def to_dict(self) -> dict[str, Any]:
         return {"status": self.status.value, "strategies": _normal(self.strategies),
-                "diagnostic_best": self.diagnostic_best, "reason": self.reason,
+                "diagnostic_best": self.diagnostic_best,
+                "diagnostic_candidates": _normal(self.diagnostic_candidates), "reason": self.reason,
                 "accepted": False, "physical_feasibility_certified": False,
                 "comparison_is_not_qualification": True}
 
@@ -100,6 +102,23 @@ def _canonical(value: Any) -> str:
     return json.dumps(_normal(value), sort_keys=True, allow_nan=False, separators=(",", ":"))
 
 
+def _reject_numeric_booleans(value: Any, label: str) -> None:
+    """Reject bool where chart/reserve data uses a numeric value slot.
+
+    The identity schema intentionally leaves chart/reserve key names open; any
+    boolean nested in that field is ambiguous with a numeric setting and fails
+    closed, without imposing types or tolerances on other values.
+    """
+    if isinstance(value, bool):
+        raise ValueError(f"{label} must not contain boolean numeric values")
+    if isinstance(value, dict):
+        for nested in value.values():
+            _reject_numeric_booleans(nested, label)
+    elif isinstance(value, (list, tuple)):
+        for nested in value:
+            _reject_numeric_booleans(nested, label)
+
+
 def _station_list(value: Any, label: str) -> list[Any]:
     if not isinstance(value, (list, tuple)):
         raise ValueError(f"{label} must be a station sequence")
@@ -123,9 +142,11 @@ def _attempt_dict(a: Attempt) -> dict[str, Any]:
 def compare_strategies(records: Any) -> ComparisonResult:
     """Normalize exactly uniform/localized/exchange records without ranking.
 
-    Comparable records may identify the first explicitly independently
-    validated attempt as ``diagnostic_best``. No solver or local status grants
-    that state. Inputs are rejected (never coerced) when malformed.
+    Exactly one strategy with explicit independent validation is exposed as
+    ``diagnostic_best``. Multiple qualifying strategies remain ambiguous and
+    are listed as ``diagnostic_candidates`` in input-record order. No solver or
+    local status grants feasibility. Inputs are rejected (never coerced) when
+    malformed.
     """
     if not isinstance(records, (list, tuple)) or len(records) != 3:
         raise ValueError("exactly three strategy records are required")
@@ -140,6 +161,10 @@ def compare_strategies(records: Any) -> ComparisonResult:
     for r in records:
         if not isinstance(r.identity, dict) or set(r.identity) != set(required):
             raise ValueError("identity must contain exactly the required shared fields")
+        cap = r.identity["parent_wall_cap_s"]
+        if isinstance(cap, bool) or not isinstance(cap, (int, float)) or not math.isfinite(cap) or cap <= 0:
+            raise ValueError("parent_wall_cap_s must be finite positive non-boolean numeric data")
+        _reject_numeric_booleans(r.identity["chart_reserve"], "chart_reserve")
         _canonical(r.identity)
         if not isinstance(r.attempts, (list, tuple)):
             raise ValueError("attempts must be an ordered sequence")
@@ -162,23 +187,28 @@ def compare_strategies(records: Any) -> ComparisonResult:
     for field in required:
         values = [_canonical(normalized[name]["identity"][field]) for name in sorted(expected)]
         if values[1:] != values[:-1]:
-            return ComparisonResult(ComparisonStatus.INCOMPARABLE, normalized, None, f"identity mismatch: {field}")
+            return ComparisonResult(ComparisonStatus.INCOMPARABLE, normalized, None, f"identity mismatch: {field}", [])
     feasible = []
-    for name in ("uniform", "localized", "exchange"):
-        for index, attempt in enumerate(records[names.index(name)].attempts):
+    for record in records:
+        for attempt in record.attempts:
             iv = attempt.independent_validation
             if attempt.terminal is Terminal.INDEPENDENTLY_FEASIBLE and iv is not None and iv.status is Terminal.INDEPENDENTLY_FEASIBLE:
-                feasible.append((name, index))
+                feasible.append(record.name)
                 break
-    if feasible:
-        best = feasible[0][0]
+    candidates = feasible
+    if len(candidates) == 1:
+        best = candidates[0]
         status = ComparisonStatus.COMPARABLE
         reason = None
+    elif len(candidates) > 1:
+        best = None
+        status = ComparisonStatus.COMPARABLE
+        reason = "multiple strategies carry explicit independently_feasible validation evidence; no ranking applied"
     else:
         best = None
         status = ComparisonStatus.NO_INDEPENDENTLY_FEASIBLE
         reason = "no attempt carries explicit independently_feasible validation evidence"
-    return ComparisonResult(status, normalized, best, reason)
+    return ComparisonResult(status, normalized, best, reason, candidates)
 
 
 __all__ = ["Attempt", "ComparisonResult", "ComparisonStatus", "IndependentValidation", "StrategyRecord", "Terminal", "compare_strategies"]

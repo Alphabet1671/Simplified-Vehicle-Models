@@ -58,6 +58,25 @@ class ComparisonTests(unittest.TestCase):
         self.assertFalse(r.physical_feasibility_certified)
         self.assertTrue(r.comparison_is_not_qualification)
 
+    def test_identity_rejects_boolean_numeric_values_by_field_schema(self):
+        for field, value in (("parent_wall_cap_s", True),
+                             ("chart_reserve", {"chart": "chart-a", "reserve": True})):
+            altered = dict(IDENTITY)
+            altered[field] = value
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                compare_strategies(records(identities={"uniform": altered}))
+
+    def test_multiple_qualifying_strategies_preserve_ambiguity(self):
+        iv = IndependentValidation(Terminal.INDEPENDENTLY_FEASIBLE, {"validator": "independent-v1"})
+        result = compare_strategies([
+            StrategyRecord("exchange", dict(IDENTITY), (attempt(Terminal.INDEPENDENTLY_FEASIBLE, iv),)),
+            StrategyRecord("localized", dict(IDENTITY), ()),
+            StrategyRecord("uniform", dict(IDENTITY), (attempt(Terminal.INDEPENDENTLY_FEASIBLE, iv),)),
+        ])
+        self.assertIsNone(result.diagnostic_best)
+        self.assertEqual(result.diagnostic_candidates, ["exchange", "uniform"])
+        self.assertEqual(json.loads(result.to_json())["diagnostic_candidates"], ["exchange", "uniform"])
+
     def test_preserves_attempt_order_mesh_sites_seed_and_stage(self):
         a = attempt(seed_ancestry=["s0", "s1"], stage="coarse")
         b = attempt(Terminal.FAILED, stage="refine", elapsed_s=4)

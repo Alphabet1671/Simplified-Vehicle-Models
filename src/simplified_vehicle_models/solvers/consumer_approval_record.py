@@ -115,11 +115,11 @@ def verify_consumer_approval_record(record: Any, *, policy: AccuracyPolicy = NUM
         # each independently valid JSON payload for traceability.
         try:
             normalized_record = _normalize(record)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, RecursionError):
             normalized_record = None
         try:
             normalized_evidence = _normalize(required_evidence)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, RecursionError):
             normalized_evidence = None
         return _result(ApprovalStatus.UNAPPROVED_POLICY, False,
                        normalized_record, normalized_evidence)

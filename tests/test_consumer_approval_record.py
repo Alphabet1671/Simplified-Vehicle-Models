@@ -56,6 +56,34 @@ class ConsumerApprovalRecordTests(unittest.TestCase):
         self.assertIsNone(result.record)
         self.assertEqual(result.evidence["grid"]["trace"], ("grid",))
 
+    def test_proposed_policy_handles_cyclic_and_deep_payloads_independently(self):
+        cyclic_record = []
+        cyclic_record.append(cyclic_record)
+        valid_evidence = {"grid": {"passed": True, "trace": ["grid"]}}
+        result = verify_consumer_approval_record(cyclic_record, policy=NUMERICAL_POLICY_V1,
+            executed_identity={}, required_evidence=valid_evidence)
+        self.assertEqual(result.status, ApprovalStatus.UNAPPROVED_POLICY)
+        self.assertIsNone(result.record)
+        self.assertEqual(result.evidence["grid"]["trace"], ("grid",))
+
+        cyclic_evidence = []
+        cyclic_evidence.append(cyclic_evidence)
+        valid_record = {"payload": ["record"]}
+        result = verify_consumer_approval_record(valid_record, policy=NUMERICAL_POLICY_V1,
+            executed_identity={}, required_evidence=cyclic_evidence)
+        self.assertEqual(result.status, ApprovalStatus.UNAPPROVED_POLICY)
+        self.assertEqual(result.record["payload"], ("record",))
+        self.assertIsNone(result.evidence)
+
+        deep_record = "leaf"
+        for _ in range(1200):
+            deep_record = [deep_record]
+        result = verify_consumer_approval_record(deep_record, policy=NUMERICAL_POLICY_V1,
+            executed_identity={}, required_evidence=valid_evidence)
+        self.assertEqual(result.status, ApprovalStatus.UNAPPROVED_POLICY)
+        self.assertIsNone(result.record)
+        self.assertEqual(result.evidence["grid"]["trace"], ("grid",))
+
     def test_proposed_policy_precedes_malformed_inputs(self):
         for record, identity, evidence in (
             ({"bad": float("nan")}, {}, {}),

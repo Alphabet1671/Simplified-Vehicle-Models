@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import math
 from typing import Literal, Mapping
+from types import MappingProxyType
 
 import numpy as np
 
@@ -76,6 +77,19 @@ def curvature_rate_from_samples(distance, curvature, *, is_closed=False) -> np.n
     return np.gradient(y, x, edge_order=2)
 
 
+class YawProfileTransitionError(ValueError):
+    """Legacy transition failure with immutable, compact numerical evidence."""
+
+    def __init__(self, message: str, diagnostics: Mapping[str, object]):
+        super().__init__(message)
+        object.__setattr__(self, "diagnostics", MappingProxyType(dict(diagnostics)))
+
+    def __setattr__(self, name, value):
+        if hasattr(self, name):
+            raise AttributeError(f"{name} is immutable")
+        object.__setattr__(self, name, value)
+
+
 class _MapInterpolator:
     """Strict trilinear map query; infeasible support is never interpolated through."""
     def __init__(self, capability: YawCapabilityMap):
@@ -118,6 +132,45 @@ class _MapInterpolator:
                     out += w * self.fields[1][i, j, k]
         return into, out
 
+    def query_evidence(self, speed, ax, ay):
+        """Return query domain, positive-weight support and masked-corner evidence."""
+        q = tuple(float(v) for v in (speed, ax, ay))
+        brackets = []
+        for axis, value in zip(self.axes, q):
+            if not math.isfinite(value) or value < axis[0] - 1e-12 or value > axis[-1] + 1e-12:
+                return {"query": q, "in_domain": False, "reason": "out_of_domain",
+                        "axes_bounds": tuple((float(a[0]), float(a[-1])) for a in self.axes),
+                        "support": (), "masked_corners": ()}
+            value = min(float(axis[-1]), max(float(axis[0]), value))
+            hi = int(np.searchsorted(axis, value, side="right"))
+            if hi == 0:
+                brackets.append(((0, 1.0),))
+            elif hi >= axis.size:
+                brackets.append(((axis.size - 1, 1.0),))
+            else:
+                lo = hi - 1
+                f = (value - axis[lo]) / (axis[hi] - axis[lo])
+                brackets.append(((lo, 1. - f), (hi, f)))
+        support, masked = [], []
+        into = out = 0.0
+        for i, wi in brackets[0]:
+            for j, wj in brackets[1]:
+                for k, wk in brackets[2]:
+                    weight = wi * wj * wk
+                    if weight <= 1e-14:
+                        continue
+                    item = (int(i), int(j), int(k), float(weight), bool(self.map.feasible_mask[i, j, k]))
+                    support.append(item)
+                    if not item[-1]:
+                        masked.append(item)
+                    else:
+                        into += weight * self.fields[0][i, j, k]
+                        out += weight * self.fields[1][i, j, k]
+        return {"query": q, "in_domain": True,
+                "reason": "masked_support" if masked else "supported",
+                "support": tuple(support), "masked_corners": tuple(masked),
+                "moments": None if masked else (float(into), float(out))}
+
     def yaw_feasible(self, speed, ax, curvature, curvature_rate, *, acceleration=None):
         ay = speed * speed * curvature if acceleration is None else float(acceleration)
         moments = self.query(speed, ax, ay)
@@ -159,6 +212,31 @@ def _max_speed_cap(interp, curvature, curvature_rate, *, maximum_speed, speed_sa
             if interp.yaw_feasible(float(v), ax, curvature, curvature_rate):
                 return float(v)
     return None
+
+
+def _transition_failure(interp, path, index, fixed_speed, ds, *, direction, candidates):
+    k = .5 * (path.curvature[index] + path.curvature[index + 1])
+    kp = .5 * (path.curvature_rate[index] + path.curvature_rate[index + 1])
+    evidence = []
+    for endpoint in candidates:
+        v0, v1 = ((fixed_speed, endpoint) if direction == "forward" else (endpoint, fixed_speed))
+        vm = math.sqrt(max(0., .5 * (v0*v0 + v1*v1)))
+        ax = (v1*v1 - v0*v0) / (2. * ds)
+        ay = vm*vm*k
+        query = interp.query_evidence(vm, ax, ay)
+        item = {"endpoint_speed": float(endpoint), "required_ax": float(ax), **query}
+        if query.get("moments") is not None:
+            into, out = query["moments"]
+            sign = math.copysign(1., k if abs(k) > 1e-12 else (kp if abs(kp) > 1e-12 else 1.))
+            demand = sign * interp.map.yaw_inertia * (ax*k + vm*vm*kp)
+            item.update(yaw_demand=float(demand), into_margin=float(into-demand),
+                        out_margin=float(out+demand))
+        evidence.append(MappingProxyType(item))
+    diag = {"direction": direction, "segment_index": int(index),
+            "fixed_speed": float(fixed_speed), "candidate_endpoint_speeds": tuple(map(float, candidates)),
+            "ds": float(ds), "midpoint_curvature": float(k),
+            "midpoint_curvature_rate": float(kp), "candidates": tuple(evidence)}
+    return YawProfileTransitionError(f"no {direction}-feasible transition on segment {index}", diag)
 
 
 def _segment_acceleration(interp, path, v0, v1, index, ds):
@@ -249,11 +327,12 @@ def yaw_aware_profile(path: YawPath, capability: YawCapabilityMap, *,
             else:
                 trial = upper
             found = None
-            for value in _transition_candidates(interp, trial, speed[i], float(ds), forward=True):
+            candidates = _transition_candidates(interp, trial, speed[i], float(ds), forward=True)
+            for value in candidates:
                 if _segment_acceleration(interp, path, float(speed[i]), float(value), i, float(ds)):
                     found = float(value); break
             if found is None:
-                raise ValueError(f"no forward-feasible transition on segment {i}")
+                raise _transition_failure(interp, path, i, float(speed[i]), float(ds), direction="forward", candidates=candidates)
             speed[i + 1] = min(speed[i + 1], found)
         if boundary == "flying":
             speed[0] = speed[-1] = min(speed[0], speed[-1])
@@ -264,11 +343,12 @@ def yaw_aware_profile(path: YawPath, capability: YawCapabilityMap, *,
             ds = float(path.distance[i + 1] - path.distance[i])
             upper = min(speed[i], caps[i])
             found = None
-            for value in _transition_candidates(interp, upper, speed[i + 1], ds, forward=False):
+            candidates = _transition_candidates(interp, upper, speed[i + 1], ds, forward=False)
+            for value in candidates:
                 if _segment_acceleration(interp, path, float(value), float(speed[i + 1]), i, ds):
                     found = float(value); break
             if found is None:
-                raise ValueError(f"no backward-feasible transition on segment {i}")
+                raise _transition_failure(interp, path, i, float(speed[i + 1]), ds, direction="backward", candidates=candidates)
             speed[i] = min(speed[i], found)
         if boundary == "flying":
             speed[0] = speed[-1] = min(speed[0], speed[-1])

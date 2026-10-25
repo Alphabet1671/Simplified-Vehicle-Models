@@ -5,7 +5,7 @@ import numpy as np
 
 from simplified_vehicle_models.formulations.yaw_capability import YawCapabilityMap
 from simplified_vehicle_models.solvers.yaw_aware_profile import (
-    YawPath, curvature_rate_from_samples, to_speed_plan, yaw_aware_profile,
+    YawPath, YawProfileTransitionError, curvature_rate_from_samples, to_speed_plan, yaw_aware_profile,
 )
 
 
@@ -39,6 +39,30 @@ class YawPathTests(unittest.TestCase):
 
 
 class YawProfileTests(unittest.TestCase):
+    def test_transition_failure_has_immutable_numerical_diagnostics(self):
+        distance = np.array([0., 1., 2.])
+        path = YawPath(distance, np.zeros(3), np.zeros(3), False)
+        mask = np.zeros((61, 3, 3), dtype=bool)
+        mask[:, 1, :] = True  # station caps exist only on the exact zero-ax slice
+        cap = yaw_map(ax=(-1., 0., 1.), feasible=mask)
+        with self.assertRaises(YawProfileTransitionError) as caught:
+            yaw_aware_profile(path, cap, boundary="standing", maximum_speed=10.)
+        error = caught.exception
+        diag = error.diagnostics
+        self.assertEqual(diag["direction"], "forward")
+        self.assertEqual(diag["segment_index"], 0)
+        self.assertEqual(diag["fixed_speed"], 0.)
+        self.assertGreater(len(diag["candidate_endpoint_speeds"]), 0)
+        self.assertEqual(diag["ds"], 1.)
+        self.assertEqual(diag["midpoint_curvature"], 0.)
+        self.assertEqual(diag["midpoint_curvature_rate"], 0.)
+        self.assertTrue(all("required_ax" in row and "reason" in row for row in diag["candidates"]))
+        self.assertTrue(any(row["reason"] == "masked_support" for row in diag["candidates"]))
+        with self.assertRaises(TypeError):
+            diag["direction"] = "backward"
+        with self.assertRaises(AttributeError):
+            error.diagnostics = {}
+
     def test_constant_radius_reduces_to_steady_cap_when_yaw_is_nonbinding(self):
         distance = np.linspace(0., 100., 101)
         k = np.full_like(distance, .02)

@@ -44,8 +44,42 @@ class TrackGeometryAuditTests(unittest.TestCase):
     def test_translation_rotation_invariance(self):
         a = audit_track_geometry(*self.circle())
         b = audit_track_geometry(*self.circle(transform=(.71,(120.,-80.))))
-        self.assertAlmostEqual(a["fit"]["metric"]["min_m_per_m"], b["fit"]["metric"]["min_m_per_m"], places=8)
-        self.assertAlmostEqual(a["source_vs_fit"]["xy"]["max_abs_m"], b["source_vs_fit"]["xy"]["max_abs_m"], places=7)
+        for path, key in (("fit.metric", "min_m_per_m"), ("fit.metric", "max_m_per_m"),
+                          ("fit.curvature", "min_per_m"), ("fit.curvature", "max_per_m"),
+                          ("source_vs_fit.xy", "max_abs_m"), ("source_vs_fit.xy", "rms_m"),
+                          ("corridor", "narrowest_left_width_m"), ("corridor", "narrowest_right_width_m")):
+            av, bv = a, b
+            for part in path.split("."):
+                av, bv = av[part], bv[part]
+            self.assertAlmostEqual(av[key], bv[key], places=7)
+        self.assertEqual(a["crossings"]["count"], b["crossings"]["count"])
+        self.assertAlmostEqual(a["crossings"]["minimum_nonlocal_separation_m"]["minimum_m"],
+                               b["crossings"]["minimum_nonlocal_separation_m"]["minimum_m"], places=7)
+        # Absolute diagnostic coordinates (for example crossing north/east) are
+        # not scalar rigid-motion invariants and are intentionally not compared.
+
+    def test_ordered_coincident_source_nodes_are_diagnostic(self):
+        t=np.linspace(0,2*np.pi,33); x=12*np.sin(t); y=12*np.sin(t)*np.cos(t)
+        s=np.linspace(0,100,len(t)); dx,dy=np.gradient(x,s),np.gradient(y,s)
+        h=np.unwrap(np.arctan2(dy,dx)); ddx,ddy=np.gradient(dx,s),np.gradient(dy,s)
+        k=(dx*ddy-dy*ddx)/np.maximum(dx*dx+dy*dy,1e-12)**1.5
+        x[-1],y[-1],k[-1]=x[0],y[0],k[0]
+        c=PathCoordinates(s,x,y,h,k); tr=TrackProfile(s,np.diff(s),np.ones(len(s)),k,True,"coincident",path_coordinates=c)
+        result=audit_track_geometry(tr,ReferenceCurve(tr),None,sample_budget=33)
+        json.dumps(result,allow_nan=False)
+        self.assertEqual(result["claim"], "diagnostic_only")
+        self.assertEqual(result["crossings"]["route_order_policy"]["identity"], "source_station")
+        records=result["crossings"]["records"]
+        self.assertTrue(any(row["station_a_m"] != row["station_b_m"] for row in records))
+        self.assertNotIn("status", result)
+
+    def test_resampling_compares_route_facts_not_fit_invariance(self):
+        a=audit_track_geometry(*self.circle(count=7)); b=audit_track_geometry(*self.circle(count=17))
+        self.assertNotAlmostEqual(a["fit"]["metric"]["min_m_per_m"],b["fit"]["metric"]["min_m_per_m"],places=8)
+        self.assertAlmostEqual(a["corridor"]["narrowest_left_width_m"],b["corridor"]["narrowest_left_width_m"])
+        self.assertEqual(a["corridor"]["provenance"],b["corridor"]["provenance"])
+        self.assertEqual(a["crossings"]["count"],b["crossings"]["count"])
+        self.assertEqual(a["crossings"]["route_order_policy"],b["crossings"]["route_order_policy"])
 
     def test_nonuniform_parabola_analytic_curvature_and_metric(self):
         p=np.array([-2.,-1.1,-.4,0.,.15,.55,1.3,2.])

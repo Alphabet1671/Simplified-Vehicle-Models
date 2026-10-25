@@ -16,6 +16,16 @@
 - All `test_maneuver*.py`: 39 passed.
 - `git diff --check`: passed.
 
-## Notes
+## Fix round 2 — independent planar closure comparison
 
-Zero/small-angle comparison against existing planar evaluation was not added in this fix round; existing tests verify Cartesian heading pose rates and body acceleration identity. No existing forward-run semantics were changed.
+Added the Task 4-required zero/small-angle comparison in `tests/test_maneuver_planar.py`. For zero and 0.01 rad SWA, the test builds an equivalent `PlanarState`, derives road-wheel angles directly from calibration geometry via `steering_angles`, maps the zero pedal travels to physical forces, constructs the matching `DriverCommand`, and obtains wheel torques through `evaluate_forward_powertrain`. Those independently computed values feed `evaluate_planar_dynamics`; its body acceleration and wheel-rate components are compared to `ManeuverPlanarPlant.evaluate`. The reference does not use plant internals or `accepted_outputs`.
+
+The comparison is for zero pedal input. Its physical pedal maps yield zero force, matching zero throttle/brake at the forward closure; nonzero pedal-map/command equivalence is not asserted here. Cartesian world-pose rates and SWA-servo rate have no path-planar counterpart and remain excluded.
+
+## Verification
+
+- `PYTHONPATH=src:. python3 -m unittest discover -s tests -p 'test_maneuver_planar.py' -v` — PASS, 11 tests.
+- `PYTHONPATH=src:. python3 -m unittest discover -s tests -p 'test_planar_forward.py' -v` — PASS, 9 tests.
+- `git diff --check` — PASS.
+
+No production code was changed, and no existing forward-run semantics were changed.

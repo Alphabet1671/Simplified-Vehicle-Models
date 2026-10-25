@@ -11,29 +11,22 @@ from simplified_vehicle_models.controls.maneuvers.schema import CapabilityError,
 from simplified_vehicle_models.controls.maneuvers.types import ManeuverDefinition
 
 
-# Field ownership/compatibility is presentation-only: selecting a preset never
-# rewrites the user's steering or longitudinal mode. Values are dotted paths.
-_PRESET_POLICY = {
-    'step_steer': {'disabled': {'steering.target_heading_rad', 'steering.target_radius_m'},
-                   'allowed': {'steering.amplitude_rad', 'steering.amplitude_mps2'},
+# Preset annotations are guidance only; mode/schema validation controls fields.
+_PRESET_GUIDANCE = {
+    'step_steer': {'guidance': 'Steering waveform is typically used for SWA amplitude/profile.',
                    'owner': 'Steering waveform owns SWA amplitude/profile.'},
-    'ramp_steer': {'disabled': {'steering.target_heading_rad', 'steering.target_radius_m'},
-                   'allowed': {'steering.amplitude_rad', 'steering.amplitude_mps2'},
+    'ramp_steer': {'guidance': 'Steering waveform is typically used for SWA amplitude/profile.',
                    'owner': 'Steering waveform owns SWA amplitude/profile.'},
-    'sine_steer': {'disabled': {'steering.target_heading_rad', 'steering.target_radius_m'},
-                   'allowed': {'steering.amplitude_rad', 'steering.amplitude_mps2'},
+    'sine_steer': {'guidance': 'Steering waveform is typically used for SWA amplitude/profile.',
                    'owner': 'Steering waveform owns SWA amplitude/profile.'},
-    'straight_maintain': {'disabled': {'steering.amplitude_rad', 'steering.amplitude_mps2'},
-                          'allowed': {'steering.target_heading_rad'},
+    'straight_maintain': {'guidance': 'Straight path/heading or locked-SWA steering is typical.',
                           'owner': 'Straight path/heading or locked-SWA steering.'},
-    'straight_accel_brake': {'disabled': {'steering.amplitude_rad', 'steering.amplitude_mps2', 'longitudinal.accelerator'},
-                             'allowed': {'steering.target_heading_rad'},
+    'straight_accel_brake': {'guidance': 'Straight steering with profile-owned pedals is typical.',
                              'owner': 'Straight steering; profile owns accelerator/brake.'},
-    'circular_skidpad': {'disabled': {'steering.amplitude_rad', 'steering.amplitude_mps2'},
-                         'allowed': {'steering.target_radius_m'},
+    'circular_skidpad': {'guidance': 'Radius tracking with a profile speed sweep is typical.',
                          'owner': 'Radius tracking; profile owns speed sweep.'},
-    'csv_playback': {'disabled': {'steering.amplitude_rad', 'steering.amplitude_mps2', 'steering.target_heading_rad', 'steering.target_radius_m', 'longitudinal.accelerator', 'longitudinal.target_speed_mps'},
-                     'allowed': set(), 'owner': 'CSV owns SWA, accelerator, and brake.'},
+    'csv_playback': {'guidance': 'CSV supplies the command channels; schema-valid CSV mode is required.',
+                     'owner': 'CSV owns SWA, accelerator, and brake.'},
 }
 
 
@@ -106,11 +99,7 @@ class ManeuverDraft:
             'longitudinal.accelerator': lmode == 'constant_accelerator',
             'longitudinal.target_speed_mps': lmode == 'cruise_pid',
         }
-        # Apply preset incompatibilities atop mode ownership. Policy entries
-        # must exclude legitimate alternate modes (e.g. path_pid on straight).
-        policy = _PRESET_POLICY.get(self._payload.get('preset'), {})
-        # Preset policy is guidance; active input fields remain controlled by
-        # validated selected modes and are never hidden by preset alone.
+        # Presets never disable non-CSV fields; selected mode owns enablement.
         enabled = dict(mode_enabled)
         if csv:
             enabled = {path: False for path in mode_enabled}
@@ -118,11 +107,11 @@ class ManeuverDraft:
         return enabled
 
     def preset_policy(self) -> dict:
-        """Return a defensive presentation policy and truthful channel owner label."""
-        policy = _PRESET_POLICY.get(self._payload.get('preset'), {})
-        return {'disabled': set(policy.get('disabled', set())),
-                'allowed': set(policy.get('allowed', set())),
-                'owner': policy.get('owner', 'Mode selection owns active controls.')}
+        """Return guidance, channel owner and explicit mode-preservation semantics."""
+        guidance = _PRESET_GUIDANCE.get(self._payload.get('preset'), {})
+        return {'guidance': guidance.get('guidance', 'Select modes permitted by the schema.'),
+                'owner': guidance.get('owner', 'Mode selection owns active controls.'),
+                'mode_preservation': 'Preset selection does not disable schema-valid modes; selected mode controls fields.'}
 
     def preview(self, applied: dict | None = None) -> dict:
         return {'requested': self.to_dict(), 'applied': deepcopy(applied) if applied is not None else None}

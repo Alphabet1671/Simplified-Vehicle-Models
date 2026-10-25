@@ -42,3 +42,9 @@ Verification after repair: Qt **10 passed**, draft **6 passed**, CSV **7 passed*
 Added an explicit presentation policy for every advertised preset and test coverage for its guidance, while preserving schema-valid selected controller modes: non-CSV input enablement is mode-owned, so choosing a preset cannot silently hide a valid path/radius/longitudinal controller. CSV remains the only hard three-channel owner. The editor now displays each preset guidance label alongside mode ownership.
 
 Verification after repair: Qt **10 passed**, draft **7 passed**, CSV **7 passed**, maneuver **95 passed**, and `git diff --check` passed.
+
+## Fix round 5 — guidance semantics
+
+Renamed preset metadata to explicit non-enforcing guidance and added mode-preservation semantics. Regressions prove schema-valid alternate controller modes remain available under non-CSV presets; only CSV hard-disables the three command channels.
+
+Verification after repair: Qt **10 passed**, draft **7 passed**, CSV **7 passed**, maneuver **95 passed**, and `git diff --check` passed.

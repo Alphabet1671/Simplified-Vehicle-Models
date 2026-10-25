@@ -49,30 +49,31 @@ class ManeuverDraftTests(unittest.TestCase):
         data['steering'] = {'mode': 'csv'}; data['longitudinal'] = {'mode': 'csv'}
         self.assertTrue(ManeuverDraft.from_dict(data).enabled_fields()['csv'])
 
-    def test_preset_policy_disables_incompatible_fields_and_preserves_modes(self):
-        cases = {
-            'step_steer': ('steering.target_heading_rad', 'steering.amplitude_rad', 'Steering waveform'),
-            'ramp_steer': ('steering.target_heading_rad', 'steering.amplitude_rad', 'Steering waveform'),
-            'sine_steer': ('steering.target_heading_rad', 'steering.amplitude_rad', 'Steering waveform'),
-            'straight_maintain': ('steering.amplitude_rad', 'steering.target_heading_rad', 'Straight'),
-            'straight_accel_brake': ('steering.amplitude_rad', 'steering.target_heading_rad', 'profile'),
-            'circular_skidpad': ('steering.amplitude_rad', 'steering.target_radius_m', 'Radius'),
+    def test_preset_guidance_preserves_schema_valid_modes(self):
+        guidance = {
+            'step_steer': 'Steering waveform', 'ramp_steer': 'Steering waveform',
+            'sine_steer': 'Steering waveform', 'straight_maintain': 'Straight',
+            'straight_accel_brake': 'Straight', 'circular_skidpad': 'Radius',
         }
-        for preset, (disabled_path, enabled_path, label) in cases.items():
+        for preset, expected_guidance in guidance.items():
             with self.subTest(preset=preset):
                 data = payload(); data['preset'] = preset
-                if preset in ('straight_maintain', 'straight_accel_brake'):
-                    data['steering'] = {'mode': 'path_pid', 'target_heading_rad': 0.}
-                elif preset == 'circular_skidpad':
-                    data['steering'] = {'mode': 'radius_pid', 'target_radius_m': 10.}
                 draft = ManeuverDraft.from_dict(data)
-                fields = draft.enabled_fields(); policy = draft.preset_policy()
-                self.assertIn(disabled_path, policy['disabled'])
-                self.assertIn(enabled_path, policy['allowed'])
-                self.assertTrue(fields[enabled_path])
-                self.assertIn(label.lower(), policy['owner'].lower())
+                policy = draft.preset_policy()
+                self.assertIn(expected_guidance.lower(), policy['guidance'].lower())
+                self.assertIn('does not disable', policy['mode_preservation'])
                 self.assertEqual(draft.to_dict()['steering']['mode'], data['steering']['mode'])
-                self.assertEqual(draft.to_dict()['longitudinal']['mode'], data['longitudinal']['mode'])
+        # Preset guidance cannot hide valid controller modes: the schema allows
+        # these alternate non-CSV combinations, and mode ownership enables them.
+        alternate_modes = {
+            'step_steer': ({'mode': 'path_pid', 'target_heading_rad': 0.}, 'steering.target_heading_rad'),
+            'straight_maintain': ({'mode': 'peak_swa', 'amplitude_rad': .2, 'direction': 1}, 'steering.amplitude_rad'),
+            'circular_skidpad': ({'mode': 'path_pid', 'target_heading_rad': 0.}, 'steering.target_heading_rad'),
+        }
+        for preset, (steering, active_field) in alternate_modes.items():
+            with self.subTest(alternate=preset):
+                data = payload(); data['preset'] = preset; data['steering'] = steering
+                self.assertTrue(ManeuverDraft.from_dict(data).enabled_fields()[active_field])
         with self.subTest(preset='csv_playback'):
             data = payload(); data['preset'] = 'csv_playback'
             data['csv'] = {'mapping': {'time': 't', 'swa': 's', 'accelerator': 'a', 'brake': 'b'}}

@@ -218,7 +218,7 @@ def write_artifact(output_base: Path, definition, result, *, run_id: str | None 
         _atomic_bytes(run_dir / "manifest.json",
                       (json.dumps(manifest, sort_keys=True, indent=2, allow_nan=False) + "\n").encode())
     except BaseException:
-        for name in ("maneuver.json", "summary.json", "events.json", "commands.csv", "run_record.npz", "manifest.json"): 
+        for name in ("maneuver.json", "summary.json", "events.json", "commands.csv", "run_record.npz", "manifest.json"):
             try:
                 (run_dir / name).unlink()
             except FileNotFoundError:

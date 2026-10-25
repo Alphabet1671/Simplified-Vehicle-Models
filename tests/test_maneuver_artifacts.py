@@ -42,7 +42,7 @@ class ManeuverArtifactTests(unittest.TestCase):
             self.assertEqual(manifest["execution_outcome"], "completed")
             self.assertEqual(
                 set(manifest["hashes"]),
-                {"definition_sha256", "calibration_sha256", "model_sha256", "result_sha256", "summary_sha256", "events_sha256", "commands_sha256"}, 
+                {"definition_sha256", "calibration_sha256", "model_sha256", "result_sha256", "summary_sha256", "events_sha256", "commands_sha256"},
             )
             np.testing.assert_array_equal(arrays["time_s"], [0.0, 0.1])
             self.assertFalse((Path(temp) / "run_record.npz").exists())

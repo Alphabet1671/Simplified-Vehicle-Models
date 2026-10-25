@@ -23,6 +23,39 @@ class ConsumerApprovalRecordTests(unittest.TestCase):
         self.assertFalse(result.policy_approved)
         self.assertIsNone(result.geometry_state_convergence)
 
+    def test_proposed_policy_preserves_valid_normalized_snapshots(self):
+        record = {"payload": {"items": ["record"]}}
+        evidence = {"grid": {"passed": True, "trace": ["grid"]}}
+        result = verify_consumer_approval_record(record, policy=NUMERICAL_POLICY_V1,
+            executed_identity={}, required_evidence=evidence)
+        self.assertEqual(result.status, ApprovalStatus.UNAPPROVED_POLICY)
+        self.assertEqual(result.record["payload"]["items"], ("record",))
+        self.assertEqual(result.evidence["grid"]["trace"], ("grid",))
+        with self.assertRaises(TypeError):
+            result.record["payload"]["items"] = ()
+        detached = result.to_dict()
+        detached["record"]["payload"]["items"].append("changed")
+        detached["evidence"]["grid"]["trace"].append("changed")
+        self.assertEqual(result.record["payload"]["items"], ("record",))
+        self.assertEqual(result.evidence["grid"]["trace"], ("grid",))
+
+    def test_proposed_policy_preserves_valid_input_when_other_is_malformed(self):
+        record = {"payload": {"items": ["record"]}}
+        malformed_evidence = {"bad": object()}
+        result = verify_consumer_approval_record(record, policy=NUMERICAL_POLICY_V1,
+            executed_identity={}, required_evidence=malformed_evidence)
+        self.assertEqual(result.status, ApprovalStatus.UNAPPROVED_POLICY)
+        self.assertEqual(result.record["payload"]["items"], ("record",))
+        self.assertIsNone(result.evidence)
+
+        malformed_record = {"bad": float("nan")}
+        evidence = {"grid": {"passed": True, "trace": ["grid"]}}
+        result = verify_consumer_approval_record(malformed_record, policy=NUMERICAL_POLICY_V1,
+            executed_identity={}, required_evidence=evidence)
+        self.assertEqual(result.status, ApprovalStatus.UNAPPROVED_POLICY)
+        self.assertIsNone(result.record)
+        self.assertEqual(result.evidence["grid"]["trace"], ("grid",))
+
     def test_proposed_policy_precedes_malformed_inputs(self):
         for record, identity, evidence in (
             ({"bad": float("nan")}, {}, {}),

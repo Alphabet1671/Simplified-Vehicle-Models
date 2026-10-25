@@ -111,8 +111,18 @@ def verify_consumer_approval_record(record: Any, *, policy: AccuracyPolicy = NUM
     """Check evidence traceability and fail closed; never grant qualification."""
     approved = getattr(policy, "status", None) == "approved" and getattr(policy, "requirements_status", None) == "approved"
     if not approved:
-        # Proposed policy status dominates even malformed caller payloads.
-        return _result(ApprovalStatus.UNAPPROVED_POLICY, False)
+        # Proposed policy status dominates malformed payloads, while preserving
+        # each independently valid JSON payload for traceability.
+        try:
+            normalized_record = _normalize(record)
+        except (TypeError, ValueError):
+            normalized_record = None
+        try:
+            normalized_evidence = _normalize(required_evidence)
+        except (TypeError, ValueError):
+            normalized_evidence = None
+        return _result(ApprovalStatus.UNAPPROVED_POLICY, False,
+                       normalized_record, normalized_evidence)
     expected_id, expected_hash = getattr(policy, "identifier", None), getattr(policy, "sha256", None)
     try:
         normalized_record = _normalize(record)

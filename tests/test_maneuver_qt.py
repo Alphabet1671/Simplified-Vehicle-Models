@@ -46,6 +46,35 @@ class ManeuverQtTests(unittest.TestCase):
             editor.definition()
         self.assertTrue(editor.validation_label.text())
 
+    def test_mode_controls_and_optional_field_creation(self):
+        data = payload()
+        editor = ManeuverEditor(data)
+        presets = ['step_steer','ramp_steer','sine_steer','straight_maintain','straight_accel_brake','circular_skidpad','csv_playback']
+        for preset in presets:
+            if preset == 'csv_playback':
+                csv = {'source': '', 'mapping': {'time':'t','swa':'s','accelerator':'a','brake':'b'}}
+                editor.set_draft({**payload(), 'preset':preset, 'csv':csv, 'steering':{'mode':'csv'}, 'longitudinal':{'mode':'csv'}})
+                self.assertFalse(editor.fields['steering.amplitude_rad'].isEnabled())
+                self.assertFalse(editor.fields['longitudinal.accelerator'].isEnabled())
+                self.assertFalse(editor.steering_mode.isEnabled())
+            else:
+                editor.set_draft({**payload(), 'preset':preset})
+                self.assertTrue(editor.fields['steering.amplitude_rad'].isEnabled())
+                self.assertTrue(editor.fields['profile.rise_s'].isEnabled())
+        # Leave CSV ownership before exercising selectable steering modes.
+        editor.set_draft(payload())
+        for mode,path in [('path_pid','steering.target_heading_rad'),('radius_pid','steering.target_radius_m')]:
+            editor.steering_mode.setCurrentText(mode)
+            # The offscreen editor is not shown; enabled controls remain keyboard-focusable.
+            self.assertTrue(editor.fields[path].isEnabled())
+            self.assertTrue(editor.fields[path].focusPolicy() != 0)
+            editor.fields[path].setText('1.25')
+            editor.fields[path].textEdited.emit('1.25')
+            self.assertEqual(editor.to_dict()['steering'][path.split('.')[-1]],1.25)
+        editor.fields['profile.rise_s'].setText('0.3')
+        editor.fields['profile.rise_s'].textEdited.emit('0.3')
+        self.assertEqual(editor.to_dict()['profile']['rise_s'],0.3)
+
     def test_tab_public_api_busy_and_result(self):
         data = payload()
         tab = ManeuverTab()

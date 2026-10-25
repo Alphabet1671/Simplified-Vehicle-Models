@@ -28,7 +28,7 @@ class ManeuverEditor(QWidget):
         self.longitudinal_mode.setObjectName('longitudinal.mode')
         self.longitudinal_mode.addItems(['cruise_pid','constant_accelerator','csv'])
         for label, widget in [('Preset',self.preset),('Steering mode',self.steering_mode),('Longitudinal mode',self.longitudinal_mode)]: form.addRow(label,widget)
-        for path in ('steering.amplitude_rad','steering.amplitude_mps2','initial.speed_mps','longitudinal.accelerator','longitudinal.target_speed_mps','profile.lead_in_s','profile.rise_s','profile.hold_s','profile.release_s','profile.recovery_s','profile.duration_s'):
+        for path in ('steering.amplitude_rad','steering.amplitude_mps2','steering.target_heading_rad','steering.target_radius_m','steering.frequency_hz','steering.cycles','steering.preview_distance_m','initial.speed_mps','longitudinal.accelerator','longitudinal.target_speed_mps','profile.lead_in_s','profile.rise_s','profile.ramp_s','profile.hold_s','profile.release_s','profile.recovery_s','profile.duration_s','profile.cycles','profile.settle_s','profile.sweep_start_mps','profile.sweep_end_mps','profile.sweep_rate_mps2'):
             edit=QLineEdit(inner); edit.setObjectName(path); self.fields[path]=edit; form.addRow(path,edit)
         scroll=QScrollArea(self); scroll.setWidgetResizable(True); scroll.setWidget(inner)
         layout=QVBoxLayout(self); layout.addWidget(self.validation_label); layout.addWidget(self.ownership_label); layout.addWidget(scroll)
@@ -57,8 +57,10 @@ class ManeuverEditor(QWidget):
         try:
             node=value
             for key in keys[:-1]: node=node[key]
-            old=node[keys[-1]]
-            node[keys[-1]]=float(text) if isinstance(old,(int,float)) and not isinstance(old,bool) else text
+            old=node.get(keys[-1])
+            if text.strip() == '':
+                return
+            node[keys[-1]]=float(text) if old is None or (isinstance(old,(int,float)) and not isinstance(old,bool)) else text
             self.draft=ManeuverDraft.from_dict(value)
         except (ValueError,KeyError,TypeError): pass
         self.validate()
@@ -86,9 +88,11 @@ class ManeuverEditor(QWidget):
     def validate(self):
         definition,errors=self.draft.validate(); self.validation_label.setText('; '.join(errors.values()))
         enabled=self.draft.enabled_fields()
+        always={'initial.speed_mps','profile.lead_in_s','profile.rise_s','profile.ramp_s','profile.hold_s','profile.release_s','profile.recovery_s','profile.duration_s','profile.cycles','profile.settle_s','profile.sweep_start_mps','profile.sweep_end_mps','profile.sweep_rate_mps2','steering.frequency_hz','steering.cycles','steering.preview_distance_m'}
+        mode_fields={'steering.target_heading_rad': self.draft.to_dict().get('steering',{}).get('mode') in ('path_pid','locked_swa'),
+                     'steering.target_radius_m': self.draft.to_dict().get('steering',{}).get('mode') in ('radius_pid','peak_ay')}
         for path,edit in self.fields.items():
-            alias={'initial.speed_mps':True,'profile.lead_in_s':True,'profile.rise_s':True,'profile.hold_s':True,'profile.release_s':True,'profile.recovery_s':True,'profile.duration_s':True}
-            edit.setEnabled(enabled.get(path,alias.get(path,True)))
+            edit.setEnabled(enabled.get(path, mode_fields.get(path, path in always)))
         is_csv=self.draft.to_dict().get('preset')=='csv_playback'
         self.steering_mode.setEnabled(not is_csv); self.longitudinal_mode.setEnabled(not is_csv)
         self.ownership_label.setText('Channel ownership: CSV owns SWA, accelerator, and brake; PID disabled.' if is_csv else 'Channel ownership: steering mode / longitudinal mode')

@@ -70,6 +70,16 @@ class ManeuverArtifactTests(unittest.TestCase):
                     write_artifact(temp, sample_definition(), sample_result(), run_id=name)
                 self.assertEqual(list(Path(temp).iterdir()), [])
 
+    def test_missing_channels_hash_rejected(self):
+        with tempfile.TemporaryDirectory() as temp:
+            run_dir = write_artifact(temp, sample_definition(), sample_result())
+            manifest_path = run_dir / "manifest.json"
+            manifest = json.loads(manifest_path.read_text())
+            del manifest["hashes"]["channels_sha256"]
+            manifest_path.write_text(json.dumps(manifest))
+            with self.assertRaisesRegex(ValueError, "channels.json corruption"):
+                load_artifact(run_dir)
+
     def test_missing_corrupt_npz_and_manifest_schema_rejected(self):
         with tempfile.TemporaryDirectory() as temp:
             run_dir = write_artifact(temp, sample_definition(), sample_result())

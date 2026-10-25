@@ -325,15 +325,13 @@ def load_manifest(directory: Path) -> dict:
             raise ValueError("manifest/summary outcome mismatch")
         integrity_files = [("summary_sha256", "summary.json"),
                            ("events_sha256", "events.json"),
-                           ("commands_sha256", "commands.csv")]
-        if "channels_sha256" in hashes:
-            integrity_files.append(("channels_sha256", "channels.json"))
+                           ("commands_sha256", "commands.csv"),
+                           ("channels_sha256", "channels.json")]
         for key, filename in integrity_files:
             if hashes.get(key) != hashlib.sha256((directory / filename).read_bytes()).hexdigest():
                 raise ValueError(f"{filename} corruption detected")
-        required_files = ["maneuver.json", "summary.json", "events.json", "commands.csv", "run_record.npz"]
-        if "channels_sha256" in hashes:
-            required_files.append("channels.json")
+        required_files = ["maneuver.json", "summary.json", "events.json", "commands.csv",
+                          "run_record.npz", "channels.json"]
         for name in required_files:
             if not (directory / name).is_file():
                 raise ValueError(f"missing artifact {name}")

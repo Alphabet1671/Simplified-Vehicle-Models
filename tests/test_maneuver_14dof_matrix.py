@@ -54,9 +54,10 @@ class Maneuver14DofMatrixTests(unittest.TestCase):
                 arrays = {key: evidence[key] for key in evidence.files}
             with (result / 'commands.csv').open(newline='') as stream:
                 commands = list(csv.DictReader(stream))
+            channels = json.loads((result / 'channels.json').read_text())
             if inspect_result is not None:
                 inspect_result(result)
-            return manifest, arrays, commands
+            return manifest, arrays, commands, channels
 
     def test_model_kind_manifest_validation(self):
         vertical = 'models/formulations/iem24_murphy_real_14dof_simple.xml'
@@ -75,17 +76,40 @@ class Maneuver14DofMatrixTests(unittest.TestCase):
                     load_manifest(result)
         self._run(vertical_definition, inspect_result=verify_rejections)
 
+    def test_vertical_csv_playback_preserves_source_digest(self):
+        vertical = 'models/formulations/iem24_murphy_real_14dof_simple.xml'
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            csv_path = root / 'commands.csv'
+            csv_path.write_text('time_s,swa,accelerator,brake\n0,0,0.1,0\n0.1,0.01,0.1,0\n')
+            definition = self._definition(vertical, self._calibration(vertical), duration=.1)
+            definition.update({'preset': 'csv_playback', 'steering': {'mode': 'csv'},
+                               'longitudinal': {'mode': 'csv'},
+                               'csv': {'source': 'commands.csv',
+                                       'mapping': {'time': 'time_s', 'swa': 'swa',
+                                                   'accelerator': 'accelerator', 'brake': 'brake'},
+                                       'interpolation': 'hold', 'time_unit': 's', 'swa_unit': 'rad',
+                                       'accelerator_unit': 'fraction', 'brake_unit': 'fraction'}})
+            source = root / 'definition.json'; source.write_text(json.dumps(definition))
+            attempt = run_definition(source, root / 'out', timeout_s=180)
+            summary = json.loads((attempt / 'summary.json').read_text())
+            self.assertEqual(summary['execution_outcome'], 'completed', summary)
+            self.assertIn('csv_sha256', summary)
+            channels = json.loads((attempt / 'result' / 'channels.json').read_text())
+            self.assertTrue({'position-x', 'position-y', 'heading-world'}.issubset(channels[0]))
+
     def test_iem24_vertical_and_legacy_planar_runs(self):
         vertical = 'models/formulations/iem24_murphy_real_14dof_simple.xml'
-        manifest, evidence, commands = self._run(self._definition(vertical, self._calibration(vertical)))
+        manifest, evidence, commands, channels = self._run(self._definition(vertical, self._calibration(vertical)))
         self.assertEqual(manifest['model_kind'], '14dof-simple')
         self.assertGreaterEqual(evidence['state'].shape[1], 38)
         self.assertEqual(evidence['state'].shape, evidence['state_rate'].shape)
         self.assertGreater(len(commands), 0)
         self.assertTrue(any(float(row['swa_rad']) != 0. for row in commands))
+        self.assertTrue({'position-x', 'position-y', 'heading-world'}.issubset(channels[0]))
 
         planar = 'models/formulations/iem24_murphy_real_planar_7dof.xml'
-        manifest, evidence, commands = self._run(self._definition(planar, self._calibration(planar), duration=.1))
+        manifest, evidence, commands, _channels = self._run(self._definition(planar, self._calibration(planar), duration=.1))
         self.assertEqual(manifest['model_kind'], 'planar-7dof')
         self.assertEqual(evidence['state'].shape[1], 12)
         self.assertEqual(evidence['state'].shape, evidence['state_rate'].shape)

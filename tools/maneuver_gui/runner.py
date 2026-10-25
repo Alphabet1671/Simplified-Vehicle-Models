@@ -179,12 +179,23 @@ def run_definition(definition_path: Path, output_root: Path, *, cancel=None, tim
         vehicle_spec["model"] = str(formulation_path)
         source_copy = attempt / "maneuver-source.json"
         source_copy.write_text(json.dumps(data, indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8")
+        if data["preset"] == "csv_playback":
+            import shutil
+            csv_config = data.get("csv") or {}
+            relative = Path(csv_config.get("source", ""))
+            if relative.is_absolute() or ".." in relative.parts:
+                raise ValueError("CSV source must be a relative sibling path")
+            csv_input = source.parent / relative
+            if csv_input.parent.resolve() != source.parent.resolve() or not csv_input.is_file():
+                raise ValueError("CSV source must be an existing sibling of the definition")
+            shutil.copyfile(csv_input, attempt / relative.name)
         stage = attempt.parent / f".{attempt.name}.{uuid.uuid4().hex}.result-stage"
         stage.mkdir()
         helper = r'''import json, sys, traceback
 from pathlib import Path
 from simplified_vehicle_models.controls.maneuvers.schema import load_definition
 from simplified_vehicle_models.controls.maneuvers.program import ManeuverProgram
+from simplified_vehicle_models.controls.maneuvers.csv_source import CsvMapping, load_csv_source
 from simplified_vehicle_models.solvers.maneuver_planar import ActuatorCalibration, ManeuverPlanarPlant
 from simplified_vehicle_models.solvers.maneuver_vertical import VerticalManeuverPlant
 from simplified_vehicle_models.solvers.maneuver_simulation import SimulationSettings, simulate_maneuver
@@ -208,10 +219,22 @@ try:
     else:
         raise ValueError('maneuver runner supports planar-7dof or 14dof-simple only')
     initial=plant.initial_state(**{k:v for k,v in data['initial'].items() if k in ('speed_mps','x_m','y_m','heading_rad')})
-    program=ManeuverProgram(d)
+    csv_source=None
+    if data['preset']=='csv_playback':
+        csv_config=data['csv']
+        if not isinstance(csv_config, dict): raise ValueError('CSV playback requires CSV configuration')
+        relative=Path(csv_config.get('source',''))
+        if relative.is_absolute() or '..' in relative.parts: raise ValueError('CSV source must be a relative sibling path')
+        csv_path=(p.parent/relative).resolve()
+        if csv_path.parent != p.parent.resolve(): raise ValueError('CSV source must be a sibling of the definition')
+        mapping=csv_config['mapping']; accelerator_unit=csv_config['accelerator_unit']; brake_unit=csv_config['brake_unit']
+        if accelerator_unit != brake_unit: raise ValueError('CSV accelerator and brake units must match')
+        csv_source=load_csv_source(csv_path, CsvMapping(mapping['time'], mapping['swa'], mapping['accelerator'], mapping['brake'], csv_config['time_unit'], csv_config['swa_unit'], accelerator_unit, csv_config['interpolation']))
+    program=ManeuverProgram(d, csv_source=csv_source)
     result=simulate_maneuver(plant, program, initial, SimulationSettings(tick_s=float(data['clock']['controller_tick_s']), max_wall_s=300.))
     outcome=result.execution_outcome
     summary={'execution_outcome':outcome,'input_fidelity':'exact','objective':'not_evaluated','termination_reason':result.termination_reason}
+    if csv_source is not None: summary['csv_sha256']=csv_source.source_sha256
     write_artifacts(out,d,result,summary, model_kind=model_kind)
     print(json.dumps({'event':'complete','time_s':float(result.time_s[-1]),'fraction':1.0,'phase':result.termination_reason}), flush=True)
     sys.exit(0 if outcome == 'completed' else 2)

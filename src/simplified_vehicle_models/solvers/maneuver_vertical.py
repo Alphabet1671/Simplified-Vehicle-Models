@@ -107,7 +107,13 @@ class VerticalManeuverPlant:
             "throttle_fraction": throttle, "brake_force_n": brake,
             "speed_mps": float(np.hypot(values[3], values[4])),
             "x_m": float(values[0]), "y_m": float(values[1]),
-            "heading_rad": float(values[2]), "body_ax_mps2": float(ax),
+            "heading_rad": float(values[2]),
+            # Canonical world-pose evidence for animation.  These aliases are
+            # recorded with the accepted plant outputs; they are not derived
+            # later by the animation/export path.
+            "position-x": float(values[0]), "position-y": float(values[1]),
+            "heading-world": float(values[2]),
+            "body_ax_mps2": float(ax),
             "body_ay_mps2": float(ay), "ay_mps2": float(ay),
             "roll_rad": float(mechanical[7]), "pitch_rad": float(mechanical[8]),
             "heave_m": float(mechanical[6]),

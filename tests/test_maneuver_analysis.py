@@ -35,6 +35,22 @@ class ManeuverAnalysisTests(unittest.TestCase):
         self.assertEqual(summary['objective']['last_valid_speed_mps'], 5.)
         self.assertIsNone(summary['objective']['first_invalid_speed_mps'])
 
+    def test_missing_target_speed_is_insufficient_for_any_limit_claim(self):
+        config = skidpad()['steering']
+        del config['target_speed_mps']
+        definition = {'preset': 'circular_skidpad', 'steering': config,
+                      'longitudinal': {'mode': 'speed'}}
+        for radial in ([0.] * 5, [.2] * 5):
+            summary = analyze_maneuver(definition, result(radial=radial))
+            self.assertEqual(summary['objective']['limit_status'], 'not_established')
+            self.assertIsNone(summary['objective']['target_speed_met'])
+
+    def test_invalid_from_first_sample_has_no_fake_bracket(self):
+        summary = analyze_maneuver(skidpad(), result(radial=[.2] * 5))
+        self.assertEqual(summary['objective']['limit_status'], 'not_established')
+        self.assertIsNone(summary['objective']['last_valid_speed_mps'])
+        self.assertIsNone(summary['objective']['first_invalid_speed_mps'])
+
     def test_transient_spike_is_not_physical_limit(self):
         summary = analyze_maneuver(skidpad(), result(radial=[0., .5, 0., 0., 0.]))
         self.assertEqual(summary['objective']['limit_status'], 'not_established')
@@ -52,6 +68,13 @@ class ManeuverAnalysisTests(unittest.TestCase):
         failed = analyze_maneuver(skidpad(), result(radial=[.2] * 5, outcome='failed', reason='model_limit'))
         for summary in (saturated, low_speed, failed):
             self.assertEqual(summary['objective']['limit_status'], 'not_established')
+        self.assertEqual(low_speed['objective']['target_speed_met'], False)
+
+    def test_inadequate_target_speed_samples_are_not_limit_evidence(self):
+        short = result(radial=[.2, .2], speeds=[5., 5.])
+        summary = analyze_maneuver(skidpad(), short)
+        self.assertEqual(summary['objective']['limit_status'], 'not_established')
+        self.assertIsNone(summary['objective']['target_speed_met'])
 
     def test_locked_swa_and_malformed_samples_are_safe(self):
         locked = analyze_maneuver({'steering': {'mode': 'locked_swa'}}, result())

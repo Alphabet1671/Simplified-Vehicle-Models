@@ -24,10 +24,15 @@ class AyCalibration:
     status: str
 
 
-def _without_ui(value):
+def _without_ui(value, parent_key=None):
     if isinstance(value, dict):
-        return {str(k): _without_ui(v) for k, v in value.items()
-                if str(k) not in {'ui', 'output', 'output_path', 'output_directory'}}
+        # Strip only known presentation/output-location metadata. `output` is
+        # semantic in model and actuator payloads and must remain fingerprinted.
+        ignored = {'ui'}
+        if parent_key in (None, 'ui', 'paths', 'locations'):
+            ignored |= {'output_path', 'output_directory'}
+        return {str(k): _without_ui(v, str(k)) for k, v in value.items()
+                if str(k) not in ignored}
     if isinstance(value, (tuple, list)):
         return [_without_ui(item) for item in value]
     if isinstance(value, np.generic):

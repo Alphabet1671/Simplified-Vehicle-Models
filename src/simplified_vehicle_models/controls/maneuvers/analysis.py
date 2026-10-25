@@ -139,33 +139,53 @@ def analyze_maneuver(definition, result) -> dict:
                 break
         target_speed = steer.get('target_speed_mps', longitudinal.get('target_speed_mps'))
         speed_met = None
+        speed_window = None
         if speeds is not None and target_speed is not None:
             try:
                 target_speed = float(target_speed)
-                speed_met = bool(np.all(np.isfinite(speeds)) and np.mean(speeds >= target_speed * .98) >= .8)
+                if math.isfinite(target_speed) and target_speed > 0 and speeds.size >= 3:
+                    window_n = min(5, speeds.size)
+                    speed_window = speeds[-window_n:]
+                    # Require target attainment persistently throughout the
+                    # evidence window; a sparse mean or missing value is not proof.
+                    speed_met = bool(np.all(speed_window >= target_speed * .98))
             except (TypeError, ValueError, OverflowError):
                 pass
         # Persistence threshold is a conservative multi-sample condition; no
         # geometry evidence means no physical conclusion.
         persistent = None
+        bad = None
+        tolerance = float(steer.get('path_tolerance_m', .1)) if isinstance(steer.get('path_tolerance_m', .1), (int,float)) else .1
         if path_err is not None:
-            tolerance = float(steer.get('path_tolerance_m', .1)) if isinstance(steer.get('path_tolerance_m', .1), (int,float)) else .1
             bad = np.abs(path_err) > max(tolerance, 0.)
-            persistent = bool(bad.size >= 3 and np.count_nonzero(bad[-min(5, bad.size):]) >= min(3, bad.size))
+            tail = bad[-min(5, bad.size):]
+            persistent = bool(bad.size >= 3 and np.all(tail[-3:]))
         saturated = any(bool(_get(c, 'saturated', False)) for c in channels)
         if saturated:
             interventions.append({'kind': 'actuator_saturation'})
         if speed_met is False:
             interventions.append({'kind': 'target_speed_unmet'})
+        elif speed_met is None:
+            interventions.append({'kind': 'target_speed_evidence_insufficient'})
         model_failed = termination in {'model_error', 'model_limit', 'nonfinite_state'} or outcome == 'failed'
-        bracket = persistent is True and not saturated and speed_met is not False and not model_failed
+        evidence_ok = speed_met is True
+        bracket = persistent is True and not saturated and evidence_ok and not model_failed
         clean_sweep = (persistent is False and path_err is not None and not np.any(np.abs(path_err) > max(float(steer.get('path_tolerance_m', .1)), 0.))
-                       and not saturated and speed_met is not False and not model_failed)
+                       and not saturated and evidence_ok and not model_failed)
         if bracket and speeds is not None and speeds.size == path_err.size:
-            bad_indices = np.flatnonzero(np.abs(path_err) > max(float(steer.get('path_tolerance_m', .1)), 0.))
+            bad_indices = np.flatnonzero(bad)
             first_bad = int(bad_indices[0])
-            last_valid = float(speeds[max(first_bad - 1, 0)])
-            first_invalid = float(speeds[first_bad])
+            run_start = next((int(i) for i in range(first_bad, len(bad))
+                              if np.all(bad[i:min(i + 3, len(bad))])), first_bad)
+            # Bracket only when the persistent invalid run is preceded by a
+            # valid sample; never manufacture a same-speed bracket at index 0.
+            prior_valid = np.flatnonzero(~bad[:run_start])
+            if prior_valid.size:
+                last_valid = float(speeds[int(prior_valid[-1])])
+                first_invalid = float(speeds[run_start])
+            else:
+                bracket = False
+                last_valid, first_invalid = None, None
         elif clean_sweep and speeds is not None and speeds.size:
             last_valid, first_invalid = float(speeds[-1]), None
         else:

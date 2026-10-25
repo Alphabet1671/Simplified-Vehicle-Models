@@ -1,6 +1,6 @@
 import unittest
 
-from simplified_vehicle_models.controls.maneuvers.calibration import calibrate_peak_ay
+from simplified_vehicle_models.controls.maneuvers.calibration import calibrate_peak_ay, definition_fingerprint
 
 
 class Result:
@@ -49,6 +49,23 @@ class PeakAyCalibrationTests(unittest.TestCase):
         self.assertEqual(ambiguous.status, 'ambiguous')
         limited = calibrate_peak_ay(definition(), lambda a: Result(a, 'failed'), (0., 2.))
         self.assertEqual(limited.status, 'model_limit')
+
+    def test_fingerprint_excludes_only_location_metadata(self):
+        base = definition()
+        base['ui'] = {'theme': 'dark'}
+        base['output_path'] = '/tmp/first'
+        base['model']['output'] = {'torque_nm': 120.}
+        digest = definition_fingerprint(base)
+        moved = definition()
+        moved['ui'] = {'theme': 'light'}
+        moved['output_path'] = '/tmp/second'
+        moved['model']['output'] = {'torque_nm': 120.}
+        self.assertEqual(digest, definition_fingerprint(moved))
+        changed = definition()
+        changed['ui'] = {'theme': 'dark'}
+        changed['output_path'] = '/tmp/first'
+        changed['model']['output'] = {'torque_nm': 121.}
+        self.assertNotEqual(digest, definition_fingerprint(changed))
 
     def test_fingerprint_tracks_definition_and_selection_is_frozen(self):
         base = definition()

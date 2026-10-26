@@ -1,0 +1,15 @@
+# Stage2 implementation brief: bounded line optimizer
+
+Read Stage2 in the main plan for scope. This brief locks interfaces for implementation after Stage1 review.
+
+Add appended YawLineSettings fields (existing positional order preserved): maximum_profile_evaluations=24, maximum_wall_seconds=900., minimum_improvement_seconds=1e-4. Existing optimizer_max_iterations remains per-window iteration cap. Validate positive finite budgets; seed_blends passed by caller must be honored and validated finite0..1 rather than overwritten.
+
+Cache exact coefficient vector evaluation by bytes; settings/map/spline constant within one call. Repeated cache hits record reason/cache_hit but never invoke coupled solver or count independent evaluation. Cache accepts success and failure. Evaluation budget counts cache misses that invoke profile, geometry-only rejections tracked separately. Wall deadline starts at function entry, checked before QP/seed/window evaluations and passed as min(remaining,profile_settings.max_wall_seconds). If no validated incumbent when exhausted raise YawLineOptimizationError with explicit global budget cause; otherwise return incumbent with status budget_exceeded and diagnostics search_stop_reason. Never claim converged on budget stop.
+
+Evaluate all initial seeds once within budget, choose best validated seed, then optimize corner windows from current incumbent only (not Powell each seed each pass). Bounds/geometry folded containment gates stay. Exact evaluate cache prevents result reevaluation. Each window's accepted candidate becomes next window base if faster by minimum improvement. Powell maxfev is bounded by global remaining, and global guard in objective prevents overrun even if SciPy asks extra.
+
+Warm start: retain (reference_station,speed) for last accepted profile; derive reference stations using trajectory.station_map.to_reference(path.distance), new path's reference stations likewise; interpolate speed and enforce seam duplicate suggestion. This is candidate suggestion only; profile strict validates. Do not interpolate solely normalized path distance if corresponding reference station map exists.
+
+Convergence diagnostics separate selected optimizer_success, outer pass time change, profile_resolution_converged, search_budget_exhausted, evaluated_profile_count, cache_hits, timings, exact selected coefficients. Global 'converged' requires full completed search pass with optimizer success plus stable subsequent pass, not simply no budget remaining or re-evaluation same cached line. Grid convergence not claimed here.
+
+Tests use mocked deterministic profile to demonstrate cache call counts, global eval cap, wall stop, seed blends honored, incumbent never worsens, later corners start from selected incumbent, warm on mismatched physical sample lengths, failed profile cached. Keep original functional tests meaningful; run focused under run_with_deadline <=120s, broader line tests<=600s. Do not edit OCP, physical map, or controller modules. Write report docs/superpowers/plans/2026-10-26-lap-suite-stage2-report.md. No subagents, no commit until parent review.

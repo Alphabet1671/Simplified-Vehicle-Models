@@ -94,8 +94,12 @@ def run(args):
         # watchdog which must be recorded by their run wrapper.
         'watchdog_budget_seconds':1800}
     controller_overrides={key:getattr(args,key) for key in ('preview_seconds','heading_gain','lateral_gain','yaw_damping')}
+    warm_digest = (hashlib.sha256(args.warm_plan.read_bytes()).hexdigest()
+                   if args.warm_plan is not None else 'none')
     resolved={'profile_settings':{key:getattr(settings,key) for key in settings.__dataclass_fields__},
         'controller':args.controller,'controller_overrides':controller_overrides,
+        'warm_start_policy':'squared_speed_prolongation' if args.warm_plan is not None else 'cold',
+        'warm_start_digest':warm_digest,
         'solver':{'method':'BDF','rtol':1e-6,'atol':1e-8,'maximum_step':args.maximum_step},
         'profile_line_settings':{'spacing':args.spacing,'control_spacing':args.control_spacing,
             'profile_seconds':args.profile_seconds,'profile_rounds':args.profile_rounds,

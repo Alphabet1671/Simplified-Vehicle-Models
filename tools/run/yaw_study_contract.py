@@ -14,7 +14,7 @@ _DIMENSIONS = {"geometry": "geometry_spacing_m", "control": "control_spacing_m",
 _COMMON = {"yaw_moment_tolerance", "map_identity", "map_file_sha256", "map_source_identity",
     "track_identity", "track_data_hashes", "vehicle_configuration_hashes", "vehicle_source_identity",
     "boundary", "boundary_type", "maximum_speed", "maximum_speed_mps", "solver", "solver_settings",
-    "profile_settings", "profile_line_settings", "controller_values", "controller", "warm_start_policy",
+    "profile_settings", "profile_line_settings", "controller_values", "controller", "warm_start_policy", "warm_start_digest",
     "package_versions", "thread_settings", "initial_state_soc", "initial_state", "source_revision",
     "source_dirty_hashes", "source_provenance_status", "watchdog_budget_seconds", "plan_file_digest",
     "plan_array_digest", "mode", "duration", "maximum_step", "rtol", "atol", "method"}
@@ -61,7 +61,8 @@ def study_contract(args, resolved_settings, provenance) -> dict:
     prov.setdefault("source_dirty_hashes", "unknown")
     complete_source = (prov["source_revision"] != "unknown" and
                        prov["source_dirty_hashes"] != "unknown")
-    prov.setdefault("source_provenance_status", "attested" if complete_source else "historical_unknown")
+    # This is derived evidence, never a caller-controlled self-attestation.
+    prov["source_provenance_status"] = "attested" if complete_source else "historical_unknown"
     encoded = _canonical(payload)
     payload["canonical_json_sha256"] = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
     return payload

@@ -21,13 +21,19 @@ class StudyContractTests(unittest.TestCase):
             dict(refined, vehicle_source_identity="vehicle-b"), "geometry"))
         with self.assertRaises(ValueError):
             comparison_identity(base, "other")
+        cold = dict(base, warm_start_policy="cold", warm_start_digest="none")
+        warm = dict(cold, warm_start_policy="squared_speed_prolongation", warm_start_digest="digest-a")
+        self.assertNotEqual(comparison_identity(cold, "geometry"), comparison_identity(warm, "geometry"))
+        with self.assertRaisesRegex(ValueError, "warm_start_(policy|digest)"):
+            validate_comparison_pair(cold, warm, "geometry")
 
     def test_contract_marks_incomplete_source_historical_unknown(self):
         contract = study_contract({}, {}, {})
         self.assertEqual(contract["contract_version"], "yaw-study-contract-v1")
         self.assertEqual(contract["provenance"]["source_revision"], "unknown")
         self.assertEqual(contract["provenance"]["source_provenance_status"], "historical_unknown")
-        partial = study_contract({}, {}, {"source_revision":"abc", "source_dirty_hashes":"unknown"})
+        partial = study_contract({}, {}, {"source_revision":"abc", "source_dirty_hashes":"unknown",
+                                         "source_provenance_status":"attested"})
         self.assertEqual(partial["provenance"]["source_provenance_status"], "historical_unknown")
         self.assertEqual(len(contract["canonical_json_sha256"]), 64)
 

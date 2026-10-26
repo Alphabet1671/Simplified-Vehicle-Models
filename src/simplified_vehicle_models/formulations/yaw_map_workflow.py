@@ -310,15 +310,13 @@ def _refine_axes(capability: YawCapabilityMap, audit: YawMapCompletionAudit,
     if supported:
         nearest = min(supported, key=lambda value: abs(value - probe.lateral_acceleration))
         lo, hi = sorted((nearest, probe.lateral_acceleration))
-        gap_knots = sorted(value for value in ay if lo <= value <= hi)
+        gap_knots = sorted({value for value in ay if lo <= value <= hi} | {lo, hi})
         gaps = list(zip(gap_knots, gap_knots[1:]))
         ay_midpoint = (sum(max(gaps, key=lambda pair: pair[1]-pair[0])) / 2
                        if gaps else _axis_midpoint(ay, probe.lateral_acceleration))
     else:
         ay_midpoint = _axis_midpoint(ay, probe.lateral_acceleration)
-    if "ay" in axes_to_refine and ay_midpoint is not None:
-        ay.add(ay_midpoint)
-    elif "ay" in axes_to_refine and probe.map_reason is MapQueryReason.OUT_OF_DOMAIN and lateral_bound is not None:
+    if "ay" in axes_to_refine and probe.map_reason is MapQueryReason.OUT_OF_DOMAIN and lateral_bound is not None:
         # Grow only toward directly feasible exterior evidence, never past the
         # model-derived finite tyre bound. `_fill_lateral_axis` preserves width.
         target = max(-lateral_bound, min(lateral_bound, probe.lateral_acceleration))
@@ -326,6 +324,10 @@ def _refine_axes(capability: YawCapabilityMap, audit: YawMapCompletionAudit,
             ay.add(target)
         elif target > max(ay):
             ay.add(target)
+    elif "ay" in axes_to_refine and ay_midpoint is not None:
+        if lateral_bound is not None:
+            ay_midpoint = max(-lateral_bound, min(lateral_bound, ay_midpoint))
+        ay.add(ay_midpoint)
     return tuple(sorted(speed)), tuple(sorted(ax)), _fill_lateral_axis(ay, settings.maximum_lateral_cell_width)
 
 

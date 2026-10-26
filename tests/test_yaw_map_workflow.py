@@ -198,6 +198,28 @@ class YawMapWorkflowTest(unittest.TestCase):
         self.assertIn(-16.75, ay)
         self.assertNotIn(-17.25, ay)
 
+    def test_terminal_boundary_gap_is_split_on_supported_side_for_both_signs(self):
+        from simplified_vehicle_models.formulations.yaw_capability import YawCapabilityGrid
+        from simplified_vehicle_models.formulations.yaw_map_workflow import AuditProbe, YawMapCompletionAudit, _refine_axes
+        from simplified_vehicle_models.solvers.yaw_profile_map import MapQueryReason
+        # Existing map knots have a small support-side gap (21..21.1) and a
+        # large terminal gap to a non-knot direct boundary (21.6). The virtual
+        # boundary endpoint must select 21.35, not re-split the small gap.
+        for sign in (-1., 1.):
+            with self.subTest(sign=sign):
+                axis = np.array(sorted((sign * 21., sign * 21.1, sign * 22.)))
+                grid = YawCapabilityGrid([0., 10.], [0., 1.], axis)
+                shape = (2, 2, 3); values = np.ones(shape); mask = np.zeros(shape, bool)
+                supported_index = int(np.flatnonzero(np.isclose(axis, sign * 21.))[0])
+                mask[:, :, supported_index] = True
+                capability = YawCapabilityMap(grid.speed, grid.longitudinal_acceleration, grid.lateral_acceleration,
+                                              values, values, mask, 1., "physical_no_tv_v1", "terminal-gap")
+                probe = AuditProbe(5., .5, sign * 21.6, ProbeStatus.FEASIBLE,
+                                   MapQueryReason.MASKED_SUPPORT, .6)
+                audit = YawMapCompletionAudit((), 0, 10, False, False, (), (probe,), (), (), .6, .1)
+                _, _, ay = _refine_axes(capability, audit, self.settings(), axes_to_refine=("ay",))
+                self.assertTrue(np.any(np.isclose(ay, sign * 21.35)))
+
     def test_outer_refinement_extends_ay_only_to_model_bound(self):
         from simplified_vehicle_models.formulations.yaw_capability import YawCapabilityGrid
         from simplified_vehicle_models.formulations.yaw_map_workflow import AuditProbe, YawMapCompletionAudit, _refine_axes

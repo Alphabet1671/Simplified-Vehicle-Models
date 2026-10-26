@@ -5,7 +5,8 @@ uses empirical dense containment checks; it does not modify QSS OCPs.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+import time
 from types import MappingProxyType
 from typing import Mapping
 
@@ -45,9 +46,12 @@ class YawLineSettings:
     qp_tolerance: float = 1.e-9
     profile_solver: str = "coupled"
     profile_settings: CoupledProfileSettings = field(default_factory=CoupledProfileSettings)
+    maximum_profile_evaluations: int = 24
+    maximum_wall_seconds: float = 900.
+    minimum_improvement_seconds: float = 1.e-4
 
     def __post_init__(self):
-        for name in ("control_spacing", "grid_spacing", "optimizer_x_tolerance", "optimizer_f_tolerance", "maximum_speed", "lap_time_tolerance", "corner_min_length", "corner_quiet_padding", "qp_tolerance"):
+        for name in ("control_spacing", "grid_spacing", "optimizer_x_tolerance", "optimizer_f_tolerance", "maximum_speed", "lap_time_tolerance", "corner_min_length", "corner_quiet_padding", "qp_tolerance", "maximum_wall_seconds", "minimum_improvement_seconds"):
             value = float(getattr(self, name))
             if not np.isfinite(value) or value <= 0:
                 raise ValueError(f"{name} must be finite and positive")
@@ -61,10 +65,16 @@ class YawLineSettings:
             raise ValueError("profile_solver must be 'coupled' or 'legacy'")
         if not isinstance(self.profile_settings, CoupledProfileSettings):
             raise TypeError("profile_settings must be CoupledProfileSettings")
-        if self.dense_subdivisions < 1 or self.optimizer_max_iterations < 1 or self.maximum_outer_passes < 1:
-            raise ValueError("subdivisions, iterations, and passes must be positive")
-        blends = (0., .25, .5, .75)
+        if self.dense_subdivisions < 1 or self.optimizer_max_iterations < 1 or self.maximum_outer_passes < 1 or self.maximum_profile_evaluations < 1:
+            raise ValueError("subdivisions, iterations, passes, and profile evaluations must be positive")
+        blends=tuple(float(value) for value in self.seed_blends)
+        if any(not np.isfinite(value) or value < 0. or value > 1. for value in blends):
+            raise ValueError("seed_blends must be finite values in [0, 1]")
         object.__setattr__(self, "seed_blends", blends)
+
+
+class _SearchBudgetStop(RuntimeError):
+    pass
 
 
 class YawLineOptimizationError(ValueError):
@@ -212,6 +222,7 @@ def optimize_yaw_aware_line(track: TrackProfile, corridor: Corridor | None,
         raise TypeError("corridor must be a Corridor or None")
     if (settings.boundary == "flying") != bool(track.is_closed):
         raise ValueError("flying requires closed track; standing requires open track")
+    started=time.monotonic()
     reference = ReferenceCurve(track)
     if corridor is None:
         corridor = corridor_from_track(track, margin=0., half_width=None if track.has_edges else 5.,
@@ -238,6 +249,9 @@ def optimize_yaw_aware_line(track: TrackProfile, corridor: Corridor | None,
     seeds = [np.zeros(spline.control_count)]
     seed_solver_diagnostics = []
     for blend in settings.seed_blends:
+        if time.monotonic()-started >= settings.maximum_wall_seconds:
+            raise YawLineOptimizationError("global line-search wall budget exhausted before seed construction",
+                                           ({"reason":"global_budget","budget_cause":"wall_seconds"},))
         seed, success, iterations, objective_value = _qp_seed(
             spline, reference, blend, low, high, settings.qp_tolerance)
         seeds.append(seed)
@@ -246,14 +260,24 @@ def optimize_yaw_aware_line(track: TrackProfile, corridor: Corridor | None,
                                         "method": "SLSQP_box_constrained_convex_QP"})
     corners = _corner_complexes(track, settings.corner_quiet_curvature,
                                 settings.corner_min_length, settings.corner_quiet_padding)
-    records = []
-    # Previous accepted speed vector; used only as candidate suggestions and
-    # always re-checked by the coupled solver's strict edge oracle.
-    warm_speed = [None]
+    records = []; cache={}; profile_evaluations=[0]; cache_hits=[0]
+    stop_reason=[None]
+    # Accepted warm reference is projected by physical reference station, never
+    # by normalized path distance.
+    warm_reference = [None]
 
     def evaluate(coeff, seed_index, stage):
+        canonical=np.ascontiguousarray(np.asarray(coeff,dtype=float).copy())
+        canonical[canonical == 0.] = 0.  # normalize -0. exact-cache aliases
+        key=canonical.tobytes()
+        if key in cache:
+            cache_hits[0]+=1
+            record=dict(cache[key][0]); record.update(seed=seed_index,stage=stage,cache_hit=True)
+            return record,cache[key][1]
+        if time.monotonic()-started >= settings.maximum_wall_seconds:
+            stop_reason[0]="wall_seconds"; raise _SearchBudgetStop()
         record = {"seed": seed_index, "stage": stage, "accepted": False, "reason": None,
-                  "lap_time": None, "coefficients": np.asarray(coeff).tolist()}
+                  "lap_time": None, "coefficients": np.asarray(coeff).tolist(),"cache_hit":False}
         try:
             trajectory = OffsetTrajectory(reference, spline, coeff)
             path = _sample_trajectory(trajectory, settings.grid_spacing)
@@ -264,17 +288,27 @@ def optimize_yaw_aware_line(track: TrackProfile, corridor: Corridor | None,
             dlo = np.interp(dense_source, shrunk.distance, shrunk.minimum)
             dhi = np.interp(dense_source, shrunk.distance, shrunk.maximum)
             if np.any(np.asarray(dense.fold_factor) < .2-1e-8) or np.any(off < dlo-1e-8) or np.any(off > dhi+1e-8):
-                record["reason"] = "geometry_or_corridor"; return record, None
+                record["reason"] = "geometry_or_corridor"; cache[key]=(record,None); return record, None
         except Exception as exc:
-            record["reason"] = "geometry_or_corridor"; record["detail"] = str(exc); return record, None
+            record["reason"] = "geometry_or_corridor"; record["detail"] = str(exc); cache[key]=(record,None); return record, None
         try:
+            if profile_evaluations[0] >= settings.maximum_profile_evaluations:
+                stop_reason[0]="profile_evaluations"; raise _SearchBudgetStop()
+            remaining=settings.maximum_wall_seconds-(time.monotonic()-started)
+            if remaining <= 0.:
+                stop_reason[0]="wall_seconds"; raise _SearchBudgetStop()
+            profile_evaluations[0]+=1
             if settings.profile_solver == "coupled":
                 warm = None
-                if warm_speed[0] is not None and warm_speed[0].shape == path.distance.shape:
-                    warm = warm_speed[0]
+                if warm_reference[0] is not None:
+                    stations,speeds=warm_reference[0]
+                    target=np.asarray(trajectory.station_map.to_reference(path.distance),dtype=float)
+                    warm=np.interp(target,stations,speeds)
+                    if path.is_closed: warm[-1]=warm[0]
+                profile_settings=replace(settings.profile_settings,max_wall_seconds=min(remaining,settings.profile_settings.max_wall_seconds))
                 profile = yaw_aware_profile(path, capability, boundary=settings.boundary,
                                             maximum_speed=settings.maximum_speed, solver="coupled",
-                                            coupled_settings=settings.profile_settings,
+                                            coupled_settings=profile_settings,
                                             warm_start_speed=warm)
             else:
                 profile = yaw_aware_profile(path, capability, boundary=settings.boundary,
@@ -289,18 +323,21 @@ def optimize_yaw_aware_line(track: TrackProfile, corridor: Corridor | None,
             record["profile_diagnostics"] = {k: v for k, v in exc.diagnostics.items()
                                              if k in ("budget_reason", "disconnect_cut", "refinement_rounds",
                                                       "candidate_cap_rejections", "empty_station_count", "timings")}
-            return record, None
+            cache[key]=(record,None); return record, None
         except RuntimeError as exc:
-            record["reason"] = "profile_nonconvergence"; record["detail"] = str(exc); return record, None
+            record["reason"] = "profile_nonconvergence"; record["detail"] = str(exc); cache[key]=(record,None); return record, None
         except ValueError as exc:
             text = str(exc)
             record["reason"] = "capability_domain" if ("map" in text or "feasible" in text or "transition" in text) else "profile_invalid"
-            record["detail"] = text; return record, None
+            record["detail"] = text; cache[key]=(record,None); return record, None
         record.update(accepted=True, reason="accepted", lap_time=profile.lap_time,
                       geometry_grid_nodes=len(path.distance),
                       resolution_converged=profile.diagnostics.get("resolution_converged"))
-        warm_speed[0] = np.asarray(profile.speed)
-        return record, (trajectory, path, profile)
+        reference_stations=np.asarray(trajectory.station_map.to_reference(path.distance),dtype=float)
+        warm_reference[0]=(reference_stations,np.asarray(profile.speed,dtype=float))
+        item=(trajectory,path,profile)
+        cache[key]=(record,item)
+        return record,item
 
     best_coeff = np.zeros(spline.control_count)
     best_eval = None
@@ -308,39 +345,51 @@ def optimize_yaw_aware_line(track: TrackProfile, corridor: Corridor | None,
     pass_summary = []
     selected_optimizer_success = True
     selected_optimizer_attempts = []
+    # Evaluate the complete seed family before any local optimization, so the
+    # first seed cannot consume the global budget before comparison.
+    for idx, seed in enumerate(seeds):
+        try:
+            rec,item=evaluate(seed,idx,"seed")
+        except _SearchBudgetStop:
+            break
+        records.append(rec)
+        if item and (best_eval is None or item[2].lap_time < best_eval[2].lap_time-settings.minimum_improvement_seconds):
+            best_coeff,best_eval=seed.copy(),item
     for outer in range(1, min(3, settings.maximum_outer_passes)+1):
-        for idx, seed in enumerate(seeds):
-            if outer > 1 and best_eval is not None:
-                seed = best_coeff.copy()
-            rec, item = evaluate(seed, idx, f"pass_{outer}_seed")
-            records.append(rec)
-            if item and (best_eval is None or item[2].lap_time < best_eval[2].lap_time):
-                best_coeff, best_eval = seed.copy(), item
-            if not item:
-                continue
-            # Optimize one corner complex at a time; controls outside the window
-            # are fixed, with smooth fixed blending supplied by the spline basis.
+        if stop_reason[0] is not None or best_eval is None: break
+        # Subsequent passes begin from exactly the current validated incumbent.
+        for idx, seed in enumerate((best_coeff.copy(),)):
+            # Optimize one corner complex at a time from the current accepted
+            # incumbent; controls outside the window remain fixed.
             for ci, (start, end) in enumerate(corners):
+                if stop_reason[0] is not None: break
                 active = np.flatnonzero((spline.control_distance >= start) & (spline.control_distance <= min(end, track.lap_length)))
                 if track.is_closed and end > track.lap_length:
                     active = np.unique(np.r_[active, np.flatnonzero(spline.control_distance <= end-track.lap_length)])
                 if not active.size:
                     continue
-                base = seed.copy()
+                base = best_coeff.copy()
                 def objective(values):
                     candidate = base.copy(); candidate[active] = values
                     recx, evalx = evaluate(candidate, idx, f"pass_{outer}_corner_{ci}")
                     records.append(recx)
                     return evalx[2].lap_time if evalx else 1.e8 + float(np.linalg.norm(values-seed[active]))
-                result = minimize(objective, seed[active], method="Powell",
-                    bounds=[bounds[j] for j in active], options={"maxiter": settings.optimizer_max_iterations,
-                    "xtol": settings.optimizer_x_tolerance, "ftol": settings.optimizer_f_tolerance})
+                try:
+                    result = minimize(objective, base[active], method="Powell",
+                        bounds=[bounds[j] for j in active], options={"maxiter": settings.optimizer_max_iterations,
+                        "maxfev": max(1,settings.maximum_profile_evaluations-profile_evaluations[0]),
+                        "xtol": settings.optimizer_x_tolerance, "ftol": settings.optimizer_f_tolerance})
+                except _SearchBudgetStop:
+                    break
                 candidate = base.copy(); candidate[active] = result.x
-                recx, evalx = evaluate(candidate, idx, f"pass_{outer}_corner_{ci}_result")
+                try:
+                    recx, evalx = evaluate(candidate, idx, f"pass_{outer}_corner_{ci}_result")
+                except _SearchBudgetStop:
+                    break
                 recx.update(optimizer_success=bool(result.success), optimizer_iterations=int(result.nit))
                 records.append(recx)
                 selected_optimizer_attempts.append(bool(result.success))
-                if evalx and (best_eval is None or evalx[2].lap_time < best_eval[2].lap_time):
+                if evalx and (best_eval is None or evalx[2].lap_time < best_eval[2].lap_time-settings.minimum_improvement_seconds):
                     best_coeff, best_eval = candidate, evalx
                     selected_optimizer_success = bool(result.success)
         current = None if best_eval is None else best_eval[2].lap_time
@@ -349,10 +398,15 @@ def optimize_yaw_aware_line(track: TrackProfile, corridor: Corridor | None,
             break
         previous_time = current
     if best_eval is None:
+        if stop_reason[0] is not None:
+            records.append({"reason":"global_budget","budget_cause":stop_reason[0],"accepted":False})
+            raise YawLineOptimizationError("global line-search budget exhausted without validated incumbent", records)
         raise YawLineOptimizationError("all yaw-aware line candidates rejected", records)
     trajectory, path, profile = best_eval
     speed_plan = to_speed_plan(path, profile)
-    if len(pass_summary) == 1:
+    if stop_reason[0] is not None:
+        status = "budget_exceeded"
+    elif len(pass_summary) == 1:
         status = "single_pass"
     elif selected_optimizer_attempts and not all(selected_optimizer_attempts):
         status = "iteration_limit"
@@ -369,6 +423,10 @@ def optimize_yaw_aware_line(track: TrackProfile, corridor: Corridor | None,
         "corner_complexes": tuple(corners), "outer_passes": tuple(pass_summary),
         "optimizer_success": selected_optimizer_success,
         "converged": status == "converged",
+        "search_stop_reason": stop_reason[0], "search_budget_exhausted": stop_reason[0] is not None,
+        "evaluated_profile_count": profile_evaluations[0], "cache_hits": cache_hits[0],
+        "timings": {"wall_seconds": time.monotonic()-started},
+        "minimum_improvement_seconds": settings.minimum_improvement_seconds,
         "profile_solver": settings.profile_solver,
         "profile_resolution_converged": profile.diagnostics.get("resolution_converged"),
         "profile_diagnostics": {k: profile.diagnostics[k] for k in

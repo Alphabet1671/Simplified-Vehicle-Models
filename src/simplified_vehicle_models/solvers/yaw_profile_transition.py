@@ -202,12 +202,43 @@ def transition_intervals(path, capability, segment_index: int, fixed_q: float, d
             low=max(low,fixed_q+2*ds*amin); high=min(high,fixed_q+2*ds*amax)
         else:
             low=max(low,fixed_q-2*ds*amax); high=min(high,fixed_q-2*ds*amin)
+        # Keep the strict oracle domain aligned with the normalized interval
+        # endpoints for the exact-zero roundoff case.
+        q_domain_lo, q_domain_hi = lo, hi
         def q_feasible(q):
-            ev = edge_evidence(path, capability, segment_index,
-                               fixed_q if direction == 'forward' else q,
-                               q if direction == 'forward' else fixed_q,
-                               settings=settings)
+            q=float(q)
+            q_left=fixed_q if direction == 'forward' else q
+            q_right=q if direction == 'forward' else fixed_q
+            if not math.isfinite(q) or q < 0.0 or min(q_left,q_right) < 0.0:
+                return False
+            if not (q_domain_lo <= q <= q_domain_hi):
+                return False
+            ev = edge_evidence(path, capability, segment_index,q_left,q_right,settings=settings)
             return bool(ev['feasible'])
+        # A negative high bound can only be repaired when its magnitude is
+        # consistent with floating-point cancellation at q=0. Do not use the
+        # interval-merging tolerance here: it is not a physical-domain tolerance.
+        q_roundoff = 8.0 * np.finfo(float).eps * max(
+            abs(fixed_q), abs(ds * amin), abs(ds * amax), np.finfo(float).tiny)
+        if high < 0.0:
+            if high >= -q_roundoff:
+                high = 0.0
+            else:
+                continue
+        low = max(low, 0.0)
+        q_domain_lo, q_domain_hi = max(q_domain_lo, 0.0), high
+        if low > high:
+            continue
+        if low == high:
+            if q_feasible(low):
+                item=QInterval(low,high,True,True,support)
+                if result and item.lower <= result[-1].upper and q_feasible(item.lower):
+                    prev=result[-1]
+                    result[-1]=QInterval(prev.lower,max(prev.upper,item.upper),True,True,
+                                         prev.support_id if prev.support_id==item.support_id else ())
+                else:
+                    result.append(item)
+            continue
         # A returned numeric bound itself must be strict-feasible. If root
         # rounding produced an infeasible endpoint, isolate the nearest
         # representable feasible value toward a known feasible interior point.
@@ -221,11 +252,14 @@ def transition_intervals(path, capability, segment_index: int, fixed_q: float, d
             if not math.isfinite(qmid):
                 probe_evidence = []
                 for probe in candidates:
-                    ev = edge_evidence(path, capability, segment_index,
-                                       fixed_q if direction == 'forward' else float(probe),
-                                       float(probe) if direction == 'forward' else fixed_q,
-                                       settings=settings)
-                    probe_evidence.append({"q_free": float(probe), "feasible": bool(ev['feasible']),
+                    probe=float(probe)
+                    q_left=fixed_q if direction == 'forward' else probe
+                    q_right=probe if direction == 'forward' else fixed_q
+                    if not math.isfinite(probe) or min(q_left,q_right)<0 or not (lo <= probe <= hi):
+                        probe_evidence.append({"q_free":probe,"feasible":False,"reason":"outside_nonnegative_free_domain"})
+                        continue
+                    ev = edge_evidence(path, capability, segment_index,q_left,q_right,settings=settings)
+                    probe_evidence.append({"q_free": probe, "feasible": bool(ev['feasible']),
                                            "reason": ev['reason'].value,
                                            "midpoint_speed": ev['midpoint_speed'],
                                            "longitudinal_acceleration": ev['longitudinal_acceleration'],

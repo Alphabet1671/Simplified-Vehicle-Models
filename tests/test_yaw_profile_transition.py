@@ -141,6 +141,18 @@ class TransitionIntervalTests(unittest.TestCase):
             self.assertTrue(edge_evidence(path,cap,0,100.,x.lower,settings=self.settings)['feasible'])
             self.assertTrue(edge_evidence(path,cap,0,100.,x.upper,settings=self.settings)['feasible'])
 
+    def test_backward_near_zero_roundoff_keeps_exact_boundary(self):
+        cap=make_map()
+        # Pick a fixed q whose backward acceleration-domain limit is zero;
+        # cancellation in the free-q transform may put that limit a few ulps
+        # below zero, but q=0 itself is strictly feasible.
+        ds=float(self.path.distance[1]-self.path.distance[0])
+        fixed=2.0*ds*float(cap.longitudinal_acceleration[0])
+        fixed=abs(fixed)
+        iv=transition_intervals(self.path,cap,0,fixed,'backward',(0.,400.),settings=self.settings)
+        self.assertTrue(any(item.lower == 0. for item in iv),iv)
+        self.assertTrue(edge_evidence(self.path,cap,0,0.,fixed,settings=self.settings)['feasible'])
+
     def test_backward_dense_oracle_membership(self):
         cap=make_map(into=8.,out=5.)
         path=YawPath(np.array([0.,.05,.1]),np.array([-.03,-.03,-.03]),np.array([.02,.02,.02]),False)

@@ -18,6 +18,8 @@ def add_yaw_map_options(parser):
     parser.add_argument('--yaw-map-mode', choices=('vehicle-limit', 'limited-grid'), default='vehicle-limit',
                         help='limited-grid is explicitly truncated legacy comparison mode')
     parser.add_argument('--yaw-ay-spacing', type=float, default=.5)
+    parser.add_argument('--yaw-map-ax-min', type=float, default=-6.)
+    parser.add_argument('--yaw-map-ax-max', type=float, default=3.)
     parser.add_argument('--yaw-map-scan-spacing', type=float, default=.5)
     parser.add_argument('--yaw-map-boundary-tolerance', type=float, default=.05)
     parser.add_argument('--yaw-map-max-probes', type=int, default=250000)

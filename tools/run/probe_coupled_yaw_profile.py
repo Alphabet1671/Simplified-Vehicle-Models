@@ -70,10 +70,11 @@ def run(args):
     speed_domain = runner.physical_map_speed_limit(pm, search_limit_mps=args.maximum_speed)
     track = load_track(args.track)
     path = _sample_geometry(track, args.geometry, args.spacing)
-    ax = np.linspace(-6., 3., args.ax_points)
+    ax_min, ax_max = getattr(args, 'yaw_map_ax_min', -6.), getattr(args, 'yaw_map_ax_max', 3.)
+    ax = np.linspace(ax_min, ax_max, args.ax_points)
     ay = np.linspace(-9.80665, 9.80665, args.ay_points)
     if args.anchored:
-        ax, ay = runner.anchored_axis(-6., 3., args.ax_points), runner.anchored_axis(-9.80665, 9.80665, args.ay_points)
+        ax, ay = runner.anchored_axis(ax_min, ax_max, args.ax_points), runner.anchored_axis(-9.80665, 9.80665, args.ay_points)
     started = time.perf_counter()
     from tools.run.yaw_map_options import resolve_yaw_map
     capability, map_report = resolve_yaw_map(pm, vehicle.yaw_inertia,

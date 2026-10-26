@@ -44,7 +44,7 @@ def main(argv=None):
     vmax = runner.physical_map_speed_limit(pm)
     from tools.run.yaw_map_options import resolve_yaw_map
     capability, map_report = resolve_yaw_map(pm, vehicle.yaw_inertia,
-        np.linspace(0., vmax, args.speed_points), runner.anchored_axis(-6., 3., args.ax_points), args,
+        np.linspace(0., vmax, args.speed_points), runner.anchored_axis(args.yaw_map_ax_min, args.yaw_map_ax_max, args.ax_points), args,
         limited_ay=runner.anchored_axis(-9.80665, 9.80665, args.ay_points))
     track = load_track(args.track)
     path = _sample_geometry(track, args.geometry, args.spacing)

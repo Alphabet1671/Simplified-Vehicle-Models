@@ -321,7 +321,7 @@ def run(args):
     # low-speed forward/backward profile domain: braking needs more range
     # than the initial symmetric convenience grid supplied. Exact zero is a
     # required support slice for both signed acceleration dimensions.
-    ax_axis = anchored_axis(-6., 3., args.yaw_ax_points)
+    ax_axis = anchored_axis(getattr(args, 'yaw_map_ax_min', -6.), getattr(args, 'yaw_map_ax_max', 3.), args.yaw_ax_points)
     ay_axis = anchored_axis(-9.80665, 9.80665, args.yaw_ay_points)
     from tools.run.yaw_map_options import resolve_yaw_map, IncompleteYawMapError
     try:

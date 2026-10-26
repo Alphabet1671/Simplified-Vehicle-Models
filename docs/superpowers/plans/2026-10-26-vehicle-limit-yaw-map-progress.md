@@ -45,7 +45,12 @@
 - Midpoint-only adaptive refinement plus disjoint quarter-position validation gates now implemented and tested (51 focused tests pass).
 - Physical v8:58×56×149 (~484k nodes), no completely masked training/validation slices. Node budget500k stopped at47 rounds; training loss0.65625, held-out loss0.59375m/s². Result correctly incomplete; no acceptance claim.
 - Larger explicit build v9 now running:2M nodes,256refinements,2400s. Tolerance remains0.25m/s². If it fails the workflow must remain fail-closed, not silently relax acceptance.
-- Full repository suite bash-1471 still running; latest125-yaw-test pass is earlier snapshot. No OCP edits.
+- Full repository suite bash-1471 still running. Final yaw-specific suite130 tests passed in704.6s; meaningful budget assertion subsequently passes14 workflow tests. No OCP edits.
+
+## Refinement efficiency ruling
+
+- Reviewer proposes ay-only splits for finite loss and cross-axis splits only for wholly unsupported faces. Do NOT adopt as a guarantee: a finite masked boundary can still be limited by an infeasible v/ax corner even when lower ay has support. Ay bisection alone may converge to a persistently masked boundary. Any selective optimization needs measured progress or direct prospective plane evidence plus fallback, not a new monotonicity assumption.
+- Current v9 larger-budget physical run remains authoritative for the present all-axis midpoint algorithm. No duplicate build launched.
 
 ## Remaining
 

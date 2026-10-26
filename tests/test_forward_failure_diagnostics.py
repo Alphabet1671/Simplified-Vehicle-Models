@@ -41,6 +41,23 @@ class ForwardFailureDiagnosticsTests(unittest.TestCase):
                 solve_forward(Plant(),self.driver,np.array([2.]),duration=1.,wall_seconds=1.)
         np.testing.assert_array_equal(caught.exception.last_state,[2.])
         self.assertEqual(caught.exception.diagnostics["accepted_step_count"],0)
+        self.assertEqual(caught.exception.diagnostics["last_state_kind"],"initial")
+
+    def test_domain_rejection_message_and_time_are_retained(self):
+        def fake(rhs, *_args, **_kwargs):
+            rhs(.25,np.array([3.]))
+            return SimpleNamespace(success=False,message="failed",t=np.array([0.]),y=np.array([[2.]]))
+        class RejectingPlant(Plant):
+            def evaluate(self,time,state,command):
+                from simplified_vehicle_models.solvers.forward_driver import TrialStateError
+                if time > 0.: raise TrialStateError("wheel speed below domain")
+                return RateSystem(np.array([1.]))
+        with patch("scipy.integrate.solve_ivp",side_effect=fake):
+            with self.assertRaises(ForwardIntegrationError) as caught:
+                solve_forward(RejectingPlant(),self.driver,np.array([2.]),duration=1.,wall_seconds=1.)
+        rejection=caught.exception.diagnostics["last_domain_rejection"]
+        self.assertEqual(rejection,{"time":.25,"message":"wheel speed below domain"})
+        self.assertEqual(caught.exception.diagnostics["last_state_kind"],"solver_accepted_unvalidated")
 
     def test_diagnostic_counts_and_limits_are_reported(self):
         fake=SimpleNamespace(success=False,message="failed",t=np.array([0.]),y=np.array([[2.]]))

@@ -618,6 +618,7 @@ def solve_forward(plant: ForwardPlant, driver: PreviewDriver, initial_state,
     start = perf_counter()
     evaluations = 0
     rejected_domain_trials = 0
+    last_domain_rejection = [None]
 
     #: The command of the latest ``state_rates`` call, read only by ``step_sink``.
     applied = [None]
@@ -656,8 +657,9 @@ def solve_forward(plant: ForwardPlant, driver: PreviewDriver, initial_state,
             rates = raw_state_rates(time, state)
         except _CommandMapperTrialStateError as error:
             raise error.original from None
-        except TrialStateError:
+        except TrialStateError as error:
             rejected_domain_trials += 1
+            last_domain_rejection[0]={"time":float(time),"message":str(error)}
             # Radau rejects this Newton trial and reduces its integration step.
             return np.full(initial.shape, np.nan)
         if rates.shape != initial.shape:
@@ -704,10 +706,12 @@ def solve_forward(plant: ForwardPlant, driver: PreviewDriver, initial_state,
     if not result.success:
         accepted_time=float(result.t[-1]) if len(result.t) else 0.
         accepted_state=np.asarray(result.y[:,-1],dtype=float) if result.y.ndim == 2 and result.y.shape[1] else initial
+        state_kind="solver_accepted_unvalidated" if len(result.t) else "initial"
         diagnostics={"failure_kind":"solver_unsuccessful","solver_message":str(result.message),
-                     "last_accepted_time":accepted_time,"accepted_step_count":max(0,len(result.t)-1),
+                     "last_state_kind":state_kind,"last_accepted_time":accepted_time,
+                     "accepted_step_count":max(0,len(result.t)-1),
                      "rhs_evaluations":evaluations,"rejected_domain_trials":rejected_domain_trials,
-                     "duration":float(duration),"wall_seconds":float(wall_seconds),"method":method,
+                     "last_domain_rejection":last_domain_rejection[0],"duration":float(duration),"wall_seconds":float(wall_seconds),"method":method,
                      "elapsed_wall_seconds":perf_counter()-start}
         raise ForwardIntegrationError(str(result.message),diagnostics,accepted_state,accepted_time)
     # Bound every component of the dense polynomial over each accepted interval

@@ -52,6 +52,12 @@
 - Reviewer proposes ay-only splits for finite loss and cross-axis splits only for wholly unsupported faces. Do NOT adopt as a guarantee: a finite masked boundary can still be limited by an infeasible v/ax corner even when lower ay has support. Ay bisection alone may converge to a persistently masked boundary. Any selective optimization needs measured progress or direct prospective plane evidence plus fallback, not a new monotonicity assumption.
 - Current v9 larger-budget physical run remains authoritative for the present all-axis midpoint algorithm. No duplicate build launched.
 
+## Larger-budget v9 outcome
+
+- v9 exceeded2400s after81rounds; retained92×90×183 map (~1.5M nodes), unresolved deadline evidence, incomplete. No completed default artifact exists yet.
+- Ruling: optimize refinement before increasing budgets further. Try ay-only finite-loss split, explicitly detect no measured loss reduction, then alternate one speed/ax midpoint fallback; wholly unsupported slices need cross-axis refinement. Acceptance remains disjoint and unchanged. The previous caution against ay-only guarantees still applies; fallback is required.
+- Physical budget-failure end-to-end smoke verified CLI exits4, saves NPZ, loader rejects incomplete artifact. Artifact workflow remains honest despite performance limits.
+
 ## Remaining
 
 1. Finish/review workflow, especially true holdout-to-supported-domain distance and preallocation budgets.

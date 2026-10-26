@@ -36,7 +36,7 @@ PYTHONPATH=src:. python3 tools/run/build_vehicle_yaw_map.py \
 
 Exit 0 means the finite-resolution audit completed; exit 4 means it did not. Inspect the adjacent JSON report before increasing resolution or budgets. Do not loosen the loss tolerance merely to get a success status.
 
-The NPZ embeds axes, directional moments, strict mask, discovery evidence, audit evidence, settings, model/build identity and provenance. Input or implementation changes invalidate loading; array integrity is checked. Incomplete artifacts require an explicit diagnostic-only override at the library loader and are rejected by normal consumer tools.
+The NPZ embeds axes, directional moments, strict mask, discovery evidence, training and held-out validation evidence, settings, model/build identity and provenance. Source XML/data content hashes are retained for traceability; cache identity is governed by the compiled physical parameters plus implementation and settings (an XML comment-only change need not change physical identity). Input or implementation changes invalidate loading; array integrity is checked. Incomplete artifacts require an explicit diagnostic-only override at the library loader and are rejected by normal consumer tools.
 
 ## Use the same artifact
 

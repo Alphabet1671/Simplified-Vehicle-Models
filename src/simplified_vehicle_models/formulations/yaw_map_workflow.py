@@ -123,7 +123,7 @@ class YawMapWorkflowResult:
     refinement_rounds: int
     declared_speed_knots: tuple[float, ...]
     declared_longitudinal_acceleration_knots: tuple[float, ...]
-    finite_resolution_disclosure: str
+    finite_resolution_disclosure: str  # Finite bisection may not reduce every loss before budgets.
 
 
 def _validated_knots(values: Iterable[float], name: str, *, nonnegative: bool = False) -> tuple[float, ...]:
@@ -269,7 +269,8 @@ def _audit_map(capability: YawCapabilityMap, holdout_domain: YawMapDomain,
 
 
 def _refine_axes(capability: YawCapabilityMap, audit: YawMapCompletionAudit,
-                 settings: YawMapWorkflowSettings, lateral_bound: float | None = None
+                 settings: YawMapWorkflowSettings, lateral_bound: float | None = None,
+                 axes_to_refine: tuple[str, ...] = ("speed", "ax", "ay")
                  ) -> tuple[tuple[float, ...], tuple[float, ...], tuple[float, ...]]:
     """Refine one worst responsible holdout, keeping tensor growth bounded.
 
@@ -279,6 +280,8 @@ def _refine_axes(capability: YawCapabilityMap, audit: YawMapCompletionAudit,
     losses; outer truncation ranks ahead of masked interior loss.  This is a
     finite adaptive search, not a guarantee it will converge before its budgets.
     """
+    if not set(axes_to_refine).issubset({"speed", "ax", "ay"}):
+        raise ValueError("axes_to_refine must contain only speed, ax, and ay")
     speed = set(float(value) for value in capability.speed)
     ax = set(float(value) for value in capability.longitudinal_acceleration)
     ay = set(float(value) for value in capability.lateral_acceleration)
@@ -292,16 +295,17 @@ def _refine_axes(capability: YawCapabilityMap, audit: YawMapCompletionAudit,
                 -1.0 if probe.loss_distance is None else probe.loss_distance)
 
     probe = max(candidates, key=priority)
-    # Split enclosing cells rather than inserting the training probe itself.
+    # Split selected enclosing cells rather than inserting a training probe.
     # This prevents a pointwise fitted map from acquiring artificial zero loss.
-    for axis, value in ((speed, probe.speed), (ax, probe.longitudinal_acceleration)):
-        midpoint = _axis_midpoint(axis, value)
-        if midpoint is not None:
-            axis.add(midpoint)
+    for name, axis, value in (("speed", speed, probe.speed), ("ax", ax, probe.longitudinal_acceleration)):
+        if name in axes_to_refine:
+            midpoint = _axis_midpoint(axis, value)
+            if midpoint is not None:
+                axis.add(midpoint)
     ay_midpoint = _axis_midpoint(ay, probe.lateral_acceleration)
-    if ay_midpoint is not None:
+    if "ay" in axes_to_refine and ay_midpoint is not None:
         ay.add(ay_midpoint)
-    elif probe.map_reason is MapQueryReason.OUT_OF_DOMAIN and lateral_bound is not None:
+    elif "ay" in axes_to_refine and probe.map_reason is MapQueryReason.OUT_OF_DOMAIN and lateral_bound is not None:
         # Grow only toward directly feasible exterior evidence, never past the
         # model-derived finite tyre bound. `_fill_lateral_axis` preserves width.
         target = max(-lateral_bound, min(lateral_bound, probe.lateral_acceleration))
@@ -364,6 +368,8 @@ def build_yaw_map_workflow(
     rounds = 0
     last_capability: YawCapabilityMap | None = None
     last_audit: YawMapCompletionAudit | None = None
+    worst_history: dict[tuple[float, float, float], float | None] = {}
+    cross_axis = "speed"
     while True:
         node_count = len(map_speed) * len(map_ax) * len(lateral)
         if node_count > settings.maximum_map_nodes or time.monotonic() - started > settings.time_budget_seconds:
@@ -421,7 +427,29 @@ def build_yaw_map_workflow(
         last_capability, last_audit = capability, audit
         if (domain.diagnostics.complete and audit.complete) or rounds >= settings.maximum_refinement_rounds:
             break
-        refined = _refine_axes(capability, audit, settings, domain.lateral_bound.lateral_acceleration)
+        candidates = (*audit.outer_truncations, *audit.interpolation_losses)
+        if not candidates:
+            # Unresolved/budget evidence is already incomplete but has no
+            # physical boundary whose cell can honestly be refined.
+            break
+        worst = max(candidates, key=lambda probe: (
+            int(probe.full_slice_unsupported), int(probe.map_reason is MapQueryReason.OUT_OF_DOMAIN),
+            -1.0 if probe.loss_distance is None else probe.loss_distance))
+        worst_key = (worst.speed, worst.longitudinal_acceleration, worst.lateral_acceleration)
+        prior_loss = worst_history.get(worst_key)
+        finite_stalled = (worst.loss_distance is not None and prior_loss is not None
+                          and worst.loss_distance >= prior_loss - 1e-12)
+        # Finite lateral loss has strict support at its v/ax face: spend the
+        # cheap ay slab first.  Escalate only if that same boundary did not
+        # improve; full unsupported faces need a cross-axis split immediately.
+        if worst.full_slice_unsupported or finite_stalled:
+            axes = (cross_axis,)
+            cross_axis = "ax" if cross_axis == "speed" else "speed"
+        else:
+            axes = ("ay",)
+        refined = _refine_axes(capability, audit, settings,
+                               domain.lateral_bound.lateral_acceleration, axes)
+        worst_history[worst_key] = worst.loss_distance
         if refined == (map_speed, map_ax, lateral):
             audit = replace(audit, refinement_stalled=True)
             last_audit = audit

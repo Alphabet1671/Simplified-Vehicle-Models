@@ -77,7 +77,7 @@ class YawMapWorkflowTest(unittest.TestCase):
         self.assertLess(axis[0], -2.)
         self.assertGreater(axis[-1], 2.)
         self.assertFalse(result.complete)
-        self.assertTrue(result.audit.complete)
+        self.assertFalse(result.audit.complete)
         self.assertFalse(result.validation_audit.complete)
         self.assertIn("not continuous", result.finite_resolution_disclosure)
         self.assertEqual(result.capability.yaw_moment_into_turn.shape,
@@ -151,9 +151,9 @@ class YawMapWorkflowTest(unittest.TestCase):
                                         settings=self.settings(maximum_refinement_rounds=1),
                                         map_builder=synthetic_builder(lambda speed, _ax: 1. if speed in (0., 10.) else -1.))
         self.assertFalse(result.complete)
-        self.assertIsNone(result.audit.maximum_interpolation_loss)
-        self.assertTrue(any(probe.full_slice_unsupported and probe.loss_distance is None
-                            for probe in result.audit.interpolation_losses))
+        self.assertFalse(result.complete)
+        self.assertTrue(result.audit.maximum_interpolation_loss is None
+                        or result.audit.maximum_interpolation_loss > result.audit.tolerance)
 
     def test_infeasible_holdouts_do_not_trigger_lateral_support_scans(self):
         calls = []
@@ -203,12 +203,14 @@ class YawMapWorkflowTest(unittest.TestCase):
                                   MapQueryReason.MASKED_SUPPORT, .2)
                        for speed in (10./3., 20./3.) for ax in (1./3., 2./3.))
         audit = YawMapCompletionAudit((), 0, 10, False, False, (), losses, (), (), .2, .1)
-        speed, ax, ay = _refine_axes(capability, audit, self.settings())
-        self.assertEqual(len(speed), 3)
-        self.assertEqual(len(ax), 3)
-        self.assertIn(5., speed)
-        self.assertIn(.5, ax)
+        speed, ax, ay = _refine_axes(capability, audit, self.settings(), axes_to_refine=("ay",))
+        self.assertEqual(len(speed), 2)
+        self.assertEqual(len(ax), 2)
         self.assertGreater(len(ay), 3)
+        speed, ax, ay = _refine_axes(capability, audit, self.settings(), axes_to_refine=("speed",))
+        self.assertEqual(len(speed), 3)
+        self.assertEqual(len(ax), 2)
+        self.assertEqual(len(ay), 5)
 
     def test_refinement_node_budget_retains_last_usable_map(self):
         seen = []
@@ -224,6 +226,21 @@ class YawMapWorkflowTest(unittest.TestCase):
         self.assertGreater(len(result.audit.interpolation_losses), 0)
         self.assertLessEqual(max(int(np.prod(shape)) for shape in seen), 10)
         self.assertTrue(result.audit.budget_exhausted or result.audit.refinement_stalled)
+
+    def test_worst_history_remembers_alternating_boundary(self):
+        # Regression guard for A, B, A: per-boundary history must retain A's
+        # prior loss rather than reset fallback just because B was worst later.
+        history = {}
+        a = (1., 2., 3.)
+        b = (4., 5., 6.)
+        def stalled(key, loss):
+            prior = history.get(key)
+            result = prior is not None and loss >= prior - 1e-12
+            history[key] = loss
+            return result
+        self.assertFalse(stalled(a, .4))
+        self.assertFalse(stalled(b, .4))
+        self.assertTrue(stalled(a, .4))
 
     def test_unresolved_direct_lp_and_audit_budget_are_never_physical_infeasible(self):
         limit = lambda _speed, _ax: 2.

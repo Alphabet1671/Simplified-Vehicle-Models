@@ -40,6 +40,13 @@
 - Ruling: separate cell-third refinement/training from untouched quarter-cell validation. Adaptive insertions use enclosing CELL MIDPOINTS rather than audit coordinates, so fitted audit knot coincidences cannot manufacture success. Completion must require held-out audit too. Cost if wrong: larger tensor/time, but never relax strict support or claim false vehicle-edge coverage.
 - Cancelled old final artifact rebuild; leave existing v7 as failed external-validation evidence only.
 
+## Disjoint validation build v8
+
+- Midpoint-only adaptive refinement plus disjoint quarter-position validation gates now implemented and tested (51 focused tests pass).
+- Physical v8:58×56×149 (~484k nodes), no completely masked training/validation slices. Node budget500k stopped at47 rounds; training loss0.65625, held-out loss0.59375m/s². Result correctly incomplete; no acceptance claim.
+- Larger explicit build v9 now running:2M nodes,256refinements,2400s. Tolerance remains0.25m/s². If it fails the workflow must remain fail-closed, not silently relax acceptance.
+- Full repository suite bash-1471 still running; latest125-yaw-test pass is earlier snapshot. No OCP edits.
+
 ## Remaining
 
 1. Finish/review workflow, especially true holdout-to-supported-domain distance and preallocation budgets.

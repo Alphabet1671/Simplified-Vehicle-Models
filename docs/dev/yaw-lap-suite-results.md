@@ -64,15 +64,15 @@ The model-aware mode improves speed tracking/lap time but worsens lateral tracki
 
 The current implementation subsequently aligns yaw damping with the preview curvature used for feedforward. The FSC table above is intentionally labeled with the earlier controller revision; it must not be represented as final matched-preview evidence.
 
-## MIS forward tracking: still unresolved
+## MIS forward tracking: matched-preview correction succeeds
 
 The early model-aware controller diverged near station 346.6 m, producing an unvalidated failure state with lateral displacement -12.17 m and a near-zero front wheel speed. This is a real tracking failure, not successful containment. Finite Newton-trial steering overshoot is now retryable without changing the physical bound, and inward steering-stop commands are tested.
 
-A longer-preview gain experiment exhausted its 550 s integration budget. Matched-preview yaw damping advanced to accepted-state validation but exhausted 550 s there; a final 1,400 s validation-budget / 1,500 s hard-watchdog replay is pending at this snapshot. No MIS controller success or containment is claimed until that evidence is collected.
+A longer-preview gain experiment exhausted its 550 s integration budget. Matched-preview yaw damping advanced to accepted-state validation but exhausted 550 s there. The subsequent 1,400 s cooperative / 1,500 s hard-watchdog replay **completed all solver validation**: driven64.80223 s versus planned64.16651 s, lateralRMS0.06579 m/max0.23174 m, speedRMS0.27060 m/s, sampled centre-corridor violation0 m. Requested full-throttle time23.855%, no requested steering-rate/brake saturation. This is successful fixed-line replay, not footprint/between-step corridor certification. A matched-final-revision FSC replay is underway.
 
 ## Remaining work
 
-- Collect final MIS matched-preview replay and, if successful, repeat the matched FSC comparison for that exact revision.
+- Collect the matched-final-revision FSC replay; MIS final fixed-line replay now completes.
 - Improve frontier/refinement efficiency enough to resolve the 0.5 m profiles within the hard runtime cap; do not widen strict tolerances.
 - Demonstrate optimizer and control-basis/spatial convergence, rather than only bounded improvement.
 - Validate optimized-line replay independently of fixed-line controller evidence.

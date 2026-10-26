@@ -235,3 +235,26 @@ class EdgeFeasibilityMatrixTests(unittest.TestCase):
                     mismatches += scalar != bool(matrix[a, b])
         self.assertGreater(feasible, 5)  # both outcomes exercised
         self.assertEqual(mismatches, 0)
+
+    def test_matrix_matches_scalar_on_exact_knots_and_tolerance_band(self):
+        from simplified_vehicle_models.solvers.yaw_profile_transition import edge_feasibility_matrix
+        speed = np.linspace(0., 10., 11); ax = np.linspace(-3., 3., 7); ay = np.linspace(-6., 6., 9)
+        shape = (speed.size, ax.size, ay.size)
+        mask = np.ones(shape, bool); mask[-1, -1, :] = False; mask[0, 0, 0] = False
+        cap = YawCapabilityMap(speed, ax, ay, np.full(shape, 50.), np.full(shape, 50.), mask, 1.,
+                               "physical_no_tv_v1", "edge-test")
+        d = np.linspace(0., .2, 5); path = YawPath(d, np.full(5, .05), np.zeros(5), False)
+        ds = float(d[1] - d[0]); settings = CoupledProfileSettings()
+        top = speed[-1] ** 2
+        pairs = []
+        for target_ax in (ax[0], ax[-1], 0., ax[-1] + 1e-13, ax[-1] + 1e-11, ax[0] - 1e-13, ax[0] - 1e-11):
+            for qm in (top, top - 1e-9, 1., 0.25):
+                q0 = qm - ds * target_ax; q1 = qm + ds * target_ax
+                if q0 >= 0 and q1 >= 0 and q0 + q1 > 0:
+                    pairs.append((q0, q1))
+        pairs += [(top, top), (top + 1e-11, top + 1e-11), (top + 1e-9, top + 1e-9)]
+        q0 = np.array([p[0] for p in pairs]); q1 = np.array([p[1] for p in pairs])
+        got = edge_feasibility_matrix(path, cap, 0, q0, q1, pairwise=True)
+        want = [bool(edge_evidence(path, cap, 0, a, b, settings=settings)["feasible"]) for a, b in pairs]
+        self.assertEqual(got.tolist(), want)
+        self.assertIn(True, want); self.assertIn(False, want)

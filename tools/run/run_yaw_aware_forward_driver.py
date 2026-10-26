@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import asdict
+import hashlib
 import json
 import math
 from collections.abc import Mapping
@@ -121,7 +122,21 @@ def parse_args(argv=None):
     parser.add_argument("--record", action="store_true")
     parser.add_argument("--record-precision", choices=("float32", "float64"), default="float32")
     parser.add_argument("--frame-rate-note", default="")
+    from simplified_vehicle_models.solvers.yaw_profile_contracts import CoupledProfileSettings
+    defaults = CoupledProfileSettings()
+    parser.add_argument("--profile-solver", choices=("coupled", "legacy"), default="coupled")
+    parser.add_argument("--profile-wall-seconds", type=float, default=defaults.max_wall_seconds)
+    parser.add_argument("--profile-max-refinements", type=int, default=defaults.max_refinement_rounds)
+    parser.add_argument("--profile-max-candidates", type=int, default=defaults.max_candidates_per_station)
+    parser.add_argument("--profile-max-seam-anchors", type=int, default=defaults.max_seam_anchors)
+    parser.add_argument("--plan-only", action="store_true", help="stop after planning; no forward simulation")
+    parser.add_argument("--skip-preflight", action="store_true", help="do not block on preflight map holes")
     args = parser.parse_args(argv)
+    if not math.isfinite(args.profile_wall_seconds) or args.profile_wall_seconds <= 0:
+        parser.error("--profile-wall-seconds must be finite and positive")
+    for name in ("profile_max_refinements", "profile_max_candidates", "profile_max_seam_anchors"):
+        if getattr(args, name) < 1:
+            parser.error(f"--{name.replace('_','-')} must be at least 1")
     for name in ("lateral_margin", "control_spacing", "planning_grid_spacing",
                  "duration", "wall_seconds", "maximum_step", "rtol", "preview_seconds",
                  "heading_gain", "lateral_gain", "speed_gain"):
@@ -152,15 +167,49 @@ def make_record_sink(plant, optimized_path, output, precision="float32"):
 
 
 def _jsonable(value):
+    """Convert to strict JSON values; nonfinite floats become null."""
     if isinstance(value, Mapping):
         return {str(k): _jsonable(v) for k, v in value.items()}
-    if isinstance(value, (tuple, list)):
+    if isinstance(value, np.ndarray):
+        return _jsonable(value.tolist())
+    if isinstance(value, (tuple, list, set, frozenset)):
         return [_jsonable(v) for v in value]
     if isinstance(value, np.generic):
-        return value.item()
+        return _jsonable(value.item())
     if isinstance(value, Path):
         return str(value)
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    if hasattr(value, "value") and type(value).__module__.endswith("yaw_profile_map"):
+        return value.value
+    if hasattr(value, "__dataclass_fields__"):
+        return _jsonable(asdict(value))
     return value
+
+
+def write_json(path, document):
+    """Write strict JSON (no NaN/Infinity); nonfinite values are already null."""
+    Path(path).write_text(json.dumps(_jsonable(document), indent=2, allow_nan=False) + "\n")
+
+
+def file_sha256(path):
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def array_sha256(*arrays):
+    digest = hashlib.sha256()
+    for array in arrays:
+        array = np.ascontiguousarray(np.asarray(array))
+        digest.update(str(array.dtype).encode()); digest.update(str(array.shape).encode())
+        digest.update(array.tobytes())
+    return digest.hexdigest()
+
+
+def failure_summary(stage, causes, started, **extra):
+    return {"status": "failed", "failure_stage": stage, "causes": causes,
+            "lap_completed": False, "qualified": False, "accepted": False, "U3_qualified": False,
+            "elapsed_setup_seconds": time.perf_counter() - started,
+            "diagnostic_only": DIAGNOSTIC_NONCLAIMS, **extra}
 
 
 def record_metadata(args, track, vehicle, capability, plan, result):
@@ -206,11 +255,13 @@ def record_metadata(args, track, vehicle, capability, plan, result):
                      "scipy": scipy.__version__},
         "model": {"model": args.model, "plant_class": "PlanarForwardPlant",
                   "formulation_xml": identity(formulation), "mechanical_dof": 7,
-                  "vehicle_name": getattr(vehicle, "name", None)},
+                  "vehicle_name": getattr(vehicle, "name", None),
+                  "yaw_profile": getattr(args, "yaw_profile_provenance", None)},
         "sources": source_hashes(sources),
         "track": {"file": identity(track_path), "reference": "yaw-aware-optimized-line",
                   "source_path_identity": identity(track_path),
-                  "optimized_path_identity": "line.csv"},
+                  "optimized_path_identity": "line.csv",
+                  "optimized_path_sha256": getattr(args, "line_csv_sha256", None)},
         "yaw_capability": {"source_kind": capability.source_kind,
                            "source_identity": capability.source_identity,
                            "yaw_inertia": float(capability.yaw_inertia),
@@ -272,15 +323,80 @@ def run(args):
     ay_axis = anchored_axis(-9.80665, 9.80665, args.yaw_ay_points)
     grid = YawCapabilityGrid(speed_axis, ax_axis, ay_axis)
     capability = build_physical_yaw_map(pm, grid, yaw_inertia=vehicle.yaw_inertia)
+    from simplified_vehicle_models.solvers.yaw_profile_contracts import CoupledProfileSettings
+    profile_settings = CoupledProfileSettings(
+        max_wall_seconds=float(getattr(args, "profile_wall_seconds", CoupledProfileSettings().max_wall_seconds)),
+        max_refinement_rounds=int(getattr(args, "profile_max_refinements", CoupledProfileSettings().max_refinement_rounds)),
+        max_candidates_per_station=int(getattr(args, "profile_max_candidates", CoupledProfileSettings().max_candidates_per_station)),
+        max_seam_anchors=int(getattr(args, "profile_max_seam_anchors", CoupledProfileSettings().max_seam_anchors)))
+    profile_solver = getattr(args, "profile_solver", "coupled")
+    map_fields = ("speed", "longitudinal_acceleration", "lateral_acceleration",
+                  "feasible_mask", "yaw_moment_into_turn", "yaw_moment_out_of_turn")
+    map_hash = (array_sha256(*(getattr(capability, f) for f in map_fields))
+                if all(hasattr(capability, f) for f in map_fields) else None)
+    if map_hash is not None:
+        try:
+            np.savez(output / "yaw_map.npz", speed=capability.speed, ax=capability.longitudinal_acceleration,
+                     ay=capability.lateral_acceleration, feasible_mask=capability.feasible_mask,
+                     yaw_moment_into_turn=capability.yaw_moment_into_turn,
+                     yaw_moment_out_of_turn=capability.yaw_moment_out_of_turn)
+        except (TypeError, ValueError, AttributeError):
+            pass  # test doubles without real arrays
+    inputs = {"track": str(args.track), "args": {k: v for k, v in vars(args).items()},
+              "speed_domain_mps": speed_domain, "speed_domain_source": speed_domain_source,
+              "map": {"source_kind": capability.source_kind, "source_identity": capability.source_identity,
+                      "array_sha256": map_hash, "requested_counts": [args.yaw_speed_points, args.yaw_ax_points, args.yaw_ay_points],
+                      "actual_counts": [len(capability.speed), len(capability.longitudinal_acceleration), len(capability.lateral_acceleration)]},
+              "profile_solver": profile_solver, "profile_settings": asdict(profile_settings),
+              "diagnostic_only": DIAGNOSTIC_NONCLAIMS}
+    try:
+        import subprocess
+        inputs["git_revision"] = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True,
+                                                check=False).stdout.strip() or None
+    except OSError:
+        inputs["git_revision"] = None
+    write_json(output / "inputs.json", inputs)
+    if not getattr(args, "skip_preflight", True) and hasattr(capability, "feasible_mask"):
+        from simplified_vehicle_models.planning.yaw_preflight import preflight
+        from simplified_vehicle_models.planning.yaw_aware_line import _sample_trajectory
+        from simplified_vehicle_models.tracks.line_trajectory import OffsetTrajectory
+        from simplified_vehicle_models.tracks.offset_spline import OffsetSpline
+        spline0 = OffsetSpline(track, args.control_spacing)
+        report = preflight(_sample_trajectory(OffsetTrajectory(reference, spline0, np.zeros(spline0.control_count)),
+                                              args.planning_grid_spacing), capability, maximum_speed=speed_domain)
+        write_json(output / "preflight.json", report.to_dict())
+        if not report.ok:
+            summary = failure_summary("preflight", list(report.blocking), started)
+            write_json(output / "summary.json", summary)
+            return summary
     settings = YawLineSettings(maximum_speed=speed_domain, footprint_margin=0.,
         buffer=args.lateral_margin, control_spacing=args.control_spacing,
         grid_spacing=args.planning_grid_spacing, optimizer_max_iterations=args.planner_iterations,
-        maximum_outer_passes=args.planner_passes)
-    plan = optimize_yaw_aware_line(track, corridor, capability, settings=settings)
+        maximum_outer_passes=args.planner_passes, profile_solver=profile_solver,
+        profile_settings=profile_settings)
+    from simplified_vehicle_models.planning.yaw_aware_line import YawLineOptimizationError
+    try:
+        plan = optimize_yaw_aware_line(track, corridor, capability, settings=settings)
+    except YawLineOptimizationError as error:
+        records = [dict(item) for item in error.diagnostics]
+        causes = sorted({str(r.get("profile_status") or r.get("reason")) for r in records})
+        write_json(output / "planning_failure.json", {"message": str(error), "causes": causes,
+                                                      "candidate_records": records})
+        summary = failure_summary("planning", causes, started, candidate_count=len(records))
+        write_json(output / "summary.json", summary)
+        return summary
     line = path_coordinates_from_yaw_line(plan)
     np.savetxt(output / "line.csv", np.column_stack((line.distance, line.reference_distance, line.x_north,
                line.y_east, line.heading, line.curvature)), delimiter=",", comments="",
                header="distance,reference_distance,x_north,y_east,heading,curvature")
+    line_path = output / "line.csv"
+    args.line_csv_sha256 = file_sha256(line_path) if line_path.exists() else None
+    profile_diag = dict(getattr(plan, "diagnostics", {}) or {}).get("profile_diagnostics", {})
+    args.yaw_profile_provenance = {"solver": profile_solver, "settings": asdict(profile_settings),
+                                   "map_array_sha256": map_hash, "line_csv_sha256": args.line_csv_sha256,
+                                   "feasibility_status": profile_diag.get("feasibility_status"),
+                                   "resolution_converged": profile_diag.get("resolution_converged"),
+                                   "budget_reason": profile_diag.get("budget_reason")}
     plan_doc = {
         "status": plan.status, "speed_domain_source": speed_domain_source,
         "speed_domain_mps": speed_domain, "map": {"source_kind": capability.source_kind,
@@ -289,8 +405,19 @@ def run(args):
                  "lateral_acceleration": grid.lateral_acceleration.tolist()}},
         "planning": asdict(settings), "line_shape_metrics": dict(plan.shape_metrics),
         "candidate_diagnostics": _jsonable(plan.diagnostics), "diagnostic_only": DIAGNOSTIC_NONCLAIMS,
+        "profile_diagnostics": _jsonable(profile_diag), "yaw_profile_provenance": args.yaw_profile_provenance,
+        "predicted_lap_time_seconds": float(plan.profile.lap_time),
     }
-    (output / "plan.json").write_text(json.dumps(_jsonable(plan_doc), indent=2) + "\n")
+    write_json(output / "plan.json", plan_doc)
+    if getattr(args, "plan_only", False):
+        summary = {"status": "planned", "plan_only": True, "lap_completed": False,
+                   "predicted_time_seconds": float(plan.profile.lap_time),
+                   "profile_resolution_converged": profile_diag.get("resolution_converged"),
+                   "elapsed_setup_seconds": time.perf_counter() - started,
+                   "qualified": False, "accepted": False, "U3_qualified": False,
+                   "diagnostic_only": DIAGNOSTIC_NONCLAIMS}
+        write_json(output / "summary.json", summary)
+        return summary
     control = vehicle
     plant = PlanarForwardPlant(vehicle, plan.speed_plan)
     driver = PreviewDriver(plan.speed_plan, control.wheelbase, control.steering_maximum_angle,
@@ -312,12 +439,8 @@ def run(args):
         try:
             sink.close(record_metadata(args, track, vehicle, capability, plan, result))
         except RuntimeError as error:
-            summary = {"status": "failed", "failure_stage": "record",
-                       "lap_completed": False, "qualified": False, "accepted": False,
-                       "U3_qualified": False, "exception": str(error),
-                       "elapsed_setup_seconds": time.perf_counter() - started,
-                       "diagnostic_only": DIAGNOSTIC_NONCLAIMS}
-            (output / "summary.json").write_text(json.dumps(_jsonable(summary), indent=2) + "\n")
+            summary = failure_summary("record", ["no_recorded_step"], started, exception=str(error))
+            write_json(output / "summary.json", summary)
             return summary
     np.savetxt(output / "trace.csv", np.column_stack((result.time, result.state.T)), delimiter=",", comments="",
                header=",".join(("time", *plant.state_names)))
@@ -333,17 +456,22 @@ def run(args):
         "sampled_center_corridor_violation_m": violation, "worst_violation_station_m": station,
         "sampled_center_contained": contained, "elapsed_setup_seconds": time.perf_counter()-started,
         "qualified": False, "accepted": False, "U3_qualified": False, "diagnostic_only": DIAGNOSTIC_NONCLAIMS}
-    (output / "summary.json").write_text(json.dumps(_jsonable(summary), indent=2) + "\n")
+    write_json(output / "summary.json", summary)
     return summary
+
+
+#: Exit codes: 0 completed lap or successful --plan-only; 3 incomplete lap;
+#: 4 failure summary written (planning, preflight, record); 1 exception.
+EXIT_CODES = {"completed": 0, "planned": 0, "incomplete": 3, "failed": 4}
 
 
 def main(argv=None):
     args = parse_args(argv)
     try:
-        run(args)
+        summary = run(args)
     except (ValueError, FileExistsError, OSError) as error:
         raise SystemExit(f"error: {error}") from error
-    return 0
+    return EXIT_CODES.get(summary.get("status"), 1)
 
 
 if __name__ == "__main__":

@@ -105,8 +105,8 @@ def run(args):
             map_identity=capability.source_identity,track_identity=track_identity,maximum_speed=vmax,
             profile_settings=settings,provenance=plan_diagnostics)
         # Load once through the strict replay gate before declaring a usable plan.
-        load_lap_plan(output/'plan.npz',capability,expected_track_identity=track_identity)
-        summary={'status':'planned','lap_time_s':profile.lap_time,'speed_min_mps':float(min(profile.speed)),
+        _,_,_,saved_metadata,_=load_lap_plan(output/'plan.npz',capability,expected_track_identity=track_identity)
+        summary={'plan_array_digest':saved_metadata['array_digest'],'status':'planned','lap_time_s':profile.lap_time,'speed_min_mps':float(min(profile.speed)),
             'speed_max_mps':float(max(profile.speed)),'profile_resolution_converged':profile.diagnostics.get('resolution_converged'),
             'profile_validation':profile.diagnostics.get('validation'),'diagnostics':plan_diagnostics,
             'lap_completed':False,'sampled_center_contained':None}

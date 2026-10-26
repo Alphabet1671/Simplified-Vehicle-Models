@@ -17,6 +17,11 @@ def compare_runs(directories,*,dimension):
                              'message':summary.get('message')});continue
         with np.load(directory/'plan.npz',allow_pickle=False) as artifact:
             metadata=json.loads(str(artifact['metadata'].item()))
+            from simplified_vehicle_models.planning.yaw_lap_artifact import _digest,ARRAYS,SCHEMA
+            if metadata.get('schema')!=SCHEMA or _digest({key:artifact[key] for key in ARRAYS})!=metadata.get('array_digest'):
+                raise ValueError('lap plan array integrity mismatch')
+            if summary.get('plan_array_digest',metadata['array_digest'])!=metadata['array_digest']:
+                raise ValueError('summary and plan artifact digest disagree')
             if (metadata['map_identity'],metadata['track_identity'])!=(inputs['map_identity'],inputs['track_identity']):
                 raise ValueError('plan and input provenance disagree')
             if summary['diagnostics']['kind']=='optimized_line':

@@ -76,6 +76,12 @@ class ModelAwareYawDriver(PreviewDriver):
         desired=float(np.clip(desired,-self.maximum_steering,self.maximum_steering))
         steering=float(np.clip((desired-observation.steering)/self.steering_time_constant,
             -self.maximum_steering_rate,self.maximum_steering_rate))
+        # Keep a small numerical reserve at the physical stop; trial states at
+        # the bound must always be driven inward rather than held against it.
+        stop = self.maximum_steering * (1. - 1e-6)
+        steering = min(steering, (stop-observation.steering)/self.steering_time_constant)
+        steering = max(steering, (-stop-observation.steering)/self.steering_time_constant)
+        steering = float(np.clip(steering,-self.maximum_steering_rate,self.maximum_steering_rate))
         acceleration=feedforward+self.speed_gain*(target-observation.speed)
         force=self.mass*acceleration+float(np.interp(speed,self.force_speed,self.drag_force))
         if force>=0:

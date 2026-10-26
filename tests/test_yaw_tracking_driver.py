@@ -36,6 +36,12 @@ class TrackingTests(unittest.TestCase):
         self.assertLess(a.steering_rate,0.)
         self.assertAlmostEqual(a.steering_rate,-b.steering_rate)
 
+    def test_steering_stop_commands_inward_rate(self):
+        right=self.driver().command(self.obs(steering=.5,lateral_error=-100.))
+        left=self.driver().command(self.obs(steering=-.5,lateral_error=100.))
+        self.assertLess(right.steering_rate,0.)
+        self.assertGreater(left.steering_rate,0.)
+
     def test_seam_commands_are_periodic(self):
         a=self.driver().command(self.obs(distance=.001))
         b=self.driver().command(self.obs(distance=20.001))

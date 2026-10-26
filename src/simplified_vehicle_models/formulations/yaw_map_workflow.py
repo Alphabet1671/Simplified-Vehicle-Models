@@ -372,7 +372,14 @@ def build_yaw_map_workflow(
             # valuable partial coverage for a 1x1x1 placeholder.
             if last_capability is None:
                 grid = YawCapabilityGrid((map_speed[0],), (map_ax[0],), (0.0,))
-                capability = map_builder(vehicle, grid, tv_limits, yaw_inertia=yaw_inertia)
+                try:
+                    capability = map_builder(vehicle, grid, tv_limits, yaw_inertia=yaw_inertia)
+                except YawCapabilityNumericalError:
+                    zeros = np.zeros((1, 1, 1))
+                    capability = YawCapabilityMap(grid.speed, grid.longitudinal_acceleration,
+                        grid.lateral_acceleration, zeros, zeros, np.zeros((1,1,1),bool), yaw_inertia,
+                        'physical_no_tv_v1' if tv_limits is None else 'physical_tv_v1',
+                        'unresolved-budget-placeholder')
             else:
                 capability = last_capability
             if last_audit is None:

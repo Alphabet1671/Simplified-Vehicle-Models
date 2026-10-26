@@ -136,7 +136,7 @@ def _real_roots_unit(poly, *, scale, tolerance, diagnostics):
 def _segment(path, capability, segment_index):
     if not isinstance(segment_index, int) or isinstance(segment_index, bool) or not 0 <= segment_index < len(path.distance)-1:
         raise ValueError("segment_index out of range")
-    ds = float(path.distance[segment_index+1]-path.distance[segment_index])
+    ds = float(path.segment_lengths[segment_index])
     k = .5*float(path.curvature[segment_index]+path.curvature[segment_index+1])
     kp = .5*float(path.curvature_rate[segment_index]+path.curvature_rate[segment_index+1])
     sign = math.copysign(1., k if abs(k)>1e-12 else (kp if abs(kp)>1e-12 else 1.))

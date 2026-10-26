@@ -8,7 +8,7 @@ is marked infeasible.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import math
 from typing import Literal, Mapping
 from types import MappingProxyType
@@ -26,6 +26,9 @@ class YawPath:
     curvature: np.ndarray
     curvature_rate: np.ndarray
     is_closed: bool
+    # Optional only for internal cyclic rotation: preserves exact original edge
+    # subtraction values when reconstructed cumulative distance rounds them.
+    segment_lengths: np.ndarray | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self):
         d, k, kp = (np.array(v, dtype=float, copy=True) for v in
@@ -42,7 +45,17 @@ class YawPath:
             raise ValueError("closed yaw path curvature must agree at duplicated seam")
         if self.is_closed and not np.isclose(kp[0], kp[-1], rtol=0., atol=1e-12):
             raise ValueError("closed yaw path curvature rate must agree at duplicated seam")
-        for name, value in (("distance", d), ("curvature", k), ("curvature_rate", kp)):
+        computed_lengths=np.diff(d)
+        lengths=(computed_lengths.copy() if self.segment_lengths is None
+                 else np.array(self.segment_lengths,dtype=float,copy=True))
+        if lengths.shape != computed_lengths.shape or not np.all(np.isfinite(lengths)) or np.any(lengths <= 0.):
+            raise ValueError("segment_lengths must be finite positive values for every path segment")
+        # Permit only cumulative-summation rounding drift; arbitrary alternative
+        # geometry cannot be smuggled into a public path.
+        bound=32.*np.finfo(float).eps*np.maximum(1.,np.maximum(np.abs(d[:-1]),np.abs(d[1:])))
+        if np.any(np.abs(lengths-computed_lengths) > bound):
+            raise ValueError("segment_lengths must match distance differences within cumulative rounding")
+        for name, value in (("distance", d), ("curvature", k), ("curvature_rate", kp), ("segment_lengths", lengths)):
             value.setflags(write=False)
             object.__setattr__(self, name, value)
         object.__setattr__(self, "is_closed", bool(self.is_closed))
@@ -245,7 +258,7 @@ def yaw_aware_profile(path: YawPath, capability: YawCapabilityMap, *,
         old = speed.copy()
         # Repeated forward/backward projections. Each transition is searched
         # over descending endpoint speeds, preserving safety with nonmonotone maps.
-        for i, ds in enumerate(np.diff(path.distance)):
+        for i, ds in enumerate(path.segment_lengths):
             upper = min(speed[i + 1], caps[i + 1])
             if speed[i] <= 0.:
                 # Low-speed launch is outside most maps; find the smallest
@@ -267,7 +280,7 @@ def yaw_aware_profile(path: YawPath, capability: YawCapabilityMap, *,
             speed[0] = 0.
         minimum_index = 1 if boundary == "standing" else 0
         for i in range(len(speed) - 2, minimum_index - 1, -1):
-            ds = float(path.distance[i + 1] - path.distance[i])
+            ds = float(path.segment_lengths[i])
             upper = min(speed[i], caps[i])
             found = None
             candidates = _transition_candidates(interp, upper, speed[i + 1], ds, forward=False)
@@ -286,7 +299,7 @@ def yaw_aware_profile(path: YawPath, capability: YawCapabilityMap, *,
             converged = True
             break
     ax = np.zeros_like(speed)
-    ds = np.diff(path.distance)
+    ds = path.segment_lengths
     segment_ax = np.diff(speed * speed) / (2. * ds)
     ax[:-1] = segment_ax
     ax[-1] = segment_ax[-1]
@@ -341,7 +354,7 @@ def _coupled_profile(path, capability, *, boundary, start_speed, maximum_speed, 
             "coupled profile failed independent validation in original station order",
             {"invalid_segment_indices": validation.invalid_segment_indices,
              "solver_diagnostics": dict(result["diagnostics"])})
-    ds = np.diff(path.distance)
+    ds = path.segment_lengths
     q = speed * speed
     segment_ax = np.diff(q) / (2. * ds)
     ax = np.empty_like(speed)
@@ -352,7 +365,9 @@ def _coupled_profile(path, capability, *, boundary, start_speed, maximum_speed, 
     keep = ("budget_reason", "candidate_counts", "tested_seam_anchors", "closed_seam_rotation",
             "refinement_waves", "refinement_windows", "witness_counts", "omitted_optional_witnesses",
             "candidate_cap_rejections", "timings", "edge_count", "edge_density", "stopping_uncertainty",
-            "interval_cache_entries")
+            "interval_cache_entries", "initial_seed_counts", "initial_optional_omitted",
+            "initial_optional_seed_cap", "refinement_reserve_per_station",
+            "rotated_edge_lengths_exact")
     diagnostics = {
         "boundary": boundary, "solver": "coupled", "feasibility_status": diag["status"],
         "resolution_converged": bool(diag["resolution_converged"]),

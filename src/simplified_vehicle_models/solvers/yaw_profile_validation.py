@@ -46,7 +46,7 @@ def validate_profile(path: YawPath, capability: YawCapabilityMap, q,
     dense_valid = True if dense else None
     total_time = 0.0
     interp = _MapInterpolator(capability)
-    for i, ds in enumerate(np.diff(path.distance)):
+    for i, ds in enumerate(path.segment_lengths):
         v0, v1 = float(speed[i]), float(speed[i+1])
         if v0 < 0 or v1 < 0 or v0 > maximum_speed or v1 > maximum_speed:
             bad.append(i)
@@ -121,7 +121,7 @@ def validate_profile_object(path: YawPath, capability: YawCapabilityMap, profile
     """Validate a profile and its redundant stored time/acceleration fields."""
     result = validate_profile(path, capability, profile.speed, maximum_speed=maximum_speed,
                               boundary=boundary, settings=settings, dense=dense)
-    expected = float(np.sum(2.*np.diff(path.distance)/(profile.speed[:-1]+profile.speed[1:]))) if np.all(profile.speed[:-1]+profile.speed[1:] > 0) else math.inf
+    expected = float(np.sum(2.*path.segment_lengths/(profile.speed[:-1]+profile.speed[1:]))) if np.all(profile.speed[:-1]+profile.speed[1:] > 0) else math.inf
     if (not math.isfinite(expected) or not math.isclose(profile.lap_time, expected, rel_tol=0., abs_tol=1e-9*max(1., expected))
             or not math.isclose(float(profile.elapsed_time[-1]), expected, rel_tol=0., abs_tol=1e-9*max(1., expected))):
         return ProfileValidation(False, result.maximum_acceleration_domain_violation,

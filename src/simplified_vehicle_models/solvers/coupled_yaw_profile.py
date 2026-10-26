@@ -66,7 +66,7 @@ def _rotate_closed_path(path, rotation):
     edge=np.diff(path.distance)
     lengths=np.r_[edge[rotation:],edge[:rotation]]
     distance=np.r_[0.,np.cumsum(lengths)]
-    return YawPath(distance,path.curvature[order],path.curvature_rate[order],True),order
+    return YawPath(distance,path.curvature[order],path.curvature_rate[order],True,lengths),order
 
 
 def _snap(q):
@@ -123,24 +123,80 @@ def solve_coupled_profile(path, capability, *, boundary, maximum_speed,
     warm=None if warm_start_q is None else np.asarray(warm_start_q,float)
     if warm is not None and (warm.shape!=(n,) or not np.all(np.isfinite(warm))): raise ValueError("warm_start_q must match path stations")
     layers=[]
+    mandatory_layers=[]
+    initial_seed_counts=[]
+    initial_optional_omitted={"map_speed_knots":0,"curvature_lateral_knots":0,"capacity":0}
+    initial_mandatory_overflow=[]
     for i,(lo,hi) in enumerate(domains):
         if hi < lo:
-            layers.append([]); continue
-        qs=list(np.linspace(lo,hi,settings.q_seed_count))
-        qs.extend(float(v*v) for v in capability.speed if lo <= v*v <= hi and v <= maximum_speed)
-        if warm is not None and lo <= warm[i]**2 <= hi: qs.append(float(warm[i]**2))
+            layers.append([]); mandatory_layers.append(set()); initial_seed_counts.append({"mandatory":0,"optional":0,"retained":0}); continue
+        mandatory=list(np.linspace(lo,hi,settings.q_seed_count))
+        if warm is not None and lo <= warm[i]**2 <= hi: mandatory.append(float(warm[i]**2))
+        if boundary == "standing" and i==0:
+            mandatory=[0.]
+        mandatory=sorted(set(_snap(q) for q in mandatory if lo<=q<=hi))
+        if len(mandatory)>settings.max_candidates_per_station:
+            initial_mandatory_overflow.append(i)
+        capacity=max(0,settings.max_candidates_per_station-len(mandatory)-settings.refinement_reserve_per_station)
+        capacity=min(capacity,settings.initial_optional_seed_cap)
+        speed_proposals=sorted(set(q for q in (_snap(float(v*v)) for v in capability.speed)
+                                  if lo <= q <= hi and q <= maximum_speed*maximum_speed))
         k=float(path.curvature[i])
-        if abs(k)>0:
-            qs.extend(float(y/k) for y in capability.lateral_acceleration if lo <= y/k <= hi)
-        if boundary == "standing" and i==0: qs=[0.]
-        qs=sorted(set(_snap(q) for q in qs if lo<=q<=hi))
-        qs=[q for q in qs if lo<=q<=hi]
+        lateral_proposals=[] if abs(k)==0 else sorted(set(_snap(candidate) for candidate in
+                                  (float(y/k) for y in capability.lateral_acceleration)
+                                  if lo <= candidate <= hi))
+        # Standing is an exact physical boundary, not a sampling layer.
+        if boundary == "standing" and i == 0:
+            speed_proposals=[]; lateral_proposals=[]; capacity=0
+        # Divide proposal capacity deterministically between map-speed and
+        # curvature/lateral sources so dense speed axes cannot starve lateral
+        # boundary projections (and vice versa).
+        speed_quota=(capacity+1)//2
+        lateral_quota=capacity//2
+        speed_selected=_spread(speed_proposals,min(speed_quota,len(speed_proposals)))
+        lateral_selected=_spread(lateral_proposals,min(lateral_quota,len(lateral_proposals)))
+        remaining=capacity-len(speed_selected)-len(lateral_selected)
+        if remaining:
+            pool=sorted(set(speed_proposals+lateral_proposals)-set(speed_selected)-set(lateral_selected))
+            for value in _spread(pool,remaining):
+                if value in speed_proposals: speed_selected.append(value)
+                else: lateral_selected.append(value)
+        optional=sorted(set(speed_selected+lateral_selected)-set(mandatory))
+        # Source counts distinguish offered optional proposals from selected ones;
+        # deduplication against mandatory seeds is intentionally not an omission.
+        initial_optional_omitted["map_speed_knots"]+=max(0,len(speed_proposals)-len(speed_selected))
+        initial_optional_omitted["curvature_lateral_knots"]+=max(0,len(lateral_proposals)-len(lateral_selected))
+        initial_optional_omitted["capacity"]+=max(0,len(speed_selected)+len(lateral_selected)-len(optional))
+        qs=sorted(set(mandatory+optional))
         layers.append(qs)
+        mandatory_layers.append(set(mandatory))
+        initial_seed_counts.append({"mandatory":len(mandatory),"optional":len(optional),"retained":len(qs),
+                                    "map_speed_offered":len(speed_proposals),"map_speed_selected":len(speed_selected),
+                                    "curvature_lateral_offered":len(lateral_proposals),"curvature_lateral_selected":len(lateral_selected),
+                                    "refinement_reserve":settings.refinement_reserve_per_station})
+    # A global total cap trims only optional initial proposals deterministically;
+    # mandatory boundary/warm seeds and later refinement witnesses are untouched.
+    initial_nodes=sum(map(len,layers))
+    excess=max(0,initial_nodes-settings.max_total_nodes)
+    if excess:
+        optional_entries=sorted((q,i) for i,layer in enumerate(layers) for q in layer
+                                if q not in mandatory_layers[i])
+        for q,i in _spread(optional_entries, min(excess,len(optional_entries))):
+            layers[i].remove(q)
+            initial_seed_counts[i]["optional"]-=1
+            initial_seed_counts[i]["retained"]-=1
+            initial_optional_omitted["capacity"]+=1
     oversize=[i for i,layer in enumerate(layers) if len(layer)>settings.max_candidates_per_station]
-    if oversize or sum(map(len,layers))>settings.max_total_nodes:
+    initial_nodes=sum(map(len,layers))
+    if oversize or initial_mandatory_overflow or initial_nodes>settings.max_total_nodes:
+        mandatory_nodes=sum(item["mandatory"] for item in initial_seed_counts)
+        cause="mandatory_overflow" if oversize or initial_mandatory_overflow or mandatory_nodes>settings.max_total_nodes else "optional_budget"
         raise YawProfileSolveError("budget_exceeded","initial candidate seeds exceed the candidate budget",
-            {"budget_reason":"candidate_budget","oversize_stations":tuple(oversize[:64]),
-             "candidate_counts":tuple(map(len,layers))})
+            {"budget_reason":"candidate_budget","initial_budget_cause":cause,
+             "mandatory_overflow_stations":tuple(initial_mandatory_overflow[:64]),
+             "oversize_stations":tuple(oversize[:64]),"candidate_counts":tuple(map(len,layers)),
+             "initial_seed_counts":tuple(initial_seed_counts),
+             "initial_optional_omitted":dict(initial_optional_omitted)})
     empty=[i for i,layer in enumerate(layers) if not layer]
     if empty:
         raise YawProfileSolveError("no_path_at_resolution","station squared-speed domain admits no candidate",
@@ -226,7 +282,7 @@ def solve_coupled_profile(path, capability, *, boundary, maximum_speed,
         while carry and 0<=i<segs and in_window(i):
             if deadline_reached(): return inserted_total,True,steps,dead_end
             target=i+1 if direction=="forward" else i
-            ds=float(path.distance[i+1]-path.distance[i])
+            ds=float(path.segment_lengths[i])
             mandatory=[]; optional=[]
             for fixed in carry:
                 for iv in intervals_for(i,fixed,direction,domains[target]):
@@ -297,7 +353,7 @@ def solve_coupled_profile(path, capability, *, boundary, maximum_speed,
             processed+=1
             fixed=float.fromhex(fixed_hex)
             target=i+1 if direction=="forward" else i
-            ds=float(path.distance[i+1]-path.distance[i])
+            ds=float(path.segment_lengths[i])
             sign=1.0 if direction=="forward" else -1.0
             for iv in intervals_for(i,fixed,direction,domains[target]):
                 witnesses=[("interval_lower",iv.lower),("interval_midpoint",(iv.lower+iv.upper)*.5),("interval_upper",iv.upper)]
@@ -343,7 +399,7 @@ def solve_coupled_profile(path, capability, *, boundary, maximum_speed,
         for step,i in enumerate(order):
             if step % 256 == 255 and deadline_reached(): return inserted,True,dead_ends
             target=i+1 if direction=="forward" else i
-            ds=float(path.distance[i+1]-path.distance[i])
+            ds=float(path.segment_lengths[i])
             lo,hi=domains[target]
             fixed=np.repeat(carry,chain_accels.size)
             free=np.clip((carry[:,None]+sign*2.*ds*chain_accels[None,:]).ravel(),lo,hi)
@@ -433,7 +489,7 @@ def solve_coupled_profile(path, capability, *, boundary, maximum_speed,
             # Every candidate pair is checked by the vectorised strict oracle,
             # which reproduces edge_evidence exactly; no edge is inferred from
             # interval membership alone.
-            ds=float(path.distance[i+1]-path.distance[i])
+            ds=float(path.segment_lengths[i])
             base_i=int(node_offsets[i]); base_j=int(node_offsets[i+1])
             q0=np.asarray(layers[i],float); q1=np.asarray(layers[i+1],float)
             feasible=edge_feasibility_matrix(path,capability,i,q0,q1)
@@ -561,14 +617,19 @@ def solve_coupled_profile(path, capability, *, boundary, maximum_speed,
             budget_reason="graph_budget"; break
     diagnostics_common={
         "refinement_rounds":refinement_rounds,"candidate_counts":tuple(map(len,layers)),"budget_reason":budget_reason,
-        "closed_seam_rotation":rotation,"tested_seam_anchors":tuple(tested_anchors),
+        "closed_seam_rotation":rotation,"rotated_edge_lengths_exact":bool(rotation),
+        "tested_seam_anchors":tuple(tested_anchors),
         "interval_cache_entries":len(interval_cache),"interval_work_queue_entries":len(pending),
         "refinement_radius":refinement_radius,"refinement_waves":tuple(refinement_waves),
         "refinement_windows":tuple(refinement_windows),"inserted_witnesses":tuple(inserted_witnesses),
         "witness_counts":dict(witness_counts),"omitted_optional_witnesses":omitted[0],
         "candidate_cap_rejections":cap_hits["rejected"],"candidate_cap_layers":tuple(sorted(cap_hits["layers"]))[:64],"timings":{**timings,"total_seconds":time.monotonic()-started},
         "edge_count":None if packed is None else len(packed.targets),
-        "edge_density":None if packed is None else len(packed.targets)/max(1,packed.n_nodes)}
+        "edge_density":None if packed is None else len(packed.targets)/max(1,packed.n_nodes),
+        "initial_seed_counts":tuple(initial_seed_counts),
+        "initial_optional_omitted":dict(initial_optional_omitted),
+        "initial_optional_seed_cap":settings.initial_optional_seed_cap,
+        "refinement_reserve_per_station":settings.refinement_reserve_per_station}
     if incumbent is None:
         status = ("strict_validation_failed" if budget_reason == "strict_validation_failed"
                   else "budget_exceeded" if budget_reason

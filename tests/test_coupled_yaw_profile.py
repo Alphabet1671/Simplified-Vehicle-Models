@@ -25,12 +25,52 @@ class CoupledProfileTests(unittest.TestCase):
         self.assertTrue(validation.valid, (result["q"], validation))
         self.assertEqual(result["diagnostics"]["status"],"feasible_sampled")
 
+    def test_dense_map_initial_optional_seeds_are_bounded_and_deterministic(self):
+        speed=np.linspace(0.,30.,80); ax=np.linspace(-3.,3.,9); ay=np.linspace(-25.,25.,450)
+        shape=(len(speed),len(ax),len(ay))
+        capability=YawCapabilityMap(speed,ax,ay,np.full(shape,1.e6),np.full(shape,1.e6),
+                                    np.ones(shape,bool),1.,"physical_no_tv_v1","dense-seed")
+        distance=np.array([0.,.1,.2]); path=YawPath(distance,np.array([.02,.03,.02]),np.zeros(3),False)
+        settings=CoupledProfileSettings(max_refinement_rounds=1,max_candidates_per_station=256,
+                                        initial_optional_seed_cap=32,refinement_reserve_per_station=32)
+        reports=[]
+        for _ in range(2):
+            try:
+                result=solve_coupled_profile(path,capability,boundary="standing",maximum_speed=20.,
+                    warm_start_q=np.array([0.,64.,36.]),settings=settings)
+                reports.append(result["diagnostics"])
+            except YawProfileSolveError as error:
+                reports.append(error.diagnostics)
+        for diag in reports:
+            self.assertTrue(all(count <= 224 for count in diag["candidate_counts"]))
+            self.assertGreater(diag["initial_optional_omitted"]["curvature_lateral_knots"],0)
+            self.assertEqual(diag["initial_seed_counts"][0]["mandatory"],1)
+            self.assertEqual(diag["initial_seed_counts"][0]["optional"],0)
+        self.assertEqual(reports[0]["initial_seed_counts"],reports[1]["initial_seed_counts"])
+
+    def test_settings_positional_order_is_backward_compatible(self):
+        settings=CoupledProfileSettings(7,6,55,66,77,8,9.,1e-5,2e-5,3e-5,4e-5,5e-5)
+        self.assertEqual(settings.q_seed_count,7)
+        self.assertEqual(settings.max_refinement_rounds,6)
+        self.assertEqual(settings.max_candidates_per_station,55)
+        self.assertEqual(settings.refinement_speed_tolerance,5e-5)
+        self.assertEqual(settings.initial_optional_seed_cap,32)
+
     def test_open_profile_budget_failure_is_typed(self):
         distance=np.array([0.,.05,.1]); path=YawPath(distance,np.zeros(3),np.zeros(3),False)
         settings=CoupledProfileSettings(q_seed_count=33,max_candidates_per_station=2)
         with self.assertRaises(YawProfileSolveError) as caught:
             solve_coupled_profile(path,make_map(),boundary="standing",maximum_speed=8.,settings=settings)
         self.assertEqual(caught.exception.status,"budget_exceeded")
+
+    def test_rotated_path_preserves_exact_original_edge_lengths(self):
+        from simplified_vehicle_models.solvers.coupled_yaw_profile import _rotate_closed_path
+        distance=np.array([0., .1, .3, .30000000000000004, 10., 10.1])
+        curvature=np.zeros_like(distance); path=YawPath(distance,curvature,curvature,True)
+        rotated, order=_rotate_closed_path(path,2)
+        expected=np.r_[path.segment_lengths[2:],path.segment_lengths[:2]]
+        np.testing.assert_array_equal(rotated.segment_lengths,expected)
+        self.assertFalse(np.array_equal(np.diff(rotated.distance),expected))
 
     def test_closed_rotation_uses_tightest_domain_and_restores_original_order(self):
         d=np.array([0.,.1,.2,.3,.4]); k=np.array([0.,.1,.5,.2,0.]); path=YawPath(d,k,np.zeros_like(k),True)

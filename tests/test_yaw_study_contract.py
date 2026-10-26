@@ -46,6 +46,9 @@ class StudyContractTests(unittest.TestCase):
         partial = study_contract({}, {}, {"source_revision":"abc", "source_dirty_hashes":"unknown",
                                          "source_provenance_status":"attested"})
         self.assertEqual(partial["provenance"]["source_provenance_status"], "historical_unknown")
+        spoofed = study_contract({}, {}, {"source_revision":"abc", "source_dirty_hashes":{},
+                                         "source_provenance_status":"attested"})
+        self.assertEqual(spoofed["provenance"]["source_provenance_status"], "historical_unknown")
         self.assertEqual(len(contract["canonical_json_sha256"]), 64)
 
     def test_geometry_refinement_rejects_control_spacing_change(self):
@@ -64,6 +67,9 @@ class StudyContractTests(unittest.TestCase):
                     comparison_identity(partial, dimension)
                 with self.assertRaises(ValueError):
                     validate_comparison_pair(partial, partial, dimension)
+        malformed = dict(base, track_data_hashes={})
+        with self.assertRaisesRegex(ValueError, "track_data_hashes lacks attestation"):
+            comparison_identity(malformed, "geometry")
 
     def test_replay_manifest_update_records_exact_initialized_state(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -65,6 +65,17 @@ def _canonical(value):
     return json.dumps(_jsonable(value), sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 
+def _attested(value):
+    """Whether a required provenance value has non-placeholder evidence."""
+    if value is None or value == "" or value == "unknown":
+        return False
+    if isinstance(value, dict):
+        return bool(value) and all(bool(key) and _attested(item) for key, item in value.items())
+    if isinstance(value, (tuple, list)):
+        return bool(value) and all(_attested(item) for item in value)
+    return True
+
+
 def study_contract(args, resolved_settings, provenance) -> dict:
     """Return frozen settings and provenance, preserving missing history as unknown."""
     args = vars(args) if hasattr(args, "__dict__") else args
@@ -77,8 +88,8 @@ def study_contract(args, resolved_settings, provenance) -> dict:
     prov = payload["provenance"]
     prov.setdefault("source_revision", "unknown")
     prov.setdefault("source_dirty_hashes", "unknown")
-    complete_source = (prov["source_revision"] != "unknown" and
-                       prov["source_dirty_hashes"] != "unknown")
+    complete_source = (_attested(prov["source_revision"]) and
+                       _attested(prov["source_dirty_hashes"]))
     # This is derived evidence, never a caller-controlled self-attestation.
     prov["source_provenance_status"] = "attested" if complete_source else "historical_unknown"
     encoded = _canonical(payload)
@@ -165,8 +176,8 @@ def _comparison_values(contract, dimension):
     if missing:
         raise ValueError(f"incomplete {dimension} comparison contract; missing required fields: {', '.join(missing)}")
     for key in _REQUIRED[dimension]:
-        if values[key] is None or values[key] == "":
-            raise ValueError(f"incomplete {dimension} comparison contract; required field {key} is empty")
+        if not _attested(values[key]):
+            raise ValueError(f"incomplete {dimension} comparison contract; required field {key} lacks attestation")
     return values
 
 

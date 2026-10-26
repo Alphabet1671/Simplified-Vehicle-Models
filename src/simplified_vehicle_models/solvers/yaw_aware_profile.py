@@ -367,7 +367,7 @@ def _coupled_profile(path, capability, *, boundary, start_speed, maximum_speed, 
             "candidate_cap_rejections", "timings", "edge_count", "edge_density", "stopping_uncertainty",
             "interval_cache_entries", "initial_seed_counts", "initial_optional_omitted",
             "initial_optional_seed_cap", "refinement_reserve_per_station",
-            "rotated_edge_lengths_exact")
+            "rotated_edge_lengths_exact", "seam_seed_policy")
     diagnostics = {
         "boundary": boundary, "solver": "coupled", "feasibility_status": diag["status"],
         "resolution_converged": bool(diag["resolution_converged"]),

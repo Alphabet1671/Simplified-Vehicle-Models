@@ -72,6 +72,18 @@ class CoupledProfileTests(unittest.TestCase):
         np.testing.assert_array_equal(rotated.segment_lengths,expected)
         self.assertFalse(np.array_equal(np.diff(rotated.distance),expected))
 
+    def test_flying_equal_warm_seam_seed_is_retained(self):
+        d=np.array([0.,.1,.2,.3]); k=np.zeros(4); path=YawPath(d,k,k,True)
+        v=np.linspace(0,8,17); ax=np.linspace(-2,2,9); ay=np.linspace(-2,2,17); shape=(len(v),len(ax),len(ay))
+        cap=YawCapabilityMap(v,ax,ay,np.full(shape,100.),np.full(shape,100.),np.ones(shape,bool),1.,"physical_no_tv_v1","warm-seam")
+        result=solve_coupled_profile(path,cap,boundary="flying",maximum_speed=8.,
+            warm_start_q=np.array([3.7,4.,4.,3.7]),settings=CoupledProfileSettings(max_refinement_rounds=1))
+        diag=result["diagnostics"]
+        self.assertIn(float(np.sqrt(3.7*3.7))**2,diag["tested_seam_anchors"])
+        self.assertNotIn(3.7,diag["tested_seam_anchors"])
+        self.assertEqual(diag["seam_seed_policy"]["mandatory_policy"],
+                         "seam_endpoints_and_valid_endpoint_warm_suggestions")
+
     def test_closed_rotation_uses_tightest_domain_and_restores_original_order(self):
         d=np.array([0.,.1,.2,.3,.4]); k=np.array([0.,.1,.5,.2,0.]); path=YawPath(d,k,np.zeros_like(k),True)
         v=np.linspace(0,8,17); ax=np.linspace(-2,2,9); ay=np.linspace(-2,2,17); shape=(len(v),len(ax),len(ay))

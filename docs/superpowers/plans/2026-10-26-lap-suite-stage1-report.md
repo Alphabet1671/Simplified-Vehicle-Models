@@ -51,7 +51,7 @@ PYTHONPATH=src:. python3 tools/run/run_with_deadline.py --seconds 120 -- \
   python3 -m unittest tests.test_coupled_yaw_profile -q
 ```
 
-Result: 13 tests passed in 2.953 seconds for the Stage 1 seed suite. Follow-up exact-edge rotation regression and profile/validator focused run: 40 tests passed in 4.243 seconds.
+Result: 15 tests passed in 2.996 seconds for the Stage 1 seed/seam suite. Follow-up exact-edge rotation regression and profile/validator focused run: 40 tests passed in 4.529 seconds.
 
 The new dense-map regression uses 80 speed knots and 450 lateral knots with the
 normal 256 station cap. It verifies bounded optional counts, curvature-proposal

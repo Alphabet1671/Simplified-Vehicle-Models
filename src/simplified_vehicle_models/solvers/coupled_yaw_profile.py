@@ -174,55 +174,76 @@ def solve_coupled_profile(path, capability, *, boundary, maximum_speed,
                                     "map_speed_offered":len(speed_proposals),"map_speed_selected":len(speed_selected),
                                     "curvature_lateral_offered":len(lateral_proposals),"curvature_lateral_selected":len(lateral_selected),
                                     "refinement_reserve":settings.refinement_reserve_per_station})
-    # A global total cap trims only optional initial proposals deterministically;
-    # mandatory boundary/warm seeds and later refinement witnesses are untouched.
+    tested_anchors=[]
+    seam_seed_policy=None
+    if boundary == "flying":
+        low=max(domains[0][0],domains[-1][0]); high=min(domains[0][1],domains[-1][1])
+        if high<low:
+            raise YawProfileSolveError("no_path_at_resolution","closed seam domains do not overlap",{"seam_rotation":rotation})
+        # Seam anchors are their own mandatory policy: preserve seam endpoints
+        # and both valid endpoint warm suggestions squared. Baseline q-grid
+        # points at a cyclic seam are optional anchors, not mandatory values.
+        seam_mandatory={q for q in (_snap(low),_snap(high)) if low <= q <= high}
+        if warm is not None:
+            for suggestion in (float(warm[0])**2, float(warm[-1])**2):
+                if low <= suggestion <= high:
+                    snapped=_snap(suggestion)
+                    if low <= snapped <= high:
+                        seam_mandatory.add(snapped)
+        if len(seam_mandatory)>settings.max_seam_anchors:
+            raise YawProfileSolveError("budget_exceeded","mandatory seam anchors exceed seam budget",{
+                "budget_reason":"candidate_budget","initial_budget_cause":"mandatory_seam_overflow",
+                "mandatory_seam_anchors":tuple(sorted(seam_mandatory)),"max_seam_anchors":settings.max_seam_anchors})
+        initial_anchor_cap=min(8,settings.max_seam_anchors)
+        anchor_set=set(seam_mandatory)
+        if len(anchor_set)<initial_anchor_cap:
+            for candidate in np.linspace(low,high,initial_anchor_cap):
+                if len(anchor_set)>=initial_anchor_cap: break
+                anchor_set.add(_snap(candidate))
+        anchors=sorted(a for a in anchor_set if low<=a<=high)
+        tested_anchors.extend(anchors)
+        layers[0]=anchors.copy(); layers[-1]=anchors.copy()
+        seam_seed_policy={"mandatory_policy":"seam_endpoints_and_valid_endpoint_warm_suggestions",
+                          "mandatory_count":len(seam_mandatory),"anchor_count":len(anchors),
+                          "baseline_grid_optional":True}
+        initial_seed_counts[0]={"mandatory":len(seam_mandatory),"optional":len(anchors)-len(seam_mandatory),
+                                "retained":len(anchors),"seam_anchor":True}
+        initial_seed_counts[-1]=dict(initial_seed_counts[0])
+        # Keep matching seam anchors atomic under a global trim; they are a
+        # cyclic boundary pair, even when some are sampled rather than required.
+        mandatory_layers[0]=set(anchors); mandatory_layers[-1]=set(anchors)
+        initial_mandatory_overflow=[i for i in initial_mandatory_overflow if i not in (0,n-1)]
+
+    # Global budget is enforced after seam policy replaces ordinary endpoint
+    # layers, so discarded baseline q-grid values cannot cause a false overflow.
     initial_nodes=sum(map(len,layers))
     excess=max(0,initial_nodes-settings.max_total_nodes)
     if excess:
         optional_entries=sorted((q,i) for i,layer in enumerate(layers) for q in layer
                                 if q not in mandatory_layers[i])
-        for q,i in _spread(optional_entries, min(excess,len(optional_entries))):
-            layers[i].remove(q)
-            initial_seed_counts[i]["optional"]-=1
-            initial_seed_counts[i]["retained"]-=1
-            initial_optional_omitted["capacity"]+=1
+        for q,i in _spread(optional_entries,min(excess,len(optional_entries))):
+            layers[i].remove(q); initial_seed_counts[i]["optional"]-=1
+            initial_seed_counts[i]["retained"]-=1; initial_optional_omitted["capacity"]+=1
     oversize=[i for i,layer in enumerate(layers) if len(layer)>settings.max_candidates_per_station]
     initial_nodes=sum(map(len,layers))
     if oversize or initial_mandatory_overflow or initial_nodes>settings.max_total_nodes:
         mandatory_nodes=sum(item["mandatory"] for item in initial_seed_counts)
         cause="mandatory_overflow" if oversize or initial_mandatory_overflow or mandatory_nodes>settings.max_total_nodes else "optional_budget"
-        raise YawProfileSolveError("budget_exceeded","initial candidate seeds exceed the candidate budget",
-            {"budget_reason":"candidate_budget","initial_budget_cause":cause,
-             "mandatory_overflow_stations":tuple(initial_mandatory_overflow[:64]),
-             "oversize_stations":tuple(oversize[:64]),"candidate_counts":tuple(map(len,layers)),
-             "initial_seed_counts":tuple(initial_seed_counts),
-             "initial_optional_omitted":dict(initial_optional_omitted)})
+        raise YawProfileSolveError("budget_exceeded","initial candidate seeds exceed the candidate budget",{
+            "budget_reason":"candidate_budget","initial_budget_cause":cause,
+            "mandatory_overflow_stations":tuple(initial_mandatory_overflow[:64]),
+            "oversize_stations":tuple(oversize[:64]),"candidate_counts":tuple(map(len,layers)),
+            "initial_seed_counts":tuple(initial_seed_counts),"initial_optional_omitted":dict(initial_optional_omitted)})
     empty=[i for i,layer in enumerate(layers) if not layer]
     if empty:
-        raise YawProfileSolveError("no_path_at_resolution","station squared-speed domain admits no candidate",
-            {"empty_stations":tuple(empty[:64]),"empty_station_count":len(empty),"boundary":boundary})
-    tested_anchors=[]
-    if boundary == "flying":
-        low=max(domains[0][0],domains[-1][0]); high=min(domains[0][1],domains[-1][1])
-        if high<low:
-            raise YawProfileSolveError("no_path_at_resolution","closed seam domains do not overlap",{"seam_rotation":rotation})
-        initial_anchor_cap=min(8,settings.max_seam_anchors)
-        # Uniform anchors span the whole seam domain (including its top, which
-        # sorting-and-truncating previously discarded); map speed knots are
-        # added only while the anchor cap allows.
-        anchor_set=set(_snap(a) for a in np.linspace(low,high,initial_anchor_cap))
-        for v in capability.speed:
-            if len(anchor_set)>=initial_anchor_cap: break
-            if low<=v*v<=high and v<=maximum_speed: anchor_set.add(_snap(v*v))
-        anchors=sorted(a for a in anchor_set if low<=a<=high)
-        tested_anchors.extend(anchors)
-        layers[0]=anchors.copy(); layers[-1]=anchors.copy()
+        raise YawProfileSolveError("no_path_at_resolution","station squared-speed domain admits no candidate",{
+            "empty_stations":tuple(empty[:64]),"empty_station_count":len(empty),"boundary":boundary})
 
     tol=float(settings.interval_q_tolerance)
     seam_layers={0,n-1} if boundary=="flying" else ({0} if boundary=="standing" else set())
     interval_cache={}
-    cache_identity=(tuple(map(float,path.distance)),tuple(map(float,path.curvature)),tuple(map(float,path.curvature_rate)),
-                    capability.source_identity,tuple(map(float,capability.speed)),tuple(map(float,capability.longitudinal_acceleration)),
+    cache_identity=(tuple(map(float,path.distance)),tuple(map(float,path.segment_lengths)),
+                    tuple(map(float,path.curvature)),tuple(map(float,path.curvature_rate)),capability.source_identity,tuple(map(float,capability.speed)),tuple(map(float,capability.longitudinal_acceleration)),
                     tuple(map(float,capability.lateral_acceleration)),capability.feasible_mask.tobytes(),
                     capability.yaw_moment_into_turn.tobytes(),capability.yaw_moment_out_of_turn.tobytes(),settings)
     queued=set(); pending=[]
@@ -618,7 +639,7 @@ def solve_coupled_profile(path, capability, *, boundary, maximum_speed,
     diagnostics_common={
         "refinement_rounds":refinement_rounds,"candidate_counts":tuple(map(len,layers)),"budget_reason":budget_reason,
         "closed_seam_rotation":rotation,"rotated_edge_lengths_exact":bool(rotation),
-        "tested_seam_anchors":tuple(tested_anchors),
+        "tested_seam_anchors":tuple(tested_anchors),"seam_seed_policy":seam_seed_policy,
         "interval_cache_entries":len(interval_cache),"interval_work_queue_entries":len(pending),
         "refinement_radius":refinement_radius,"refinement_waves":tuple(refinement_waves),
         "refinement_windows":tuple(refinement_windows),"inserted_witnesses":tuple(inserted_witnesses),

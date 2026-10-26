@@ -17,6 +17,17 @@ class TrialStateError(ValueError):
     """Reject an integrator trial outside the plant state domain."""
 
 
+class ForwardIntegrationError(RuntimeError):
+    """An IVP solver stopped without producing an accepted forward result."""
+    def __init__(self, message, diagnostics, last_state, last_time):
+        super().__init__(message)
+        snapshot=np.array(last_state,dtype=float,copy=True)
+        snapshot.setflags(write=False)
+        self.last_state=snapshot
+        self.last_time=float(last_time)
+        self.diagnostics=dict(diagnostics)
+
+
 class _CommandMapperTrialStateError(Exception):
     """Keep mapper TrialStateError separate from plant domain rejections."""
 
@@ -691,7 +702,14 @@ def solve_forward(plant: ForwardPlant, driver: PreviewDriver, initial_state,
     result = solve_ivp(rhs, (0., duration), initial, method=method, jac=jacobian,
                        rtol=rtol, atol=atol, max_step=maximum_step, events=finish, dense_output=True)
     if not result.success:
-        raise RuntimeError(result.message)
+        accepted_time=float(result.t[-1]) if len(result.t) else 0.
+        accepted_state=np.asarray(result.y[:,-1],dtype=float) if result.y.ndim == 2 and result.y.shape[1] else initial
+        diagnostics={"failure_kind":"solver_unsuccessful","solver_message":str(result.message),
+                     "last_accepted_time":accepted_time,"accepted_step_count":max(0,len(result.t)-1),
+                     "rhs_evaluations":evaluations,"rejected_domain_trials":rejected_domain_trials,
+                     "duration":float(duration),"wall_seconds":float(wall_seconds),"method":method,
+                     "elapsed_wall_seconds":perf_counter()-start}
+        raise ForwardIntegrationError(str(result.message),diagnostics,accepted_state,accepted_time)
     # Bound every component of the dense polynomial over each accepted interval
     # before the replay loops, so a later timeout cannot hide this result.
     dense_bounds = None

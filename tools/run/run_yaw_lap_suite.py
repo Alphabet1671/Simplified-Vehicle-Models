@@ -130,6 +130,10 @@ def replay(args,output,vehicle,track,path,speed_plan,arrays,metadata):
             wall_seconds=args.replay_seconds,maximum_wall_seconds=min(1500.,args.replay_seconds),
             maximum_step=args.maximum_step,rtol=1e-6,atol=1e-8,method='BDF',step_sink=sink)
     except (RuntimeError,TimeoutError,ValueError) as error:
+        if hasattr(error,'last_state'):
+            runner.write_json(output/'integration_failure.json',{'diagnostics':getattr(error,'diagnostics',{}),
+                'last_solver_time':error.last_time,'last_solver_state':error.last_state,
+                'snapshot_validated':False,'state_names':plant.state_names})
         try:
             sink.close({'model':{'yaw_profile':metadata,'controller':args.controller},
                         'segment':{'lap_completed':False,'exception':str(error)}})

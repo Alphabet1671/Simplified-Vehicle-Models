@@ -41,5 +41,17 @@ class TrackingTests(unittest.TestCase):
         b=self.driver().command(self.obs(distance=20.001))
         self.assertEqual(a,b)
 
+    def test_factory_uses_actual_vehicle_brake_and_motor_tables(self):
+        from simplified_vehicle_models.compiler.compile import compile_formulation
+        from simplified_vehicle_models.formulations.point_mass import point_mass_view_of_planar
+        from pathlib import Path
+        root=Path(__file__).resolve().parents[1]
+        vehicle=compile_formulation(str(root/'models/formulations/iem24_murphy_real_planar_7dof.xml')).model
+        driver=ModelAwareYawDriver.for_vehicle(self.driver().plan,vehicle,point_mass_view_of_planar(vehicle))
+        self.assertGreater(max(driver.drive_force),0.)
+        self.assertGreater(max(driver.brake_wheel_force),0.)
+        self.assertTrue(driver.has_pedal_dynamics)
+        self.assertLessEqual(driver.command(self.obs()).throttle,1.)
+
     def test_nonmonotone_brake_table_rejected(self):
         with self.assertRaises(ValueError):self.driver(brake_wheel_force=(2.,1.))

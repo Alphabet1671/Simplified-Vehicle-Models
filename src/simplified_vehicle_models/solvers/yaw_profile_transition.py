@@ -4,10 +4,79 @@ from __future__ import annotations
 from dataclasses import dataclass
 import math
 import numpy as np
-from numpy.polynomial import Polynomial
+
+
+class Polynomial:
+    """Minimal power-series polynomial (ascending coefficients).
+
+    Mirrors the subset of ``numpy.polynomial.Polynomial`` used by the interval
+    oracle with plain Python floats; numpy's object overhead dominated runtime.
+    Arithmetic is exact-order identical: no trimming happens implicitly.
+    """
+    __slots__ = ("c",)
+
+    def __init__(self, coef):
+        self.c = [float(x) for x in coef] or [0.]
+
+    @property
+    def coef(self):
+        return np.asarray(self.c, dtype=float)
+
+    def degree(self):
+        return len(self.c) - 1
+
+    def deriv(self):
+        if len(self.c) <= 1:
+            return Polynomial([0.])
+        return Polynomial([i * self.c[i] for i in range(1, len(self.c))])
+
+    @staticmethod
+    def _wrap(other):
+        return other if isinstance(other, Polynomial) else Polynomial([other])
+
+    def __add__(self, other):
+        o = self._wrap(other).c; a = self.c
+        n = max(len(a), len(o))
+        return Polynomial([(a[i] if i < len(a) else 0.) + (o[i] if i < len(o) else 0.) for i in range(n)])
+    __radd__ = __add__
+
+    def __neg__(self):
+        return Polynomial([-x for x in self.c])
+
+    def __sub__(self, other):
+        return self + (-self._wrap(other))
+
+    def __rsub__(self, other):
+        return self._wrap(other) - self
+
+    def __mul__(self, other):
+        if not isinstance(other, Polynomial):
+            f = float(other); return Polynomial([x * f for x in self.c])
+        a, b = self.c, other.c
+        out = [0.] * (len(a) + len(b) - 1)
+        for i, x in enumerate(a):
+            if x == 0.: continue
+            for j, y in enumerate(b):
+                out[i + j] += x * y
+        return Polynomial(out)
+    __rmul__ = __mul__
+
+    def __truediv__(self, other):
+        f = float(other); return Polynomial([x / f for x in self.c])
+
+    def __call__(self, x):
+        if isinstance(x, Polynomial):
+            out = Polynomial([0.])
+            for coefficient in reversed(self.c):
+                out = out * x + coefficient
+            return out
+        x = float(x); acc = 0.
+        for coefficient in reversed(self.c):
+            acc = acc * x + coefficient
+        return acc
 
 from simplified_vehicle_models.solvers.yaw_profile_contracts import CoupledProfileSettings, YawProfileSolveError
-from simplified_vehicle_models.solvers.yaw_profile_map import _MapInterpolator
+from simplified_vehicle_models.solvers.yaw_profile_map import _MapInterpolator, interpolator_for
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,7 +153,7 @@ def transition_intervals(path, capability, segment_index: int, fixed_q: float, d
     lo,hi=map(float,free_q_bounds)
     if not (math.isfinite(lo) and math.isfinite(hi)) or lo<0 or hi<lo: raise ValueError("invalid free_q_bounds")
     axes=(np.asarray(capability.speed),np.asarray(capability.longitudinal_acceleration),np.asarray(capability.lateral_acceleration))
-    interp=_MapInterpolator(capability)
+    interp=interpolator_for(capability)
     # Map free endpoint q to midpoint-speed squared. Independently intersect
     # endpoint speed domain: both endpoint q values must lie in the map domain.
     ulo2=(fixed_q+lo)/2.; uhi2=(fixed_q+hi)/2.
@@ -311,7 +380,7 @@ def edge_evidence(path, capability, segment_index: int, q_left: float, q_right: 
     ds,k,kp,sign=_segment(path,capability,segment_index)
     if min(q_left,q_right)<0 or not all(map(math.isfinite,(q_left,q_right))): raise ValueError("q endpoints must be finite and nonnegative")
     u=math.sqrt((q_left+q_right)/2); ax=(q_right-q_left)/(2*ds); ay=k*u*u
-    evidence=_MapInterpolator(capability).query_evidence(u,ax,ay)
+    evidence=interpolator_for(capability).query_evidence(u,ax,ay)
     out={"segment_index":segment_index,"q_left":float(q_left),"q_right":float(q_right),"midpoint_speed":u,"longitudinal_acceleration":ax,"lateral_acceleration":ay,**evidence}
     out['capability_identity'] = capability.source_identity
     out['strict_query_model'] = "_MapInterpolator.query_evidence; zero-weight masked corners excluded"

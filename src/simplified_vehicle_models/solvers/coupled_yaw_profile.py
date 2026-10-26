@@ -3,10 +3,14 @@
 Refinement is organised as bounded *work waves*.  After every graph solve the
 solver schedules transition-interval requests ``(segment, direction, fixed_q)``
 at the actual reachability/co-reachability frontier, processes one snapshot of
-them, inserts every strictly evidenced witness, and re-solves the graph before
-any request created by those insertions is processed.  Requests that do not fit
-in a wave are deferred, never discarded, and every disjoint interval component
-returned for a processed request contributes witnesses.
+them, inserts strictly evidenced witnesses, and re-solves the graph before any
+request created by those insertions is processed.  After a disconnected graph,
+bounded directional sweeps run from the real graph cut.  Every interval
+component returned for a swept value contributes its midpoint; optional
+endpoint/projection witnesses beyond the per-layer cap are counted in
+``omitted_optional_witnesses``.  Insertions never exceed
+``max_candidates_per_station``; a layer at its cap reports a visible
+``candidate_budget`` stop instead of silently dropping a component midpoint.
 """
 from __future__ import annotations
 
@@ -48,8 +52,8 @@ def _domain(path, capability, maximum_speed):
         b=hi
         if k > 0 and ay_hi > 0: b=min(b,ay_hi/k)
         elif k < 0 and ay_lo < 0: b=min(b,ay_lo/k)
-        elif k != 0: b=lo
-        bounds.append((lo,max(lo,b)))
+        elif k != 0: b=lo if lo == 0. else -1.
+        bounds.append((lo,b))
     return bounds,interp
 
 
@@ -98,6 +102,8 @@ def solve_coupled_profile(path, capability, *, boundary, maximum_speed,
     if warm is not None and (warm.shape!=(n,) or not np.all(np.isfinite(warm))): raise ValueError("warm_start_q must match path stations")
     layers=[]
     for i,(lo,hi) in enumerate(domains):
+        if hi < lo:
+            layers.append([]); continue
         qs=list(np.linspace(lo,hi,settings.q_seed_count))
         qs.extend(float(v*v) for v in capability.speed if lo <= v*v <= hi and v <= maximum_speed)
         if warm is not None and lo <= warm[i]**2 <= hi: qs.append(float(warm[i]**2))
@@ -107,6 +113,11 @@ def solve_coupled_profile(path, capability, *, boundary, maximum_speed,
         if boundary == "standing" and i==0: qs=[0.]
         qs=sorted(set(float(q) for q in qs if lo<=q<=hi))
         layers.append(qs)
+    oversize=[i for i,layer in enumerate(layers) if len(layer)>settings.max_candidates_per_station]
+    if oversize or sum(map(len,layers))>settings.max_total_nodes:
+        raise YawProfileSolveError("budget_exceeded","initial candidate seeds exceed the candidate budget",
+            {"budget_reason":"candidate_budget","oversize_stations":tuple(oversize[:64]),
+             "candidate_counts":tuple(map(len,layers))})
     empty=[i for i,layer in enumerate(layers) if not layer]
     if empty:
         raise YawProfileSolveError("no_path_at_resolution","station squared-speed domain admits no candidate",
@@ -131,7 +142,13 @@ def solve_coupled_profile(path, capability, *, boundary, maximum_speed,
                     tuple(map(float,capability.lateral_acceleration)),capability.feasible_mask.tobytes(),
                     capability.yaw_moment_into_turn.tobytes(),capability.yaw_moment_out_of_turn.tobytes(),settings)
     queued=set(); pending=[]
+    cap_hits={"layers":set(),"rejected":0}
+    total_nodes=[sum(map(len,layers))]
+    def room(layer_index):
+        return (len(layers[layer_index])<settings.max_candidates_per_station
+                and total_nodes[0]<settings.max_total_nodes)
     refinement_waves=[]; refinement_windows=[]; inserted_witnesses=[]; witness_counts={}
+    omitted=[0]
     refinement_radius=min(segs,INITIAL_REFINEMENT_RADIUS)
 
     def deadline_reached():
@@ -152,7 +169,9 @@ def solve_coupled_profile(path, capability, *, boundary, maximum_speed,
         layer=layers[layer_index]
         pos=bisect.bisect_left(layer,q)
         if (pos<len(layer) and abs(layer[pos]-q)<=tol) or (pos>0 and abs(layer[pos-1]-q)<=tol): return False
-        layer.insert(pos,q); return True
+        if not room(layer_index):
+            cap_hits["layers"].add(layer_index); cap_hits["rejected"]+=1; return False
+        layer.insert(pos,q); total_nodes[0]+=1; return True
 
     def node_for(layer_index,q):
         """Return the layer value representing ``q`` (inserting it if new), or None."""
@@ -163,7 +182,9 @@ def solve_coupled_profile(path, capability, *, boundary, maximum_speed,
         for p_ in (pos,pos-1):
             if 0<=p_<len(layer) and abs(layer[p_]-q)<=tol: return layer[p_]
         if layer_index in seam_layers: return None
-        layer.insert(pos,q); return q
+        if not room(layer_index):
+            cap_hits["layers"].add(layer_index); cap_hits["rejected"]+=1; return None
+        layer.insert(pos,q); total_nodes[0]+=1; return q
 
     def sweep(start,direction,fixed_values,in_window,source):
         """Propagate strict witnesses layer by layer from a frontier, bounded per layer."""
@@ -196,8 +217,10 @@ def solve_coupled_profile(path, capability, *, boundary, maximum_speed,
                                     "target_layer":target,"inserted":False}
                             inserted_witnesses.append(record)
                         if feasible: (mandatory if must else optional).append((qfree,record))
-            room=max(0,SWEEP_INSERT_PER_LAYER-len(mandatory))
-            chosen=list(mandatory)+_spread(sorted(optional,key=lambda x:x[0]),room)
+            spare=max(0,SWEEP_INSERT_PER_LAYER-len(mandatory))
+            sampled=_spread(sorted(optional,key=lambda x:x[0]),spare)
+            omitted[0]+=len(optional)-len(sampled)
+            chosen=list(mandatory)+sampled
             nodes=[]
             for q,record in sorted(chosen,key=lambda x:x[0]):
                 before=len(layers[target])
@@ -311,6 +334,8 @@ def solve_coupled_profile(path, capability, *, boundary, maximum_speed,
         if deadline_reached():
             budget_reason="wall_deadline"; break
         refinement_rounds=round_index+1
+        if cap_hits["rejected"]:
+            budget_reason="candidate_budget"; break
         counts=np.array([len(x) for x in layers],dtype=np.int64)
         if np.any(counts>settings.max_candidates_per_station) or int(counts.sum())>settings.max_total_nodes:
             budget_reason="candidate_budget"; break
@@ -332,7 +357,7 @@ def solve_coupled_profile(path, capability, *, boundary, maximum_speed,
                             src_ids.append(base_i+j); dst_ids.append(base_j+target)
                             costs.append(2*ds/(math.sqrt(q0)+math.sqrt(q1)))
             if len(costs)>settings.max_total_edges: break
-            if i % 256 == 255 and deadline_reached(): break
+            if deadline_reached(): break
         timings["graph_build_seconds"]+=time.monotonic()-t0
         if deadline_reached():
             budget_reason="wall_deadline"; break
@@ -421,7 +446,8 @@ def solve_coupled_profile(path, capability, *, boundary, maximum_speed,
         "interval_cache_entries":len(interval_cache),"interval_work_queue_entries":len(pending),
         "refinement_radius":refinement_radius,"refinement_waves":tuple(refinement_waves),
         "refinement_windows":tuple(refinement_windows),"inserted_witnesses":tuple(inserted_witnesses),
-        "witness_counts":dict(witness_counts),"timings":{**timings,"total_seconds":time.monotonic()-started},
+        "witness_counts":dict(witness_counts),"omitted_optional_witnesses":omitted[0],
+        "candidate_cap_rejections":cap_hits["rejected"],"candidate_cap_layers":tuple(sorted(cap_hits["layers"]))[:64],"timings":{**timings,"total_seconds":time.monotonic()-started},
         "edge_count":None if packed is None else len(packed.targets),
         "edge_density":None if packed is None else len(packed.targets)/max(1,packed.n_nodes)}
     if incumbent is None:

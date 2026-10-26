@@ -106,6 +106,22 @@ class ProfileValidationTests(unittest.TestCase):
         self.assertFalse(result.dense_sample_valid)
         self.assertFalse(result.valid)
 
+    def test_dense_audit_runs_after_unsupported_midpoint(self):
+        from unittest.mock import patch
+        closed = YawPath(np.array([0., 100., 200.]), np.zeros(3), np.zeros(3), True)
+        calls = []
+        class Instrumented:
+            def __init__(self, _): pass
+            def query_evidence(self, v, ax, ay):
+                calls.append(v)
+                reason = "masked_support" if len(calls) == 1 else "supported"
+                return {"reason": type("R", (), {"value": reason})(), "moments": (1e9, 1e9)}
+        with patch("simplified_vehicle_models.solvers.yaw_profile_validation._MapInterpolator", Instrumented):
+            result = validate_profile(closed, self.cap, np.array([10., 20., 10.]), maximum_speed=30., boundary="flying", settings=self.settings, dense=True)
+        self.assertFalse(result.dense_sample_valid)
+        self.assertEqual(len(calls), 12)  # midpoint plus five required samples per segment
+        self.assertIn(0, result.invalid_segment_indices)
+
     def test_dense_failure_reports_only_its_segment(self):
         from unittest.mock import patch
         closed = YawPath(np.array([0., 100., 200.]), np.zeros(3), np.zeros(3), True)

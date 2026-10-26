@@ -29,6 +29,16 @@ class LapArtifactTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'track identity'):
                 load_lap_plan(target,cap,expected_track_identity='other')
 
+    def test_saved_artifact_revalidation_uses_full_profile_contract(self):
+        cap,p,g=self.fixture()
+        with tempfile.TemporaryDirectory() as d:
+            target=Path(d)/'plan.npz'
+            save_lap_plan(target,yaw_path=p,speed=np.full(3,5.),geometry=g,map_identity=cap.source_identity,
+                track_identity='track',maximum_speed=10.,profile_settings=CoupledProfileSettings())
+            path,plan,arrays,meta,validation=load_lap_plan(target,cap,expected_track_identity='track')
+            self.assertTrue(validation.valid)
+            self.assertEqual(validation.dense_sample_valid, None)
+
     def test_tampered_arrays_rejected_before_replay(self):
         cap,p,g=self.fixture()
         with tempfile.TemporaryDirectory() as d:

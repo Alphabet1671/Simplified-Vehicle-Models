@@ -56,8 +56,9 @@ def validate_profile(path: YawPath, capability: YawCapabilityMap, q,
             max_ax_violation = max(max_ax_violation, max(0., -v0, -v1, v0-maximum_speed, v1-maximum_speed))
             continue
         if v0 + v1 <= 0.0:
+            # The segment cannot have finite elapsed time, but dense support and
+            # moment samples still need their independent audit.
             bad.append(i)
-            continue
         # Same arithmetic as the edge oracle (q = v*v, then midpoint and
         # difference in q), so a value on a map knot face is classified
         # identically by solver and validator.
@@ -76,15 +77,17 @@ def validate_profile(path: YawPath, capability: YawCapabilityMap, q,
         if evidence["reason"].value != "supported":
             invalid_support += 1
             bad.append(i)
-            continue
-        into, out = evidence["moments"]
-        sign = math.copysign(1., k if abs(k)>1e-12 else (kp if abs(kp)>1e-12 else 1.))
-        demand = sign*capability.yaw_inertia*(ax*k+vm*vm*kp)
-        yaw_violation = max(0., demand-into, -out-demand)
-        max_yaw_violation = max(max_yaw_violation, yaw_violation)
-        min_margin = min(min_margin, into-demand, out+demand)
-        if ax_violation > settings.acceleration_tolerance or yaw_violation > settings.yaw_moment_tolerance:
-            bad.append(i)
+            if dense:
+                dense_valid = False
+        else:
+            into, out = evidence["moments"]
+            sign = math.copysign(1., k if abs(k)>1e-12 else (kp if abs(kp)>1e-12 else 1.))
+            demand = sign*capability.yaw_inertia*(ax*k+vm*vm*kp)
+            yaw_violation = max(0., demand-into, -out-demand)
+            max_yaw_violation = max(max_yaw_violation, yaw_violation)
+            min_margin = min(min_margin, into-demand, out+demand)
+            if ax_violation > settings.acceleration_tolerance or yaw_violation > settings.yaw_moment_tolerance:
+                bad.append(i)
         if dense:
             for fraction in (0.0, 0.25, 0.5, 0.75, 1.0):
                 qf = (1.0-fraction)*q0 + fraction*q1

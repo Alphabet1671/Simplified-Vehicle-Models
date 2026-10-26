@@ -82,9 +82,9 @@
 - Shared preflight successfully identity-loads final map for MIS/FSC at0.05m; both no holes, no warnings, lateral-axis saturation0% (old79%/88%). No lap/controller claims.
 - Independent final reviewer approved config/docs/reduced model. Current67focused tests passed; final yaw suite bash1551 running. Full2894-test repo suite bash1471 cancelled after ~3hours no completion; do not claim full suite pass.
 
-## Remaining
+## Completion and runtime policy
 
-1. Finish/review workflow, especially true holdout-to-supported-domain distance and preallocation budgets.
-2. Physical IEM24 build with persisted complete/incomplete evidence; tune resolution using evidence, not tolerance relaxation.
-3. Shared runner/probe/preflight build/load integration (no silent ±1 g default).
-4. Independent audit and regression suite, documentation, commits.
+- Requested map-workflow objective completed: signed model-bound discovery, unresolved/truncation states, held-out canonical LP validation, persisted integrity/provenance artifacts, and shared consumer integration verified.
+- Final current-code focused suite:67 tests passed in3.399s under a120s process-group SIGKILL watchdog. Earlier yaw-wide snapshot:130 tests passed; the subsequent final broad yaw attempt was cancelled, not counted as a pass.
+- User hard rule: every run, including tests, must be killed at1800s unless explicitly approved beforehand. Recorded in AGENTS.md. All future nontrivial runs require process-level watchdogs; cooperative solver limits and tool wait timeouts alone are insufficient. Earlier multi-hour full suite was cancelled and is NOT a pass.
+- Separate follow-up: the larger accepted map can exceed the coupled profile solver's initial candidate budget; cached coarse probe reported typed budget_exceeded. Map coverage does not imply end-to-end planner readiness. No new lap/controller claim.

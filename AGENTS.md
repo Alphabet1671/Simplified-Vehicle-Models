@@ -31,6 +31,15 @@ that drifts out of format fails the test suite.
 | `docs/dev/` | Developer documentation |
 | `tests/` | The unit and regression suite |
 
+## Hard runtime limit
+
+Every run—including tests, map builds, benchmarks, and simulations—must be
+terminated at **30 minutes wall-clock time (1,800 seconds)** unless the user
+explicitly approves a longer run beforehand. Enforce this with a process-level
+watchdog covering the entire run and its child processes; a tool wait timeout
+or cooperative solver budget is not sufficient. Use smaller scoped runs when
+necessary. Never silently restart timed-out work to evade this limit.
+
 ## Commands
 
 ```bash

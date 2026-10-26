@@ -227,20 +227,48 @@ class YawMapWorkflowTest(unittest.TestCase):
         self.assertLessEqual(max(int(np.prod(shape)) for shape in seen), 10)
         self.assertTrue(result.audit.budget_exhausted or result.audit.refinement_stalled)
 
-    def test_worst_history_remembers_alternating_boundary(self):
-        # Regression guard for A, B, A: per-boundary history must retain A's
-        # prior loss rather than reset fallback just because B was worst later.
-        history = {}
-        a = (1., 2., 3.)
-        b = (4., 5., 6.)
-        def stalled(key, loss):
-            prior = history.get(key)
-            result = prior is not None and loss >= prior - 1e-12
-            history[key] = loss
-            return result
-        self.assertFalse(stalled(a, .4))
-        self.assertFalse(stalled(b, .4))
-        self.assertTrue(stalled(a, .4))
+    def test_workflow_history_escalates_after_a_b_a_cycle(self):
+        # Exercise the production loop: A, B, unchanged A must issue ay, ay,
+        # then speed—not reset to ay merely because B intervened.
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from simplified_vehicle_models.formulations import yaw_map_workflow as workflow
+        from simplified_vehicle_models.formulations.yaw_map_workflow import AuditProbe, YawMapCompletionAudit
+        from simplified_vehicle_models.formulations.yaw_map_domain import LateralForceBound
+        from simplified_vehicle_models.solvers.yaw_profile_map import MapQueryReason
+        diagnostics = SimpleNamespace(complete=True, probe_count=0, budget_exhausted=False,
+                                      unresolved_probes=())
+        original = SimpleNamespace(lateral_bound=LateralForceBound(12., 120., True), diagnostics=diagnostics,
+                                   slices=())
+        training = SimpleNamespace(diagnostics=diagnostics)
+        validation = SimpleNamespace(diagnostics=diagnostics)
+        discoveries = iter((original, training, validation))
+        point_a = AuditProbe(10./3., 1./3., .2, ProbeStatus.FEASIBLE,
+                             MapQueryReason.MASKED_SUPPORT, .4)
+        point_b = AuditProbe(20./3., 2./3., .2, ProbeStatus.FEASIBLE,
+                             MapQueryReason.MASKED_SUPPORT, .4)
+        complete = YawMapCompletionAudit((), 0, 100, False, False, (), (), (), (), 0., .1)
+        training_audits = iter((
+            YawMapCompletionAudit((), 0, 100, False, False, (), (point_a,), (), (), .4, .1),
+            YawMapCompletionAudit((), 0, 100, False, False, (), (point_b,), (), (), .4, .1),
+            YawMapCompletionAudit((), 0, 100, False, False, (), (point_a,), (), (), .4, .1),
+            complete,
+        ))
+        axes = []
+        original_refine = workflow._refine_axes
+        def audit(_capability, domain, **_kwargs):
+            return complete if domain is validation else next(training_audits)
+        def refine(*args, **kwargs):
+            axes.append(args[4])
+            return original_refine(*args, **kwargs)
+        with patch.object(workflow, "discover_yaw_map_domain", side_effect=lambda *_a, **_k: next(discoveries)), \
+             patch.object(workflow, "_audit_map", side_effect=audit), \
+             patch.object(workflow, "_refine_axes", side_effect=refine):
+            result = workflow.build_yaw_map_workflow(vehicle(), [0., 10.], [0., 1.],
+                evaluator(lambda _v, _a: 2.), yaw_inertia=1.,
+                settings=self.settings(maximum_refinement_rounds=5),
+                map_builder=synthetic_builder(lambda _v, _a: 20.))
+        self.assertEqual(axes[:3], [("ay",), ("ay",), ("speed",)])
 
     def test_unresolved_direct_lp_and_audit_budget_are_never_physical_infeasible(self):
         limit = lambda _speed, _ax: 2.

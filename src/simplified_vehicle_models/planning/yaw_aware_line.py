@@ -163,7 +163,7 @@ def _corner_complexes(track, threshold, min_length, quiet_padding=25.):
     return padded
 
 
-def _qp_seed(spline, reference, blend, lower, upper, tolerance=1.e-9):
+def _qp_seed(spline, reference, blend, lower, upper, tolerance=1.e-9, *, linearization_cache=None):
     """Solve the deterministic convex discrete offset seed QP.
 
     Objective: ``(1-eps)||K(c)-k_ref||_W^2 + eps/2 ||W B1 c||^2`` where
@@ -175,30 +175,33 @@ def _qp_seed(spline, reference, blend, lower, upper, tolerance=1.e-9):
     to the zero solution. Box bounds are imposed directly; SLSQP uses analytic
     gradient, fixed tolerance and fixed zero initial point.
     """
-    count = spline.control_count
-    eye = np.eye(count)
-    if spline.is_closed:
-        D2 = np.roll(eye, 1, axis=1) - 2.*eye + np.roll(eye, -1, axis=1)
-    else:
-        D2 = np.diff(eye, n=2, axis=0)
-    ds = float(spline.track.lap_length) / max(1, count if spline.is_closed else count-1)
-    grid = np.linspace(0., spline.track.lap_length, max(40, 4*count)+1)
-    _, B0, B2 = spline.basis(grid)
-    k_ref = np.asarray(reference.evaluate(grid).curvature, dtype=float)
-    # Linearized offset curvature from analytic trajectory perturbations at the
-    # origin. Central differences keep this deterministic and independent of
-    # any optimizer-internal finite-difference policy.
-    eps_fd = 1.e-3
-    A = np.empty((grid.size, count))
-    for j in range(count):
-        unit = np.zeros(count); unit[j] = eps_fd
-        kp = np.asarray(OffsetTrajectory(reference, spline, unit).evaluate(grid).curvature)
-        km = np.asarray(OffsetTrajectory(reference, spline, -unit).evaluate(grid).curvature)
-        A[:, j] = (kp-km)/(2.*eps_fd)
+    cache_box=linearization_cache if isinstance(linearization_cache,dict) else None
+    if linearization_cache is None or cache_box is not None and "data" not in cache_box:
+        count = spline.control_count
+        eye = np.eye(count)
+        if spline.is_closed:
+            D2 = np.roll(eye, 1, axis=1) - 2.*eye + np.roll(eye, -1, axis=1)
+        else:
+            D2 = np.diff(eye, n=2, axis=0)
+        ds = float(spline.track.lap_length) / max(1, count if spline.is_closed else count-1)
+        grid = np.linspace(0., spline.track.lap_length, max(40, 4*count)+1)
+        _, B0, B2 = spline.basis(grid)
+        k_ref = np.asarray(reference.evaluate(grid).curvature, dtype=float)
+        eps_fd = 1.e-3
+        A = np.empty((grid.size, count))
+        for j in range(count):
+            unit = np.zeros(count); unit[j] = eps_fd
+            kp = np.asarray(OffsetTrajectory(reference,spline,unit,build_station_map=False).evaluate(grid).curvature)
+            km = np.asarray(OffsetTrajectory(reference,spline,-unit,build_station_map=False).evaluate(grid).curvature)
+            A[:,j]=(kp-km)/(2.*eps_fd)
+        weights=np.full(grid.size,ds*count/max(grid.size-1,1))
+        data=(count,A,weights,-k_ref,D2,B2,ds)
+        if cache_box is not None: cache_box["data"]=data
+        linearization_cache=data
+    if cache_box is not None: linearization_cache=cache_box["data"]
+    count,A,weights,target,D2,B2,ds=linearization_cache
     # The curvature map is locally quadraticized by its linearization; offset
     # second-difference smoothness is the regularizer and length is quadratic.
-    target = -k_ref
-    weights = np.full(grid.size, ds * count / max(grid.size-1, 1))
     curvature_Q = A.T @ (weights[:, None] * A) + D2.T @ D2 * 1.e-4
     length_Q = B2.T @ (weights[:, None] * B2) * (ds*ds)
     Q = 2.*((1.-blend)*curvature_Q + blend*length_Q) + np.eye(count)*1.e-10
@@ -247,16 +250,18 @@ def optimize_yaw_aware_line(track: TrackProfile, corridor: Corridor | None,
     high = np.interp(spline.control_distance, shrunk.distance, shrunk.maximum)
     bounds = list(zip(low.tolist(), high.tolist()))
     seeds = [np.zeros(spline.control_count)]
-    seed_solver_diagnostics = []
+    seed_solver_diagnostics = []; qp_cache={}
     for blend in settings.seed_blends:
         if time.monotonic()-started >= settings.maximum_wall_seconds:
             raise YawLineOptimizationError("global line-search wall budget exhausted before seed construction",
                                            ({"reason":"global_budget","budget_cause":"wall_seconds"},))
+        qp_started=time.monotonic()
         seed, success, iterations, objective_value = _qp_seed(
-            spline, reference, blend, low, high, settings.qp_tolerance)
+            spline, reference, blend, low, high, settings.qp_tolerance,linearization_cache=qp_cache)
         seeds.append(seed)
         seed_solver_diagnostics.append({"epsilon": blend, "success": success,
                                         "iterations": iterations, "objective": objective_value,
+                                        "seconds":time.monotonic()-qp_started,
                                         "method": "SLSQP_box_constrained_convex_QP"})
     corners = _corner_complexes(track, settings.corner_quiet_curvature,
                                 settings.corner_min_length, settings.corner_quiet_padding)
@@ -279,6 +284,7 @@ def optimize_yaw_aware_line(track: TrackProfile, corridor: Corridor | None,
         record = {"seed": seed_index, "stage": stage, "accepted": False, "reason": None,
                   "lap_time": None, "coefficients": np.asarray(coeff).tolist(),"cache_hit":False}
         try:
+            geometry_started=time.monotonic()
             trajectory = OffsetTrajectory(reference, spline, coeff)
             path = _sample_trajectory(trajectory, settings.grid_spacing)
             dense_source = np.linspace(reference.start, reference.end,
@@ -291,6 +297,7 @@ def optimize_yaw_aware_line(track: TrackProfile, corridor: Corridor | None,
                 record["reason"] = "geometry_or_corridor"; cache[key]=(record,None); return record, None
         except Exception as exc:
             record["reason"] = "geometry_or_corridor"; record["detail"] = str(exc); cache[key]=(record,None); return record, None
+        record["geometry_seconds"]=time.monotonic()-geometry_started
         try:
             if profile_evaluations[0] >= settings.maximum_profile_evaluations:
                 stop_reason[0]="profile_evaluations"; raise _SearchBudgetStop()
@@ -298,6 +305,7 @@ def optimize_yaw_aware_line(track: TrackProfile, corridor: Corridor | None,
             if remaining <= 0.:
                 stop_reason[0]="wall_seconds"; raise _SearchBudgetStop()
             profile_evaluations[0]+=1
+            profile_started=time.monotonic()
             if settings.profile_solver == "coupled":
                 warm = None
                 if warm_reference[0] is not None:
@@ -330,6 +338,7 @@ def optimize_yaw_aware_line(track: TrackProfile, corridor: Corridor | None,
             text = str(exc)
             record["reason"] = "capability_domain" if ("map" in text or "feasible" in text or "transition" in text) else "profile_invalid"
             record["detail"] = text; cache[key]=(record,None); return record, None
+        record["profile_seconds"]=time.monotonic()-profile_started
         record.update(accepted=True, reason="accepted", lap_time=profile.lap_time,
                       geometry_grid_nodes=len(path.distance),
                       resolution_converged=profile.diagnostics.get("resolution_converged"))

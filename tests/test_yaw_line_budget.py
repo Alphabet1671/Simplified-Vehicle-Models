@@ -2,7 +2,9 @@ import unittest
 from unittest.mock import patch
 import numpy as np
 
-from simplified_vehicle_models.planning.yaw_aware_line import YawLineSettings, optimize_yaw_aware_line
+from simplified_vehicle_models.planning.yaw_aware_line import YawLineSettings, optimize_yaw_aware_line, _qp_seed
+from simplified_vehicle_models.tracks.line_trajectory import OffsetTrajectory, ReferenceCurve
+from simplified_vehicle_models.tracks.offset_spline import OffsetSpline
 from simplified_vehicle_models.solvers.yaw_aware_profile import YawAwareProfile
 from tests.test_yaw_aware_line import capability, circle_track
 
@@ -25,6 +27,22 @@ class YawLineBudgetSettingsTests(unittest.TestCase):
         with self.assertRaises(ValueError): YawLineSettings(seed_blends=(1.1,))
         with self.assertRaises(ValueError): YawLineSettings(maximum_profile_evaluations=0)
         with self.assertRaises(ValueError): YawLineSettings(maximum_wall_seconds=0.)
+
+    def test_qp_cached_linearization_matches_uncached_seed(self):
+        track=circle_track(); spline=OffsetSpline(track,160.); reference=ReferenceCurve(track)
+        lower=np.full(spline.control_count,-2.); upper=np.full(spline.control_count,2.)
+        uncached=_qp_seed(spline,reference,.25,lower,upper)
+        cached=_qp_seed(spline,reference,.25,lower,upper,linearization_cache={})
+        np.testing.assert_allclose(cached[0],uncached[0],rtol=0.,atol=1.e-12)
+        self.assertEqual(cached[1:],uncached[1:])
+
+    def test_geometry_only_trajectory_matches_default_evaluation(self):
+        track=circle_track(); spline=OffsetSpline(track,160.); reference=ReferenceCurve(track)
+        coeff=np.linspace(-.2,.2,spline.control_count); stations=np.linspace(0.,track.lap_length,17)
+        full=OffsetTrajectory(reference,spline,coeff)
+        geometry=OffsetTrajectory(reference,spline,coeff,build_station_map=False)
+        self.assertIsNone(geometry.station_map)
+        np.testing.assert_allclose(geometry.evaluate(stations).curvature,full.evaluate(stations).curvature)
 
     def test_global_profile_budget_keeps_validated_incumbent(self):
         track=circle_track(); calls=[]
@@ -61,7 +79,7 @@ class YawLineBudgetSettingsTests(unittest.TestCase):
         settings=YawLineSettings(control_spacing=160.,grid_spacing=100.,dense_subdivisions=1,
             optimizer_max_iterations=1,maximum_outer_passes=1,maximum_speed=20.,boundary="flying",
             seed_blends=(0.,),maximum_profile_evaluations=8)
-        with patch("simplified_vehicle_models.planning.yaw_aware_line._qp_seed",side_effect=lambda spline,*args: (np.zeros(spline.control_count),True,1,0.)), \
+        with patch("simplified_vehicle_models.planning.yaw_aware_line._qp_seed",side_effect=lambda spline,*args,**kwargs: (np.zeros(spline.control_count),True,1,0.)), \
              patch("simplified_vehicle_models.planning.yaw_aware_line.yaw_aware_profile",failed):
             with self.assertRaises(Exception) as caught:
                 optimize_yaw_aware_line(track,None,capability(),settings=settings)

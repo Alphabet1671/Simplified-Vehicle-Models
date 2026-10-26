@@ -27,14 +27,14 @@ PYTHONPATH=src:. python3 tools/run/run_with_deadline.py --seconds 120 -- \
   python3 -m unittest tests.test_yaw_line_budget -q
 ```
 
-Result: 2 focused settings tests passed. Broader guarded functional run:
+Result: 8 focused settings, cache-equivalence, geometry-only, and behavioral tests passed in 2.267 seconds. Broader guarded functional run:
 
 ```sh
 PYTHONPATH=src:. python3 tools/run/run_with_deadline.py --seconds 600 -- \
   python3 -m unittest tests.test_yaw_aware_line -q
 ```
 
-Result: 6 tests passed in 157.908 seconds.
+Result: 6 tests passed in 80.417 seconds after QP geometry-only/shared-linearization optimization (previous guarded run was 157.908 seconds; this focused synthetic suite is not a physical performance claim).
 
 ## Focused behavioral coverage and deferred checks
 

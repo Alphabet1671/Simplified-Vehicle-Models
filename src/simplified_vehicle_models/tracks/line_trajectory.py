@@ -248,11 +248,13 @@ class OffsetTrajectory:
     """Offset a reference curve analytically using an existing ``OffsetSpline``."""
 
     def __init__(self, reference: ReferenceCurve, spline: object, coefficients: object,
-                 station_accuracy: float = 1.0e-7) -> None:
+                 station_accuracy: float = 1.0e-7, *, build_station_map: bool = True) -> None:
         if bool(getattr(spline, "is_closed", False)) != reference.is_closed:
             raise ValueError("reference and offset spline closure must agree")
         if not np.isfinite(station_accuracy) or station_accuracy <= 0.0:
             raise ValueError("station_accuracy must be positive and finite")
+        if not isinstance(build_station_map, (bool, np.bool_)):
+            raise TypeError("build_station_map must be boolean")
         values = np.asarray(coefficients, dtype=float)
         count = int(getattr(spline, "control_count"))
         if values.shape != (count,) or not np.all(np.isfinite(values)):
@@ -264,7 +266,7 @@ class OffsetTrajectory:
         # interpolation kernel per public call; a trajectory is an evaluator
         # and must not pay that cost at every geometry or quadrature query.
         self._offset_curve = spline._spline(self.coefficients)
-        self.station_map = self._build_station_map()
+        self.station_map = self._build_station_map() if build_station_map else None
 
     def _knots(self) -> np.ndarray:
         controls = np.asarray(self.spline.control_distance, dtype=float)

@@ -11,7 +11,9 @@ python -m pip install -e '.[gui]'
 PYTHONPATH=src:. python3 tools/sim_gui/app.py
 ```
 
-Open a vehicle formulation, then select **Maneuvers**. A track is not required. The selected vehicle is copied into a validated draft; changing vehicle invalidates the prior run draft. The tab refuses physical backends and hardware arm remains unavailable.
+Open a vehicle formulation in the shared **Model** dock, then select **Maneuvers**. This is the same import/component-selection workflow used by lap simulations; Maneuvers intentionally has no second model browser. A track is not required. The selected vehicle is copied into a validated draft; changing vehicle clears the prior maneuver result and draft state. The tab refuses physical backends and hardware arm remains unavailable.
+
+The Maneuvers tab follows the lap-run layout: select an **Export folder**, run or stop the isolated simulation child, and watch the shared progress bar, status line, local bounded log, and application Log tab. On a completed hash-validated artifact, the tab loads accepted command evidence into the requested/applied preview and displays the immutable artifact path and termination reason. Use **Export animation…** to choose a fresh MP4 destination; the existing bridge still rejects an existing output rather than overwriting it.
 
 A headless simulation run uses the same runner:
 

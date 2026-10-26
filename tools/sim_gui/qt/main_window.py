@@ -98,6 +98,10 @@ class MainWindow(QMainWindow):
         self.maneuver_tab.runRequested.connect(self._run_maneuver)
         self.maneuver_tab.stopRequested.connect(self.maneuver_controller.cancel)
         self.maneuver_controller.busyChanged.connect(self._maneuver_busy_changed)
+        self.maneuver_controller.progress.connect(self._maneuver_progress)
+        self.maneuver_controller.finished.connect(self._maneuver_finished)
+        self.maneuver_controller.animationFinished.connect(self._maneuver_animation_finished)
+        self.maneuver_tab.log_view.textChanged.connect(self._mirror_maneuver_log)
         self.track_tab.trackChanged.connect(self._track_changed)
         stored = self.settings_store.value("single_run_output")
         self.single_tab.set_export_folder(Path(stored) if stored else self.output_root)
@@ -165,6 +169,7 @@ class MainWindow(QMainWindow):
     def _configuration_changed(self, configuration) -> None:
         self.configuration = configuration
         self.maneuver_tab.set_vehicle_configuration(self._maneuver_definition_seed(configuration))
+        self.maneuver_tab.clear_run()
         if self.study_tab is not None:
             self.study_tab.configuration = configuration
             self.study_tab.settings = self.settings_tab._settings
@@ -196,9 +201,45 @@ class MainWindow(QMainWindow):
         self.maneuver_controller.start(definition)
 
     def _maneuver_busy_changed(self, busy: bool) -> None:
-        if not busy and self._run_mode == "maneuver":
+        if busy:
+            self._run_mode = "maneuver"
+            self.status.showMessage("Maneuver running…")
+        elif self._run_mode == "maneuver":
             self._run_mode = None
         self._refresh_actions()
+
+    def _mirror_maneuver_log(self) -> None:
+        """Mirror newly appended tab log lines into the application log."""
+        text = self.maneuver_tab.log_view.toPlainText()
+        count = getattr(self, "_maneuver_log_lines", 0)
+        lines = text.splitlines()
+        if count > len(lines):
+            count = 0
+        for line in lines[count:]:
+            self.log_view.appendPlainText(f"maneuver: {line}")
+        self._maneuver_log_lines = len(lines)
+
+    def _maneuver_progress(self, event: dict) -> None:
+        """Forward simulation progress into the shared status bar."""
+        if not isinstance(event, dict):
+            return
+        fraction = event.get("fraction")
+        phase = event.get("phase", "running")
+        time_s = event.get("time_s")
+        detail = f"Maneuver: {phase}"
+        if time_s is not None:
+            detail += f" at {float(time_s):.3f} s"
+        if isinstance(fraction, (int, float)):
+            detail += f" ({float(fraction) * 100:.0f}%)"
+        self.status.showMessage(detail)
+
+    def _maneuver_finished(self, summary: dict) -> None:
+        status = summary.get("status", "Finished") if isinstance(summary, dict) else "Finished"
+        self.status.showMessage(f"Maneuver {status.lower()}")
+
+    def _maneuver_animation_finished(self, summary: dict) -> None:
+        status = summary.get("status", "Animation finished") if isinstance(summary, dict) else "Animation finished"
+        self.status.showMessage(f"Maneuver {status.lower()}")
 
     def _settings_changed(self, settings) -> None:
         if self.study_tab is not None:
@@ -217,6 +258,7 @@ class MainWindow(QMainWindow):
         self.configuration = VehicleConfiguration.open(path)
         self.model_panel.set_configuration(self.configuration)
         self.maneuver_tab.set_vehicle_configuration(self._maneuver_definition_seed(self.configuration))
+        self.maneuver_tab.clear_run()
         self.settings_tab.set_model(self.configuration.model)
         try:
             current_settings = self.settings_tab.settings()

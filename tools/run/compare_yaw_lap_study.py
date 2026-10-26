@@ -4,14 +4,18 @@ import json
 from pathlib import Path
 import numpy as np
 from simplified_vehicle_models.planning.yaw_convergence import ConvergenceSample,convergence_study
+from tools.run.yaw_study_contract import comparison_identity, validate_comparison_pair
 
 
 def compare_runs(directories,*,dimension):
-    rows=[];failures=[];identities=set()
+    rows=[];failures=[];identities=set();contracts=[]
     for directory in map(Path,directories):
         summary=json.loads((directory/'summary.json').read_text())
         inputs=json.loads((directory/'inputs.json').read_text())
         identities.add((inputs['map_identity'],inputs['track_identity']))
+        contract=inputs.get('study_contract')
+        if contract is not None:
+            contracts.append(contract)
         if summary['status']!='planned':
             failures.append({'run':str(directory),'status':summary['status'],'cause':summary.get('cause'),
                              'message':summary.get('message')});continue
@@ -45,7 +49,11 @@ def compare_runs(directories,*,dimension):
                 True,bool(profile.get('resolution_converged',False)),optimizer_converged,
                 budget or profile.get('budget_reason')))
     if len(identities)>1:raise ValueError('study runs must have identical track and map identities')
+    if len(contracts)>1:
+        for first,second in zip(contracts,contracts[1:]):
+            validate_comparison_pair(first,second,dimension)
     result=convergence_study(rows,dimension=dimension)
+    if contracts:result['comparison_identity']=comparison_identity(contracts[0],dimension)
     result['failed_runs']=failures
     if failures:result['status']='inconclusive'
     result['scope']='saved discrete plans; no new capability/geometry validation performed by comparison'

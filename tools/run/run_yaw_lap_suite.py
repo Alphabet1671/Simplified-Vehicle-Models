@@ -60,13 +60,51 @@ def run(args):
     track=load_track(args.track)
     # Include transitive track/data bytes, not merely the XML pathname.
     from simplified_vehicle_models.formulations.yaw_map_artifact import source_provenance
-    track_identity=hashlib.sha256(json.dumps(source_provenance(args.track),sort_keys=True).encode()).hexdigest()
-    runner.write_json(output/'inputs.json',{'args':vars(args),'map_identity':capability.source_identity,
-        'track_identity':track_identity,'continuous_feasibility_certified':False})
+    track_provenance=source_provenance(args.track)
+    track_identity=hashlib.sha256(json.dumps(track_provenance,sort_keys=True).encode()).hexdigest()
     settings=CoupledProfileSettings(max_wall_seconds=args.profile_seconds,max_refinement_rounds=args.profile_rounds)
+    from tools.run.yaw_study_contract import study_contract, finalized_plan_inputs
+    try:
+        import scipy, casadi
+        packages={'scipy':scipy.__version__,'casadi':casadi.__version__}
+    except ImportError as error:
+        packages={'unavailable':str(error)}
+    source_revision='unknown';dirty_hashes='unknown'
+    try:
+        import subprocess
+        root=Path(__file__).resolve().parents[3]
+        source_revision=subprocess.check_output(['git','rev-parse','HEAD'],cwd=root,text=True).strip()
+        changed=subprocess.check_output(['git','status','--porcelain'],cwd=root,text=True).splitlines()
+        dirty_hashes={}
+        for entry in changed:
+            name=entry[3:]
+            target=(root/name)
+            if target.is_file():dirty_hashes[name]=hashlib.sha256(target.read_bytes()).hexdigest()
+    except (OSError,subprocess.SubprocessError):
+        source_revision='unknown';dirty_hashes='unknown'
+    provenance={'source_revision':source_revision,'source_dirty_hashes':dirty_hashes,
+        'vehicle_configuration_hashes':source_provenance(str(runner.PLANAR_FORMULATION)), 
+        'track_data_hashes':track_provenance,'map_file_sha256':hashlib.sha256(args.yaw_map.read_bytes()).hexdigest(),
+        'map_source_identity':capability.source_identity,'plan_file_digest':'pending','plan_array_digest':'pending',
+        'initial_state_soc':'recorded on replay','package_versions':packages,
+        'thread_settings':{key:value for key,value in __import__('os').environ.items() if 'THREAD' in key.upper()},
+        'watchdog_budget_seconds':1800}
+    resolved={'profile_settings':{key:getattr(settings,key) for key in settings.__dataclass_fields__},
+        'controller':args.controller,'controller_overrides':{key:getattr(args,key) for key in ('preview_seconds','heading_gain','lateral_gain','yaw_damping')},
+        'solver':{'method':'BDF','rtol':1e-6,'atol':1e-8,'maximum_step':args.maximum_step},
+        'profile_line_settings':{'spacing':args.spacing,'control_spacing':args.control_spacing,
+            'profile_seconds':args.profile_seconds,'profile_rounds':args.profile_rounds,
+            'line_evaluations':args.line_evaluations,'line_seconds':args.line_seconds}}
+    contract=study_contract(vars(args),resolved,provenance)
+    manifest={'args':vars(args),'map_identity':capability.source_identity,
+        'track_identity':track_identity,'continuous_feasibility_certified':False,'study_contract':contract}
+    runner.write_json(output/'inputs.json',manifest)
     try:
         if args.mode=='replay':
             path,speed_plan,arrays,metadata,validation=load_lap_plan(args.plan,capability,expected_track_identity=track_identity)
+            finalized=finalized_plan_inputs(vars(args),resolved,provenance,args.plan,metadata['array_digest'],
+                map_identity=capability.source_identity,track_identity=track_identity)
+            runner.write_json(output/'inputs.json',finalized)
             return replay(args,output,vehicle,track,path,speed_plan,arrays,metadata)
         if args.mode=='fixed':
             from tools.run.probe_coupled_yaw_profile import _sample_geometry
@@ -103,9 +141,18 @@ def run(args):
                               'coefficients':line.coefficients.tolist()}
         save_lap_plan(output/'plan.npz',yaw_path=path,speed=profile.speed,geometry=geometry_data,
             map_identity=capability.source_identity,track_identity=track_identity,maximum_speed=vmax,
-            profile_settings=settings,provenance=plan_diagnostics)
+            profile_settings=settings,provenance={**plan_diagnostics,'study_contract_version':contract['contract_version'],
+                'study_contract_sha256':contract['canonical_json_sha256']})
+        plan_path=output/'plan.npz'
+        with np.load(plan_path,allow_pickle=False) as archive:
+            saved_metadata=json.loads(str(archive['metadata'].item()))
+        provenance.update(plan_file_digest=hashlib.sha256(plan_path.read_bytes()).hexdigest(),
+                          plan_array_digest=saved_metadata['array_digest'])
+        contract=study_contract(vars(args),resolved,provenance)
+        runner.write_json(output/'inputs.json',{'args':vars(args),'map_identity':capability.source_identity,
+            'track_identity':track_identity,'continuous_feasibility_certified':False,'study_contract':contract})
         # Load once through the strict replay gate before declaring a usable plan.
-        _,_,_,saved_metadata,_=load_lap_plan(output/'plan.npz',capability,expected_track_identity=track_identity)
+        _,_,_,saved_metadata,_=load_lap_plan(plan_path,capability,expected_track_identity=track_identity)
         summary={'plan_array_digest':saved_metadata['array_digest'],'status':'planned','lap_time_s':profile.lap_time,'speed_min_mps':float(min(profile.speed)),
             'speed_max_mps':float(max(profile.speed)),'profile_resolution_converged':profile.diagnostics.get('resolution_converged'),
             'profile_validation':profile.diagnostics.get('validation'),'diagnostics':plan_diagnostics,

@@ -122,7 +122,11 @@ def _require_linprog():
     return linprog
 
 
-def _cell_lp(vehicle, speed, ax, ay, tv_limits, direction, *, ideal=False):
+class YawCapabilityNumericalError(RuntimeError):
+    """A direct capability LP was unresolved, rather than physically infeasible."""
+
+
+def _cell_lp(vehicle, speed, ax, ay, tv_limits, direction, *, ideal=False, strict_status=False):
     linprog = _require_linprog()
     loads = normal_loads(vehicle, speed, ax, ay)
     if np.any(loads < -1e-9):
@@ -232,8 +236,46 @@ def _cell_lp(vehicle, speed, ax, ay, tv_limits, direction, *, ideal=False):
     result = linprog(-c, A_ub=np.asarray(aub) if aub else None, b_ub=np.asarray(bub) if bub else None,
                      A_eq=np.asarray(aeq), b_eq=np.asarray(beq), bounds=bounds, method="highs")
     if not result.success:
+        if strict_status and getattr(result, "status", None) != 2:
+            raise YawCapabilityNumericalError(
+                f"yaw LP unresolved at {(speed, ax, ay)}: status={getattr(result, 'status', None)} "
+                f"{getattr(result, 'message', '')}")
         return None
-    return float(-result.fun)
+    value = float(-result.fun)
+    if not math.isfinite(value):
+        if strict_status:
+            raise YawCapabilityNumericalError(f"yaw LP returned nonfinite objective at {(speed, ax, ay)}")
+        return None
+    return value
+
+
+@dataclass(frozen=True, slots=True)
+class DirectYawCell:
+    status: object
+    into_turn: float | None = None
+    out_of_turn: float | None = None
+    detail: str = ""
+
+
+def direct_yaw_cell(vehicle, speed, ax, ay, tv_limits=None, *, ideal=False):
+    """Direct LP evidence, keeping numerical failure distinct from infeasibility."""
+    from simplified_vehicle_models.formulations.yaw_map_domain import ProbeStatus
+    if not all(math.isfinite(float(x)) for x in (speed, ax, ay)) or speed < 0:
+        raise ValueError("direct yaw query requires finite accelerations and nonnegative speed")
+    try:
+        positive = _cell_lp(vehicle, speed, ax, ay, tv_limits, 1., ideal=ideal, strict_status=True)
+        negative = _cell_lp(vehicle, speed, ax, ay, tv_limits, -1., ideal=ideal, strict_status=True)
+    except YawCapabilityNumericalError as error:
+        return DirectYawCell(ProbeStatus.UNRESOLVED, detail=str(error))
+    if positive is None or negative is None or min(positive, negative) < -1e-7:
+        return DirectYawCell(ProbeStatus.INFEASIBLE)
+    return DirectYawCell(ProbeStatus.FEASIBLE, max(0., positive), max(0., negative))
+
+
+def direct_yaw_probe(vehicle, speed, ax, ay, tv_limits=None, *, ideal=False):
+    from simplified_vehicle_models.formulations.yaw_map_domain import ProbeResult
+    cell = direct_yaw_cell(vehicle, speed, ax, ay, tv_limits, ideal=ideal)
+    return ProbeResult(cell.status, cell.detail)
 
 
 def build_physical_yaw_map(vehicle: PointMassVehicleParameters, grid: YawCapabilityGrid,
@@ -258,8 +300,8 @@ def _build(vehicle, grid, tv_limits, yaw_inertia, ideal):
       for j,ax in enumerate(grid.longitudinal_acceleration):
        for k,ay in enumerate(grid.lateral_acceleration):
         # Feasibility requires a zero yaw moment; query both optimization directions.
-        positive=_cell_lp(vehicle,float(v),float(ax),float(ay),tv_limits,1.,ideal=ideal)
-        negative=_cell_lp(vehicle,float(v),float(ax),float(ay),tv_limits,-1.,ideal=ideal)
+        positive=_cell_lp(vehicle,float(v),float(ax),float(ay),tv_limits,1.,ideal=ideal,strict_status=True)
+        negative=_cell_lp(vehicle,float(v),float(ax),float(ay),tv_limits,-1.,ideal=ideal,strict_status=True)
         if positive is not None and negative is not None and positive >= -1e-7 and negative >= -1e-7:
             feasible[i,j,k]=True
             into[i,j,k]=max(0.,positive); out[i,j,k]=max(0.,negative)

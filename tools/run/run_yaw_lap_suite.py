@@ -75,7 +75,7 @@ def run(args):
             warm=None
             if args.warm_plan:
                 _,_,warm_arrays,_,_=load_lap_plan(args.warm_plan,capability,expected_track_identity=track_identity)
-                warm=np.interp(source,warm_arrays['reference_distance'],warm_arrays['speed'])
+                warm=np.sqrt(np.maximum(0.,np.interp(source,warm_arrays['reference_distance'],warm_arrays['speed']**2)))
                 if path.is_closed:warm[-1]=warm[0]
             profile=yaw_aware_profile(path,capability,boundary='flying' if path.is_closed else 'standing',
                 maximum_speed=vmax,solver='coupled',coupled_settings=settings,warm_start_speed=warm)

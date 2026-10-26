@@ -3,7 +3,7 @@ import numpy as np
 from simplified_vehicle_models.formulations.yaw_capability import YawCapabilityMap
 from simplified_vehicle_models.solvers.yaw_aware_profile import YawPath
 from simplified_vehicle_models.solvers.yaw_profile_contracts import CoupledProfileSettings
-from simplified_vehicle_models.solvers.yaw_profile_transition import transition_intervals, edge_evidence
+from simplified_vehicle_models.solvers.yaw_profile_transition import transition_intervals, edge_evidence, _transition_cuts
 
 
 def make_map(mask=None, into=100., out=100.):
@@ -17,6 +17,29 @@ class TransitionIntervalTests(unittest.TestCase):
     def setUp(self):
         self.path=YawPath(np.array([0.,.05, .1]),np.zeros(3),np.zeros(3),False)
         self.settings=CoupledProfileSettings()
+
+    def test_restricted_cuts_match_full_axis_scan_randomized(self):
+        rng=np.random.default_rng(415)
+        def full(axes,lo,hi,fixed,ds,k,direction):
+            cuts=[lo,hi]
+            for u in axes[0]:
+                if lo<u<hi: cuts.append(float(u))
+            for a in axes[1]:
+                sq=fixed+ds*a if direction=="forward" else fixed-ds*a
+                if sq>=0 and lo<np.sqrt(sq)<hi: cuts.append(float(np.sqrt(sq)))
+            if k:
+                for y in axes[2]:
+                    sq=y/k
+                    if sq>=0 and lo<np.sqrt(sq)<hi: cuts.append(float(np.sqrt(sq)))
+            return sorted(cuts)
+        for _ in range(1000):
+            axes=(np.sort(rng.uniform(0.,100.,51)),np.sort(rng.uniform(-20.,20.,61)),
+                  np.sort(rng.uniform(-80.,80.,71)))
+            lo=float(rng.uniform(.01,80.)); hi=lo+float(rng.uniform(1.e-10,5.))
+            fixed=float(rng.uniform(0.,1.e5)); ds=float(10.**rng.uniform(-7,1)); k=float(rng.uniform(-.3,.3))
+            direction=("forward","backward")[rng.integers(2)]
+            np.testing.assert_array_equal(_transition_cuts(axes,lo,hi,fixed,ds,k,direction),
+                                          full(axes,lo,hi,fixed,ds,k,direction))
 
     def test_narrow_high_speed_cell_uses_local_polynomial_without_unresolved(self):
         # Fine map cells at substantial u are ill-conditioned if multilinear

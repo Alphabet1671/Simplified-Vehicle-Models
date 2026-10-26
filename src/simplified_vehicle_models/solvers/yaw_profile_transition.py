@@ -143,6 +143,34 @@ def _segment(path, capability, segment_index):
     return ds,k,kp,sign
 
 
+def _transition_cuts(axes, ulo, uhi, fixed_q, ds, k, direction):
+    """Enumerate strict partition faces reachable in a local u interval."""
+    cuts=[ulo,uhi]
+    def candidates(axis, lower, upper):
+        left=np.searchsorted(axis,np.nextafter(lower,-math.inf),side='left')
+        right=np.searchsorted(axis,np.nextafter(upper,math.inf),side='right')
+        # Neighbor padding is conservative for inverse-transform cancellation;
+        # the final `ulo < u < uhi` test remains the authority.
+        return axis[max(0,left-1):min(len(axis),right+1)]
+    for knot in candidates(axes[0],ulo,uhi):
+        if ulo<knot<uhi: cuts.append(float(knot))
+    alow,ahigh=(((ulo*ulo-fixed_q)/ds,(uhi*uhi-fixed_q)/ds) if direction=='forward'
+                else ((fixed_q-uhi*uhi)/ds,(fixed_q-ulo*ulo)/ds))
+    for accel in candidates(axes[1],min(alow,ahigh),max(alow,ahigh)):
+        sq=fixed_q+ds*float(accel) if direction=='forward' else fixed_q-ds*float(accel)
+        if sq>=0:
+            u=math.sqrt(sq)
+            if ulo<u<uhi: cuts.append(u)
+    if k:
+        ylow,yhigh=sorted((k*ulo*ulo,k*uhi*uhi))
+        for y in candidates(axes[2],ylow,yhigh):
+            sq=float(y)/k
+            if sq>=0:
+                u=math.sqrt(sq)
+                if ulo<u<uhi: cuts.append(u)
+    return sorted(cuts)
+
+
 def transition_intervals(path, capability, segment_index: int, fixed_q: float, direction: str,
                          free_q_bounds: tuple[float,float], *, settings: CoupledProfileSettings) -> tuple[QInterval,...]:
     if direction not in ("forward", "backward"):
@@ -167,20 +195,7 @@ def transition_intervals(path, capability, segment_index: int, fixed_q: float, d
     uhi=min(speed_hi,math.sqrt(max(0.,(fixed_q+hi)/2.)))
     # Also intersect acceleration/lateral domains via partitioned strict queries.
     if uhi<ulo: return ()
-    cuts=[ulo,uhi]
-    for knot in axes[0]:
-        if ulo<knot<uhi: cuts.append(float(knot))
-    for a in axes[1]:
-        sq=fixed_q+ds*float(a) if direction=='forward' else fixed_q-ds*float(a)
-        if sq>=0:
-            u=math.sqrt(sq)
-            if ulo<u<uhi: cuts.append(u)
-    if k:
-        for y in axes[2]:
-            sq=float(y)/k
-            if sq>=0:
-                u=math.sqrt(sq)
-                if ulo<u<uhi: cuts.append(u)
+    cuts=_transition_cuts(axes,ulo,uhi,fixed_q,ds,k,direction)
     cuts=sorted(cuts)
     tol=settings.interval_q_tolerance
     cuts=[cuts[0]]+[x for i,x in enumerate(cuts[1:],1) if x-cuts[i-1]>tol]

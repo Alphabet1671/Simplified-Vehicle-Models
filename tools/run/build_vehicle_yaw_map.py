@@ -76,7 +76,9 @@ def main(argv=None):
     summary = {'complete': result.complete, 'artifact': str(args.output),
                'shape': list(result.capability.feasible_mask.shape),
                'ay_extent_mps2': result.capability.lateral_acceleration[[0,-1]].tolist(),
-               'maximum_interpolation_loss_mps2': result.audit.maximum_interpolation_loss,
+               'training_interpolation_loss_mps2': result.audit.maximum_interpolation_loss,
+               'validation_interpolation_loss_mps2': result.validation_audit.maximum_interpolation_loss,
+               'validation_complete': result.validation_audit.complete,
                'wall_seconds': report['wall_seconds']}
     args.output.with_suffix('.json').write_text(json.dumps(json_values(report), indent=2, allow_nan=False)+'\n')
     print(json.dumps(json_values(summary), indent=2, allow_nan=False))

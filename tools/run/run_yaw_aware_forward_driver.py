@@ -329,7 +329,8 @@ def run(args):
             limited_ay=ay_axis, save_path=output / "vehicle_limit_yaw_map.npz")
     except IncompleteYawMapError as error:
         from simplified_vehicle_models.formulations.yaw_map_artifact import json_values
-        write_json(output / "map_build_failure.json", {"complete":False, "audit":json_values(error.result.audit)})
+        write_json(output / "map_build_failure.json", {"complete":False, "audit":json_values(error.result.audit),
+            "validation_audit":json_values(error.result.validation_audit)})
         summary = failure_summary("map_build", ["incomplete_vehicle_limit_audit"], started)
         write_json(output / "summary.json", summary)
         return summary

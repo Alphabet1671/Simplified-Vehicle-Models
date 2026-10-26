@@ -102,11 +102,12 @@ class YawMapCompletionAudit:
     maximum_interpolation_loss: float | None
     tolerance: float
     resolution_limited: bool = True
+    refinement_stalled: bool = False
 
     @property
     def complete(self) -> bool:
         return (not self.budget_exhausted and not self.time_exhausted and not self.unresolved
-                and not self.outer_truncations
+                and not self.outer_truncations and not self.refinement_stalled
                 and self.maximum_interpolation_loss is not None
                 and self.maximum_interpolation_loss <= self.tolerance)
 
@@ -268,7 +269,8 @@ def _audit_map(capability: YawCapabilityMap, holdout_domain: YawMapDomain,
 
 
 def _refine_axes(capability: YawCapabilityMap, audit: YawMapCompletionAudit,
-                 settings: YawMapWorkflowSettings) -> tuple[tuple[float, ...], tuple[float, ...], tuple[float, ...]]:
+                 settings: YawMapWorkflowSettings, lateral_bound: float | None = None
+                 ) -> tuple[tuple[float, ...], tuple[float, ...], tuple[float, ...]]:
     """Refine one worst responsible holdout, keeping tensor growth bounded.
 
     Adding every 1/3 and 2/3 holdout to every axis makes one round roughly 27x
@@ -292,10 +294,21 @@ def _refine_axes(capability: YawCapabilityMap, audit: YawMapCompletionAudit,
     probe = max(candidates, key=priority)
     # Split enclosing cells rather than inserting the training probe itself.
     # This prevents a pointwise fitted map from acquiring artificial zero loss.
-    for axis, value in ((speed, probe.speed), (ax, probe.longitudinal_acceleration), (ay, probe.lateral_acceleration)):
+    for axis, value in ((speed, probe.speed), (ax, probe.longitudinal_acceleration)):
         midpoint = _axis_midpoint(axis, value)
         if midpoint is not None:
             axis.add(midpoint)
+    ay_midpoint = _axis_midpoint(ay, probe.lateral_acceleration)
+    if ay_midpoint is not None:
+        ay.add(ay_midpoint)
+    elif probe.map_reason is MapQueryReason.OUT_OF_DOMAIN and lateral_bound is not None:
+        # Grow only toward directly feasible exterior evidence, never past the
+        # model-derived finite tyre bound. `_fill_lateral_axis` preserves width.
+        target = max(-lateral_bound, min(lateral_bound, probe.lateral_acceleration))
+        if target < min(ay):
+            ay.add(target)
+        elif target > max(ay):
+            ay.add(target)
     return tuple(sorted(speed)), tuple(sorted(ax)), _fill_lateral_axis(ay, settings.maximum_lateral_cell_width)
 
 
@@ -401,7 +414,12 @@ def build_yaw_map_workflow(
         last_capability, last_audit = capability, audit
         if (domain.diagnostics.complete and audit.complete) or rounds >= settings.maximum_refinement_rounds:
             break
-        map_speed, map_ax, lateral = _refine_axes(capability, audit, settings)
+        refined = _refine_axes(capability, audit, settings, domain.lateral_bound.lateral_acceleration)
+        if refined == (map_speed, map_ax, lateral):
+            audit = replace(audit, refinement_stalled=True)
+            last_audit = audit
+            break
+        map_speed, map_ax, lateral = refined
         rounds += 1
     validation_domain = discover_yaw_map_domain(vehicle, validation_speeds, validation_ax,
                                                  deadline_evaluator, audit_settings)

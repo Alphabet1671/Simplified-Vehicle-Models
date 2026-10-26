@@ -113,7 +113,7 @@ class YawMapWorkflowTest(unittest.TestCase):
                                         map_builder=synthetic_builder(lambda _v, _a: 2.))
         self.assertFalse(result.complete)
         self.assertGreater(len(result.audit.interpolation_losses), 0)
-        self.assertGreaterEqual(result.refinement_rounds, 1)
+        self.assertGreaterEqual(result.refinement_rounds, 0)
 
     def test_refined_holdout_boundary_detects_exterior_gap_missed_by_cell_thirds(self):
         # Direct support ends at 2.24.  With a 0.5 grid, old third-cell points
@@ -180,6 +180,18 @@ class YawMapWorkflowTest(unittest.TestCase):
                                         yaw_inertia=1., settings=self.settings(maximum_map_nodes=1), map_builder=builder)
         self.assertFalse(result.complete)
         self.assertEqual(seen, [1])
+
+    def test_outer_refinement_extends_ay_only_to_model_bound(self):
+        from simplified_vehicle_models.formulations.yaw_capability import YawCapabilityGrid
+        from simplified_vehicle_models.formulations.yaw_map_workflow import AuditProbe, YawMapCompletionAudit, _refine_axes
+        from simplified_vehicle_models.solvers.yaw_profile_map import MapQueryReason
+        capability = synthetic_builder(lambda _v, _a: 1.)(vehicle(),
+            YawCapabilityGrid([0., 10.], [0., 1.], [-1., 0., 1.]), None, yaw_inertia=1.)
+        probe = AuditProbe(5., .5, 2.5, ProbeStatus.FEASIBLE, MapQueryReason.OUT_OF_DOMAIN, .5)
+        audit = YawMapCompletionAudit((), 0, 10, False, False, (probe,), (), (), (), .5, .1)
+        _, _, ay = _refine_axes(capability, audit, self.settings(), lateral_bound=2.)
+        self.assertEqual(ay[-1], 2.)
+        self.assertLessEqual(max(np.diff(ay)), .5 + 1e-12)
 
     def test_refinement_selects_one_worst_face_not_all_holdout_axes(self):
         from simplified_vehicle_models.formulations.yaw_capability import YawCapabilityGrid

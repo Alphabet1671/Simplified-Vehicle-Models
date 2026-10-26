@@ -19,8 +19,12 @@ def saved_run(root,name,*,spacing,control,map_identity='map',contract=True):
     if contract:
         inputs['study_contract']={'arguments':dict(inputs['args']), 'resolved_settings':{},
             'provenance':{'map_identity':map_identity, 'track_identity':'track',
-                           'warm_start_policy':'cold', 'source_revision':'unknown',
-                           'source_dirty_hashes':'unknown'}, 'contract_version':'yaw-study-contract-v1'}
+                           'warm_start_policy':'cold', 'warm_start_digest':'none', 'source_revision':'unknown',
+                           'source_dirty_hashes':'unknown', 'yaw_moment_tolerance':1e-7, 'interval_q_tolerance':1e-8,'acceleration_tolerance':1e-7,
+                           'interval_q_tolerance':1e-8,'acceleration_tolerance':1e-7,
+                           'map_file_sha256':'maphash','map_source_identity':map_identity,
+                           'track_data_hashes':{'track':'hash'},'vehicle_configuration_hashes':{'vehicle':'hash'},
+                           'boundary_type':'flying','maximum_speed_mps':70.0}, 'contract_version':'yaw-study-contract-v1'}
     (path/'inputs.json').write_text(json.dumps(inputs))
     (path/'summary.json').write_text(json.dumps({'status':'planned','lap_time_s':100.,
         'plan_array_digest':metadata['array_digest'],'diagnostics':{'kind':'fixed_line',

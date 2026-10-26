@@ -63,7 +63,7 @@ def run(args):
     track_provenance=source_provenance(args.track)
     track_identity=hashlib.sha256(json.dumps(track_provenance,sort_keys=True).encode()).hexdigest()
     settings=CoupledProfileSettings(max_wall_seconds=args.profile_seconds,max_refinement_rounds=args.profile_rounds)
-    from tools.run.yaw_study_contract import study_contract, finalized_plan_inputs
+    from tools.run.yaw_study_contract import study_contract, finalized_plan_inputs, update_replay_initial_state
     try:
         import scipy, casadi
         packages={'scipy':scipy.__version__,'casadi':casadi.__version__}
@@ -88,7 +88,10 @@ def run(args):
         'map_source_identity':capability.source_identity,'plan_file_digest':'pending','plan_array_digest':'pending',
         # Planning has no forward-plant state; replay records its actual initial
         # state at invocation below. Unknown is never an attestation.
-        'initial_state_soc':'unknown','package_versions':packages,
+        'initial_state_soc':'unknown','initial_state':'unknown',
+        'map_identity':capability.source_identity,'track_identity':track_identity,
+        'maximum_speed_mps':vmax,'boundary_type':'flying' if track.is_closed else 'standing',
+        'package_versions':packages,
         'thread_settings':{key:value for key,value in __import__('os').environ.items() if 'THREAD' in key.upper()},
         # The runner self-guards at 1800 s; callers may impose a shorter outer
         # watchdog which must be recorded by their run wrapper.
@@ -100,7 +103,16 @@ def run(args):
         'controller':args.controller,'controller_overrides':controller_overrides,
         'warm_start_policy':'squared_speed_prolongation' if args.warm_plan is not None else 'cold',
         'warm_start_digest':warm_digest,
+        'yaw_moment_tolerance':settings.yaw_moment_tolerance,
+        'interval_q_tolerance':settings.interval_q_tolerance,'acceleration_tolerance':settings.acceleration_tolerance,
+        'geometry_spacing_m':args.spacing,'control_spacing_m':args.control_spacing,
+        'map_identity':capability.source_identity,'map_file_sha256':hashlib.sha256(args.yaw_map.read_bytes()).hexdigest(),
+        'map_source_identity':capability.source_identity,'track_identity':track_identity,
+        'track_data_hashes':track_provenance,'vehicle_configuration_hashes':source_provenance(str(runner.PLANAR_FORMULATION)),
+        'boundary_type':'flying' if track.is_closed else 'standing','maximum_speed_mps':vmax,
+        'replay_treatment':args.controller,
         'solver':{'method':'BDF','rtol':1e-6,'atol':1e-8,'maximum_step':args.maximum_step},
+        'duration':args.duration,'maximum_step':args.maximum_step,'rtol':1e-6,'atol':1e-8,'method':'BDF',
         'profile_line_settings':{'spacing':args.spacing,'control_spacing':args.control_spacing,
             'profile_seconds':args.profile_seconds,'profile_rounds':args.profile_rounds,
             'line_evaluations':args.line_evaluations,'line_seconds':args.line_seconds}}
@@ -195,7 +207,9 @@ def replay(args,output,vehicle,track,path,speed_plan,arrays,metadata):
     plant=PlanarForwardPlant(vehicle,speed_plan)
     sink=RunRecordSink(plant,geometry,output/'run_record.npz',precision='float64')
     try:
-        result=solve_forward(plant,driver,plant.initial_state(float(speed_plan.speed[0])),duration=args.duration,
+        initial_state=plant.initial_state(float(speed_plan.speed[0]))
+        update_replay_initial_state(output/'inputs.json',initial_state,plant.state_names)
+        result=solve_forward(plant,driver,initial_state,duration=args.duration,
             wall_seconds=args.replay_seconds,maximum_wall_seconds=min(1500.,args.replay_seconds),
             maximum_step=args.maximum_step,rtol=1e-6,atol=1e-8,method='BDF',step_sink=sink)
     except (RuntimeError,TimeoutError,ValueError) as error:

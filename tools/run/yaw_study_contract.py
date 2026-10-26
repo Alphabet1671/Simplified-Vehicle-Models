@@ -11,7 +11,7 @@ from pathlib import Path
 CONTRACT_VERSION = "yaw-study-contract-v1"
 _DIMENSIONS = {"geometry": "geometry_spacing_m", "control": "control_spacing_m", "replay": "replay_treatment"}
 # Explicit identity schema: unknown fields never become accidental compatibility keys.
-_COMMON = {"yaw_moment_tolerance", "map_identity", "map_file_sha256", "map_source_identity",
+_COMMON = {"yaw_moment_tolerance", "interval_q_tolerance", "acceleration_tolerance", "map_identity", "map_file_sha256", "map_source_identity",
     "track_identity", "track_data_hashes", "vehicle_configuration_hashes", "vehicle_source_identity",
     "boundary", "boundary_type", "maximum_speed", "maximum_speed_mps", "solver", "solver_settings",
     "profile_settings", "profile_line_settings", "controller_values", "controller", "warm_start_policy", "warm_start_digest",
@@ -19,6 +19,24 @@ _COMMON = {"yaw_moment_tolerance", "map_identity", "map_file_sha256", "map_sourc
     "source_dirty_hashes", "source_provenance_status", "watchdog_budget_seconds", "plan_file_digest",
     "plan_array_digest", "mode", "duration", "maximum_step", "rtol", "atol", "method"}
 _REPLAY = {"line_treatment", "controller_treatment", "replay_treatment"}
+# Minimum attestations the real runner can supply for every comparable run.
+# Geometry/control are the only coordinates permitted to vary independently.
+_REQUIRED = {
+    "geometry": {"geometry_spacing_m", "control_spacing_m", "yaw_moment_tolerance", "interval_q_tolerance", "acceleration_tolerance",
+        "map_identity", "map_file_sha256", "map_source_identity", "track_identity",
+        "track_data_hashes", "vehicle_configuration_hashes", "boundary_type",
+        "maximum_speed_mps", "warm_start_policy", "warm_start_digest"},
+    "control": {"geometry_spacing_m", "control_spacing_m", "yaw_moment_tolerance", "interval_q_tolerance", "acceleration_tolerance",
+        "map_identity", "map_file_sha256", "map_source_identity", "track_identity",
+        "track_data_hashes", "vehicle_configuration_hashes", "boundary_type",
+        "maximum_speed_mps", "warm_start_policy", "warm_start_digest"},
+    "replay": {"geometry_spacing_m", "control_spacing_m", "yaw_moment_tolerance", "interval_q_tolerance", "acceleration_tolerance",
+        "map_identity", "map_file_sha256", "map_source_identity", "track_identity",
+        "track_data_hashes", "vehicle_configuration_hashes", "boundary_type",
+        "maximum_speed_mps", "warm_start_policy", "warm_start_digest", "replay_treatment",
+        "solver", "duration", "maximum_step", "rtol", "atol", "method",
+        "initial_state", "initial_state_soc"},
+}
 _OUTPUT_FIELDS = {"output_dir", "output_path", "plan", "warm_plan", "timestamp", "runtime_seconds",
     "wall_time_seconds", "elapsed_seconds", "canonical_json_sha256", "contract_version"}
 
@@ -89,6 +107,29 @@ def finalized_plan_inputs(args, resolved_settings, provenance, plan_path, array_
     }
 
 
+def update_replay_initial_state(inputs_path, state, state_names):
+    """Bind the actual initialized plant state to inputs.json, never the plan."""
+    inputs_path = Path(inputs_path)
+    manifest = json.loads(inputs_path.read_text())
+    contract = manifest.get("study_contract")
+    if not isinstance(contract, dict):
+        raise ValueError("replay inputs lack a study contract")
+    state_values = _jsonable(state)
+    names = list(state_names) if state_names is not None else []
+    if len(names) == len(state_values):
+        recorded = {"names": names, "values": state_values}
+        soc = state_values[names.index("soc")] if "soc" in names else "unknown"
+    else:
+        recorded, soc = "unknown", "unknown"
+    provenance = contract.setdefault("provenance", {})
+    provenance["initial_state"] = recorded
+    provenance["initial_state_soc"] = soc
+    contract.pop("canonical_json_sha256", None)
+    contract["canonical_json_sha256"] = hashlib.sha256(_canonical(contract).encode("utf-8")).hexdigest()
+    inputs_path.write_text(json.dumps(manifest, sort_keys=True, indent=2, allow_nan=False) + "\n")
+    return manifest
+
+
 def _comparison_values(contract, dimension):
     """Flatten a contract without letting one envelope layer overwrite another."""
     if dimension not in _DIMENSIONS:
@@ -120,6 +161,12 @@ def _comparison_values(contract, dimension):
     # Paths and runtime observations are intentionally not compatibility data;
     # content digests and the explicit warm-start policy remain binding.
     values = {key: value for key, value in values.items() if key in allowed}
+    missing = sorted(_REQUIRED[dimension] - values.keys())
+    if missing:
+        raise ValueError(f"incomplete {dimension} comparison contract; missing required fields: {', '.join(missing)}")
+    for key in _REQUIRED[dimension]:
+        if values[key] is None or values[key] == "":
+            raise ValueError(f"incomplete {dimension} comparison contract; required field {key} is empty")
     return values
 
 

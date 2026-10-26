@@ -49,6 +49,9 @@ class StudyContractTests(unittest.TestCase):
         spoofed = study_contract({}, {}, {"source_revision":"abc", "source_dirty_hashes":{},
                                          "source_provenance_status":"attested"})
         self.assertEqual(spoofed["provenance"]["source_provenance_status"], "historical_unknown")
+        malformed = study_contract({}, {}, {"source_revision":"abc", "source_dirty_hashes":"garbage",
+                                           "source_provenance_status":"attested"})
+        self.assertEqual(malformed["provenance"]["source_provenance_status"], "historical_unknown")
         self.assertEqual(len(contract["canonical_json_sha256"]), 64)
 
     def test_geometry_refinement_rejects_control_spacing_change(self):
@@ -69,6 +72,9 @@ class StudyContractTests(unittest.TestCase):
                     validate_comparison_pair(partial, partial, dimension)
         malformed = dict(base, track_data_hashes={})
         with self.assertRaisesRegex(ValueError, "track_data_hashes lacks attestation"):
+            comparison_identity(malformed, "geometry")
+        malformed = dict(base, vehicle_configuration_hashes="garbage")
+        with self.assertRaisesRegex(ValueError, "vehicle_configuration_hashes lacks attestation"):
             comparison_identity(malformed, "geometry")
 
     def test_replay_manifest_update_records_exact_initialized_state(self):

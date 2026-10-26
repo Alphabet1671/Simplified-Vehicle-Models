@@ -66,14 +66,27 @@ def _canonical(value):
 
 
 def _attested(value):
-    """Whether a required provenance value has non-placeholder evidence."""
-    if value is None or value == "" or value == "unknown":
-        return False
-    if isinstance(value, dict):
-        return bool(value) and all(bool(key) and _attested(item) for key, item in value.items())
-    if isinstance(value, (tuple, list)):
-        return bool(value) and all(_attested(item) for item in value)
-    return True
+    """Whether a scalar evidence value is non-placeholder and JSON-safe."""
+    return isinstance(value, (str, int, float)) and not isinstance(value, bool) and value not in ("", "unknown") and (not isinstance(value, float) or math.isfinite(value))
+
+
+def _hash_mapping(value):
+    """A transitive-source/hash attestation is a nonempty string→digest map."""
+    return (isinstance(value, dict) and bool(value) and
+            all(isinstance(key, str) and bool(key) and _attested(digest)
+                for key, digest in value.items()))
+
+
+def _required_attested(key, value):
+    if key in {"track_data_hashes", "vehicle_configuration_hashes", "source_dirty_hashes"}:
+        return _hash_mapping(value)
+    if key == "initial_state":
+        return value == "unknown" or (isinstance(value, dict) and
+            isinstance(value.get("names"), list) and isinstance(value.get("values"), list) and
+            len(value["names"]) == len(value["values"]) and bool(value["names"]) and
+            all(isinstance(name, str) and name for name in value["names"]) and
+            all(_attested(item) for item in value["values"]))
+    return _attested(value)
 
 
 def study_contract(args, resolved_settings, provenance) -> dict:
@@ -89,7 +102,7 @@ def study_contract(args, resolved_settings, provenance) -> dict:
     prov.setdefault("source_revision", "unknown")
     prov.setdefault("source_dirty_hashes", "unknown")
     complete_source = (_attested(prov["source_revision"]) and
-                       _attested(prov["source_dirty_hashes"]))
+                       _required_attested("source_dirty_hashes", prov["source_dirty_hashes"]))
     # This is derived evidence, never a caller-controlled self-attestation.
     prov["source_provenance_status"] = "attested" if complete_source else "historical_unknown"
     encoded = _canonical(payload)
@@ -176,7 +189,7 @@ def _comparison_values(contract, dimension):
     if missing:
         raise ValueError(f"incomplete {dimension} comparison contract; missing required fields: {', '.join(missing)}")
     for key in _REQUIRED[dimension]:
-        if not _attested(values[key]):
+        if not _required_attested(key, values[key]):
             raise ValueError(f"incomplete {dimension} comparison contract; required field {key} lacks attestation")
     return values
 

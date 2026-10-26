@@ -101,7 +101,7 @@ class MainWindow(QMainWindow):
         self.single_tab.modelSelected.connect(self._single_model_selected)
         self.single_tab.trackSelected.connect(self._single_track_selected)
         self.maneuver_tab.runRequested.connect(self._run_maneuver)
-        self.maneuver_tab.stopRequested.connect(self.maneuver_controller.cancel)
+        self.maneuver_tab.stopRequested.connect(self.stop_cases)
         self.maneuver_controller.busyChanged.connect(self._maneuver_busy_changed)
         self.maneuver_controller.progress.connect(self._maneuver_progress)
         self.maneuver_controller.finished.connect(self._maneuver_finished)
@@ -502,7 +502,7 @@ class MainWindow(QMainWindow):
     def stop_cases(self) -> None:
         """Stop the active run, cancelling validation when it has not started."""
         if self._run_mode == "maneuver":
-            self.maneuver_controller.cancel()
+            self._queue.stop()
             return
         if self._run_mode == "single" and self._validation_thread is not None:
             self._cancel_validation()

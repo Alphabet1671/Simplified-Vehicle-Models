@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import numpy as np
+
 from simplified_vehicle_models.core.types import FloatArray
 
 
@@ -19,9 +21,10 @@ class PathCoordinates:
     a lap.
 
     An open path (``is_closed`` false) has a start and an end. Its last node is
-    the end of the course and is not a repeat of the first node. Outside the
-    course, ``evaluate_path`` continues the path as a straight line along the
-    end tangents.
+    normally not a repeat of the first node; an explicit full-course cut view
+    may retain the repeated XY endpoint while preserving a periodic source fit.
+    Outside the course, ``evaluate_path`` continues the path as a straight line
+    along the end tangents.
     """
 
     distance: FloatArray
@@ -30,12 +33,23 @@ class PathCoordinates:
     heading: FloatArray
     curvature: FloatArray
     is_closed: bool = True
+    # Optional explicit source/reference station corresponding to ``distance``.
+    # It prevents consumers from treating path arclength as centerline station.
+    reference_distance: FloatArray | None = None
 
     @property
     def lap_length(self) -> float:
         """Return the represented lap length, or the course length if open."""
 
         return float(self.distance[-1] - self.distance[0])
+
+
+#: How a lateral corridor was obtained.  ``surveyed`` means the boundary was
+#: measured independently of the driver.  ``swept`` means it is the union of
+#: driven vehicle envelopes and is therefore an inner bound on the drivable
+#: area.  ``assumed`` means it is a declared constant used for sensitivity
+#: only.  A result produced from a non-surveyed corridor is conditional.
+WIDTH_PROVENANCE = ("surveyed", "swept", "assumed")
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,6 +75,47 @@ class TrackProfile:
     is_closed: bool
     title: str
     path_coordinates: PathCoordinates | None = None
+    half_width_right: FloatArray | None = None
+    half_width_left: FloatArray | None = None
+    width_provenance: str | None = None
+    # Explicit source-curve boundary condition; independent of course topology.
+    source_reference_interpolation_periodic: bool | None = None
+
+    def __post_init__(self) -> None:
+        fit_periodic = self.source_reference_interpolation_periodic
+        if fit_periodic is not None and not isinstance(fit_periodic, (bool, np.bool_)):
+            raise TypeError("source_reference_interpolation_periodic must be bool or None")
+        if fit_periodic is not None:
+            fit_periodic = bool(fit_periodic)
+            object.__setattr__(self, "source_reference_interpolation_periodic", fit_periodic)
+            if self.is_closed and not fit_periodic:
+                raise ValueError("closed track cannot declare a nonperiodic source reference")
+        left, right = self.half_width_left, self.half_width_right
+        if (left is None) != (right is None):
+            raise ValueError("both half widths are required together")
+        if left is None:
+            if self.width_provenance is not None:
+                raise ValueError("width provenance requires width data")
+            return
+        if self.width_provenance not in WIDTH_PROVENANCE:
+            raise ValueError(
+                f"width provenance must be one of {WIDTH_PROVENANCE}, "
+                f"not {self.width_provenance!r}"
+            )
+        for name in ("half_width_left", "half_width_right"):
+            values = np.asarray(getattr(self, name), dtype=float)
+            if values.shape != self.distance.shape:
+                raise ValueError(f"{name} must match the distance grid")
+            if not np.all(np.isfinite(values)) or np.any(values <= 0.0):
+                raise ValueError(f"{name} must be positive and finite")
+            values.setflags(write=False)
+            object.__setattr__(self, name, values)
+
+    @property
+    def has_edges(self) -> bool:
+        """Return true when the track carries a lateral corridor."""
+
+        return self.half_width_left is not None
 
     @property
     def lap_length(self) -> float:

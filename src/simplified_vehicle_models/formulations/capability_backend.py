@@ -1,0 +1,98 @@
+"""Capability backends used by the line OCP; controller behavior is supplied."""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+import numpy as np
+
+from simplified_vehicle_models.formulations.point_mass_capability import (
+    CapabilitySurface, build_capability_surface,
+)
+
+
+@dataclass(frozen=True, slots=True)
+class CapabilityGrid:
+    speed: np.ndarray
+    curvature: np.ndarray
+
+    def __post_init__(self):
+        for name in ('speed', 'curvature'):
+            value = np.asarray(getattr(self, name), dtype=float)
+            if value.ndim != 1 or value.size < 3 or not np.all(np.isfinite(value)):
+                raise ValueError(f'{name} must be a finite one-dimensional grid')
+            if np.any(np.diff(value) <= 0.0):
+                raise ValueError(f'{name} must increase')
+            value.setflags(write=False)
+            object.__setattr__(self, name, value)
+
+
+@dataclass(frozen=True, slots=True)
+class SampledCapability:
+    surface: CapabilitySurface
+    vehicle_hash: str
+    controller_hash: str
+    mode: str
+    version: str = '1'
+    metadata: dict = field(default_factory=dict)
+    feasible_mask: np.ndarray | None = None
+
+    def __post_init__(self):
+        if self.feasible_mask is not None:
+            mask = np.asarray(self.feasible_mask, dtype=bool)
+            if mask.shape != self.surface.acceleration_max.shape:
+                raise ValueError('feasible_mask must match the capability grid')
+            mask.setflags(write=False)
+            object.__setattr__(self, 'feasible_mask', mask)
+
+
+def _require_within_domain(surface, grid):
+    """Reject caller axes the builder surface cannot cover."""
+    for name in ('speed', 'curvature'):
+        requested = getattr(grid, name)
+        domain = getattr(surface, name)
+        if requested[0] < domain[0] or requested[-1] > domain[-1]:
+            raise ValueError(
+                f'{name} grid [{requested[0]:g}, {requested[-1]:g}] is outside '
+                f'the builder domain [{domain[0]:g}, {domain[-1]:g}]')
+
+
+def _regrid(surface, grid):
+    """Interpolate a builder surface onto the caller's exact axes."""
+    _require_within_domain(surface, grid)
+    from scipy.interpolate import RegularGridInterpolator
+    points = (surface.speed, surface.curvature)
+    amax = RegularGridInterpolator(points, surface.acceleration_max)(
+        (grid.speed[:, None], grid.curvature[None, :]))
+    amin = RegularGridInterpolator(points, surface.acceleration_min)(
+        (grid.speed[:, None], grid.curvature[None, :]))
+    ceiling = np.interp(grid.curvature, surface.curvature, surface.speed_ceiling)
+    mask = None
+    if surface.feasible_mask is not None:
+        if not np.all(surface.feasible_mask):
+            # A boolean feasibility mask is not interpolable. Refuse to drop
+            # infeasible cells rather than relabel a zeroed placeholder as legal.
+            raise ValueError(
+                "cannot regrid a capability surface with infeasible cells")
+        mask = np.ones(amax.shape, dtype=bool)
+    return CapabilitySurface(grid.speed, grid.curvature, amax, amin, ceiling,
+                             surface.provenance_hash, surface.mode,
+                             surface.controller_hash, mask)
+
+
+class IdealCapabilityBackend:
+    mode = 'ideal'
+
+    def __init__(self, vehicle):
+        self.vehicle = vehicle
+
+    def sample(self, grid: CapabilityGrid, *, curvature_limit: float) -> SampledCapability:
+        raw = build_capability_surface(
+            self.vehicle, curvature_limit=curvature_limit,
+            speed_points=grid.speed.size, curvature_points=grid.curvature.size)
+        regridded = _regrid(raw, grid)
+        mask = np.ones(regridded.acceleration_max.shape, dtype=bool)
+        surface = CapabilitySurface(
+            regridded.speed, regridded.curvature, regridded.acceleration_max,
+            regridded.acceleration_min, regridded.speed_ceiling,
+            regridded.provenance_hash, self.mode, '', mask)
+        return SampledCapability(surface, surface.provenance_hash, '', self.mode,
+                                 feasible_mask=mask)

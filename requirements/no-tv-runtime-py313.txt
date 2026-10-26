@@ -1,0 +1,4 @@
+# Tested runtime lock: Python 3.13; wheel availability depends on platform.
+numpy==2.5.4
+scipy==1.17.1
+casadi==3.8.1

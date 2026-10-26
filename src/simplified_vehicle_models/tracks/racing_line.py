@@ -1,0 +1,163 @@
+"""Reconstruct signed paths from lateral offsets.
+
+Offsets are positive to the right of travel. In the repository's north/east
+frame, the right normal at heading theta is (-sin(theta), cos(theta)).
+"""
+
+from __future__ import annotations
+
+import math
+
+import numpy as np
+
+from simplified_vehicle_models.tracks.types import PathCoordinates
+
+
+def _periodic_derivative(values, distance):
+    """Differentiate periodic samples, excluding the repeated terminal node."""
+
+    length = float(distance[-1])
+    unique_distance = np.asarray(distance, dtype=float)[:-1]
+    nodes = np.asarray(values, dtype=float)[:-1]
+    forward = np.diff(np.r_[unique_distance, unique_distance[0] + length])
+    backward = np.r_[forward[-1], forward[:-1]]
+    derivative = (np.roll(nodes, -1) - np.roll(nodes, 1)) / (forward + backward)
+    return np.r_[derivative, derivative[0]]
+
+
+def offset_path(coordinates: PathCoordinates, offset) -> PathCoordinates:
+    """Displace path nodes laterally and recompute their signed geometry."""
+
+    values = np.asarray(offset, dtype=float)
+    distance0 = np.asarray(coordinates.distance, dtype=float)
+    if values.shape != distance0.shape:
+        raise ValueError("offset must match the path node count")
+    if not np.all(np.isfinite(values)):
+        raise ValueError("offset must be finite")
+    heading = np.asarray(coordinates.heading, dtype=float)
+    north = np.asarray(coordinates.x_north, dtype=float) - values * np.sin(heading)
+    east = np.asarray(coordinates.y_east, dtype=float) + values * np.cos(heading)
+    distance = np.r_[0.0, np.cumsum(np.hypot(np.diff(north), np.diff(east)))]
+
+    if coordinates.is_closed:
+        tangent_north = _periodic_derivative(north, distance)
+        tangent_east = _periodic_derivative(east, distance)
+    else:
+        tangent_north = np.gradient(north, distance)
+        tangent_east = np.gradient(east, distance)
+    angles = np.arctan2(tangent_east, tangent_north)
+    new_heading = np.unwrap(angles)
+    if coordinates.is_closed:
+        unique_angles = angles[:-1]
+        delta = np.roll(unique_angles, -1) - np.roll(unique_angles, 1)
+        delta = (delta + np.pi) % (2.0 * np.pi) - np.pi
+        length = float(distance[-1])
+        unique_distance = distance[:-1]
+        forward = np.diff(np.r_[unique_distance, unique_distance[0] + length])
+        backward = np.r_[forward[-1], forward[:-1]]
+        curvature = delta / (forward + backward)
+        curvature = np.r_[curvature, curvature[0]]
+    else:
+        curvature = np.gradient(new_heading, distance)
+
+    for array in (north, east, new_heading, curvature, distance):
+        array.setflags(write=False)
+    return PathCoordinates(distance, north, east, new_heading, curvature, coordinates.is_closed)
+
+
+def _periodic_smooth(values, sigma_samples: float):
+    """Apply a periodic Gaussian average to unique samples."""
+
+    values = np.asarray(values, dtype=float)
+    half = int(max(1, round(4.0 * sigma_samples)))
+    taps = np.arange(-half, half + 1)
+    kernel = np.exp(-0.5 * (taps / sigma_samples) ** 2)
+    kernel /= kernel.sum()
+    indices = (np.arange(-half, values.size + half) % values.size)
+    padded = values[indices]
+    return np.convolve(padded, kernel, mode="valid")
+
+
+def _smooth(values, sigma_samples: float):
+    """Apply a Gaussian average to an open sample sequence, preserving edges."""
+
+    values = np.asarray(values, dtype=float)
+    half = int(max(1, round(4.0 * sigma_samples)))
+    taps = np.arange(-half, half + 1)
+    kernel = np.exp(-0.5 * (taps / sigma_samples) ** 2)
+    kernel /= kernel.sum()
+    padded = np.pad(values, half, mode="edge")
+    return np.convolve(padded, kernel, mode="valid")
+
+
+def path_from_solution(track, solution, *, smoothing: float = 0.0) -> PathCoordinates:
+    """Rebuild a track-grid path from a QSS solution's lateral offset."""
+
+    if not math.isfinite(smoothing) or smoothing < 0.0:
+        raise ValueError("smoothing must be finite and nonnegative")
+    trajectory = getattr(solution, "trajectory", None)
+    if trajectory is not None:
+        if smoothing != 0.0:
+            raise ValueError("smoothing is not permitted for an analytic spline trajectory")
+        # The attached trajectory is the accepted candidate: do not re-fit XY
+        # or interpolate offsets.  Caller-selected stations retain explicit
+        # reference/path correspondence through ``trajectory.station_map``.
+        return trajectory.sample_path(np.asarray(track.distance, dtype=float))
+    if track.path_coordinates is None:
+        raise ValueError("track has no signed path coordinates")
+    if not track.is_closed:
+        return _spline_path_from_solution(track, solution, smoothing)
+    from simplified_vehicle_models.solvers.qss_line_ocp import periodic_sample
+
+    offset = periodic_sample(
+        np.asarray(solution.offset, dtype=float)[:-1],
+        np.asarray(solution.distance, dtype=float)[:-1],
+        np.asarray(track.distance, dtype=float),
+        period=float(track.lap_length),
+    )
+    if smoothing > 0.0:
+        spacing = float(track.lap_length) / float(track.distance.size - 1)
+        offset = _periodic_smooth(offset[:-1], smoothing / spacing)
+        offset = np.r_[offset, offset[0]]
+    return offset_path(track.path_coordinates, offset)
+
+
+def _spline_path_from_solution(track, solution, smoothing: float) -> PathCoordinates:
+    """Fit a cubic path through the OCP nodes, then sample the track grid.
+
+    Differentiating a piecewise-linear offset creates curvature kinks at mesh
+    nodes. A cubic fit keeps the rebuilt heading and curvature mutually
+    consistent on an open course.
+    """
+    from scipy.interpolate import CubicSpline
+
+    source = np.asarray(solution.distance, dtype=float)
+    offset = np.asarray(solution.offset, dtype=float)
+    if smoothing > 0.0:
+        spacing = float(np.mean(np.diff(source)))
+        offset = _smooth(offset, smoothing / spacing)
+    coordinates = track.path_coordinates
+    center_north = np.interp(source, track.distance, coordinates.x_north)
+    center_east = np.interp(source, track.distance, coordinates.y_east)
+    center_heading = np.interp(source, track.distance, coordinates.heading)
+    north = center_north - offset * np.sin(center_heading)
+    east = center_east + offset * np.cos(center_heading)
+    positions = np.asarray(track.distance, dtype=float)
+    if (source[0] > positions[0] + 1.0e-9
+            or source[-1] < positions[-1] - 1.0e-9):
+        raise ValueError("solution mesh must span the track grid for cubic reconstruction")
+    spline_north = CubicSpline(source, north, extrapolate=False)
+    spline_east = CubicSpline(source, east, extrapolate=False)
+    x_north = spline_north(positions)
+    y_east = spline_east(positions)
+    tangent_north = spline_north(positions, 1)
+    tangent_east = spline_east(positions, 1)
+    second_north = spline_north(positions, 2)
+    second_east = spline_east(positions, 2)
+    heading = np.unwrap(np.arctan2(tangent_east, tangent_north))
+    speed_squared = tangent_north * tangent_north + tangent_east * tangent_east
+    curvature = (tangent_north * second_east - tangent_east * second_north) / np.power(speed_squared, 1.5)
+    distance = np.r_[0.0, np.cumsum(np.hypot(np.diff(x_north), np.diff(y_east)))]
+    for array in (distance, x_north, y_east, heading, curvature):
+        array.setflags(write=False)
+    return PathCoordinates(distance, x_north, y_east, heading, curvature, False)

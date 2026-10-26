@@ -1,0 +1,70 @@
+{
+  "backend": "simulation",
+  "calibration": {
+    "accelerator_force_n": [
+      0.0,
+      10.5
+    ],
+    "accelerator_travel": [
+      0.0,
+      1.0
+    ],
+    "ackermann_inner_angle_rad": [
+      0.0,
+      0.6
+    ],
+    "ackermann_outer_offset_rad": [
+      0.0,
+      0.1
+    ],
+    "brake_force_n": [
+      0.0,
+      588.399,
+      1176.798
+    ],
+    "brake_travel": [
+      0.0,
+      0.5,
+      1.0
+    ],
+    "maximum_road_wheel_angle_rad": 0.5235987755982988,
+    "maximum_swa_rad": 8.0,
+    "maximum_swa_rate_rad_s": 2.0,
+    "rack_travel_per_revolution_m": 0.04,
+    "steer_arm_length_m": 0.1
+  },
+  "clock": {
+    "controller_tick_s": 0.01
+  },
+  "csv": null,
+  "initial": {
+    "heading_rad": 0.0,
+    "speed_mps": 16.6666666667,
+    "x_m": 0.0,
+    "y_m": 0.0
+  },
+  "limits": {
+    "max_swa_rad": 0.5,
+    "max_swa_rate_rad_s": 2.0
+  },
+  "longitudinal": {
+    "accelerator": 0.5,
+    "mode": "constant_accelerator"
+  },
+  "name": "REQUESTED \u2014 IEM24 14DoF locked-steering 50% throttle acceleration",
+  "preset": "straight_accel_brake",
+  "profile": {
+    "duration_s": 5.0
+  },
+  "schema": "maneuver-v1",
+  "steering": {
+    "mode": "locked_swa",
+    "target_heading_rad": 0.0
+  },
+  "termination": {
+    "duration_s": 5.0
+  },
+  "vehicle": {
+    "model": "models/formulations/iem24_murphy_real_14dof_simple.xml"
+  }
+}

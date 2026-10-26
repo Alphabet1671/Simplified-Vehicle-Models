@@ -1052,6 +1052,40 @@ class MainWindowTests(unittest.TestCase):
             window._remember(Path(f"/tmp/model-{index}.xml"))
         self.assertEqual(len(window._recent), 10)
 
+    def test_maneuver_tab_requires_model_not_track_and_shares_configuration(self):
+        # Construct directly: unlike _window(), this test intentionally selects no track.
+        store_dir = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(store_dir, ignore_errors=True))
+        output = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(output, ignore_errors=True))
+        store = QSettings(str(store_dir / "settings.ini"), QSettings.Format.IniFormat)
+        window = MainWindow(output_root=output, settings_store=store)
+        self.addCleanup(window.close)
+        self.assertIsNone(window.track_tab.track())
+        labels = [window.tabs.tabText(i) for i in range(window.tabs.count())]
+        self.assertIn("Maneuvers", labels)
+        self.assertIn("Single Run", labels)
+        self.assertFalse(window.maneuver_tab.run_button.isEnabled())
+        window.open_model(REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_planar_7dof.xml")
+        self.assertTrue(window.maneuver_tab.run_button.isEnabled())
+        self.assertEqual(window.maneuver_tab.editor.to_dict()["vehicle"]["model"],
+                         "models/formulations/iem24_murphy_real_planar_7dof.xml")
+        # Maneuvers intentionally have no Track precondition; this window never selected one.
+        self.assertTrue(window.maneuver_tab.run_button.isEnabled())
+
+    def test_maneuver_lifecycle_excludes_other_runs_and_restores_controls(self):
+        window = self._window()
+        window.open_model(REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_planar_7dof.xml")
+        definition = window.maneuver_tab.definition()
+        with mock.patch.object(window.maneuver_controller, "start") as start:
+            window._run_maneuver(definition)
+        start.assert_called_once_with(definition)
+        self.assertEqual(window._run_mode, "maneuver")
+        self.assertFalse(window.go_action.isEnabled())
+        window._maneuver_busy_changed(False)
+        self.assertIsNone(window._run_mode)
+        self.assertTrue(window.go_action.isEnabled())
+
     def _prepared(self, root, name="case_000", timeout=2.0):
         directory = Path(root) / name
         directory.mkdir(parents=True)

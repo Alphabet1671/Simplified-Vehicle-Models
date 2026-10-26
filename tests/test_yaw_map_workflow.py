@@ -222,7 +222,8 @@ class YawMapWorkflowTest(unittest.TestCase):
         self.assertGreaterEqual(len(seen), 1)
         self.assertEqual(result.capability.feasible_mask.shape, seen[0])
         self.assertGreater(len(result.audit.interpolation_losses), 0)
-        self.assertTrue(result.validation_audit.budget_exhausted or not result.complete)
+        self.assertLessEqual(max(int(np.prod(shape)) for shape in seen), 10)
+        self.assertTrue(result.audit.budget_exhausted or result.audit.refinement_stalled)
 
     def test_unresolved_direct_lp_and_audit_budget_are_never_physical_infeasible(self):
         limit = lambda _speed, _ax: 2.

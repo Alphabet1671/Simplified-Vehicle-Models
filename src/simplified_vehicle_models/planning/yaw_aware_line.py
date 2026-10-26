@@ -266,6 +266,7 @@ def optimize_yaw_aware_line(track: TrackProfile, corridor: Corridor | None,
     corners = _corner_complexes(track, settings.corner_quiet_curvature,
                                 settings.corner_min_length, settings.corner_quiet_padding)
     records = []; cache={}; profile_evaluations=[0]; cache_hits=[0]
+    best_coeff_box=[None]; best_eval_box=[None]
     stop_reason=[None]
     # Accepted warm reference is projected by physical reference station, never
     # by normalized path distance.
@@ -344,9 +345,13 @@ def optimize_yaw_aware_line(track: TrackProfile, corridor: Corridor | None,
                       geometry_grid_nodes=len(path.distance),
                       resolution_converged=profile.diagnostics.get("resolution_converged"))
         reference_stations=np.asarray(trajectory.station_map.to_reference(path.distance),dtype=float)
-        warm_reference[0]=(reference_stations,np.asarray(profile.speed,dtype=float)**2)
         item=(trajectory,path,profile)
         cache[key]=(record,item)
+        incumbent=best_eval_box[0]
+        if incumbent is None or profile.lap_time < incumbent[2].lap_time-settings.minimum_improvement_seconds:
+            best_coeff_box[0]=np.asarray(coeff,dtype=float).copy()
+            best_eval_box[0]=item
+            warm_reference[0]=(reference_stations,np.asarray(profile.speed,dtype=float)**2)
         return record,item
 
     best_coeff = np.zeros(spline.control_count)
@@ -399,11 +404,17 @@ def optimize_yaw_aware_line(track: TrackProfile, corridor: Corridor | None,
                         "maxfev": max(1,settings.maximum_profile_evaluations-profile_evaluations[0]),
                         "xtol": settings.optimizer_x_tolerance, "ftol": settings.optimizer_f_tolerance})
                 except _SearchBudgetStop:
+                    if best_eval_box[0] is not None:
+                        best_coeff,best_eval=best_coeff_box[0],best_eval_box[0]
                     break
+                if best_eval_box[0] is not None:
+                    best_coeff,best_eval=best_coeff_box[0],best_eval_box[0]
                 candidate = base.copy(); candidate[active] = result.x
                 try:
                     recx, evalx = evaluate(candidate, idx, f"pass_{outer}_corner_{ci}_result")
                 except _SearchBudgetStop:
+                    if best_eval_box[0] is not None:
+                        best_coeff,best_eval=best_coeff_box[0],best_eval_box[0]
                     break
                 recx.update(optimizer_success=bool(result.success), optimizer_iterations=int(result.nit))
                 records.append(recx)
@@ -416,6 +427,10 @@ def optimize_yaw_aware_line(track: TrackProfile, corridor: Corridor | None,
         if previous_time is not None and current is not None and abs(previous_time-current) < settings.lap_time_tolerance:
             break
         previous_time = current
+    # A budget stop may occur inside Powell after an objective evaluation; keep
+    # the immediately recorded strictly valid incumbent, not only result.x.
+    if best_eval_box[0] is not None:
+        best_coeff,best_eval=best_coeff_box[0],best_eval_box[0]
     if best_eval is None:
         if stop_reason[0] is not None:
             records.append({"reason":"global_budget","budget_cause":stop_reason[0],"accepted":False})

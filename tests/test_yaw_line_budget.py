@@ -1,5 +1,6 @@
 import unittest
 from unittest.mock import patch
+from types import SimpleNamespace
 import numpy as np
 
 from simplified_vehicle_models.planning.yaw_aware_line import YawLineSettings, optimize_yaw_aware_line, _qp_seed
@@ -43,6 +44,26 @@ class YawLineBudgetSettingsTests(unittest.TestCase):
         geometry=OffsetTrajectory(reference,spline,coeff,build_station_map=False)
         self.assertIsNone(geometry.station_map)
         np.testing.assert_allclose(geometry.evaluate(stations).curvature,full.evaluate(stations).curvature)
+
+    def test_powell_budget_stop_retains_immediate_objective_incumbent(self):
+        track=circle_track(); call_count=[0]
+        def fake_profile(path,*_args,**_kwargs):
+            call_count[0]+=1
+            return profile_for(path,30.-5.*call_count[0])
+        def fake_minimize(fun,x0,**_kwargs):
+            fun(np.asarray(x0)+.001)  # valid, faster objective sample
+            fun(np.asarray(x0)+.002)  # reaches cap and raises private stop
+            return SimpleNamespace(x=x0,success=False,nit=1)
+        settings=YawLineSettings(control_spacing=40.,grid_spacing=100.,dense_subdivisions=1,
+            optimizer_max_iterations=1,maximum_outer_passes=1,maximum_speed=20.,boundary="flying",
+            seed_blends=(),maximum_profile_evaluations=2)
+        with patch("simplified_vehicle_models.planning.yaw_aware_line.yaw_aware_profile",fake_profile), \
+             patch("simplified_vehicle_models.planning.yaw_aware_line._corner_complexes",return_value=[(0.,track.lap_length)]), \
+             patch("simplified_vehicle_models.planning.yaw_aware_line.minimize",side_effect=fake_minimize):
+            result=optimize_yaw_aware_line(track,None,capability(),settings=settings)
+        self.assertEqual(result.status,"budget_exceeded")
+        self.assertEqual(result.lap_time,20.)
+        self.assertTrue(np.any(np.abs(result.coefficients) > 0.))
 
     def test_seed_geometry_rejection_contracts_toward_centreline(self):
         track=circle_track(); calls=[]

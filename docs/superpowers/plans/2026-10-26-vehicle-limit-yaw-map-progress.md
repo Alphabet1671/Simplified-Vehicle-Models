@@ -26,6 +26,20 @@
 - Added shared physical-cell cache (moments and status) across discovery/map/audit; no repeated LP solve for identical node.
 - 35 domain/artifact/cache/status/consumer compatibility tests pass.
 
+## Physical build — internal acceptance WITHDRAWN
+
+- v7 completed after55 adaptive rounds:34×28×246=234,192 nodes, ay extent±25.1875m/s², worst strict boundary loss0.25m/s²; no outer truncations or unresolved points. 139,131 discovery LP-coordinate probes +126,124 independent cell-third discovery probes;2172 boundary acceptance comparisons;430.56s wall.
+- Maximum tyre load among sampled feasible discovery ends2284N, within3500N tyre table. The table's clamping behavior remains a model limitation but was not reached at these sampled boundary points.
+- Review fixes: numerical map-node failure now saves unresolved artifact evidence; singleton declared axes cannot qualify; transitive source hashes (21 files) retained, compiled runtime/code hash authoritative for cache invalidation.
+- Fresh quarter-cell holdout verification delegated; final current-code artifact build running with consumer-compatible defaults.
+- Broader yaw suite125 tests passed in663.7s before final review-only fixes; current focused31+ tests pass.
+
+## Fresh holdout failure — binding correction
+
+- Quarter-cell fresh direct audit (126,116LP coordinates/73.79s) found5 completely unsupported v/ax faces and finite loss1.21875m/s². No outer truncation. Therefore v7 internal complete is withdrawn; artifact is NOT accepted.
+- Ruling: separate cell-third refinement/training from untouched quarter-cell validation. Adaptive insertions use enclosing CELL MIDPOINTS rather than audit coordinates, so fitted audit knot coincidences cannot manufacture success. Completion must require held-out audit too. Cost if wrong: larger tensor/time, but never relax strict support or claim false vehicle-edge coverage.
+- Cancelled old final artifact rebuild; leave existing v7 as failed external-validation evidence only.
+
 ## Remaining
 
 1. Finish/review workflow, especially true holdout-to-supported-domain distance and preallocation budgets.

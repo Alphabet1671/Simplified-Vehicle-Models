@@ -115,7 +115,9 @@ class YawMapCompletionAudit:
 class YawMapWorkflowResult:
     capability: YawCapabilityMap
     domain: YawMapDomain
+    # Training audit drives adaptive refinement; validation stays disjoint.
     audit: YawMapCompletionAudit
+    validation_audit: YawMapCompletionAudit
     complete: bool
     refinement_rounds: int
     declared_speed_knots: tuple[float, ...]
@@ -162,13 +164,22 @@ def _domain_axis(domain: YawMapDomain, width: float) -> tuple[float, ...]:
     return _fill_lateral_axis(points, width)
 
 
-def _holdout_axis(knots: tuple[float, ...]) -> tuple[float, ...]:
-    """Use 1/3 and 2/3 cells, distinct from discovery's knot/midpoint set."""
-    points: set[float] = set()
-    for left, right in zip(knots, knots[1:]):
-        points.add(left + (right - left) / 3.0)
-        points.add(left + 2.0 * (right - left) / 3.0)
+def _holdout_axis(knots: tuple[float, ...], fractions: tuple[float, float]) -> tuple[float, ...]:
+    """Return fixed interior fractions of original declared cells."""
+    points = {left + (right - left) * fraction
+              for left, right in zip(knots, knots[1:]) for fraction in fractions}
     return tuple(sorted(points)) or knots
+
+
+def _axis_midpoint(axis: set[float], value: float) -> float | None:
+    """Midpoint of the axis cell containing value; never return value itself."""
+    values = sorted(axis)
+    index = int(np.searchsorted(values, value))
+    if index == 0:
+        return None
+    if index == len(values):
+        return None
+    return 0.5 * (values[index - 1] + values[index])
 
 
 def _strict_supported_distance(interpolator, axis: np.ndarray, speed: float, ax: float, ay: float) -> float:
@@ -279,17 +290,12 @@ def _refine_axes(capability: YawCapabilityMap, audit: YawMapCompletionAudit,
                 -1.0 if probe.loss_distance is None else probe.loss_distance)
 
     probe = max(candidates, key=priority)
-    # This exactly inserts the speed/ax cell that produced the evidence, rather
-    # than every audit cell.  It is the necessary first step for a full masked
-    # face, which ay-only refinement cannot repair.
-    speed.add(probe.speed)
-    ax.add(probe.longitudinal_acceleration)
-    ay.add(probe.lateral_acceleration)
-    # A pair of nearby lateral knots permits strict support to emerge around the
-    # responsible direct boundary without hull-filling unsupported values.
-    half = settings.maximum_lateral_cell_width / 2.0
-    ay.add(probe.lateral_acceleration - half)
-    ay.add(probe.lateral_acceleration + half)
+    # Split enclosing cells rather than inserting the training probe itself.
+    # This prevents a pointwise fitted map from acquiring artificial zero loss.
+    for axis, value in ((speed, probe.speed), (ax, probe.longitudinal_acceleration), (ay, probe.lateral_acceleration)):
+        midpoint = _axis_midpoint(axis, value)
+        if midpoint is not None:
+            axis.add(midpoint)
     return tuple(sorted(speed)), tuple(sorted(ax)), _fill_lateral_axis(ay, settings.maximum_lateral_cell_width)
 
 
@@ -330,16 +336,18 @@ def build_yaw_map_workflow(
     map_speed, map_ax = speeds, accelerations
     # Acceptance coordinates are fixed subdivisions of the declared domain;
     # they are not regenerated from adaptive map knots.
-    audit_speeds = _holdout_axis(speeds)
-    audit_ax = _holdout_axis(accelerations)
+    training_speeds = _holdout_axis(speeds, (1.0 / 3.0, 2.0 / 3.0))
+    training_ax = _holdout_axis(accelerations, (1.0 / 3.0, 2.0 / 3.0))
+    validation_speeds = _holdout_axis(speeds, (0.25, 0.75))
+    validation_ax = _holdout_axis(accelerations, (0.25, 0.75))
     independent_holdouts = len(speeds) > 1 and len(accelerations) > 1
     # A separate discovery call makes all audit boundary scans independent of
     # map-axis discovery.  Its probe budget is the audit budget, not the map
     # discovery budget, and all LP calls remain explicitly accounted for.
     audit_settings = replace(settings.discovery, probe_budget=settings.maximum_audit_probes,
                              speed_ax_audit_subdivisions=0)
-    holdout_domain = discover_yaw_map_domain(vehicle, audit_speeds, audit_ax,
-                                              deadline_evaluator, audit_settings)
+    training_domain = discover_yaw_map_domain(vehicle, training_speeds, training_ax,
+                                               deadline_evaluator, audit_settings)
     rounds = 0
     last_capability: YawCapabilityMap | None = None
     last_audit: YawMapCompletionAudit | None = None
@@ -389,15 +397,20 @@ def build_yaw_map_workflow(
                 float(grid.lateral_acceleration[0]), ProbeStatus.UNRESOLVED, None, None, False, str(error)),),
                 (), None, settings.discovery.lateral_interpolation_loss_tolerance)
             break
-        audit = _audit_map(capability, holdout_domain, settings=settings, started=started)
+        audit = _audit_map(capability, training_domain, settings=settings, started=started)
         last_capability, last_audit = capability, audit
         if (domain.diagnostics.complete and audit.complete) or rounds >= settings.maximum_refinement_rounds:
             break
         map_speed, map_ax, lateral = _refine_axes(capability, audit, settings)
         rounds += 1
+    validation_domain = discover_yaw_map_domain(vehicle, validation_speeds, validation_ax,
+                                                 deadline_evaluator, audit_settings)
+    validation_audit = _audit_map(capability, validation_domain, settings=settings, started=started)
     complete = (independent_holdouts and domain.diagnostics.complete
-                and holdout_domain.diagnostics.complete and audit.complete)
-    disclosure = "Finite scans, transition brackets, and independent holdouts bound only the declared resolution; they are not continuous feasibility proof."
+                and training_domain.diagnostics.complete and audit.complete
+                and validation_domain.diagnostics.complete and validation_audit.complete)
+    disclosure = "Finite scans, transition brackets, training holdouts, and disjoint quarter-position validation holdouts bound only the declared resolution; they are not continuous feasibility proof."
     if not independent_holdouts:
         disclosure += " A singleton declared speed or longitudinal-acceleration axis has no independent holdout coordinate and cannot qualify as complete."
-    return YawMapWorkflowResult(capability, domain, audit, complete, rounds, speeds, accelerations, disclosure)
+    return YawMapWorkflowResult(capability, domain, audit, validation_audit, complete,
+                                rounds, speeds, accelerations, disclosure)

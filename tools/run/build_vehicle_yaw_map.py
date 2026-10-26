@@ -29,9 +29,9 @@ def parser():
     p.add_argument('--scan-spacing', type=float, default=.5)
     p.add_argument('--boundary-tolerance', type=float, default=.05)
     p.add_argument('--loss-tolerance', type=float, default=.25)
-    p.add_argument('--max-nodes', type=int, default=30000)
+    p.add_argument('--max-nodes', type=int, default=500000)
     p.add_argument('--max-probes', type=int, default=250000)
-    p.add_argument('--refinement-rounds', type=int, default=32)
+    p.add_argument('--refinement-rounds', type=int, default=128)
     p.add_argument('--audit-probes', type=int, default=500000)
     p.add_argument('--wall-seconds', type=float, default=600.)
     return p

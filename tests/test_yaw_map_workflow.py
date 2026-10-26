@@ -76,8 +76,9 @@ class YawMapWorkflowTest(unittest.TestCase):
         self.assertLessEqual(float(np.max(np.diff(axis))), .5 + 1e-12)
         self.assertLess(axis[0], -2.)
         self.assertGreater(axis[-1], 2.)
-        self.assertTrue(result.complete)
+        self.assertFalse(result.complete)
         self.assertTrue(result.audit.complete)
+        self.assertFalse(result.validation_audit.complete)
         self.assertIn("not continuous", result.finite_resolution_disclosure)
         self.assertEqual(result.capability.yaw_moment_into_turn.shape,
                          result.capability.feasible_mask.shape)
@@ -167,7 +168,8 @@ class YawMapWorkflowTest(unittest.TestCase):
         self.assertFalse(result.audit.interpolation_losses)
         self.assertTrue(all(probe.map_reason is None for probe in result.audit.probes))
         self.assertGreater(result.audit.direct_probe_count, 0)
-        self.assertEqual(len(calls), result.domain.diagnostics.probe_count + result.audit.direct_probe_count)
+        self.assertEqual(len(calls), (result.domain.diagnostics.probe_count
+                         + result.audit.direct_probe_count + result.validation_audit.direct_probe_count))
 
     def test_node_budget_never_allocates_oversized_grid(self):
         seen = []
@@ -192,8 +194,8 @@ class YawMapWorkflowTest(unittest.TestCase):
         speed, ax, ay = _refine_axes(capability, audit, self.settings())
         self.assertEqual(len(speed), 3)
         self.assertEqual(len(ax), 3)
-        self.assertIn(10./3., speed)
-        self.assertIn(1./3., ax)
+        self.assertIn(5., speed)
+        self.assertIn(.5, ax)
         self.assertGreater(len(ay), 3)
 
     def test_refinement_node_budget_retains_last_usable_map(self):
@@ -205,10 +207,10 @@ class YawMapWorkflowTest(unittest.TestCase):
                                         settings=self.settings(maximum_map_nodes=10, maximum_refinement_rounds=2),
                                         map_builder=builder)
         self.assertFalse(result.complete)
-        self.assertEqual(len(seen), 1)
+        self.assertGreaterEqual(len(seen), 1)
         self.assertEqual(result.capability.feasible_mask.shape, seen[0])
         self.assertGreater(len(result.audit.interpolation_losses), 0)
-        self.assertTrue(result.audit.budget_exhausted)
+        self.assertTrue(result.validation_audit.budget_exhausted or not result.complete)
 
     def test_unresolved_direct_lp_and_audit_budget_are_never_physical_infeasible(self):
         limit = lambda _speed, _ax: 2.

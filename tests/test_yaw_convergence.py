@@ -23,6 +23,12 @@ class ConvergenceTests(unittest.TestCase):
         result=compare_samples(sample(),fine,dimension='geometry')
         self.assertEqual(result['status'],'converged')
         self.assertEqual(result['speed_max_difference_mps'],0.)
+        self.assertEqual(result['thresholds']['geometric_time_relative'],.005)
+        self.assertEqual(result['thresholds']['geometric_speed_max_mps'],.1)
+        self.assertEqual(result['thresholds']['geometric_offset_max_m'],.05)
+        self.assertEqual(result['thresholds']['profile_candidate_time_relative'],.001)
+        self.assertEqual(result['optimizer_status'],['converged','converged'])
+        self.assertIn('piecewise-linear',result['interpolation_rule'])
 
     def test_budget_profile_or_optimizer_failure_remains_inconclusive(self):
         for changes in ({'budget_reason':'wall_deadline'},{'profile_valid':False},
@@ -36,7 +42,10 @@ class ConvergenceTests(unittest.TestCase):
 
     def test_control_convergence_distinct_from_mesh(self):
         rows=[sample(),sample('fine',control=10.)]
-        self.assertEqual(convergence_study(rows,dimension='control')['status'],'converged')
+        control=convergence_study(rows,dimension='control')
+        self.assertEqual(control['status'],'converged')
+        self.assertEqual(control['finest_pair_status'],'converged')
+        self.assertEqual(control['convergence_claim'],'finest tested pair meets criteria')
         self.assertEqual(convergence_study(rows,dimension='geometry')['status'],'inconclusive')
 
     def test_faster_time_not_enough_when_speed_or_line_changes(self):

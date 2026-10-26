@@ -309,10 +309,11 @@ def optimize_yaw_aware_line(track: TrackProfile, corridor: Corridor | None,
             if settings.profile_solver == "coupled":
                 warm = None
                 if warm_reference[0] is not None:
-                    stations,speeds=warm_reference[0]
+                    stations,warm_q=warm_reference[0]
                     target=np.asarray(trajectory.station_map.to_reference(path.distance),dtype=float)
-                    warm=np.interp(target,stations,speeds)
-                    if path.is_closed: warm[-1]=warm[0]
+                    q_suggestion=np.maximum(0.,np.interp(target,stations,warm_q))
+                    if path.is_closed: q_suggestion[-1]=q_suggestion[0]
+                    warm=np.sqrt(q_suggestion)
                 profile_settings=replace(settings.profile_settings,max_wall_seconds=min(remaining,settings.profile_settings.max_wall_seconds))
                 profile = yaw_aware_profile(path, capability, boundary=settings.boundary,
                                             maximum_speed=settings.maximum_speed, solver="coupled",
@@ -343,7 +344,7 @@ def optimize_yaw_aware_line(track: TrackProfile, corridor: Corridor | None,
                       geometry_grid_nodes=len(path.distance),
                       resolution_converged=profile.diagnostics.get("resolution_converged"))
         reference_stations=np.asarray(trajectory.station_map.to_reference(path.distance),dtype=float)
-        warm_reference[0]=(reference_stations,np.asarray(profile.speed,dtype=float))
+        warm_reference[0]=(reference_stations,np.asarray(profile.speed,dtype=float)**2)
         item=(trajectory,path,profile)
         cache[key]=(record,item)
         return record,item
@@ -357,13 +358,22 @@ def optimize_yaw_aware_line(track: TrackProfile, corridor: Corridor | None,
     # Evaluate the complete seed family before any local optimization, so the
     # first seed cannot consume the global budget before comparison.
     for idx, seed in enumerate(seeds):
-        try:
-            rec,item=evaluate(seed,idx,"seed")
-        except _SearchBudgetStop:
-            break
-        records.append(rec)
-        if item and (best_eval is None or item[2].lap_time < best_eval[2].lap_time-settings.minimum_improvement_seconds):
-            best_coeff,best_eval=seed.copy(),item
+        # QP box bounds constrain controls, not continuous spline overshoot.
+        # Deterministically contract rejected proposals toward the centreline;
+        # every repaired coefficient vector still passes the exact dense gate.
+        for scale in (1.,.5,.25,.125,.0625,0.):
+            candidate=seed*scale
+            try:
+                rec,item=evaluate(candidate,idx,"seed")
+            except _SearchBudgetStop:
+                break
+            rec["seed_scale"]=scale; records.append(rec)
+            if item:
+                if best_eval is None or item[2].lap_time < best_eval[2].lap_time-settings.minimum_improvement_seconds:
+                    best_coeff,best_eval=candidate.copy(),item
+                break
+            if rec["reason"] != "geometry_or_corridor": break
+        if stop_reason[0] is not None: break
     for outer in range(1, min(3, settings.maximum_outer_passes)+1):
         if stop_reason[0] is not None or best_eval is None: break
         # Subsequent passes begin from exactly the current validated incumbent.

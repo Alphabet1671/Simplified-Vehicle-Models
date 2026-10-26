@@ -44,6 +44,20 @@ class YawLineBudgetSettingsTests(unittest.TestCase):
         self.assertIsNone(geometry.station_map)
         np.testing.assert_allclose(geometry.evaluate(stations).curvature,full.evaluate(stations).curvature)
 
+    def test_seed_geometry_rejection_contracts_toward_centreline(self):
+        track=circle_track(); calls=[]
+        def fake_profile(path,*_args,**_kwargs):
+            calls.append(1); return profile_for(path,10.)
+        settings=YawLineSettings(control_spacing=160.,grid_spacing=100.,dense_subdivisions=1,
+            optimizer_max_iterations=1,maximum_outer_passes=1,maximum_speed=20.,boundary="flying",
+            seed_blends=(.2,),maximum_profile_evaluations=8)
+        with patch("simplified_vehicle_models.planning.yaw_aware_line._qp_seed",side_effect=lambda spline,*a,**k:(np.full(spline.control_count,10.),True,1,0.)), \
+             patch("simplified_vehicle_models.planning.yaw_aware_line.yaw_aware_profile",fake_profile):
+            result=optimize_yaw_aware_line(track,None,capability(),settings=settings)
+        scales=[row.get("seed_scale") for row in result.diagnostics["candidate_evaluations"]]
+        self.assertIn(1.,scales); self.assertTrue(any(scale not in (None,1.) for scale in scales))
+        self.assertGreaterEqual(len(calls),1)
+
     def test_global_profile_budget_keeps_validated_incumbent(self):
         track=circle_track(); calls=[]
         def fake_profile(path, *_args, **_kwargs):

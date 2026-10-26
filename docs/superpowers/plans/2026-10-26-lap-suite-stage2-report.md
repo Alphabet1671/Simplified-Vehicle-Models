@@ -38,13 +38,22 @@ Result: 6 tests passed in 80.417 seconds after QP geometry-only/shared-lineariza
 
 ## Focused behavioral coverage and deferred checks
 
-`tests/test_yaw_line_budget.py` now has six guarded tests covering settings and
+`tests/test_yaw_line_budget.py` now has nine guarded tests covering settings and
 seed-blend validation, a profile-evaluation cap retaining a validated incumbent,
-exact duplicate-coefficient cache reuse, cached profile failure reuse, and the
-wall-time stop before QP construction. Its guarded run passed in 4.549 seconds.
+exact duplicate-coefficient cache reuse, cached profile failure reuse, the
+wall-time stop before QP construction, cached QP-linearization equivalence,
+geometry-only trajectory equivalence, and seed geometry contraction. Its latest
+guarded run passed in 5.428 seconds.
 
-Two desirable white-box spy cases are deferred pending review: direct assertion
-that every later corner optimizer starts from the selected incumbent, and direct
-capture of a warm suggestion across deliberately mismatched path sample counts.
-The implementation uses `base = best_coeff` and reference-station interpolation
-for those behaviors; no additional edits will be made before review.
+QP seed controls are box-bounded but a continuous spline can still overshoot a
+corridor between controls. A geometry-rejected seed is therefore contracted
+deterministically toward the centreline at scales `1, .5, .25, .125, .0625, 0`.
+Every candidate remains subject to the unchanged dense fold/corridor gate; this
+is not a corridor or feasibility relaxation. The accepted seed scale is retained
+in candidate diagnostics.
+
+Two desirable white-box spy cases remain deferred: direct assertion that every
+later corner optimizer starts from the selected incumbent, and direct capture of
+a warm suggestion across deliberately mismatched path sample counts. The
+implementation uses `base = best_coeff` and reference-station interpolation for
+those behaviors.

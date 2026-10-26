@@ -7,7 +7,7 @@ import numpy as np
 from scipy.integrate import solve_ivp
 
 from simplified_vehicle_models.compiler.compile import compile_formulation
-from simplified_vehicle_models.solvers.forward_driver import DriverCommand, SpeedPlan
+from simplified_vehicle_models.solvers.forward_driver import DriverCommand, SpeedPlan, TrialStateError
 from simplified_vehicle_models.solvers.planar_forward import PlanarForwardPlant, body_accelerations
 
 
@@ -22,6 +22,13 @@ class PlanarForwardTests(unittest.TestCase):
     def setUp(self):
         self.plant = PlanarForwardPlant(self.vehicle, self.plan)
         self.state = self.plant.initial_state(8.)
+
+    def test_steering_domain_is_a_retryable_trial_rejection(self):
+        state=self.state.copy(); state[11]=self.vehicle.steering_maximum_angle+1.e-6
+        with self.assertRaises(TrialStateError):
+            self.plant.evaluate(0.,state,DriverCommand(0.,0.,0.))
+        with self.assertRaises(ValueError):
+            self.plant.evaluate(0.,np.full(self.plant.state_size,np.nan),DriverCommand(0.,0.,0.))
 
     def test_body_acceleration_includes_rotating_frame_terms(self):
         state = np.zeros((2, 12))

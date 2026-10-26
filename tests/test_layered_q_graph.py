@@ -18,7 +18,45 @@ def graph(layers, edges):
     return LayeredQGraph(offsets, q, eo, targets, costs)
 
 
+def scalar_open(graph_obj, start, terminals):
+    reach=np.zeros(graph_obj.n_nodes,bool); reach[start]=True
+    for u in range(graph_obj.n_nodes):
+        if reach[u]: reach[graph_obj.targets[graph_obj.edge_offsets[u]:graph_obj.edge_offsets[u+1]]]=True
+    coreach=np.zeros(graph_obj.n_nodes,bool); coreach[list(terminals)]=True
+    for u in range(graph_obj.n_nodes-1,-1,-1):
+        a,b=graph_obj.edge_offsets[u:u+2]; coreach[u]|=bool(np.any(coreach[graph_obj.targets[a:b]]))
+    live=reach&coreach; dist=np.full(graph_obj.n_nodes,np.inf); pred=np.full(graph_obj.n_nodes,-1,dtype=np.int64);dist[start]=0.
+    for u in range(graph_obj.n_nodes):
+        if not live[u] or not np.isfinite(dist[u]): continue
+        for edge in range(graph_obj.edge_offsets[u],graph_obj.edge_offsets[u+1]):
+            v=int(graph_obj.targets[edge]); candidate=dist[u]+graph_obj.costs[edge]
+            if live[v] and (candidate<dist[v] or (candidate==dist[v] and (pred[v]<0 or u<pred[v]))):dist[v]=candidate;pred[v]=u
+    best=min(terminals,key=lambda node:(dist[node],node))
+    if not np.isfinite(dist[best]): return None,reach,coreach
+    path=[best]
+    while path[-1]!=start:path.append(int(pred[path[-1]]))
+    return path[::-1],reach,coreach
+
+
 class PackedGraphTests(unittest.TestCase):
+    def test_vectorized_dp_matches_scalar_random_graphs_and_ties(self):
+        rng=np.random.default_rng(26)
+        for _ in range(50):
+            counts=np.array([1, *[rng.integers(0,5) for _ in range(2)], 1])
+            offsets=np.r_[0,np.cumsum(counts)]; edges=[]
+            for layer in range(3):
+                for source in range(offsets[layer],offsets[layer+1]):
+                    for target in range(offsets[layer+1],offsets[layer+2]):
+                        if rng.random()<.55: edges.append((source,target,float(rng.integers(1,4))))
+            g=graph([list(range(offsets[i],offsets[i+1])) for i in range(4)],edges)
+            terminal=list(range(offsets[-2],offsets[-1]))
+            expected,reach,coreach=scalar_open(g,0,terminal)
+            actual=solve_open_graph(g,0,np.array(terminal))
+            np.testing.assert_array_equal(actual["reachable_nodes"],np.flatnonzero(reach))
+            np.testing.assert_array_equal(actual["co_reachable_nodes"],np.flatnonzero(coreach))
+            if expected is None:self.assertEqual(actual["status"],"disconnected")
+            else:self.assertEqual(actual["node_ids"].tolist(),expected)
+
     def test_dead_end_local_fast_route_and_traceback(self):
         g = graph([[0], [1, 2], [3]], [(0, 1, 1), (0, 2, 2), (2, 3, 1)])
         r = solve_open_graph(g, 0, np.array([3]))

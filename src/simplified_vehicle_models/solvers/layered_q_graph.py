@@ -115,13 +115,23 @@ def _solve(graph: LayeredQGraph, start: int, terminals: set[int], max_nodes: int
         raise ValueError("start_node must be in first layer")
     if any(np.searchsorted(graph.node_offsets, t, side="right") - 1 != graph.n_layers - 1 for t in terminals):
         raise ValueError("terminal nodes must be in last layer")
+    # Sources are invariant for this solve.  Layer-wise vector reductions keep
+    # exactly the scalar graph semantics while avoiding a Python visit per edge.
+    sources = np.repeat(np.arange(graph.n_nodes, dtype=np.int64), np.diff(graph.edge_offsets))
     reach = np.zeros(graph.n_nodes, bool); reach[start] = True
-    for u in range(graph.n_nodes):
-        if reach[u]: reach[graph.targets[graph.edge_offsets[u]:graph.edge_offsets[u+1]]] = True
+    for layer in range(graph.n_layers - 1):
+        first, last = graph.node_offsets[layer:layer+2]
+        edge_first, edge_last = graph.edge_offsets[first], graph.edge_offsets[last]
+        selected = reach[sources[edge_first:edge_last]]
+        if np.any(selected):
+            reach[graph.targets[edge_first:edge_last][selected]] = True
     coreach = np.zeros(graph.n_nodes, bool); coreach[list(terminals)] = True
-    for u in range(graph.n_nodes - 1, -1, -1):
-        a, b = graph.edge_offsets[u:u+2]
-        coreach[u] |= bool(np.any(coreach[graph.targets[a:b]]))
+    for layer in range(graph.n_layers - 2, -1, -1):
+        first, last = graph.node_offsets[layer:layer+2]
+        edge_first, edge_last = graph.edge_offsets[first], graph.edge_offsets[last]
+        target_live = coreach[graph.targets[edge_first:edge_last]]
+        if np.any(target_live):
+            coreach[sources[edge_first:edge_last][target_live]] = True
     live = reach & coreach
     if not np.any(live):
         reach_nodes = np.flatnonzero(reach)
@@ -129,15 +139,30 @@ def _solve(graph: LayeredQGraph, start: int, terminals: set[int], max_nodes: int
         return _result("disconnected", [], np.inf, reach_nodes, coreach_nodes, 0,
                        disconnect_cut=_disconnect_cut(graph, reach, coreach))
     dist = np.full(graph.n_nodes, np.inf); pred = np.full(graph.n_nodes, -1, dtype=np.int64); dist[start] = 0.
-    for u in range(graph.n_nodes):
-        if not live[u] or not np.isfinite(dist[u]): continue
-        a, b = graph.edge_offsets[u:u+2]
-        for ei in range(a, b):
-            v = int(graph.targets[ei])
-            if not live[v]: continue
-            cand = dist[u] + graph.costs[ei]
-            if cand < dist[v] or (cand == dist[v] and (pred[v] < 0 or u < pred[v])):
-                dist[v] = cand; pred[v] = u
+    for layer in range(graph.n_layers - 1):
+        first, last = graph.node_offsets[layer:layer+2]
+        edge_first, edge_last = graph.edge_offsets[first], graph.edge_offsets[last]
+        src = sources[edge_first:edge_last]
+        target = graph.targets[edge_first:edge_last]
+        keep = live[src] & live[target] & np.isfinite(dist[src])
+        if not np.any(keep):
+            continue
+        src, target = src[keep], target[keep]
+        candidate = dist[src] + graph.costs[edge_first:edge_last][keep]
+        # First reduce costs, then explicitly pick smallest source ID among
+        # equal minima, matching scalar `cand == dist[v] and u < pred[v]`.
+        next_first, next_last = graph.node_offsets[layer+1:layer+3]
+        width = next_last-next_first
+        local_target = target-next_first
+        minimum = np.full(width, np.inf)
+        np.minimum.at(minimum, local_target, candidate)
+        winners = np.full(width, np.iinfo(np.int64).max, dtype=np.int64)
+        winning = candidate == minimum[local_target]
+        np.minimum.at(winners, local_target[winning], src[winning])
+        active = np.isfinite(minimum)
+        nodes = next_first + np.flatnonzero(active)
+        dist[nodes] = minimum[active]
+        pred[nodes] = winners[active]
     best = min(terminals, key=lambda t: (dist[t], t))
     if not np.isfinite(dist[best]):
         reach_nodes = np.flatnonzero(reach)

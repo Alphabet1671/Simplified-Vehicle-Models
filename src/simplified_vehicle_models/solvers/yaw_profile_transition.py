@@ -203,7 +203,10 @@ def transition_intervals(path, capability, segment_index: int, fixed_q: float, d
         # Query strict support directly; at exact pinned faces, the strict
         # interpolator correctly ignores zero-weight neighboring corners.
         if query(mid)['reason'].value != 'supported': continue
-        U=Polynomial([0.,1.]); vals=(U, (U*U-fixed_q)/ds if direction=='forward' else (fixed_q-U*U)/ds, k*U*U)
+        # Assemble directly in local r∈[0,1], rather than expanding in global
+        # speed then composing into r; narrow dense cells otherwise cancel.
+        T=Polynomial([0.,1.]); U=Polynomial([a,b-a])
+        vals=(U, (U*U-fixed_q)/ds if direction=='forward' else (fixed_q-U*U)/ds, k*U*U)
         weights=[]
         for axis,val,ix in zip(axes,vals,indices):
             weights.append(((axis[ix+1]-val)/(axis[ix+1]-axis[ix]),(val-axis[ix])/(axis[ix+1]-axis[ix])))
@@ -219,12 +222,9 @@ def transition_intervals(path, capability, segment_index: int, fixed_q: float, d
         margins=(moments[0]-dem,moments[1]+dem)
         roots=[a,b]
         for margin_index,p in enumerate(margins):
-            # Normalize each finite cell to [0,1]. Derivative-root partitioning
-            # brackets sign changes and explicitly captures repeated/tangent roots.
-            z=Polynomial([a,b-a]); pn=p(z)
             rdiag={"segment_index":segment_index,"cell":tuple(indices),"margin_index":margin_index,
-                   "polynomial_coefficients":tuple(map(float,pn.coef)),"capability_identity":capability.source_identity}
-            for r in _real_roots_unit(pn, scale=max(1.,float(np.max(np.abs(pn.coef)))),
+                   "polynomial_coefficients":tuple(map(float,p.coef)),"capability_identity":capability.source_identity}
+            for r in _real_roots_unit(p, scale=max(1.,float(np.max(np.abs(p.coef)))),
                                       tolerance=max(settings.yaw_moment_tolerance,1e-12), diagnostics=rdiag):
                 if 0 < r < 1: roots.append(float(a+(b-a)*r))
         roots=sorted(set(roots))
@@ -233,8 +233,9 @@ def transition_intervals(path, capability, segment_index: int, fixed_q: float, d
             if ev['reason'].value != 'supported':
                 continue
             exact=ev['moments']
-            approx=(float(margins[0](witness)+sign*capability.yaw_inertia*(((witness*witness-fixed_q)/ds if direction=='forward' else (fixed_q-witness*witness)/ds)*k+witness*witness*kp)),
-                    float(margins[1](witness)-sign*capability.yaw_inertia*(((witness*witness-fixed_q)/ds if direction=='forward' else (fixed_q-witness*witness)/ds)*k+witness*witness*kp)))
+            local=(witness-a)/(b-a)
+            demand=sign*capability.yaw_inertia*(((witness*witness-fixed_q)/ds if direction=='forward' else (fixed_q-witness*witness)/ds)*k+witness*witness*kp)
+            approx=(float(margins[0](local)+demand),float(margins[1](local)-demand))
             err=max(abs(exact[0]-approx[0]),abs(exact[1]-approx[1]))
             if err > settings.yaw_moment_tolerance*max(1.,*map(abs,exact)):
                 raise YawProfileSolveError("interval_oracle_unresolved", "polynomial and strict evidence disagree", {

@@ -18,6 +18,25 @@ class TransitionIntervalTests(unittest.TestCase):
         self.path=YawPath(np.array([0.,.05, .1]),np.zeros(3),np.zeros(3),False)
         self.settings=CoupledProfileSettings()
 
+    def test_narrow_high_speed_cell_uses_local_polynomial_without_unresolved(self):
+        # Fine map cells at substantial u are ill-conditioned if multilinear
+        # weights are expanded in global u then affine-composed.
+        speed=np.array([12.86,12.87,12.871,12.88])
+        ax=np.array([-.02,-.01,0.,.01])
+        ay=np.array([16.54,16.55,16.56,16.57])
+        ii,jj,kk=np.indices((4,4,4))
+        moment=1.e9+3.e6*ii-7.e6*jj+11.e6*kk+1.e5*ii*jj*kk
+        cap=YawCapabilityMap(speed,ax,ay,moment,moment+2.e8,np.ones((4,4,4),bool),
+                             1.,"physical_ideal_tv_v1","narrow-local")
+        path=YawPath(np.array([0.,.5,1.]),np.full(3,.1),np.zeros(3),False)
+        u=12.8705; fixed=u*u-.5*(-.005)
+        intervals=transition_intervals(path,cap,0,fixed,"forward",
+                                       (fixed-.01,fixed+.01),settings=self.settings)
+        self.assertTrue(intervals)
+        for item in intervals:
+            for q in (item.lower,(item.lower+item.upper)/2,item.upper):
+                self.assertTrue(edge_evidence(path,cap,0,fixed,q,settings=self.settings)["feasible"])
+
     def test_analytic_rectangle_distances(self):
         for ds in (1.,.05,.01):
             path=YawPath(np.array([0.,ds,2*ds]),np.zeros(3),np.zeros(3),False)

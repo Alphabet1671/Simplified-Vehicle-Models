@@ -95,6 +95,19 @@ class YawMapTest(unittest.TestCase):
             self.assertTrue(any(np.array_equal(row, expected) and bound == 0.
                                 for row, bound in zip(aeq, beq)))
 
+    def test_rear_driven_vehicle_can_brake_with_front_bias(self):
+        # Hydraulic brakes are on all four wheels. A rear-driven car with a
+        # 0.65 front brake bias must support straight-line braking; before the
+        # fix every ax < 0 cell beyond aero drag was infeasible.
+        from simplified_vehicle_models.formulations.yaw_capability import _cell_lp
+        model=compile_formulation(str(ROOT / "models/formulations/iem24_murphy_real_planar_7dof.xml")).model
+        vehicle=point_mass_view_of_planar(model)
+        self.assertNotIn("fl", vehicle.drivetrain.drivetrain.transmission.driven_wheels)
+        self.assertGreater(vehicle.brake_bias, 0.)
+        for ax in (-1., -3., -6.):
+            self.assertIsNotNone(_cell_lp(vehicle, 15., ax, 0., None, 1.), ax)
+            self.assertIsNotNone(_cell_lp(vehicle, 15., ax, 0., None, -1.), ax)
+
     def test_legacy_drivetrain_is_rejected(self):
         from dataclasses import replace
         from simplified_vehicle_models.parameters.drivetrain import DrivetrainParameters

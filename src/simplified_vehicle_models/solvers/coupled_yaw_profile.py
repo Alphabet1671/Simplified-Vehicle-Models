@@ -37,6 +37,8 @@ SWEEP_CARRY = 4
 SWEEP_INSERT_PER_LAYER = 16
 #: Number of witness records retained verbatim in diagnostics.
 WITNESS_SAMPLE_LIMIT = 256
+#: Values inserted per layer by one full-path incumbent sweep.
+CHAIN_INSERT_PER_LAYER = 6
 #: Initial half-width, in segments, of the failed-frontier refinement window.
 INITIAL_REFINEMENT_RADIUS = 32
 
@@ -147,9 +149,14 @@ def solve_coupled_profile(path, capability, *, boundary, maximum_speed,
         if high<low:
             raise YawProfileSolveError("no_path_at_resolution","closed seam domains do not overlap",{"seam_rotation":rotation})
         initial_anchor_cap=min(8,settings.max_seam_anchors)
-        anchor_set=set(np.linspace(low,high,initial_anchor_cap).tolist())
-        anchor_set.update(float(v*v) for v in capability.speed if low<=v*v<=high and v<=maximum_speed)
-        anchors=sorted(set(_snap(a) for a in anchor_set if low<=_snap(a)<=high))[:initial_anchor_cap]
+        # Uniform anchors span the whole seam domain (including its top, which
+        # sorting-and-truncating previously discarded); map speed knots are
+        # added only while the anchor cap allows.
+        anchor_set=set(_snap(a) for a in np.linspace(low,high,initial_anchor_cap))
+        for v in capability.speed:
+            if len(anchor_set)>=initial_anchor_cap: break
+            if low<=v*v<=high and v<=maximum_speed: anchor_set.add(_snap(v*v))
+        anchors=sorted(a for a in anchor_set if low<=a<=high)
         tested_anchors.extend(anchors)
         layers[0]=anchors.copy(); layers[-1]=anchors.copy()
 
@@ -312,6 +319,58 @@ def solve_coupled_profile(path, capability, *, boundary, maximum_speed,
                                  "deadline_stop":deadline_stop,"max_candidates_after":max(map(len,layers))})
         return inserted,deadline_stop
 
+    accel_axis=np.asarray(capability.longitudinal_acceleration,float)
+    chain_accels=np.unique(np.r_[accel_axis,(accel_axis[:-1]+accel_axis[1:])*.5])
+
+    def chain_sweep(direction,incumbent_q,source,envelope):
+        """Full-path strict acceleration/braking chains seeded from the incumbent.
+
+        Each step projects every carried value by ``2*ds*a`` for map
+        acceleration knots and their midpoints, keeps only pairs passing the
+        vectorised strict oracle (identical to ``edge_evidence``), and inserts
+        a bounded spread that always includes the fastest and slowest feasible
+        value. A dead end reseeds from the incumbent so the sweep covers the
+        whole path. Candidates are additive seeds; the graph re-checks every
+        edge.
+        """
+        order=range(segs) if direction=="forward" else range(segs-1,-1,-1)
+        sign=1.0 if direction=="forward" else -1.0
+        start=0 if direction=="forward" else n-1
+        carry=np.array([incumbent_q[start]])
+        inserted=0; dead_ends=0
+        for step,i in enumerate(order):
+            if step % 256 == 255 and deadline_reached(): return inserted,True,dead_ends
+            target=i+1 if direction=="forward" else i
+            ds=float(path.distance[i+1]-path.distance[i])
+            lo,hi=domains[target]
+            fixed=np.repeat(carry,chain_accels.size)
+            free=np.clip((carry[:,None]+sign*2.*ds*chain_accels[None,:]).ravel(),lo,hi)
+            free=np.array([_snap(x) for x in free])
+            keep=(free>=lo)&(free<=hi)&((fixed+free)>0)
+            fixed,free=fixed[keep],free[keep]
+            if free.size:
+                left,right=(fixed,free) if direction=="forward" else (free,fixed)
+                ok=edge_feasibility_matrix(path,capability,i,left,right,pairwise=True)
+                free=np.unique(free[ok])
+            if free.size==0:
+                dead_ends+=1
+                carry=np.array([incumbent_q[target]]); continue
+            # Fastest strict-feasible value reached from the carried set: the
+            # discrete forward (or backward) speed envelope at this layer.
+            envelope[target]=float(free[-1])
+            picks=_spread(list(free),CHAIN_INSERT_PER_LAYER)
+            nodes=[]
+            for q in picks:
+                before=len(layers[target]); v=node_for(target,float(q))
+                if v is not None:
+                    nodes.append(v); inserted+=len(layers[target])-before
+            if not nodes:
+                carry=np.array([incumbent_q[target]]); continue
+            nodes=sorted(set(nodes))
+            carry=np.array(_spread(nodes,SWEEP_CARRY))
+        witness_counts[source]=witness_counts.get(source,0)+segs
+        return inserted,False,dead_ends
+
     def refine_frontier(graph_result,packed):
         """Sweep forward from the reach frontier and backward from the co-reach frontier."""
         offsets=packed.node_offsets
@@ -339,7 +398,11 @@ def solve_coupled_profile(path, capability, *, boundary, maximum_speed,
         if bwd_start is not None and not deadline:
             got,deadline,steps,dead=sweep(bwd_start,"backward",values(right,coreach),in_window,"frontier_backward")
             inserted+=got; record.update(backward_steps=steps,backward_dead_end=dead)
-        lo_seg=min(x for x in (fwd_start,bwd_start) if x is not None); hi_seg=max(x for x in (fwd_start,bwd_start) if x is not None)
+        starts=[x for x in (fwd_start,bwd_start) if x is not None]
+        if not starts:
+            refinement_windows.append({**record,"note":"cut at path ends; no interior frontier"})
+            return 0,False,True
+        lo_seg=min(starts); hi_seg=max(starts)
         record["window_segments"]=((int(center-refinement_radius),int(center+refinement_radius)) if boundary=="flying"
                                    else (int(max(0,center-refinement_radius)),int(min(segs-1,center+refinement_radius))))
         record["inserted_candidates"]=inserted
@@ -428,11 +491,41 @@ def solve_coupled_profile(path, capability, *, boundary, maximum_speed,
             previous_candidate=(candidate_speed.copy(),candidate_time)
             if stable>=2 or round_index==settings.max_refinement_rounds-1: break
             t0=time.monotonic()
-            for i in range(segs):
-                enqueue(i,"forward",float(candidate[i])); enqueue(i,"backward",float(candidate[i+1]))
-            inserted,deadline_stop=process_wave("incumbent")
+            env_f=np.full(n,np.nan); env_b=np.full(n,np.nan)
+            got_f,stop_f,dead_f=chain_sweep("forward",candidate,"incumbent_forward_chain",env_f)
+            got_b,stop_b,dead_b=(0,False,0) if stop_f else chain_sweep("backward",candidate,"incumbent_backward_chain",env_b)
+            inserted=got_f+got_b
+            # The time-optimal profile in the unconstrained-yaw limit follows
+            # min(forward envelope, backward envelope); seed it so the two
+            # chains can meet. Every edge is still strictly checked.
+            got_e=0
+            if not (stop_f or stop_b):
+                both=np.isfinite(env_f)&np.isfinite(env_b)
+                for i in np.flatnonzero(both):
+                    before=len(layers[i]); node_for(int(i),float(min(env_f[i],env_b[i])))
+                    got_e+=len(layers[i])-before
+            inserted+=got_e
+            # Seam anchors: bracket the incumbent seam speed and add the two
+            # chain envelopes' seam values (the faster lap's anchor lies there).
+            if boundary=="flying" and not (stop_f or stop_b):
+                current=sorted(set(layers[0])); seam=float(candidate[0])
+                extra=[x for x in (env_f[-1],env_b[0]) if np.isfinite(x)]
+                pos=bisect.bisect_left(current,seam)
+                if pos>0: extra.append((current[pos-1]+seam)*.5)
+                if pos+1<len(current): extra.append((seam+current[pos+1])*.5)
+                lo_s,hi_s=max(domains[0][0],domains[-1][0]),min(domains[0][1],domains[-1][1])
+                for a in sorted(set(_snap(x) for x in extra)):
+                    if len(current)>=settings.max_seam_anchors: break
+                    if lo_s<=a<=hi_s and all(abs(a-c)>tol for c in current):
+                        current.append(a); tested_anchors.append(a); inserted+=1
+                layers[0]=sorted(current); layers[-1]=sorted(current)
+            refinement_waves.append({"source":"incumbent_chains","snapshot_requests":2,"processed_requests":2,
+                                     "deferred_next_wave":len(pending),"inserted_candidates":inserted,
+                                     "forward_dead_ends":dead_f,"backward_dead_ends":dead_b,
+                                     "envelope_inserted":got_e,
+                                     "deadline_stop":stop_f or stop_b,"max_candidates_after":max(map(len,layers))})
             timings["refinement_seconds"]+=time.monotonic()-t0
-            if deadline_stop: budget_reason="wall_deadline"; break
+            if stop_f or stop_b: budget_reason="wall_deadline"; break
             if inserted==0 and not pending: break
         elif graph_result["status"]=="disconnected":
             if round_index==settings.max_refinement_rounds-1: break

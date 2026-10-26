@@ -392,7 +392,7 @@ def edge_evidence(path, capability, segment_index: int, q_left: float, q_right: 
     return out
 
 
-def edge_feasibility_matrix(path, capability, segment_index: int, q_left, q_right) -> np.ndarray:
+def edge_feasibility_matrix(path, capability, segment_index: int, q_left, q_right, *, pairwise: bool = False) -> np.ndarray:
     """Vectorised strict edge check: ``out[a, b]`` equals
     ``edge_evidence(path, capability, segment_index, q_left[a], q_right[b])['feasible']``.
 
@@ -404,8 +404,14 @@ def edge_feasibility_matrix(path, capability, segment_index: int, q_left, q_righ
     """
     from simplified_vehicle_models.solvers.yaw_profile_map import SUPPORT_WEIGHT_TOLERANCE
     ds, k, kp, sign = _segment(path, capability, segment_index)
-    q0 = np.asarray(q_left, float).reshape(-1, 1)
-    q1 = np.asarray(q_right, float).reshape(1, -1)
+    if pairwise:
+        # Elementwise: out[n] is the edge (q_left[n], q_right[n]).
+        q0 = np.asarray(q_left, float).ravel(); q1 = np.asarray(q_right, float).ravel()
+        if q0.shape != q1.shape:
+            raise ValueError("pairwise q_left and q_right must have equal length")
+    else:
+        q0 = np.asarray(q_left, float).reshape(-1, 1)
+        q1 = np.asarray(q_right, float).reshape(1, -1)
     if np.any(q0 < 0) or np.any(q1 < 0) or not (np.all(np.isfinite(q0)) and np.all(np.isfinite(q1))):
         raise ValueError("q endpoints must be finite and nonnegative")
     u2 = (q0 + q1) / 2

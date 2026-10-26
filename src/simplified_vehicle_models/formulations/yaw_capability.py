@@ -176,9 +176,10 @@ def _cell_lp(vehicle, speed, ax, ay, tv_limits, direction, *, ideal=False):
         row=np.zeros(n); row[i]=1.; aub.append(row); bub.append(drive_limit*share if ("fl","fr","rl","rr")[i] in driven else 0.)
     for i in range(4):
         row=np.zeros(n); row[4+i]=1.; aeq.append(row); beq.append(0.)
-    for i in range(4):
-        if ("fl","fr","rl","rr")[i] not in driven:
-            row=np.zeros(n); row[8+i]=1.; aeq.append(row); beq.append(0.)
+    # Hydraulic brakes act on every wheel, driven or not; the axle split is
+    # fixed by the brake-bias equality below. (Restricting hydraulic force to
+    # driven wheels while also enforcing a nonzero front bias forced all
+    # braking to zero on rear-driven vehicles.)
     # Nonnegative motor drive, zero regen, nonnegative hydraulic braking.
     bounds=[(0,None)]*12 + [(None,None)]*2
     braking = target_x < 0.0

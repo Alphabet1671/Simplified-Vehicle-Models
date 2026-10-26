@@ -6,6 +6,7 @@ from simplified_vehicle_models.solvers.yaw_aware_profile import YawPath
 from simplified_vehicle_models.solvers.yaw_profile_contracts import CoupledProfileSettings, YawProfileSolveError
 from simplified_vehicle_models.solvers.coupled_yaw_profile import solve_coupled_profile
 from simplified_vehicle_models.solvers.yaw_profile_validation import validate_profile
+from simplified_vehicle_models.solvers.yaw_profile_transition import edge_evidence
 
 
 def make_map():
@@ -78,6 +79,112 @@ class CoupledProfileTests(unittest.TestCase):
         self.assertTrue(first_times)
         self.assertEqual(first_times,second_times)
         self.assertTrue(all(b <= a*(1.+1e-10) for a,b in zip(first_times,first_times[1:])),first_times)
+
+    def _disconnected_once(self):
+        """Wrap the real open solver, forcing only the first solve to report a cut at (0, 2)."""
+        from simplified_vehicle_models.solvers import coupled_yaw_profile as module
+        real=module.solve_open_graph
+        calls={"n":0}
+        def solver(graph,start,terminals,**kwargs):
+            calls["n"]+=1
+            if calls["n"]==1:
+                return {"status":"disconnected","node_ids":np.array([],dtype=np.int64),"time_seconds":np.inf,
+                        "reachable_nodes":np.arange(graph.node_offsets[0],graph.node_offsets[1]),
+                        "co_reachable_nodes":np.arange(graph.node_offsets[2],graph.node_offsets[3]),
+                        "failed_layer":0,"disconnect_cut":(0,2)}
+            return real(graph,start,terminals,**kwargs)
+        return mock.patch.object(module,"solve_open_graph",side_effect=solver)
+
+    def test_frontier_wave_processes_snapshot_once_and_defers_new_requests(self):
+        distance=np.array([0.,.05,.1]); path=YawPath(distance,np.zeros(3),np.zeros(3),False)
+        with self._disconnected_once():
+            result=solve_coupled_profile(path,make_map(),boundary="standing",maximum_speed=8.,
+                settings=CoupledProfileSettings(max_refinement_rounds=3))
+        waves=result["diagnostics"]["refinement_waves"]
+        self.assertEqual(waves[0]["source"],"frontier")
+        for wave in waves:
+            self.assertEqual(wave["processed_requests"],wave["snapshot_requests"])
+            self.assertLessEqual(wave["max_candidates_after"],256)
+        window=result["diagnostics"]["refinement_windows"][0]
+        self.assertEqual(window["cut"],(0,2))
+        validation=validate_profile(path,make_map(),np.sqrt(result["q"]),maximum_speed=8.,boundary="standing",settings=CoupledProfileSettings())
+        self.assertTrue(validation.valid)
+
+    def test_acceleration_knot_projections_are_strictly_evidenced_before_insertion(self):
+        distance=np.array([0.,.05,.1]); k=np.array([0.,.01,.02]); path=YawPath(distance,k,np.gradient(k,distance),False)
+        with self._disconnected_once():
+            result=solve_coupled_profile(path,make_map(),boundary="standing",maximum_speed=8.,
+                settings=CoupledProfileSettings(max_refinement_rounds=3))
+        witnesses=result["diagnostics"]["inserted_witnesses"]
+        projections=[w for w in witnesses if w["kind"]=="acceleration_knot_projection"]
+        self.assertTrue(projections)
+        cap=make_map(); settings=CoupledProfileSettings()
+        for w in projections:
+            ds=float(distance[w["segment"]+1]-distance[w["segment"]])
+            sign=1. if w["direction"]=="forward" else -1.
+            self.assertTrue(any(abs(w["free_q"]-(w["fixed_q"]+sign*2*ds*a))<=1e-12 for a in cap.longitudinal_acceleration))
+            left,right=(w["fixed_q"],w["free_q"]) if w["direction"]=="forward" else (w["free_q"],w["fixed_q"])
+            ev=edge_evidence(path,cap,w["segment"],left,right,settings=settings)
+            self.assertEqual(bool(ev["feasible"]),w["strict_feasible"])
+            if w["inserted"]: self.assertTrue(w["strict_feasible"])
+
+    def test_failed_window_is_local_on_long_path_and_doubles(self):
+        distance=np.arange(0.,10.0001,.05); path=YawPath(distance,np.zeros_like(distance),np.zeros_like(distance),False)
+        from simplified_vehicle_models.solvers import coupled_yaw_profile as module
+        real=module.solve_open_graph; calls={"n":0}
+        def solver(graph,start,terminals,**kwargs):
+            calls["n"]+=1
+            if calls["n"]<=2:
+                o=graph.node_offsets
+                return {"status":"disconnected","node_ids":np.array([],dtype=np.int64),"time_seconds":np.inf,
+                        "reachable_nodes":np.arange(o[0],o[101]),"co_reachable_nodes":np.arange(o[150],o[-1]),
+                        "failed_layer":0,"disconnect_cut":(100,150)}
+            return real(graph,start,terminals,**kwargs)
+        with mock.patch.object(module,"solve_open_graph",side_effect=solver):
+            result=solve_coupled_profile(path,make_map(),boundary="standing",maximum_speed=8.,
+                settings=CoupledProfileSettings(max_refinement_rounds=4))
+        windows=result["diagnostics"]["refinement_windows"]
+        self.assertEqual(windows[0]["cut"],(100,150))
+        self.assertEqual(windows[0]["radius"],32)
+        self.assertEqual(windows[0]["window_segments"],(68,132))
+        # The backward frontier (segment 149) lies outside the first window, so
+        # the first wave cannot reach it and the window doubles.
+        self.assertEqual(windows[0].get("backward_steps",0),0)
+        self.assertEqual(windows[1]["radius"],64)
+        self.assertEqual(windows[1]["window_segments"],(36,164))
+        self.assertGreater(windows[1]["backward_steps"],0)
+        # The forward sweep starts at segment 100 and cannot leave [68, 132].
+        self.assertLessEqual(windows[0]["forward_steps"],132-100+1)
+
+    def test_wall_deadline_reports_budget_stop(self):
+        distance=np.arange(0.,.5001,.05); k=np.linspace(.01,.08,len(distance)); path=YawPath(distance,k,np.gradient(k,distance),False)
+        with self.assertRaises(YawProfileSolveError) as caught:
+            solve_coupled_profile(path,make_map(),boundary="standing",maximum_speed=8.,
+                settings=CoupledProfileSettings(max_wall_seconds=1e-9))
+        self.assertEqual(caught.exception.status,"budget_exceeded")
+        self.assertEqual(caught.exception.diagnostics["budget_reason"],"wall_deadline")
+
+    def test_budget_stop_after_incumbent_returns_unconverged_validated_profile(self):
+        distance=np.arange(0.,.5001,.05); k=np.linspace(.01,.08,len(distance)); path=YawPath(distance,k,np.gradient(k,distance),False)
+        from simplified_vehicle_models.solvers import coupled_yaw_profile as module
+        real_pack=module.pack_layered_q_graph; real_validate=module.validate_profile; state={"valid":False}
+        def validate(*args,**kwargs):
+            result=real_validate(*args,**kwargs)
+            state["valid"]=state["valid"] or bool(result.valid)
+            return result
+        def pack(*args,**kwargs):
+            # Only the graph built after a real validated incumbent exceeds its budget.
+            return {"status":"budget_exceeded"} if state["valid"] else real_pack(*args,**kwargs)
+        with mock.patch.object(module,"pack_layered_q_graph",side_effect=pack), \
+             mock.patch.object(module,"validate_profile",side_effect=validate):
+            result=solve_coupled_profile(path,make_map(),boundary="standing",maximum_speed=8.,
+                settings=CoupledProfileSettings(max_refinement_rounds=4))
+        diag=result["diagnostics"]
+        self.assertEqual(diag["budget_reason"],"graph_budget")
+        self.assertFalse(diag["resolution_converged"])
+        self.assertIn("graph_budget",diag["stopping_uncertainty"])
+        validation=validate_profile(path,make_map(),np.sqrt(result["q"]),maximum_speed=8.,boundary="standing",settings=CoupledProfileSettings())
+        self.assertTrue(validation.valid)
 
     def test_closed_periodic_profile(self):
         d=np.array([0.,.1,.2,.3]); k=np.zeros(4); path=YawPath(d,k,k,True)

@@ -57,6 +57,10 @@ class ProfileValidationTests(unittest.TestCase):
         altered_elapsed = type(p)(p.distance, p.speed, p.longitudinal_acceleration, elapsed,
                                   p.lap_time, p.converged, p.iterations, p.maximum_speed_change, p.diagnostics)
         self.assertFalse(validate_profile_object(self.path, self.cap, altered_elapsed, maximum_speed=10., boundary="standing", settings=self.settings).valid)
+        unknown_diag = dict(p.diagnostics); unknown_diag.pop("terminal_acceleration_convention")
+        unknown = type(p)(p.distance, p.speed, p.longitudinal_acceleration, p.elapsed_time,
+                          p.lap_time, p.converged, p.iterations, p.maximum_speed_change, unknown_diag)
+        self.assertFalse(validate_profile_object(self.path, self.cap, unknown, maximum_speed=10., boundary="standing", settings=self.settings).valid)
 
     def test_acceleration_domain_violation_reported_even_when_support_rejected(self):
         q = self.profile.speed.copy()
@@ -68,6 +72,75 @@ class ProfileValidationTests(unittest.TestCase):
     def test_dense_audit_is_reported(self):
         result = validate_profile(self.path, self.cap, self.profile.speed, maximum_speed=10., boundary="standing", settings=self.settings, dense=True)
         self.assertIsInstance(result.dense_sample_valid, bool)
+
+    def test_dense_queries_use_squared_speed_at_five_fractions(self):
+        from unittest.mock import patch
+        closed = YawPath(np.array([0., 100., 200.]), np.zeros(3), np.zeros(3), True)
+        seen = []
+        class Instrumented:
+            def __init__(self, _): pass
+            def query_evidence(self, v, ax, ay):
+                seen.append(v)
+                return {"reason": type("R", (), {"value": "supported"})(), "moments": (1e9, 1e9)}
+        speed = np.array([10., 20., 10.])
+        with patch("simplified_vehicle_models.solvers.yaw_profile_validation._MapInterpolator", Instrumented):
+            validate_profile(closed, self.cap, speed, maximum_speed=30., boundary="flying", settings=self.settings, dense=True)
+        audited = seen[1:6]
+        expected = [np.sqrt((1-f)*100+f*400) for f in (0., .25, .5, .75, 1.)]
+        np.testing.assert_allclose(audited, expected, rtol=0., atol=1e-14)
+
+    def test_physical_q_interpolation_rejects_support_that_linear_speed_would_accept(self):
+        from unittest.mock import patch
+        closed = YawPath(np.array([0., 100., 200.]), np.zeros(3), np.zeros(3), True)
+        seen = []
+        class Instrumented:
+            def __init__(self, _): pass
+            def query_evidence(self, v, ax, ay):
+                seen.append(v)
+                # Linear interpolation's midpoint 15 is supported, but the
+                # physical squared-speed midpoint sqrt(250) is masked.
+                reason = "masked_support" if 13.0 <= v <= 13.5 else "supported"  # q-linear quarter point; v-linear is 12.5
+                return {"reason": type("R", (), {"value": reason})(), "moments": (1e9, 1e9)}
+        with patch("simplified_vehicle_models.solvers.yaw_profile_validation._MapInterpolator", Instrumented):
+            result = validate_profile(closed, self.cap, np.array([10., 20., 10.]), maximum_speed=30., boundary="flying", settings=self.settings, dense=True)
+        self.assertFalse(result.dense_sample_valid)
+        self.assertFalse(result.valid)
+
+    def test_dense_failure_reports_only_its_segment(self):
+        from unittest.mock import patch
+        closed = YawPath(np.array([0., 100., 200.]), np.zeros(3), np.zeros(3), True)
+        calls = 0
+        class Instrumented:
+            def __init__(self, _): pass
+            def query_evidence(self, v, ax, ay):
+                nonlocal calls
+                calls += 1
+                reason = "masked_support" if calls == 4 else "supported"
+                return {"reason": type("R", (), {"value": reason})(), "moments": (1e9, 1e9)}
+        with patch("simplified_vehicle_models.solvers.yaw_profile_validation._MapInterpolator", Instrumented):
+            result = validate_profile(closed, self.cap, np.array([10., 20., 10.]), maximum_speed=30., boundary="flying", settings=self.settings, dense=True)
+        self.assertEqual(result.invalid_segment_indices, (0,))
+
+    def test_terminal_acceleration_conventions_for_legacy_and_coupled(self):
+        legacy = self.profile
+        self.assertEqual(legacy.diagnostics["terminal_acceleration_convention"], "repeat_last_segment")
+        self.assertTrue(validate_profile_object(self.path, self.cap, legacy, maximum_speed=10., boundary="standing", settings=self.settings).valid)
+        coupled_path = YawPath(np.linspace(0., 10., 11), np.zeros(11), np.zeros(11), True)
+        coupled = yaw_aware_profile(coupled_path, self.cap, boundary="flying", maximum_speed=10., solver="coupled", coupled_settings=self.settings)
+        self.assertEqual(coupled.diagnostics["terminal_acceleration_convention"], "repeat_first_segment_if_closed_else_last")
+        self.assertTrue(validate_profile_object(coupled_path, self.cap, coupled, maximum_speed=10., boundary="flying", settings=self.settings).valid)
+
+    def test_object_rejects_interior_redundant_field_corruption_and_distance(self):
+        p = self.profile
+        def altered(**kw):
+            return type(p)(kw.get("distance", p.distance), p.speed,
+                kw.get("acceleration", p.longitudinal_acceleration), kw.get("elapsed", p.elapsed_time),
+                p.lap_time, p.converged, p.iterations, p.maximum_speed_change, p.diagnostics)
+        elapsed = p.elapsed_time.copy(); elapsed[4] += .01
+        ax = p.longitudinal_acceleration.copy(); ax[4] += .01
+        wrong_distance = p.distance.copy(); wrong_distance[4] += .1
+        for candidate in (altered(elapsed=elapsed), altered(acceleration=ax), altered(distance=wrong_distance)):
+            self.assertFalse(validate_profile_object(self.path, self.cap, candidate, maximum_speed=10., boundary="standing", settings=self.settings).valid)
 
     def test_exact_grid_face_ignores_zero_weight_masked_corner_but_positive_weight_fails(self):
         cap0 = yaw_map(ax=(-1., 0., 1.), ay=(-1., 0., 1.))

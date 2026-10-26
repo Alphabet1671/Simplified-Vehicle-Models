@@ -390,3 +390,56 @@ def edge_evidence(path, capability, segment_index: int, q_left: float, q_right: 
         out.update(yaw_demand=demand,into_margin=into-demand,out_margin=outer+demand,feasible=(into-demand>=-1e-9 and outer+demand>=-1e-9))
     else: out.update(feasible=False)
     return out
+
+
+def edge_feasibility_matrix(path, capability, segment_index: int, q_left, q_right) -> np.ndarray:
+    """Vectorised strict edge check: ``out[a, b]`` equals
+    ``edge_evidence(path, capability, segment_index, q_left[a], q_right[b])['feasible']``.
+
+    It reproduces the scalar oracle exactly: same segment curvature averaging
+    and yaw sign, same +/-1e-12 domain tolerance and clamping, same bracket and
+    weight construction, the same ``SUPPORT_WEIGHT_TOLERANCE`` rule that any
+    positive-weight masked corner rejects, the same corner summation order and
+    the same 1e-9 yaw-margin tolerance.
+    """
+    from simplified_vehicle_models.solvers.yaw_profile_map import SUPPORT_WEIGHT_TOLERANCE
+    ds, k, kp, sign = _segment(path, capability, segment_index)
+    q0 = np.asarray(q_left, float).reshape(-1, 1)
+    q1 = np.asarray(q_right, float).reshape(1, -1)
+    if np.any(q0 < 0) or np.any(q1 < 0) or not (np.all(np.isfinite(q0)) and np.all(np.isfinite(q1))):
+        raise ValueError("q endpoints must be finite and nonnegative")
+    u2 = (q0 + q1) / 2
+    u = np.sqrt(u2)
+    ax = (q1 - q0) / (2 * ds)
+    ay = k * u * u
+    shape = np.broadcast_shapes(q0.shape, q1.shape)
+    values = [np.broadcast_to(v, shape).ravel() for v in (u, ax, ay)]
+    ok = np.ones(values[0].shape, bool)
+    lows, fracs = [], []
+    for axis, value in zip((capability.speed, capability.longitudinal_acceleration, capability.lateral_acceleration), values):
+        axis = np.asarray(axis, float)
+        ok &= np.isfinite(value) & (value >= axis[0] - 1e-12) & (value <= axis[-1] + 1e-12)
+        v = np.clip(np.where(np.isfinite(value), value, axis[0]), axis[0], axis[-1])
+        hi = np.searchsorted(axis, v, side="right")
+        lo = np.clip(hi - 1, 0, axis.size - 2)
+        f = (v - axis[lo]) / (axis[lo + 1] - axis[lo])
+        lows.append(lo); fracs.append(f)
+    mask = capability.feasible_mask
+    f_into, f_out = capability.yaw_moment_into_turn, capability.yaw_moment_out_of_turn
+    into = np.zeros(ok.shape); out = np.zeros(ok.shape)
+    for di in (0, 1):
+        wi = fracs[0] if di else 1. - fracs[0]
+        for dj in (0, 1):
+            wj = fracs[1] if dj else 1. - fracs[1]
+            for dk in (0, 1):
+                wk = fracs[2] if dk else 1. - fracs[2]
+                w = wi * wj * wk
+                ii, jj, kk = lows[0] + di, lows[1] + dj, lows[2] + dk
+                active = w > SUPPORT_WEIGHT_TOLERANCE
+                ok &= ~(active & ~mask[ii, jj, kk])
+                wa = np.where(active, w, 0.)
+                into = into + wa * f_into[ii, jj, kk]
+                out = out + wa * f_out[ii, jj, kk]
+    demand = sign * capability.yaw_inertia * (values[1] * k + values[0] * values[0] * kp)
+    ok &= (into - demand >= -1e-9) & (out + demand >= -1e-9)
+    return ok.reshape(shape)

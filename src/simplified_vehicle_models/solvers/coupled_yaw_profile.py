@@ -23,7 +23,7 @@ import numpy as np
 from simplified_vehicle_models.solvers.yaw_aware_profile import YawPath
 from simplified_vehicle_models.solvers.yaw_profile_contracts import CoupledProfileSettings, YawProfileSolveError
 from simplified_vehicle_models.solvers.yaw_profile_map import _MapInterpolator
-from simplified_vehicle_models.solvers.yaw_profile_transition import transition_intervals, edge_evidence
+from simplified_vehicle_models.solvers.yaw_profile_transition import transition_intervals, edge_evidence, edge_feasibility_matrix
 from simplified_vehicle_models.solvers.layered_q_graph import pack_layered_q_graph, solve_open_graph, solve_closed_graph
 from simplified_vehicle_models.solvers.yaw_profile_validation import validate_profile
 
@@ -65,6 +65,24 @@ def _rotate_closed_path(path, rotation):
     lengths=np.r_[edge[rotation:],edge[:rotation]]
     distance=np.r_[0.,np.cumsum(lengths)]
     return YawPath(distance,path.curvature[order],path.curvature_rate[order],True),order
+
+
+def _snap(q):
+    """Return a squared speed that survives the ``v=sqrt(q); v*v`` round trip.
+
+    Profiles leave the solver as speeds and the independent validator
+    recomputes ``v*v``. Candidates are stored as a value ``q`` with
+    ``sqrt(q)**2 == q`` exactly, so solver edge checks and validation see
+    identical numbers. Iterating ``q <- sqrt(q)**2`` reaches such a fixed
+    point within a couple of steps for finite nonnegative floats.
+    """
+    q = float(q)
+    for _ in range(8):
+        nxt = math.sqrt(q) ** 2
+        if nxt == q:
+            return q
+        q = nxt
+    raise ArithmeticError("squared-speed snap did not reach a fixed point")
 
 
 def _spread(items, count):
@@ -111,7 +129,8 @@ def solve_coupled_profile(path, capability, *, boundary, maximum_speed,
         if abs(k)>0:
             qs.extend(float(y/k) for y in capability.lateral_acceleration if lo <= y/k <= hi)
         if boundary == "standing" and i==0: qs=[0.]
-        qs=sorted(set(float(q) for q in qs if lo<=q<=hi))
+        qs=sorted(set(_snap(q) for q in qs if lo<=q<=hi))
+        qs=[q for q in qs if lo<=q<=hi]
         layers.append(qs)
     oversize=[i for i,layer in enumerate(layers) if len(layer)>settings.max_candidates_per_station]
     if oversize or sum(map(len,layers))>settings.max_total_nodes:
@@ -130,7 +149,7 @@ def solve_coupled_profile(path, capability, *, boundary, maximum_speed,
         initial_anchor_cap=min(8,settings.max_seam_anchors)
         anchor_set=set(np.linspace(low,high,initial_anchor_cap).tolist())
         anchor_set.update(float(v*v) for v in capability.speed if low<=v*v<=high and v<=maximum_speed)
-        anchors=sorted(anchor_set)[:initial_anchor_cap]
+        anchors=sorted(set(_snap(a) for a in anchor_set if low<=_snap(a)<=high))[:initial_anchor_cap]
         tested_anchors.extend(anchors)
         layers[0]=anchors.copy(); layers[-1]=anchors.copy()
 
@@ -165,7 +184,8 @@ def solve_coupled_profile(path, capability, *, boundary, maximum_speed,
         if layer_index in seam_layers: return False
         q=float(q); lo,hi=domains[layer_index]
         if not math.isfinite(q) or q < lo-tol or q > hi+tol: return False
-        q=min(hi,max(lo,q))
+        q=_snap(min(hi,max(lo,q)))
+        if q < lo or q > hi: return False
         layer=layers[layer_index]
         pos=bisect.bisect_left(layer,q)
         if (pos<len(layer) and abs(layer[pos]-q)<=tol) or (pos>0 and abs(layer[pos-1]-q)<=tol): return False
@@ -177,7 +197,9 @@ def solve_coupled_profile(path, capability, *, boundary, maximum_speed,
         """Return the layer value representing ``q`` (inserting it if new), or None."""
         q=float(q); lo,hi=domains[layer_index]
         if not math.isfinite(q) or q < lo-tol or q > hi+tol: return None
-        q=min(hi,max(lo,q)); layer=layers[layer_index]
+        q=_snap(min(hi,max(lo,q)))
+        if q < lo or q > hi: return None
+        layer=layers[layer_index]
         pos=bisect.bisect_left(layer,q)
         for p_ in (pos,pos-1):
             if 0<=p_<len(layer) and abs(layer[p_]-q)<=tol: return layer[p_]
@@ -341,31 +363,32 @@ def solve_coupled_profile(path, capability, *, boundary, maximum_speed,
             budget_reason="candidate_budget"; break
         t0=time.monotonic()
         node_offsets=np.r_[0,np.cumsum(counts)]
-        src_ids=[]; dst_ids=[]; costs=[]
+        src_ids=[]; dst_ids=[]; costs=[]; edge_total=0
         for i in range(segs):
-            dst=layers[i+1]; ds=float(path.distance[i+1]-path.distance[i])
+            # Every candidate pair is checked by the vectorised strict oracle,
+            # which reproduces edge_evidence exactly; no edge is inferred from
+            # interval membership alone.
+            ds=float(path.distance[i+1]-path.distance[i])
             base_i=int(node_offsets[i]); base_j=int(node_offsets[i+1])
-            for j,q0 in enumerate(layers[i]):
-                for iv in intervals_for(i,q0,"forward",domains[i+1]):
-                    if iv.upper < 0 or iv.lower > domains[i+1][1]:
-                        continue
-                    a=bisect.bisect_left(dst,max(0.,iv.lower)); b=bisect.bisect_right(dst,min(domains[i+1][1],iv.upper))
-                    for target in range(a,b):
-                        q1=dst[target]
-                        if q0+q1 <= 0: continue
-                        if edge_evidence(path,capability,i,q0,q1,settings=settings)["feasible"]:
-                            src_ids.append(base_i+j); dst_ids.append(base_j+target)
-                            costs.append(2*ds/(math.sqrt(q0)+math.sqrt(q1)))
-            if len(costs)>settings.max_total_edges: break
-            if deadline_reached(): break
+            q0=np.asarray(layers[i],float); q1=np.asarray(layers[i+1],float)
+            feasible=edge_feasibility_matrix(path,capability,i,q0,q1)
+            feasible&=(q0[:,None]+q1[None,:])>0
+            a,b=np.nonzero(feasible)
+            if a.size:
+                src_ids.append(base_i+a); dst_ids.append(base_j+b)
+                costs.append(2*ds/(np.sqrt(q0[a])+np.sqrt(q1[b])))
+                edge_total+=a.size
+            if edge_total>settings.max_total_edges: break
+            if i % 64 == 63 and deadline_reached(): break
         timings["graph_build_seconds"]+=time.monotonic()-t0
         if deadline_reached():
             budget_reason="wall_deadline"; break
-        if len(costs)>settings.max_total_edges:
+        if edge_total>settings.max_total_edges:
             budget_reason="edge_budget"; break
+        cat=lambda parts,dtype: np.concatenate(parts).astype(dtype) if parts else np.zeros(0,dtype)
         packed=pack_layered_q_graph(counts,np.concatenate([np.asarray(x,float) for x in layers]),
-            np.asarray(src_ids,dtype=np.int64),np.asarray(dst_ids,dtype=np.int64),
-            np.asarray(costs,float),max_nodes=settings.max_total_nodes,max_edges=settings.max_total_edges)
+            cat(src_ids,np.int64),cat(dst_ids,np.int64),cat(costs,float),
+            max_nodes=settings.max_total_nodes,max_edges=settings.max_total_edges)
         if isinstance(packed,dict):
             packed=last_packed; budget_reason="graph_budget"; break
         last_packed=packed
@@ -427,6 +450,7 @@ def solve_coupled_profile(path, capability, *, boundary, maximum_speed,
                         if pos+1<len(current): additions.append((a+current[pos+1])*.5)
                     for a in sorted(set(additions)):
                         if len(current)>=settings.max_seam_anchors: break
+                        a=_snap(a)
                         if a not in current: current.append(a); tested_anchors.append(a); changed=True
                     layers[0]=sorted(current); layers[-1]=sorted(current)
             inserted,deadline_stop,window_covers=refine_frontier(graph_result,packed)

@@ -208,3 +208,30 @@ class TransitionIntervalTests(unittest.TestCase):
 
 
 if __name__=='__main__': unittest.main()
+
+
+class EdgeFeasibilityMatrixTests(unittest.TestCase):
+    def test_matrix_matches_scalar_strict_oracle_exactly(self):
+        from simplified_vehicle_models.solvers.yaw_profile_transition import edge_feasibility_matrix
+        rng = np.random.default_rng(3)
+        speed = np.linspace(0., 10., 11); ax = np.linspace(-3., 3., 7); ay = np.linspace(-6., 6., 9)
+        shape = (speed.size, ax.size, ay.size)
+        mask = rng.random(shape) > .15
+        into = rng.uniform(0., 40., shape); out = rng.uniform(0., 40., shape)
+        cap = YawCapabilityMap(speed, ax, ay, into, out, mask, 2., "physical_no_tv_v1", "matrix-test")
+        d = np.linspace(0., 1., 21); k = np.linspace(-.25, .25, 21)
+        path = YawPath(d, k, np.gradient(k, d), False)
+        settings = CoupledProfileSettings()
+        mismatches = feasible = 0
+        for seg in range(20):
+            q0 = np.r_[0., rng.uniform(0., 90., 12), speed[1]**2, speed[4]**2]
+            q1 = np.r_[q0[1:] + rng.normal(0., .2, q0.size - 1).clip(-q0[1:]), speed[4]**2, 0.]
+            matrix = edge_feasibility_matrix(path, cap, seg, q0, q1)
+            for a in range(q0.size):
+                for b in range(q1.size):
+                    if q0[a] + q1[b] == 0: continue
+                    scalar = bool(edge_evidence(path, cap, seg, float(q0[a]), float(q1[b]), settings=settings)["feasible"])
+                    feasible += scalar
+                    mismatches += scalar != bool(matrix[a, b])
+        self.assertGreater(feasible, 5)  # both outcomes exercised
+        self.assertEqual(mismatches, 0)

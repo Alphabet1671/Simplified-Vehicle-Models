@@ -25,6 +25,17 @@ class MapOptionsTests(unittest.TestCase):
                 resolve_yaw_map(object(),1.,[0.,10.],[-1.,0.,1.],args)
         self.assertEqual(build.call_count,1)
 
+    def test_nondefault_discovery_settings_can_match_cli_artifact(self):
+        args=SimpleNamespace(yaw_map_max_probes=123456,yaw_map_scan_spacing=1.,yaw_map_boundary_tolerance=.1,
+                             yaw_map='cached.npz')
+        with patch('tools.run.yaw_map_options.build_identity',return_value='id') as identity, \
+             patch('tools.run.yaw_map_options.load_yaw_map',return_value=('cap',{'report':{'complete':True}})):
+            resolve_yaw_map(object(),1.,[0.,10.],[-1.,0.,1.],args)
+        settings=identity.call_args.args[2]
+        self.assertEqual(settings.discovery.probe_budget,123456)
+        self.assertEqual(settings.discovery.scan_spacing,1.)
+        self.assertEqual(settings.discovery.bracket_tolerance,.1)
+
     def test_explicit_limited_mode_is_labelled_not_qualified(self):
         args=SimpleNamespace(yaw_map_mode='limited-grid')
         with patch('simplified_vehicle_models.formulations.yaw_capability.build_physical_yaw_map',return_value='cap'):

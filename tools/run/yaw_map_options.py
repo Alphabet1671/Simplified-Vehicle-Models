@@ -18,6 +18,9 @@ def add_yaw_map_options(parser):
     parser.add_argument('--yaw-map-mode', choices=('vehicle-limit', 'limited-grid'), default='vehicle-limit',
                         help='limited-grid is explicitly truncated legacy comparison mode')
     parser.add_argument('--yaw-ay-spacing', type=float, default=.5)
+    parser.add_argument('--yaw-map-scan-spacing', type=float, default=.5)
+    parser.add_argument('--yaw-map-boundary-tolerance', type=float, default=.05)
+    parser.add_argument('--yaw-map-max-probes', type=int, default=250000)
     parser.add_argument('--yaw-map-loss-tolerance', type=float, default=.25)
     parser.add_argument('--yaw-map-wall-seconds', type=float, default=600.)
     parser.add_argument('--yaw-map-max-nodes', type=int, default=500000)
@@ -39,7 +42,9 @@ def resolve_yaw_map(vehicle, yaw_inertia, speeds, ax, args, *, limited_ay=None, 
         cap = build_physical_yaw_map(vehicle, YawCapabilityGrid(speeds, ax, limited_ay), yaw_inertia=yaw_inertia)
         return cap, {'complete':False, 'mode':mode, 'scope':'explicit limited-domain legacy comparison; not vehicle-limit coverage'}
     settings = YawMapWorkflowSettings(
-        discovery=YawMapDomainSettings(probe_budget=250000,
+        discovery=YawMapDomainSettings(probe_budget=getattr(args, 'yaw_map_max_probes', 250000),
+            scan_spacing=getattr(args, 'yaw_map_scan_spacing', .5),
+            bracket_tolerance=getattr(args, 'yaw_map_boundary_tolerance', .05),
             lateral_interpolation_loss_tolerance=getattr(args, 'yaw_map_loss_tolerance', .25)),
         maximum_lateral_cell_width=getattr(args, 'yaw_ay_spacing', .5),
         maximum_map_nodes=getattr(args, 'yaw_map_max_nodes', 500000),

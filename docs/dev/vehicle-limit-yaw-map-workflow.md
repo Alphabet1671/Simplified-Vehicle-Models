@@ -40,7 +40,7 @@ The NPZ embeds axes, directional moments, strict mask, discovery evidence, audit
 
 ## Use the same artifact
 
-Consumers expose `--yaw-map` plus the same `--yaw-ay-spacing`, `--yaw-map-loss-tolerance`, `--yaw-map-max-nodes`, `--yaw-map-audit-probes`, `--yaw-map-refinement-rounds`, and `--yaw-map-wall-seconds`. Settings and initial speed/ax knots must match the build identity. A new default build is not silently substituted when a stale cache is supplied.
+Consumers expose `--yaw-map` plus `--yaw-map-max-probes`, `--yaw-map-scan-spacing`, `--yaw-map-boundary-tolerance`, and the same `--yaw-ay-spacing`, `--yaw-map-loss-tolerance`, `--yaw-map-max-nodes`, `--yaw-map-audit-probes`, `--yaw-map-refinement-rounds`, and `--yaw-map-wall-seconds`. Settings and initial speed/ax knots must match the build identity. A new default build is not silently substituted when a stale cache is supplied.
 
 A shared physical-cell cache reuses direct LP moments across discovery, map construction and repeated audits.
 

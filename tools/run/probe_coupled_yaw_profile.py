@@ -74,12 +74,15 @@ def run(args):
     ay = np.linspace(-9.80665, 9.80665, args.ay_points)
     if args.anchored:
         ax, ay = runner.anchored_axis(-6., 3., args.ax_points), runner.anchored_axis(-9.80665, 9.80665, args.ay_points)
-    grid = YawCapabilityGrid(np.linspace(0., speed_domain, args.speed_points), ax, ay)
     started = time.perf_counter()
-    capability = build_physical_yaw_map(pm, grid, yaw_inertia=vehicle.yaw_inertia)
+    from tools.run.yaw_map_options import resolve_yaw_map
+    capability, map_report = resolve_yaw_map(pm, vehicle.yaw_inertia,
+        np.linspace(0., speed_domain, args.speed_points), ax, args, limited_ay=ay)
+    grid = YawCapabilityGrid(capability.speed, capability.longitudinal_acceleration, capability.lateral_acceleration)
     map_seconds = time.perf_counter() - started
     interp = _MapInterpolator(capability)
     doc = {
+        "map_build": map_report,
         "settings": {"track": str(args.track), "geometry": args.geometry, "spacing_m": args.spacing,
                      "speed_domain_mps": speed_domain, "requested_counts": {"speed": args.speed_points,
                      "ax": args.ax_points, "ay": args.ay_points}, "actual_counts": {
@@ -143,6 +146,8 @@ def parse_args(argv=None):
     parser.add_argument("--anchored", action="store_true")
     parser.add_argument("--solver", choices=("legacy", "coupled"), default="legacy")
     parser.add_argument("--wall-seconds", type=float, default=120.)
+    from tools.run.yaw_map_options import add_yaw_map_options
+    add_yaw_map_options(parser)
     args = parser.parse_args(argv)
     if args.spacing <= 0 or not np.isfinite(args.spacing):
         parser.error("--spacing must be finite and positive")

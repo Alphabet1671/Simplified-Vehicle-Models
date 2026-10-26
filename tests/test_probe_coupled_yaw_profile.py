@@ -15,9 +15,10 @@ class ProbeArtifactTests(unittest.TestCase):
     def test_writes_path_map_and_explicit_legacy_failure_when_profile_raises(self):
         capability = SimpleNamespace(feasible_mask=np.ones((2, 2, 2), bool),
             yaw_moment_into_turn=np.ones((2, 2, 2)), yaw_moment_out_of_turn=np.ones((2, 2, 2)),
-            yaw_inertia=2., source_identity="probe-test")
+            yaw_inertia=2., source_identity="probe-test", speed=np.array([0.,10.]),
+            longitudinal_acceleration=np.array([-1.,1.]), lateral_acceleration=np.array([-2.,2.]))
         args = SimpleNamespace(track=Path("track.xml"), geometry="raw-centerline", spacing=.05,
-            speed_points=2, ax_points=2, ay_points=2, maximum_speed=10., anchored=False,
+            speed_points=2, ax_points=2, ay_points=2, maximum_speed=10., anchored=False, yaw_map_mode='limited-grid',
             output=Path(tempfile.gettempdir()) / "unused.json")
         path = SimpleNamespace(distance=np.array([0., .05, .1]), curvature=np.zeros(3),
             curvature_rate=np.zeros(3), is_closed=False)

@@ -48,7 +48,7 @@ class _Common:
 class RunnerFailureTests(_Common, unittest.TestCase):
     def _run(self, plan_side_effect, **overrides):
         directory = tempfile.mkdtemp()
-        args = _args(directory, skip_preflight=True, **overrides)
+        args = _args(directory, skip_preflight=True, yaw_map_mode='limited-grid', **overrides)
         patches = self.patches(plan_side_effect)
         for p in patches: p.start()
         try:

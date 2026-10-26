@@ -93,7 +93,7 @@ class YawAwareForwardRunnerTests(unittest.TestCase):
             track_file = Path(directory) / "track.xml"
             track_file.write_text('<track><data file="track.csv"/></track>')
             (Path(directory) / "track.csv").write_text("station,x\\n")
-            args = SimpleNamespace(output_dir=Path(directory) / "run", record=True)
+            args = SimpleNamespace(output_dir=Path(directory) / "run", record=True, yaw_map_mode='limited-grid')
             result = SimpleNamespace(lap_completed=False, time=[0.], wall_seconds=.2)
             with \
                  patch("simplified_vehicle_models.compiler.compile.compile_formulation", return_value=SimpleNamespace(model=SimpleNamespace(yaw_inertia=3., wheelbase=2., steering_maximum_angle=.5, steering_maximum_rate=.5, maximum_pedal_force=1.))), \

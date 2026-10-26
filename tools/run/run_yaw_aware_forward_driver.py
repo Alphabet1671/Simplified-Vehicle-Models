@@ -131,6 +131,8 @@ def parse_args(argv=None):
     parser.add_argument("--profile-max-seam-anchors", type=int, default=defaults.max_seam_anchors)
     parser.add_argument("--plan-only", action="store_true", help="stop after planning; no forward simulation")
     parser.add_argument("--skip-preflight", action="store_true", help="do not block on preflight map holes")
+    from tools.run.yaw_map_options import add_yaw_map_options
+    add_yaw_map_options(parser)
     args = parser.parse_args(argv)
     if not math.isfinite(args.profile_wall_seconds) or args.profile_wall_seconds <= 0:
         parser.error("--profile-wall-seconds must be finite and positive")
@@ -321,8 +323,18 @@ def run(args):
     # required support slice for both signed acceleration dimensions.
     ax_axis = anchored_axis(-6., 3., args.yaw_ax_points)
     ay_axis = anchored_axis(-9.80665, 9.80665, args.yaw_ay_points)
-    grid = YawCapabilityGrid(speed_axis, ax_axis, ay_axis)
-    capability = build_physical_yaw_map(pm, grid, yaw_inertia=vehicle.yaw_inertia)
+    from tools.run.yaw_map_options import resolve_yaw_map, IncompleteYawMapError
+    try:
+        capability, map_report = resolve_yaw_map(pm, vehicle.yaw_inertia, speed_axis, ax_axis, args,
+            limited_ay=ay_axis, save_path=output / "vehicle_limit_yaw_map.npz")
+    except IncompleteYawMapError as error:
+        from simplified_vehicle_models.formulations.yaw_map_artifact import json_values
+        write_json(output / "map_build_failure.json", {"complete":False, "audit":json_values(error.result.audit)})
+        summary = failure_summary("map_build", ["incomplete_vehicle_limit_audit"], started)
+        write_json(output / "summary.json", summary)
+        return summary
+    write_json(output / "map_build.json", map_report)
+    grid = YawCapabilityGrid(capability.speed, capability.longitudinal_acceleration, capability.lateral_acceleration)
     from simplified_vehicle_models.solvers.yaw_profile_contracts import CoupledProfileSettings
     profile_settings = CoupledProfileSettings(
         max_wall_seconds=float(getattr(args, "profile_wall_seconds", CoupledProfileSettings().max_wall_seconds)),

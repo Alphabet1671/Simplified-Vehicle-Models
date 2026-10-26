@@ -29,6 +29,8 @@ def main(argv=None):
     parser.add_argument("--ax-points", type=int, default=9)
     parser.add_argument("--ay-points", type=int, default=17)
     parser.add_argument("--output", type=Path)
+    from tools.run.yaw_map_options import add_yaw_map_options
+    add_yaw_map_options(parser)
     args = parser.parse_args(argv)
 
     from simplified_vehicle_models.compiler.compile import compile_formulation
@@ -40,15 +42,15 @@ def main(argv=None):
     vehicle = compile_formulation(str(runner.PLANAR_FORMULATION)).model
     pm = point_mass_view_of_planar(vehicle)
     vmax = runner.physical_map_speed_limit(pm)
-    grid = YawCapabilityGrid(np.linspace(0., vmax, args.speed_points),
-                             runner.anchored_axis(-6., 3., args.ax_points),
-                             runner.anchored_axis(-9.80665, 9.80665, args.ay_points))
-    capability = build_physical_yaw_map(pm, grid, yaw_inertia=vehicle.yaw_inertia)
+    from tools.run.yaw_map_options import resolve_yaw_map
+    capability, map_report = resolve_yaw_map(pm, vehicle.yaw_inertia,
+        np.linspace(0., vmax, args.speed_points), runner.anchored_axis(-6., 3., args.ax_points), args,
+        limited_ay=runner.anchored_axis(-9.80665, 9.80665, args.ay_points))
     track = load_track(args.track)
     path = _sample_geometry(track, args.geometry, args.spacing)
     report = preflight(path, capability, maximum_speed=vmax)
     doc = {"track": str(args.track), "geometry": args.geometry, "spacing_m": args.spacing,
-           "speed_domain_mps": vmax, **report.to_dict()}
+           "speed_domain_mps": vmax, "map_build": map_report, **report.to_dict()}
     text = json.dumps(_jsonable(doc), indent=2, allow_nan=False)
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)

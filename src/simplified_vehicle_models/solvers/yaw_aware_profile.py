@@ -190,13 +190,23 @@ def yaw_aware_profile(path: YawPath, capability: YawCapabilityMap, *,
                        boundary: Literal["flying", "standing"] = "flying",
                        start_speed: float | None = None, maximum_speed: float = 100.,
                        tolerance: float = 1e-5, maximum_iterations: int = 200,
-                       speed_samples: int = 80) -> "YawAwareProfile":
-    """Build a sampled yaw-aware profile using conservative feasibility scans.
+                       speed_samples: int = 80, solver: str = "legacy",
+                       coupled_settings=None, warm_start_speed=None) -> "YawAwareProfile":
+    """Build a sampled yaw-aware profile.
 
-    Segment transitions use the energy equation and require a yaw-map query at
-    the segment midpoint. This is a sampled reference profile, not a continuous
-    feasibility certificate.
+    ``solver="legacy"`` keeps the original greedy forward/backward scans
+    (``tolerance``, ``maximum_iterations`` and ``speed_samples`` apply only to
+    it). ``solver="coupled"`` uses the graph reachability solver with
+    ``coupled_settings`` and returns only profiles that pass the independent
+    all-segment validator; it never falls back to the legacy solver. Neither is
+    a continuous feasibility certificate.
     """
+    if solver not in ("legacy", "coupled"):
+        raise ValueError("solver must be 'legacy' or 'coupled'")
+    if solver == "coupled":
+        return _coupled_profile(path, capability, boundary=boundary, start_speed=start_speed,
+                                maximum_speed=maximum_speed, settings=coupled_settings,
+                                warm_start_speed=warm_start_speed)
     if not isinstance(path, YawPath):
         raise TypeError("path must be a YawPath")
     if not isinstance(capability, YawCapabilityMap):
@@ -289,6 +299,77 @@ def yaw_aware_profile(path: YawPath, capability: YawCapabilityMap, *,
                            "map_source_identity": capability.source_identity,
                            "interpolation": "strict_trilinear_feasible_corners_v1",
                            "continuous_feasibility_certified": False})
+
+
+def _coupled_profile(path, capability, *, boundary, start_speed, maximum_speed, settings, warm_start_speed):
+    # Imported lazily (the validator imports this module); always resolve the
+    # validator through its module so the solver and this re-check agree.
+    from simplified_vehicle_models.solvers import yaw_profile_validation
+    from simplified_vehicle_models.solvers.coupled_yaw_profile import solve_coupled_profile
+    from simplified_vehicle_models.solvers.yaw_profile_contracts import CoupledProfileSettings, YawProfileSolveError
+    validate_profile = yaw_profile_validation.validate_profile
+    if not isinstance(path, YawPath):
+        raise TypeError("path must be a YawPath")
+    if not isinstance(capability, YawCapabilityMap):
+        raise TypeError("capability must be a YawCapabilityMap")
+    if boundary not in ("flying", "standing"):
+        raise ValueError("boundary must be 'flying' or 'standing'")
+    if boundary == "standing" and start_speed not in (None, 0, 0.):
+        raise ValueError("standing boundary requires exact zero start_speed")
+    if boundary == "flying" and start_speed is not None:
+        raise ValueError("flying boundary takes no start_speed")
+    settings = CoupledProfileSettings() if settings is None else settings
+    if not isinstance(settings, CoupledProfileSettings):
+        raise TypeError("coupled_settings must be CoupledProfileSettings")
+    maximum_speed = float(maximum_speed)
+    warm = None
+    if warm_start_speed is not None:
+        warm = np.asarray(warm_start_speed, dtype=float)
+        if warm.shape != path.distance.shape or not np.all(np.isfinite(warm)):
+            warm = None  # suggestions only; mismatched grids are ignored
+    result = solve_coupled_profile(path, capability, boundary=boundary, maximum_speed=maximum_speed,
+                                   settings=settings, warm_start_q=warm)
+    speed = np.sqrt(np.asarray(result["q"], dtype=float))
+    if boundary == "flying":
+        speed[-1] = speed[0]
+    # Independent re-check over every segment in original station order; any
+    # invalid edge rejects the profile regardless of graph status.
+    validation = validate_profile(path, capability, speed, maximum_speed=maximum_speed,
+                                  boundary=boundary, settings=settings)
+    if not validation.valid:
+        raise YawProfileSolveError("strict_validation_failed",
+            "coupled profile failed independent validation in original station order",
+            {"invalid_segment_indices": validation.invalid_segment_indices,
+             "solver_diagnostics": dict(result["diagnostics"])})
+    ds = np.diff(path.distance)
+    q = speed * speed
+    segment_ax = np.diff(q) / (2. * ds)
+    ax = np.empty_like(speed)
+    ax[:-1] = segment_ax
+    ax[-1] = segment_ax[0] if path.is_closed else segment_ax[-1]
+    elapsed = np.r_[0., np.cumsum(2. * ds / (speed[:-1] + speed[1:]))]
+    diag = result["diagnostics"]
+    keep = ("budget_reason", "candidate_counts", "tested_seam_anchors", "closed_seam_rotation",
+            "refinement_waves", "refinement_windows", "witness_counts", "omitted_optional_witnesses",
+            "candidate_cap_rejections", "timings", "edge_count", "edge_density", "stopping_uncertainty",
+            "interval_cache_entries")
+    diagnostics = {
+        "boundary": boundary, "solver": "coupled", "feasibility_status": diag["status"],
+        "resolution_converged": bool(diag["resolution_converged"]),
+        "optimality_scope": "graph-optimal over generated candidates and tested seam anchors; not continuous minimum time",
+        "converged_meaning": "complete independently validated discrete solve; see resolution_converged for refinement convergence",
+        "validation": {"valid": validation.valid, "recomputed_time": validation.recomputed_time,
+                       "minimum_yaw_margin": validation.minimum_yaw_margin,
+                       "maximum_yaw_moment_violation": validation.maximum_yaw_moment_violation,
+                       "seam_speed_error": validation.seam_speed_error},
+        "refinement_rounds": result["refinement_rounds"],
+        "map_source_kind": capability.source_kind, "map_source_identity": capability.source_identity,
+        "interpolation": "strict_trilinear_feasible_corners_v1", "continuous_feasibility_certified": False,
+        "coupled_settings": {name: getattr(settings, name) for name in settings.__dataclass_fields__},
+        **{key: diag[key] for key in keep if key in diag},
+    }
+    return YawAwareProfile(path.distance, speed, ax, elapsed, float(elapsed[-1]), True,
+                           int(result["refinement_rounds"]), 0.0, diagnostics)
 
 
 @dataclass(frozen=True, slots=True)

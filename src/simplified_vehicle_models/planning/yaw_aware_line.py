@@ -5,7 +5,7 @@ uses empirical dense containment checks; it does not modify QSS OCPs.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Mapping
 
@@ -17,6 +17,7 @@ from simplified_vehicle_models.solvers.forward_driver import SpeedPlan
 from simplified_vehicle_models.solvers.yaw_aware_profile import (
     YawPath, curvature_rate_from_samples, to_speed_plan, yaw_aware_profile,
 )
+from simplified_vehicle_models.solvers.yaw_profile_contracts import CoupledProfileSettings, YawProfileSolveError
 from simplified_vehicle_models.tracks.corridor import Corridor, SIGNED_POLICY, corridor_from_track
 from simplified_vehicle_models.tracks.line_trajectory import OffsetTrajectory, ReferenceCurve
 from simplified_vehicle_models.tracks.offset_spline import OffsetSpline
@@ -42,6 +43,8 @@ class YawLineSettings:
     corner_min_length: float = 18.0
     corner_quiet_padding: float = 25.0
     qp_tolerance: float = 1.e-9
+    profile_solver: str = "coupled"
+    profile_settings: CoupledProfileSettings = field(default_factory=CoupledProfileSettings)
 
     def __post_init__(self):
         for name in ("control_spacing", "grid_spacing", "optimizer_x_tolerance", "optimizer_f_tolerance", "maximum_speed", "lap_time_tolerance", "corner_min_length", "corner_quiet_padding", "qp_tolerance"):
@@ -54,6 +57,10 @@ class YawLineSettings:
                 raise ValueError(f"{name} must be finite and nonnegative")
         if self.boundary not in ("flying", "standing"):
             raise ValueError("boundary must be 'flying' or 'standing'")
+        if self.profile_solver not in ("coupled", "legacy"):
+            raise ValueError("profile_solver must be 'coupled' or 'legacy'")
+        if not isinstance(self.profile_settings, CoupledProfileSettings):
+            raise TypeError("profile_settings must be CoupledProfileSettings")
         if self.dense_subdivisions < 1 or self.optimizer_max_iterations < 1 or self.maximum_outer_passes < 1:
             raise ValueError("subdivisions, iterations, and passes must be positive")
         blends = (0., .25, .5, .75)
@@ -240,6 +247,9 @@ def optimize_yaw_aware_line(track: TrackProfile, corridor: Corridor | None,
     corners = _corner_complexes(track, settings.corner_quiet_curvature,
                                 settings.corner_min_length, settings.corner_quiet_padding)
     records = []
+    # Previous accepted speed vector; used only as candidate suggestions and
+    # always re-checked by the coupled solver's strict edge oracle.
+    warm_speed = [None]
 
     def evaluate(coeff, seed_index, stage):
         record = {"seed": seed_index, "stage": stage, "accepted": False, "reason": None,
@@ -258,9 +268,28 @@ def optimize_yaw_aware_line(track: TrackProfile, corridor: Corridor | None,
         except Exception as exc:
             record["reason"] = "geometry_or_corridor"; record["detail"] = str(exc); return record, None
         try:
-            profile = yaw_aware_profile(path, capability, boundary=settings.boundary,
-                                        maximum_speed=settings.maximum_speed,
-                                        speed_samples=32, maximum_iterations=80)
+            if settings.profile_solver == "coupled":
+                warm = None
+                if warm_speed[0] is not None and warm_speed[0].shape == path.distance.shape:
+                    warm = warm_speed[0]
+                profile = yaw_aware_profile(path, capability, boundary=settings.boundary,
+                                            maximum_speed=settings.maximum_speed, solver="coupled",
+                                            coupled_settings=settings.profile_settings,
+                                            warm_start_speed=warm)
+            else:
+                profile = yaw_aware_profile(path, capability, boundary=settings.boundary,
+                                            maximum_speed=settings.maximum_speed,
+                                            speed_samples=32, maximum_iterations=80)
+        except YawProfileSolveError as exc:
+            # Typed coupled failure: preserve status and structured detail.
+            record["reason"] = "budget_exceeded" if exc.status == "budget_exceeded" else (
+                "capability_domain" if exc.status == "no_path_at_resolution" else "profile_invalid")
+            record["profile_status"] = exc.status
+            record["detail"] = str(exc)
+            record["profile_diagnostics"] = {k: v for k, v in exc.diagnostics.items()
+                                             if k in ("budget_reason", "disconnect_cut", "refinement_rounds",
+                                                      "candidate_cap_rejections", "empty_station_count", "timings")}
+            return record, None
         except RuntimeError as exc:
             record["reason"] = "profile_nonconvergence"; record["detail"] = str(exc); return record, None
         except ValueError as exc:
@@ -268,7 +297,9 @@ def optimize_yaw_aware_line(track: TrackProfile, corridor: Corridor | None,
             record["reason"] = "capability_domain" if ("map" in text or "feasible" in text or "transition" in text) else "profile_invalid"
             record["detail"] = text; return record, None
         record.update(accepted=True, reason="accepted", lap_time=profile.lap_time,
-                      geometry_grid_nodes=len(path.distance))
+                      geometry_grid_nodes=len(path.distance),
+                      resolution_converged=profile.diagnostics.get("resolution_converged"))
+        warm_speed[0] = np.asarray(profile.speed)
         return record, (trajectory, path, profile)
 
     best_coeff = np.zeros(spline.control_count)
@@ -337,6 +368,12 @@ def optimize_yaw_aware_line(track: TrackProfile, corridor: Corridor | None,
         "seed_qp_objectives": tuple(seed_solver_diagnostics),
         "corner_complexes": tuple(corners), "outer_passes": tuple(pass_summary),
         "optimizer_success": selected_optimizer_success,
-        "converged": status == "converged"}
+        "converged": status == "converged",
+        "profile_solver": settings.profile_solver,
+        "profile_resolution_converged": profile.diagnostics.get("resolution_converged"),
+        "profile_diagnostics": {k: profile.diagnostics[k] for k in
+            ("solver", "feasibility_status", "resolution_converged", "optimality_scope", "validation",
+             "budget_reason", "stopping_uncertainty", "refinement_rounds", "timings", "edge_count",
+             "tested_seam_anchors", "closed_seam_rotation") if k in profile.diagnostics}}
     return YawAwareLinePlan(trajectory, profile, speed_plan, shrunk, best_coeff,
                             profile.lap_time, status, diagnostics, shape)

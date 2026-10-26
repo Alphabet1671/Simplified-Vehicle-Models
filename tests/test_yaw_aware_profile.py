@@ -201,5 +201,67 @@ class YawProfileTests(unittest.TestCase):
                             profile.maximum_speed_change, profile.diagnostics))
 
 
+def coupled_map():
+    # Small grid keeps coupled solves quick; 1 m/s speed spacing.
+    speed = np.linspace(0., 12., 13); ax = np.array([-4., -2., 0., 2., 4.]); ay = np.linspace(-8., 8., 9)
+    shape = (speed.size, ax.size, ay.size)
+    return YawCapabilityMap(speed, ax, ay, np.full(shape, 1.e9), np.full(shape, 1.e9),
+                            np.ones(shape, bool), 1., "physical_no_tv_v1", "coupled-public-test")
+
+
+class CoupledPublicProfileTests(unittest.TestCase):
+    def _strict(self, path, cap, profile, boundary, vmax):
+        from simplified_vehicle_models.solvers.yaw_profile_contracts import CoupledProfileSettings
+        from simplified_vehicle_models.solvers.yaw_profile_validation import validate_profile_object
+        result = validate_profile_object(path, cap, profile, maximum_speed=vmax, boundary=boundary,
+                                         settings=CoupledProfileSettings())
+        self.assertTrue(result.valid, result)
+
+    def test_standing_coupled_profile_is_validated_and_timed_exactly(self):
+        distance = np.linspace(0., 4., 41)
+        path = YawPath(distance, np.full_like(distance, .05), np.zeros_like(distance), False)
+        cap = coupled_map()
+        profile = yaw_aware_profile(path, cap, boundary="standing", maximum_speed=12., solver="coupled")
+        self.assertEqual(profile.speed[0], 0.)
+        self.assertEqual(profile.diagnostics["solver"], "coupled")
+        self.assertIn("resolution_converged", profile.diagnostics)
+        self._strict(path, cap, profile, "standing", 12.)
+        ds = np.diff(distance)
+        np.testing.assert_allclose(profile.longitudinal_acceleration[:-1], np.diff(profile.speed**2)/(2*ds))
+        self.assertEqual(profile.longitudinal_acceleration[-1], profile.longitudinal_acceleration[-2])
+        plan = to_speed_plan(path, profile)
+        np.testing.assert_array_equal(plan.speed, profile.speed)
+
+    def test_flying_coupled_profile_closes_seam_and_wraps_acceleration(self):
+        distance = np.linspace(0., 6., 31)
+        path = YawPath(distance, np.full_like(distance, .1), np.zeros_like(distance), True)
+        cap = coupled_map()
+        profile = yaw_aware_profile(path, cap, boundary="flying", maximum_speed=12., solver="coupled")
+        self.assertEqual(profile.speed[0], profile.speed[-1])
+        self.assertEqual(profile.longitudinal_acceleration[-1], profile.longitudinal_acceleration[0])
+        self._strict(path, cap, profile, "flying", 12.)
+
+    def test_coupled_failure_is_typed_and_never_falls_back_to_legacy(self):
+        from unittest import mock
+        from simplified_vehicle_models.solvers.yaw_profile_contracts import YawProfileSolveError
+        from simplified_vehicle_models.solvers import yaw_aware_profile as module
+        import simplified_vehicle_models.solvers.coupled_yaw_profile  # bind real names before patching
+        distance = np.linspace(0., 4., 41)
+        path = YawPath(distance, np.full_like(distance, .05), np.zeros_like(distance), False)
+        rejected = mock.Mock(valid=False, invalid_segment_indices=(3,))
+        with mock.patch("simplified_vehicle_models.solvers.yaw_profile_validation.validate_profile",
+                        return_value=rejected), \
+             mock.patch.object(module, "_max_speed_cap", side_effect=AssertionError("legacy used")):
+            with self.assertRaises(YawProfileSolveError) as caught:
+                yaw_aware_profile(path, coupled_map(), boundary="standing", maximum_speed=12., solver="coupled")
+        self.assertEqual(caught.exception.status, "strict_validation_failed")
+
+    def test_unknown_solver_rejected(self):
+        distance = np.linspace(0., 4., 41)
+        path = YawPath(distance, np.zeros_like(distance), np.zeros_like(distance), False)
+        with self.assertRaises(ValueError):
+            yaw_aware_profile(path, coupled_map(), boundary="standing", solver="fast")
+
+
 if __name__ == "__main__":
     unittest.main()

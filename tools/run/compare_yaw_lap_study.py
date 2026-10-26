@@ -14,7 +14,10 @@ def compare_runs(directories,*,dimension):
         inputs=json.loads((directory/'inputs.json').read_text())
         identities.add((inputs['map_identity'],inputs['track_identity']))
         contract=inputs.get('study_contract')
-        if contract is not None:
+        if contract is None:
+            failures.append({'run':str(directory),'status':'unbound_historical_contract',
+                             'cause':'missing_study_contract'})
+        else:
             contracts.append(contract)
         if summary['status']!='planned':
             failures.append({'run':str(directory),'status':summary['status'],'cause':summary.get('cause'),
@@ -49,11 +52,14 @@ def compare_runs(directories,*,dimension):
                 True,bool(profile.get('resolution_converged',False)),optimizer_converged,
                 budget or profile.get('budget_reason')))
     if len(identities)>1:raise ValueError('study runs must have identical track and map identities')
-    if len(contracts)>1:
-        for first,second in zip(contracts,contracts[1:]):
+    if len(contracts) != len(directories):
+        failures.append({'status':'unbound_historical_contract','cause':'mixed_or_missing_study_contract'})
+    for index, first in enumerate(contracts):
+        for second in contracts[index+1:]:
             validate_comparison_pair(first,second,dimension)
     result=convergence_study(rows,dimension=dimension)
-    if contracts:result['comparison_identity']=comparison_identity(contracts[0],dimension)
+    if contracts and len(contracts) == len(directories):
+        result['comparison_identity']=comparison_identity(contracts[0],dimension)
     result['failed_runs']=failures
     if failures:result['status']='inconclusive'
     result['scope']='saved discrete plans; no new capability/geometry validation performed by comparison'

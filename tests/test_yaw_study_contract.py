@@ -22,11 +22,13 @@ class StudyContractTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             comparison_identity(base, "other")
 
-    def test_contract_marks_missing_source_historical_unknown(self):
+    def test_contract_marks_incomplete_source_historical_unknown(self):
         contract = study_contract({}, {}, {})
         self.assertEqual(contract["contract_version"], "yaw-study-contract-v1")
         self.assertEqual(contract["provenance"]["source_revision"], "unknown")
-        self.assertNotIn("current_source_attestation", contract["provenance"])
+        self.assertEqual(contract["provenance"]["source_provenance_status"], "historical_unknown")
+        partial = study_contract({}, {}, {"source_revision":"abc", "source_dirty_hashes":"unknown"})
+        self.assertEqual(partial["provenance"]["source_provenance_status"], "historical_unknown")
         self.assertEqual(len(contract["canonical_json_sha256"]), 64)
 
     def test_geometry_refinement_rejects_control_spacing_change(self):

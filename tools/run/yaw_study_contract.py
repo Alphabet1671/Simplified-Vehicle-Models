@@ -10,6 +10,17 @@ from pathlib import Path
 
 CONTRACT_VERSION = "yaw-study-contract-v1"
 _DIMENSIONS = {"geometry": "geometry_spacing_m", "control": "control_spacing_m", "replay": "replay_treatment"}
+# Explicit identity schema: unknown fields never become accidental compatibility keys.
+_COMMON = {"yaw_moment_tolerance", "map_identity", "map_file_sha256", "map_source_identity",
+    "track_identity", "track_data_hashes", "vehicle_configuration_hashes", "vehicle_source_identity",
+    "boundary", "boundary_type", "maximum_speed", "maximum_speed_mps", "solver", "solver_settings",
+    "profile_settings", "profile_line_settings", "controller_values", "controller", "warm_start_policy",
+    "package_versions", "thread_settings", "initial_state_soc", "initial_state", "source_revision",
+    "source_dirty_hashes", "source_provenance_status", "watchdog_budget_seconds", "plan_file_digest",
+    "plan_array_digest", "mode", "duration", "maximum_step", "rtol", "atol", "method"}
+_REPLAY = {"line_treatment", "controller_treatment", "replay_treatment"}
+_OUTPUT_FIELDS = {"output_dir", "output_path", "plan", "warm_plan", "timestamp", "runtime_seconds",
+    "wall_time_seconds", "elapsed_seconds", "canonical_json_sha256", "contract_version"}
 
 
 def _jsonable(value):
@@ -48,7 +59,9 @@ def study_contract(args, resolved_settings, provenance) -> dict:
     prov = payload["provenance"]
     prov.setdefault("source_revision", "unknown")
     prov.setdefault("source_dirty_hashes", "unknown")
-    prov.setdefault("source_provenance_status", "historical_unknown" if prov["source_revision"] == "unknown" else "attested")
+    complete_source = (prov["source_revision"] != "unknown" and
+                       prov["source_dirty_hashes"] != "unknown")
+    prov.setdefault("source_provenance_status", "attested" if complete_source else "historical_unknown")
     encoded = _canonical(payload)
     payload["canonical_json_sha256"] = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
     return payload
@@ -75,64 +88,54 @@ def finalized_plan_inputs(args, resolved_settings, provenance, plan_path, array_
     }
 
 
-def comparison_identity(contract, dimension: str) -> str:
-    """Hash compatibility fields; only the requested study coordinate may vary."""
+def _comparison_values(contract, dimension):
+    """Flatten a contract without letting one envelope layer overwrite another."""
     if dimension not in _DIMENSIONS:
         raise ValueError(f"invalid comparison dimension: {dimension}")
     if isinstance(contract, str):
         contract = json.loads(contract)
-    data = _jsonable(contract)
-    # Contracts can either be flat parameter records or full contract envelopes.
-    values = dict(data)
-    if "arguments" in values:
-        arguments = dict(values.pop("arguments") or {})
-        for source, target in (("spacing", "geometry_spacing_m"), ("control_spacing", "control_spacing_m")):
-            if source in arguments: arguments[target] = arguments.pop(source)
-        settings = values.pop("resolved_settings", {}) or {}
-        provenance = values.pop("provenance", {}) or {}
-        values = {**arguments, **settings, **provenance, **values}
-    values.pop("canonical_json_sha256", None)
-    values.pop("output_dir", None)
-    values.pop("output_path", None)
-    values.pop("timestamp", None)
-    values.pop("runtime_seconds", None)
-    values.pop("wall_time_seconds", None)
-    varying = _DIMENSIONS[dimension]
-    if dimension == "geometry":
-        invariant = "control_spacing_m"
-    elif dimension == "control":
-        invariant = "geometry_spacing_m"
-    else:
-        invariant = None
-    # Geometry/control refinement is a paired comparison: reject differing settings
-    # through a shared invariant baseline marker when a cohort declares one.
-    cohort = values.pop("comparison_cohort", None)
-    if invariant and cohort is not None and invariant in cohort:
-        values[invariant] = cohort[invariant]
-    values.pop(varying, None)
-    # Explicitly exclude declared warm-start lineage from compatibility identity.
-    values.pop("warm_start_lineage", None)
-    values.pop("warm_start_plan", None)
+    envelope = _jsonable(contract)
+    if not isinstance(envelope, dict):
+        raise ValueError("study contract must be an object")
+    # Flat records are retained for the documented helper interface; envelopes
+    # separate argument/settings/provenance namespaces to prevent overwrites.
+    top = {key: value for key, value in envelope.items()
+           if key not in ({"arguments", "resolved_settings", "provenance"} | _OUTPUT_FIELDS)}
+    layers = (("top_level", top), ("arguments", envelope.get("arguments", {})),
+              ("resolved_settings", envelope.get("resolved_settings", {})),
+              ("provenance", envelope.get("provenance", {})))
+    values = {}
+    for name, layer in layers:
+        if not isinstance(layer, dict):
+            raise ValueError(f"{name} must be an object")
+        for key, value in layer.items():
+            key = {"spacing": "geometry_spacing_m", "control_spacing": "control_spacing_m"}.get(key, key)
+            if key in values and values[key] != value:
+                raise ValueError(f"conflicting contract value for {key}")
+            values[key] = value
+    allowed = set(_COMMON)
+    if dimension == "replay": allowed |= _REPLAY
+    allowed |= {"geometry_spacing_m", "control_spacing_m"}
+    # Paths and runtime observations are intentionally not compatibility data;
+    # content digests and the explicit warm-start policy remain binding.
+    values = {key: value for key, value in values.items() if key in allowed}
+    return values
+
+
+def comparison_identity(contract, dimension: str) -> str:
+    """Hash the explicit compatibility schema, omitting only its study coordinate."""
+    values = _comparison_values(contract, dimension)
+    values.pop(_DIMENSIONS[dimension], None)
+    if dimension == "replay":
+        for key in _REPLAY: values.pop(key, None)
     return hashlib.sha256(_canonical({"dimension": dimension, "values": values}).encode("utf-8")).hexdigest()
 
 
 def validate_comparison_pair(first, second, dimension: str) -> None:
-    """Check that a pair varies only along its declared comparison coordinate."""
-    if dimension not in _DIMENSIONS:
-        raise ValueError(f"invalid comparison dimension: {dimension}")
-    if isinstance(first, str): first = json.loads(first)
-    if isinstance(second, str): second = json.loads(second)
-    def flatten(item):
-        result = dict(item)
-        for key in ("arguments", "resolved_settings", "provenance"):
-            nested = result.pop(key, {}) or {}
-            result.update(nested)
-        result.pop("canonical_json_sha256", None)
-        for key in ("output_dir", "output_path", "timestamp", "runtime_seconds", "wall_time_seconds", "warm_start_lineage", "warm_start_plan"):
-            result.pop(key, None)
-        return result
-    a, b = flatten(_jsonable(first)), flatten(_jsonable(second))
+    """Reject any non-study-coordinate or warm-start-policy change."""
+    a, b = _comparison_values(first, dimension), _comparison_values(second, dimension)
     allowed = {_DIMENSIONS[dimension]}
+    if dimension == "replay": allowed |= _REPLAY
     differing = {key for key in a.keys() | b.keys() if a.get(key) != b.get(key)}
     if differing - allowed:
         key = sorted(differing - allowed)[0]

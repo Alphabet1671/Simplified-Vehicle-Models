@@ -86,11 +86,16 @@ def run(args):
         'vehicle_configuration_hashes':source_provenance(str(runner.PLANAR_FORMULATION)), 
         'track_data_hashes':track_provenance,'map_file_sha256':hashlib.sha256(args.yaw_map.read_bytes()).hexdigest(),
         'map_source_identity':capability.source_identity,'plan_file_digest':'pending','plan_array_digest':'pending',
-        'initial_state_soc':'recorded on replay','package_versions':packages,
+        # Planning has no forward-plant state; replay records its actual initial
+        # state at invocation below. Unknown is never an attestation.
+        'initial_state_soc':'unknown','package_versions':packages,
         'thread_settings':{key:value for key,value in __import__('os').environ.items() if 'THREAD' in key.upper()},
+        # The runner self-guards at 1800 s; callers may impose a shorter outer
+        # watchdog which must be recorded by their run wrapper.
         'watchdog_budget_seconds':1800}
+    controller_overrides={key:getattr(args,key) for key in ('preview_seconds','heading_gain','lateral_gain','yaw_damping')}
     resolved={'profile_settings':{key:getattr(settings,key) for key in settings.__dataclass_fields__},
-        'controller':args.controller,'controller_overrides':{key:getattr(args,key) for key in ('preview_seconds','heading_gain','lateral_gain','yaw_damping')},
+        'controller':args.controller,'controller_overrides':controller_overrides,
         'solver':{'method':'BDF','rtol':1e-6,'atol':1e-8,'maximum_step':args.maximum_step},
         'profile_line_settings':{'spacing':args.spacing,'control_spacing':args.control_spacing,
             'profile_seconds':args.profile_seconds,'profile_rounds':args.profile_rounds,

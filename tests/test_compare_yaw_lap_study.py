@@ -8,14 +8,20 @@ from unittest.mock import patch
 from simplified_vehicle_models.planning.yaw_lap_artifact import ARRAYS,_digest,SCHEMA
 
 
-def saved_run(root,name,*,spacing,control,map_identity='map'):
+def saved_run(root,name,*,spacing,control,map_identity='map',contract=True):
     path=root/name; path.mkdir()
     arrays={key:np.array([0.,1.,2.]) for key in ARRAYS}
     arrays['speed']=np.array([10.,10.,10.])
     metadata=dict(schema=SCHEMA,array_digest=_digest(arrays),map_identity=map_identity,track_identity='track')
     np.savez(path/'plan.npz',**arrays,metadata=np.array(json.dumps(metadata)))
-    (path/'inputs.json').write_text(json.dumps({'map_identity':map_identity,'track_identity':'track',
-        'args':{'track':'synthetic','spacing':spacing,'control_spacing':control}}))
+    inputs={'map_identity':map_identity,'track_identity':'track',
+        'args':{'track':'synthetic','spacing':spacing,'control_spacing':control}}
+    if contract:
+        inputs['study_contract']={'arguments':dict(inputs['args']), 'resolved_settings':{},
+            'provenance':{'map_identity':map_identity, 'track_identity':'track',
+                           'warm_start_policy':'cold', 'source_revision':'unknown',
+                           'source_dirty_hashes':'unknown'}, 'contract_version':'yaw-study-contract-v1'}
+    (path/'inputs.json').write_text(json.dumps(inputs))
     (path/'summary.json').write_text(json.dumps({'status':'planned','lap_time_s':100.,
         'plan_array_digest':metadata['array_digest'],'diagnostics':{'kind':'fixed_line',
         'profile':{'resolution_converged':True}}}))
@@ -67,7 +73,7 @@ class SavedStudyTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'integrity'):
                 compare_runs([root],dimension='geometry')
 
-    def test_legacy_unbound_report_is_inconclusive(self):
+    def test_missing_contract_is_inconclusive(self):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory)
             (root/'inputs.json').write_text(json.dumps(dict(map_identity='map',track_identity='track')))
@@ -77,7 +83,7 @@ class SavedStudyTests(unittest.TestCase):
             np.savez(root/'plan.npz',**arrays,metadata=np.array(json.dumps(metadata)))
             result=compare_runs([root],dimension='geometry')
             self.assertEqual(result['status'],'inconclusive')
-            self.assertEqual(result['failed_runs'][0]['cause'],'missing_plan_array_digest')
+            self.assertEqual(result['failed_runs'][0]['cause'],'missing_study_contract')
 
     def test_report_bound_digest_rejects_substituted_complete_artifact(self):
         with tempfile.TemporaryDirectory() as directory:

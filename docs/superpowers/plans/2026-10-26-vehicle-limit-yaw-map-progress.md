@@ -76,6 +76,12 @@
 - Final current-code rebuild bash-1545 in progress; consumer-compatible production defaults now3Mnodes768round1200s matching proven recipe.67focused regression tests pass.
 - Final report drafted under docs/dev/vehicle-limit-yaw-map-results.md. Need current artifact identity load, MIS/FSC preflight, final suite collection and review.
 
+## Final artifact and consumer verification
+
+- Final reviewed build COMPLETE:79×76×428=2,569,712nodes,±25.1875m/s²,458rounds685.70s. Training0.125, untouched HiGHS validation0.25, no outer truncation/unresolved. Artifact runs/yaw_map_build/iem24-vehicle-limit-final.npz.
+- Shared preflight successfully identity-loads final map for MIS/FSC at0.05m; both no holes, no warnings, lateral-axis saturation0% (old79%/88%). No lap/controller claims.
+- Independent final reviewer approved config/docs/reduced model. Current67focused tests passed; final yaw suite bash1551 running. Full2894-test repo suite bash1471 cancelled after ~3hours no completion; do not claim full suite pass.
+
 ## Remaining
 
 1. Finish/review workflow, especially true holdout-to-supported-domain distance and preallocation budgets.

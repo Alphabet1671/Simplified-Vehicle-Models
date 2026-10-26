@@ -198,6 +198,9 @@ def main(argv=None):
 
 if __name__=='__main__':
     from tools.run.run_with_deadline import run_with_deadline
-    if '--_guarded-child' in sys.argv:
-        args=sys.argv[1:];args.remove('--_guarded-child');raise SystemExit(main(args))
-    raise SystemExit(run_with_deadline([sys.executable,__file__,'--_guarded-child',*sys.argv[1:]],seconds=1800))
+    import os
+    if os.environ.get('YAW_PROCESS_WATCHDOG_ACTIVE')=='1':
+        # Stay in the existing guarded process group: starting another session
+        # here would let a nested child escape the shorter outer hard deadline.
+        raise SystemExit(main())
+    raise SystemExit(run_with_deadline([sys.executable,__file__,*sys.argv[1:]],seconds=1800))

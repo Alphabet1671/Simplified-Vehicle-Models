@@ -11,6 +11,10 @@ class DeadlineTests(unittest.TestCase):
     def test_exit_status_is_preserved(self):
         self.assertEqual(run_with_deadline([sys.executable,'-c','raise SystemExit(7)'],seconds=2),7)
 
+    def test_watchdog_marks_child_for_same_group_suite_execution(self):
+        code='import os; raise SystemExit(0 if os.environ.get("YAW_PROCESS_WATCHDOG_ACTIVE")=="1" else 1)'
+        self.assertEqual(run_with_deadline([sys.executable,'-c',code],seconds=2),0)
+
     def test_oversize_and_invalid_limits_are_rejected(self):
         for seconds in (0.,-1.,float('nan'),1801.):
             with self.subTest(seconds=seconds),self.assertRaises(ValueError):

@@ -21,7 +21,9 @@ def run_with_deadline(command, *, seconds=HARD_LIMIT_SECONDS, approved_long_run=
         raise ValueError('runs above 1800 seconds require explicit prior user approval')
     if not command:
         raise ValueError('command must not be empty')
-    child = subprocess.Popen(command, env=env, start_new_session=True)
+    child_env = dict(os.environ if env is None else env)
+    child_env['YAW_PROCESS_WATCHDOG_ACTIVE'] = '1'
+    child = subprocess.Popen(command, env=child_env, start_new_session=True)
     try:
         return child.wait(timeout=seconds)
     except subprocess.TimeoutExpired:

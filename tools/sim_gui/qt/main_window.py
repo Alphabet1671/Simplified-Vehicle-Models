@@ -638,18 +638,39 @@ class MainWindow(QMainWindow):
             self.single_tab.set_log(log.read_text(errors="replace"))
 
     def save_study(self) -> None:
-        """Save the current definition atomically to a study JSON file."""
+        """Save a lap study or the current maneuver definition collection."""
         path, _ = QFileDialog.getSaveFileName(self, "Save Study", filter="Study (*.study.json)")
-        if path:
+        if not path:
+            return
+        if self.tabs.currentWidget() is self.maneuver_tab:
+            data = self.maneuver_tab.definition().to_dict()
+            source = data.get("vehicle", {}).get("formulation") or data.get("vehicle", {}).get("model", "")
+            _atomic(Path(path), ManeuverStudyDefinition(data.get("name", "maneuver"), str(source), (data,)).to_json())
+        else:
             _atomic(Path(path), self._definition().to_json())
-            self._remember(Path(path))
+        self._remember(Path(path))
 
     def open_study(self) -> None:
         """Open a definition.study.json and restore its model."""
         path, _ = QFileDialog.getOpenFileName(self, "Open Study", filter="JSON (*.json)")
         if not path:
             return
-        definition = StudyDefinition.from_json(json.loads(Path(path).read_text()))
+        raw = json.loads(Path(path).read_text())
+        if raw.get("schema") == "maneuver-study-v1":
+            maneuver = ManeuverStudyDefinition.from_json(raw)
+            if len(maneuver.definitions) != 1:
+                _warn(self, "Maneuver Study", "The Maneuvers tab currently opens one definition at a time.")
+                return
+            baseline = VehicleConfiguration.open(Path(maneuver.source))
+            self.configuration = baseline
+            self.model_panel.set_configuration(baseline)
+            self.maneuver_tab.set_vehicle_configuration(maneuver.definitions[0])
+            self.maneuver_tab.clear_run()
+            self.tabs.setCurrentWidget(self.maneuver_tab)
+            self._refresh_actions()
+            self._remember(Path(path))
+            return
+        definition = StudyDefinition.from_json(raw)
         baseline = VehicleConfiguration.open(Path(definition.source))
         configuration = baseline.with_model(definition.model)
         for key, value in definition.choices.items():

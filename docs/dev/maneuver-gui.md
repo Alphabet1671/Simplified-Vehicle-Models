@@ -13,7 +13,20 @@ PYTHONPATH=src:. python3 tools/sim_gui/app.py
 
 Open a vehicle formulation in the shared **Model** dock, then select **Maneuvers**. This is the same import/component-selection workflow used by lap simulations; Maneuvers intentionally has no second model browser. A track is not required. The selected vehicle is copied into a validated draft; changing vehicle clears the prior maneuver result and draft state. The tab refuses physical backends and hardware arm remains unavailable.
 
-The Maneuvers tab follows the lap-run layout: select an **Export folder**, run or stop the isolated simulation child, and watch the shared progress bar, status line, local bounded log, and application Log tab. On a completed hash-validated artifact, the tab loads accepted command evidence into the requested/applied preview and displays the immutable artifact path and termination reason. Use **Export animation…** to choose a fresh MP4 destination; the existing bridge still rejects an existing output rather than overwriting it.
+The Maneuvers tab follows the lap-run layout: select an **Export folder**, run or stop the isolated simulation child, and watch the shared progress bar, status line, local bounded log, application Log tab, and standard Queue tab. A Run action creates a native `sim-study-v1` index containing one maneuver case; future batch studies use the same format. Its persistent layout is the normal suite layout:
+
+```text
+<study>/definition.study.json       # maneuver-study-v1 input collection
+<study>/study.json                  # sim-study-v1 native index
+<study>/cases/case_000/case.json    # immutable maneuver-v1 case input
+<study>/cases/case_000/attempt_*/run.log
+<study>/cases/case_000/attempt_*/summary.json
+<study>/cases/case_000/attempt_*/parent.json
+<study>/cases/case_000/attempt_*/result/            # immutable validated maneuver evidence
+<study>/cases/case_000/attempt_*/run_record.npz     # canonical run-record-v1
+```
+
+Completed 14DoF cases create `run_record.npz` at precisely the same standard attempt path as lap studies. It is converted only from completed, hash-validated accepted maneuver evidence, without replaying physics, so the animator consumes it with the standard RunRecord loader. The straight-reference track used in this animator record is display-only. Failed, cancelled, timed-out, or currently unsupported planar maneuver cases remain normal indexed queue attempts but have no animator record. Use **Export animation…** to choose a fresh MP4 destination; the existing bridge still rejects an existing output rather than overwriting it.
 
 A headless simulation run uses the same runner:
 

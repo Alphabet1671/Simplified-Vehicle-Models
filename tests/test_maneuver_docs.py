@@ -29,6 +29,12 @@ class ManeuverDocumentationTests(unittest.TestCase):
         self.assertGreaterEqual(len(loaded.commands), 2)
         self.assertEqual(loaded.mapping, mapping)
 
+    def test_guide_documents_native_study_and_animator_contract(self):
+        text = GUIDE.read_text()
+        for phrase in ("sim-study-v1", "cases/case_000/attempt_", "run_record.npz",
+                       "run-record-v1", "hash-validated", "simulation-only"):
+            self.assertIn(phrase, text)
+
     def test_guide_covers_presets_and_hardware_boundary(self):
         text = GUIDE.read_text().lower()
         for preset in ("step_steer", "ramp_steer", "sine_steer", "straight_maintain",

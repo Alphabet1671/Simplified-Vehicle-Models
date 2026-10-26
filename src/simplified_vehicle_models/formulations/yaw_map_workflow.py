@@ -30,7 +30,8 @@ import time
 import numpy as np
 
 from simplified_vehicle_models.formulations.yaw_capability import (
-    TvLimits, YawCapabilityGrid, YawCapabilityMap, build_physical_yaw_map,
+    TvLimits, YawCapabilityGrid, YawCapabilityMap, YawCapabilityNumericalError,
+    build_physical_yaw_map,
 )
 from simplified_vehicle_models.formulations.yaw_map_domain import (
     DomainSlice, ProbeResult, ProbeStatus, YawMapDomain, YawMapDomainSettings,
@@ -215,13 +216,9 @@ def _audit_map(capability: YawCapabilityMap, holdout_domain: YawMapDomain,
                 if transition is not None:
                     boundary_points.add(transition.feasible_ay)
             for ay in sorted(boundary_points):
-                if count >= settings.maximum_audit_probes:
-                    budget_exhausted = True
-                    break
                 if time.monotonic() - started > settings.time_budget_seconds:
                     time_exhausted = True
                     break
-                count += 1
                 evidence = interpolator.query_evidence(slice_.speed, slice_.longitudinal_acceleration, ay)
                 reason = evidence["reason"]
                 key = (slice_.speed, slice_.longitudinal_acceleration)
@@ -249,11 +246,8 @@ def _audit_map(capability: YawCapabilityMap, holdout_domain: YawMapDomain,
                 break
         if budget_exhausted or time_exhausted:
             break
-    for slice_ in holdout_domain.slices:
-        for ay in slice_.unresolved_ay:
-            unresolved.append(AuditProbe(slice_.speed, slice_.longitudinal_acceleration, ay,
-                                         ProbeStatus.UNRESOLVED, None, None, False,
-                                         "holdout discovery unresolved"))
+    for speed, ax, ay, detail in holdout_domain.diagnostics.unresolved_probes:
+        unresolved.append(AuditProbe(speed, ax, ay, ProbeStatus.UNRESOLVED, None, None, False, detail))
     maximum_loss = (None if any(probe.full_slice_unsupported for probe in losses)
                     else max((probe.loss_distance for probe in losses), default=0.0))
     return YawMapCompletionAudit(tuple(probes), count, settings.maximum_audit_probes,
@@ -338,10 +332,12 @@ def build_yaw_map_workflow(
     # they are not regenerated from adaptive map knots.
     audit_speeds = _holdout_axis(speeds)
     audit_ax = _holdout_axis(accelerations)
+    independent_holdouts = len(speeds) > 1 and len(accelerations) > 1
     # A separate discovery call makes all audit boundary scans independent of
     # map-axis discovery.  Its probe budget is the audit budget, not the map
     # discovery budget, and all LP calls remain explicitly accounted for.
-    audit_settings = replace(settings.discovery, probe_budget=settings.maximum_audit_probes)
+    audit_settings = replace(settings.discovery, probe_budget=settings.maximum_audit_probes,
+                             speed_ax_audit_subdivisions=0)
     holdout_domain = discover_yaw_map_domain(vehicle, audit_speeds, audit_ax,
                                               deadline_evaluator, audit_settings)
     rounds = 0
@@ -374,13 +370,34 @@ def build_yaw_map_workflow(
                                 or time.monotonic() - started > settings.time_budget_seconds))
             break
         grid = YawCapabilityGrid(map_speed, map_ax, lateral)
-        capability = map_builder(vehicle, grid, tv_limits, yaw_inertia=yaw_inertia)
+        try:
+            capability = map_builder(vehicle, grid, tv_limits, yaw_inertia=yaw_inertia)
+        except YawCapabilityNumericalError as error:
+            # Preserve an inspectable all-masked map when the first map build
+            # hits a numerical LP failure; a later refinement retains the last
+            # usable map instead.  Either way it is explicit unresolved evidence.
+            if last_capability is None:
+                shape = (len(grid.speed), len(grid.longitudinal_acceleration), len(grid.lateral_acceleration))
+                zeros = np.zeros(shape)
+                capability = YawCapabilityMap(grid.speed, grid.longitudinal_acceleration,
+                    grid.lateral_acceleration, zeros, zeros, np.zeros(shape, dtype=bool), yaw_inertia,
+                    "physical_no_tv_v1" if tv_limits is None else "physical_tv_v1", "unresolved-map-node")
+            else:
+                capability = last_capability
+            audit = YawMapCompletionAudit((), 0, settings.maximum_audit_probes, False, False,
+                (), (), (AuditProbe(float(grid.speed[0]), float(grid.longitudinal_acceleration[0]),
+                float(grid.lateral_acceleration[0]), ProbeStatus.UNRESOLVED, None, None, False, str(error)),),
+                (), None, settings.discovery.lateral_interpolation_loss_tolerance)
+            break
         audit = _audit_map(capability, holdout_domain, settings=settings, started=started)
         last_capability, last_audit = capability, audit
         if (domain.diagnostics.complete and audit.complete) or rounds >= settings.maximum_refinement_rounds:
             break
         map_speed, map_ax, lateral = _refine_axes(capability, audit, settings)
         rounds += 1
-    complete = domain.diagnostics.complete and holdout_domain.diagnostics.complete and audit.complete
-    return YawMapWorkflowResult(capability, domain, audit, complete, rounds, speeds, accelerations,
-                                "Finite scans, transition brackets, and independent holdouts bound only the declared resolution; they are not continuous feasibility proof.")
+    complete = (independent_holdouts and domain.diagnostics.complete
+                and holdout_domain.diagnostics.complete and audit.complete)
+    disclosure = "Finite scans, transition brackets, and independent holdouts bound only the declared resolution; they are not continuous feasibility proof."
+    if not independent_holdouts:
+        disclosure += " A singleton declared speed or longitudinal-acceleration axis has no independent holdout coordinate and cannot qualify as complete."
+    return YawMapWorkflowResult(capability, domain, audit, complete, rounds, speeds, accelerations, disclosure)

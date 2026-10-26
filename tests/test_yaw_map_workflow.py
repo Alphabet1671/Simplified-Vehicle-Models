@@ -82,6 +82,26 @@ class YawMapWorkflowTest(unittest.TestCase):
         self.assertEqual(result.capability.yaw_moment_into_turn.shape,
                          result.capability.feasible_mask.shape)
 
+    def test_singleton_axis_cannot_qualify_without_independent_holdout(self):
+        result = build_yaw_map_workflow(vehicle(), [5.], [0.], evaluator(lambda _v, _a: 2.),
+                                        yaw_inertia=1., settings=self.settings(),
+                                        map_builder=synthetic_builder(lambda _v, _a: 2.))
+        self.assertFalse(result.complete)
+        self.assertIn("singleton", result.finite_resolution_disclosure)
+
+    def test_unresolved_map_builder_returns_inspectable_incomplete_result(self):
+        from simplified_vehicle_models.formulations.yaw_capability import YawCapabilityNumericalError
+        def failing_builder(_vehicle, _grid, _limits, *, yaw_inertia):
+            raise YawCapabilityNumericalError("synthetic map-cell numerical failure")
+        result = build_yaw_map_workflow(vehicle(), [0., 10.], [0., 1.], evaluator(lambda _v, _a: 2.),
+                                        yaw_inertia=1., settings=self.settings(), map_builder=failing_builder)
+        self.assertFalse(result.complete)
+        self.assertEqual(result.capability.feasible_mask.shape,
+                         (2, 2, len(result.capability.lateral_acceleration)))
+        self.assertFalse(np.any(result.capability.feasible_mask))
+        self.assertEqual(result.audit.unresolved[0].status, ProbeStatus.UNRESOLVED)
+        self.assertIn("map-cell", result.audit.unresolved[0].detail)
+
     def test_outer_truncation_is_explicitly_incomplete_and_refines(self):
         # The map grid builder lies about its outer feasible faces while direct
         # holdouts remain feasible.  The audit must reject it rather than claim

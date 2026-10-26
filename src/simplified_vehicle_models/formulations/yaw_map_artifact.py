@@ -31,12 +31,32 @@ def implementation_identity():
     """Invalidate cached artifacts when the builder or its physics changes."""
     root = Path(__file__).resolve().parents[1]
     digest = hashlib.sha256()
-    paths = ('formulations/yaw_capability.py', 'formulations/yaw_map_domain.py',
+    paths = ('formulations/yaw_map_artifact.py', 'formulations/yaw_capability.py', 'formulations/yaw_map_domain.py',
              'formulations/yaw_map_workflow.py', 'formulations/yaw_map_physical.py', 'formulations/point_mass.py',
              'parameters/tire.py', 'suspension/quasi_static.py')
     for name in paths:
         digest.update(name.encode()); digest.update((root / name).read_bytes())
     return digest.hexdigest()
+
+
+def source_provenance(formulation):
+    """Hash the formulation and transitive local XML/data references."""
+    import xml.etree.ElementTree as ET
+    pending = [Path(formulation).resolve()]
+    sources = {}
+    while pending:
+        path = pending.pop()
+        if str(path) in sources: continue
+        payload = path.read_bytes()
+        sources[str(path)] = hashlib.sha256(payload).hexdigest()
+        if path.suffix.lower() == '.xml':
+            for node in ET.fromstring(payload).iter():
+                for key in ('ref', 'file', 'path', 'href'):
+                    value = node.attrib.get(key)
+                    if value:
+                        referenced = (path.parent / value).resolve()
+                        if referenced.is_file(): pending.append(referenced)
+    return sources
 
 
 def build_identity(vehicle, yaw_inertia, settings, speed, ax, tv_limits=None):

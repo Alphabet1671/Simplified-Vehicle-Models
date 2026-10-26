@@ -13,7 +13,7 @@ import time
 import numpy as np
 
 from simplified_vehicle_models.formulations.yaw_map_artifact import (
-    build_identity, json_values, save_yaw_map,
+    build_identity, json_values, save_yaw_map, source_provenance,
 )
 
 
@@ -32,7 +32,7 @@ def parser():
     p.add_argument('--max-nodes', type=int, default=30000)
     p.add_argument('--max-probes', type=int, default=250000)
     p.add_argument('--refinement-rounds', type=int, default=32)
-    p.add_argument('--audit-probes', type=int, default=250000)
+    p.add_argument('--audit-probes', type=int, default=500000)
     p.add_argument('--wall-seconds', type=float, default=600.)
     return p
 
@@ -40,6 +40,7 @@ def parser():
 def main(argv=None):
     from simplified_vehicle_models.compiler.compile import compile_formulation
     from simplified_vehicle_models.formulations.point_mass import point_mass_view_of_planar
+    from simplified_vehicle_models.formulations.point_mass_capability import capability_hash
     from simplified_vehicle_models.formulations.yaw_capability import direct_yaw_probe
     from simplified_vehicle_models.formulations.yaw_map_domain import YawMapDomainSettings
     from simplified_vehicle_models.formulations.yaw_map_workflow import YawMapWorkflowSettings, build_yaw_map_workflow
@@ -59,7 +60,7 @@ def main(argv=None):
     identity = build_identity(vehicle, compiled.yaw_inertia, settings, speed, ax)
     started = time.monotonic()
     from simplified_vehicle_models.formulations.yaw_map_physical import PhysicalYawEvaluator
-    evaluator = PhysicalYawEvaluator(vehicle)
+    evaluator = PhysicalYawEvaluator(vehicle, time_budget_seconds=settings.time_budget_seconds)
     result = build_yaw_map_workflow(vehicle, speed, ax, evaluator,
         yaw_inertia=compiled.yaw_inertia, settings=settings, map_builder=evaluator.build)
     report = {k: json_values(v) for k, v in asdict(result).items() if k != 'capability'}
@@ -67,7 +68,10 @@ def main(argv=None):
     report['declared_ax_domain_mps2'] = [args.ax_min, args.ax_max]
     revision = subprocess.run(['git', 'rev-parse', 'HEAD'], capture_output=True, text=True, check=False).stdout.strip()
     save_yaw_map(args.output, result.capability, report=report, identity=identity,
-        provenance={'formulation': str(args.formulation), 'git_revision': revision,
+        provenance={'formulation': str(args.formulation), 'source_sha256': source_provenance(args.formulation),
+                    'compiled_vehicle_sha256': capability_hash(vehicle),
+                    'git_revision': revision,
+                    'identity_policy':'compiled vehicle parameters and builder implementation are authoritative for cache identity; XML bytes retained for provenance',
                     'settings': asdict(settings), 'scope': 'quasi-static model, finite-resolution lateral audit; declared ax domain only'})
     summary = {'complete': result.complete, 'artifact': str(args.output),
                'shape': list(result.capability.feasible_mask.shape),

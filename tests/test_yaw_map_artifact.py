@@ -23,6 +23,18 @@ class ArtifactTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'integrity'):
                 load_yaw_map(path, expected_identity='current')
 
+    def test_source_provenance_tracks_transitive_input_bytes(self):
+        from simplified_vehicle_models.formulations.yaw_map_artifact import source_provenance
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d)/'root.xml'; child=Path(d)/'child.xml'
+            root.write_text('<model><source ref="child.xml"/></model>')
+            child.write_text('<model/>')
+            before=source_provenance(root)
+            child.write_text('<model changed="true"/>')
+            after=source_provenance(root)
+            self.assertEqual(len(before),2)
+            self.assertNotEqual(before[str(child.resolve())],after[str(child.resolve())])
+
     def test_incomplete_maps_are_not_accepted_as_cache(self):
         cap = YawCapabilityMap([0., 10.], [-1.,1.], [-20.,20.],
             np.ones((2,2,2)), np.ones((2,2,2)), np.ones((2,2,2), bool), 1., 'physical_no_tv_v1', 'fixture')

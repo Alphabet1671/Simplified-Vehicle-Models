@@ -7,6 +7,12 @@ from simplified_vehicle_models.formulations.yaw_map_domain import ProbeStatus
 
 
 class PhysicalCacheTests(unittest.TestCase):
+    def test_deadline_stops_new_lp_calls_without_inventing_infeasibility(self):
+        evaluator=PhysicalYawEvaluator(object(),time_budget_seconds=0.)
+        with patch('simplified_vehicle_models.formulations.yaw_map_physical.direct_yaw_cell') as direct:
+            self.assertEqual(evaluator(10.,0.,0.).status,ProbeStatus.UNRESOLVED)
+        direct.assert_not_called()
+
     def test_shared_cache_reuses_both_moments_at_map_node(self):
         vehicle=object(); evaluator=PhysicalYawEvaluator(vehicle)
         with patch('simplified_vehicle_models.formulations.yaw_map_physical.direct_yaw_cell',

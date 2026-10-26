@@ -1,5 +1,6 @@
 """One direct-cell cache shared by discovery, map nodes and acceptance probes."""
 import numpy as np
+import time
 from simplified_vehicle_models.formulations.yaw_capability import (
     direct_yaw_cell, YawCapabilityMap, YawCapabilityNumericalError,
 )
@@ -8,7 +9,8 @@ from simplified_vehicle_models.formulations.point_mass_capability import capabil
 
 
 class PhysicalYawEvaluator:
-    def __init__(self, vehicle, tv_limits=None):
+    def __init__(self, vehicle, tv_limits=None, *, time_budget_seconds=None):
+        self.deadline = None if time_budget_seconds is None else time.monotonic() + time_budget_seconds
         self.vehicle = vehicle
         self.tv_limits = tv_limits
         self.cells = {}
@@ -16,6 +18,9 @@ class PhysicalYawEvaluator:
     def cell(self, speed, ax, ay):
         key = (float(speed), float(ax), float(ay))
         if key not in self.cells:
+            if self.deadline is not None and time.monotonic() >= self.deadline:
+                from simplified_vehicle_models.formulations.yaw_capability import DirectYawCell
+                return DirectYawCell(ProbeStatus.UNRESOLVED, detail='physical map build time budget exhausted')
             self.cells[key] = direct_yaw_cell(self.vehicle, *key, self.tv_limits)
         return self.cells[key]
 

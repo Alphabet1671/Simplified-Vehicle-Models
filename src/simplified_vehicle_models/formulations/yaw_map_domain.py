@@ -156,7 +156,8 @@ def unitire_peak_lateral_bound(vehicle) -> LateralForceBound:
     loads = np.asarray(tire.vertical_loads, dtype=float)
     if (not math.isfinite(mass) or mass <= 0.0 or peaks.ndim != 1 or peaks.size == 0
             or loads.shape != peaks.shape or not np.all(np.isfinite(peaks))
-            or np.any(peaks < 0.0)):
+            or not np.all(np.isfinite(loads)) or np.any(loads < 0.)
+            or np.any(np.diff(loads) <= 0.) or np.any(peaks < 0.0)):
         raise ValueError("UniTirePeakEnvelope must contain a finite nonnegative lateral peak-force table")
     peak = float(np.max(peaks))
     bound = 4.0 * peak / mass

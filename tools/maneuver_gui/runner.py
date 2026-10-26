@@ -162,7 +162,10 @@ def run_definition(definition_path: Path, output_root: Path, *, attempt_director
     """
     attempt = Path(attempt_directory) if attempt_directory is not None else create_attempt_directory(output_root)
     if attempt_directory is not None:
-        attempt.mkdir(parents=True, exist_ok=False)
+        # CaseQueue allocates the standard attempt directory before spawning us.
+        # Reject nonempty callers so we never merge evidence into prior output.
+        if not attempt.is_dir() or any(attempt.iterdir()):
+            raise ValueError("attempt directory must be an existing empty queue attempt")
     source = Path(definition_path).expanduser().resolve()
     stage = None
     source_copy = None

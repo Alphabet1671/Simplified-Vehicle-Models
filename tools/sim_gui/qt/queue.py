@@ -194,7 +194,7 @@ class CaseQueue(QObject):
 
     def _finish_without_process(self, prepared: PreparedCase, cancelled: bool) -> None:
         attempt = self.attempt_factory(prepared)
-        fields = finish_case(
+        fields = self.finish_factory(
             prepared, attempt, return_code=None, timed_out=False, cancelled=cancelled,
             wall_seconds=0.0, command=[],
         )

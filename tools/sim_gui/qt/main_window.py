@@ -55,6 +55,7 @@ class MainWindow(QMainWindow):
         self.settings_store = settings_store or QSettings("Simplified-Vehicle-Models", "sim-gui")
         self.configuration = None
         self.study_index = None
+        self._maneuver_study: ManeuverStudyDefinition | None = None
         self._prepared = []
         self._running = False
         self._run_requested = False
@@ -210,12 +211,39 @@ class MainWindow(QMainWindow):
         study = ManeuverStudyDefinition(str(data.get("name") or "maneuver"), str(source), (data,))
         try:
             cases = expand_maneuvers(study)
+            self._maneuver_study = study
             directory = _study_directory(self.maneuver_tab.export_folder(), study)
             self.study_index = create_maneuver_study(directory, study, cases)
             self._prepared = [prepare_maneuver_case(directory, study, case) for case in cases]
         except (OSError, ValueError) as error:
             _warn(self, "Maneuver", str(error))
             return
+        self._queue.study_index = self.study_index
+        self._queue.command_factory = maneuver_child_command
+        self._queue.finish_factory = finish_maneuver_case
+        self._queue.attempt_factory = new_maneuver_attempt
+        self._queue.progress_factory = maneuver_progress
+        self.queue_table.set_cases(self.study_index.cases)
+        self.maneuver_tab.clear_run()
+        self.maneuver_tab.set_busy(True)
+        self._run_mode = "maneuver"
+        self._running = True
+        self._log_timer.start()
+        self.tabs.setCurrentWidget(self.queue_table)
+        self._refresh_actions()
+        self._queue.start(self._prepared, 1)
+
+    def _run_maneuver_study(self, study: ManeuverStudyDefinition) -> None:
+        """Run an opened multi-definition maneuver study through CaseQueue."""
+        try:
+            cases = expand_maneuvers(study)
+            directory = _study_directory(self.maneuver_tab.export_folder(), study)
+            self.study_index = create_maneuver_study(directory, study, cases)
+            self._prepared = [prepare_maneuver_case(directory, study, case) for case in cases]
+        except (OSError, ValueError) as error:
+            _warn(self, "Maneuver Study", str(error))
+            return
+        self._maneuver_study = study
         self._queue.study_index = self.study_index
         self._queue.command_factory = maneuver_child_command
         self._queue.finish_factory = finish_maneuver_case
@@ -483,6 +511,9 @@ class MainWindow(QMainWindow):
         """Build a baseline if needed and start the study process queue."""
         if self._run_mode is not None or self._validation_thread is not None:
             return
+        if self.tabs.currentWidget() is self.maneuver_tab and self._maneuver_study is not None:
+            self._run_maneuver_study(self._maneuver_study)
+            return
         if not self._prepared:
             self._run_requested = True
             self.build_cases()
@@ -658,13 +689,18 @@ class MainWindow(QMainWindow):
         raw = json.loads(Path(path).read_text())
         if raw.get("schema") == "maneuver-study-v1":
             maneuver = ManeuverStudyDefinition.from_json(raw)
-            if len(maneuver.definitions) != 1:
-                _warn(self, "Maneuver Study", "The Maneuvers tab currently opens one definition at a time.")
+            try:
+                cases = expand_maneuvers(maneuver)
+            except ValueError as error:
+                _warn(self, "Maneuver Study", str(error))
                 return
             baseline = VehicleConfiguration.open(Path(maneuver.source))
             self.configuration = baseline
             self.model_panel.set_configuration(baseline)
-            self.maneuver_tab.set_vehicle_configuration(maneuver.definitions[0])
+            self._maneuver_study = maneuver
+            # Edit the first member while retaining the full study collection for
+            # explicit Run Study, rather than discarding batch definitions.
+            self.maneuver_tab.set_vehicle_configuration(cases[0].definition)
             self.maneuver_tab.clear_run()
             self.tabs.setCurrentWidget(self.maneuver_tab)
             self._refresh_actions()

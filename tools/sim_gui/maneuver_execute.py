@@ -6,13 +6,16 @@ its canonical RunRecord there after artifact verification.
 """
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
+from datetime import datetime, timezone
+import subprocess
 import json
 from pathlib import Path
 import sys
 import time
 from typing import Any
 
+from tools.sim_gui import REPOSITORY_ROOT
 from tools.sim_gui.study import StudyIndex, _atomic
 
 
@@ -55,11 +58,16 @@ class PreparedManeuverCase:
 def expand_maneuvers(definition: ManeuverStudyDefinition) -> tuple[ManeuverCaseSpec, ...]:
     """Create one standard case per validated serialized maneuver definition."""
     cases = []
+    from simplified_vehicle_models.controls.maneuvers.schema import validate_definition
     for index, item in enumerate(definition.definitions):
-        if item.get("schema") != "maneuver-v1" or item.get("backend") != "simulation":
-            raise ValueError("maneuver studies contain simulation maneuver-v1 definitions only")
-        cases.append(ManeuverCaseSpec(f"case_{index:03d}", str(item.get("name") or f"maneuver {index + 1}"),
-                                      json.loads(json.dumps(item))))
+        try:
+            checked = validate_definition(item)
+        except (TypeError, ValueError) as error:
+            raise ValueError(f"invalid maneuver definition {index + 1}: {error}") from error
+        if checked["backend"] != "simulation":
+            raise ValueError("maneuver studies contain simulation definitions only")
+        cases.append(ManeuverCaseSpec(f"case_{index:03d}", str(checked.get("name") or f"maneuver {index + 1}"),
+                                      checked))
     if not cases:
         raise ValueError("maneuver study has no definitions")
     return tuple(cases)
@@ -70,24 +78,23 @@ def create_maneuver_study(directory: Path, definition: ManeuverStudyDefinition,
     """Write native sim-study-v1 index and maneuver-study-v1 definition file."""
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
-    # Reuse StudyIndex's exact durable index construction, with a case object
-    # whose serialized fields deliberately match the common queue identity.
-    class _IndexDefinition:
-        name = definition.name
-        def to_json(self): return definition.to_json()
-    @dataclass(frozen=True)
-    class _IndexCase:
-        id: str
-        label: str
-        model: str = "maneuver"
-        track: str = ""
-        choices: dict[str, str] = None
-        sweep_points: dict[str, dict] = None
-        def __post_init__(self):
-            object.__setattr__(self, "choices", self.choices or {})
-            object.__setattr__(self, "sweep_points", self.sweep_points or {})
-    index_cases = tuple(_IndexCase(case.id, case.label) for case in cases)
-    return StudyIndex.create(directory, _IndexDefinition(), index_cases)
+    try:
+        result = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True,
+                                text=True, cwd=REPOSITORY_ROOT)
+        commit = result.stdout.strip() if result.returncode == 0 else None
+    except OSError:
+        commit = None
+    # Keep the common sim-study-v1 envelope but avoid lap-only model/track/sweep
+    # fields. Queue updates add status/attempt/run_record/summary in place.
+    payload = {"schema": "sim-study-v1", "name": definition.name,
+               "created_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+               "repository_commit": commit, "definition": "definition.study.json",
+               "cases": [{"id": case.id, "label": case.label, "status": "pending",
+                          "attempt": None, "run_record": None, "summary": None}
+                         for case in cases]}
+    _atomic(directory / "definition.study.json", definition.to_json())
+    _atomic(directory / "study.json", payload)
+    return StudyIndex(directory, payload)
 
 
 def prepare_maneuver_case(study_dir: Path, definition: ManeuverStudyDefinition,
@@ -140,7 +147,12 @@ def finish_maneuver_case(prepared: PreparedManeuverCase, attempt: Path, *, retur
                          command) -> dict[str, Any]:
     """Finish an ordinary queue case and write standard RunRecord if completed."""
     status = "cancelled" if cancelled else "timed_out" if timed_out else "failed"
-    summary: dict[str, Any] | None = None
+    summary_path = Path(attempt) / "summary.json"
+    try:
+        summary: dict[str, Any] = json.loads(summary_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        summary = {"execution_outcome": status, "input_fidelity": "not_evaluated",
+                   "objective": "not_evaluated", "error": status}
     record = None
     error = None
     if not cancelled and not timed_out and return_code == 0:
@@ -166,9 +178,15 @@ def finish_maneuver_case(prepared: PreparedManeuverCase, attempt: Path, *, retur
               "requested_wall_seconds": prepared.timeout_seconds, "elapsed_wall_seconds": wall_seconds,
               "model": "14dof-simple", "command": list(command), "attempt": str(attempt)}
     _atomic(attempt / "parent.json", parent)
-    if summary is not None:
-        _atomic(attempt / "summary.json", summary)
+    # Every terminal queue path leaves the standard attempt-root summary, even
+    # when a kill happened before the runner could publish immutable evidence.
+    if status != "completed":
+        summary = dict(summary)
+        summary["execution_outcome"] = status
+        if error is not None:
+            summary["error"] = error
+    _atomic(attempt / "summary.json", summary)
     study_root = prepared.directory.parent.parent
     return {"status": status, "attempt": attempt.relative_to(study_root).as_posix(),
             "run_record": record.relative_to(study_root).as_posix() if record else None,
-            "summary": summary if error is None else {"error": error}}
+            "summary": summary}

@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -30,12 +31,41 @@ class ManeuverStudyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             index = create_maneuver_study(Path(tmp) / "maneuvers", study, cases)
             self.assertEqual(index._payload["schema"], "sim-study-v1")
-            self.assertEqual(index.cases[0]["id"], "case_000")
+            self.assertEqual(index.cases[0], {"id": "case_000", "label": "queue maneuver",
+                                               "status": "pending", "attempt": None,
+                                               "run_record": None, "summary": None})
             prepared = prepare_maneuver_case(index.directory, study, cases[0])
             self.assertEqual(prepared.directory, index.directory / "cases" / "case_000")
             self.assertTrue((prepared.directory / "case.json").is_file())
             self.assertEqual(maneuver_child_command(prepared, prepared.directory / "attempt_1")[2:4],
                              ["-m", "tools.maneuver_gui.runner"])
+
+    def test_invalid_and_non_simulation_definitions_fail_before_case_write(self):
+        bad = payload(); bad['clock']['controller_tick_s'] = 0
+        with self.assertRaises(ValueError):
+            expand_maneuvers(ManeuverStudyDefinition('bad', 'model.xml', (bad,)))
+        physical = payload(); physical['backend'] = 'physical'
+        with self.assertRaises(ValueError):
+            expand_maneuvers(ManeuverStudyDefinition('physical', 'model.xml', (physical,)))
+
+    def test_batch_study_expands_all_validated_definitions(self):
+        first, second = payload(), payload()
+        second['name'] = 'second maneuver'
+        study = ManeuverStudyDefinition('batch', 'models/formulations/iem24_murphy_real_14dof_simple.xml', (first, second))
+        self.assertEqual([case.id for case in expand_maneuvers(study)], ['case_000', 'case_001'])
+
+    def test_cancelled_case_writes_standard_summary_and_parent(self):
+        study = ManeuverStudyDefinition('maneuvers', 'models/formulations/iem24_murphy_real_14dof_simple.xml', (payload(),))
+        with tempfile.TemporaryDirectory() as tmp:
+            cases = expand_maneuvers(study)
+            index = create_maneuver_study(Path(tmp) / 'study', study, cases)
+            prepared = prepare_maneuver_case(index.directory, study, cases[0])
+            attempt = prepared.directory / 'attempt_cancelled'; attempt.mkdir()
+            fields = finish_maneuver_case(prepared, attempt, return_code=None, timed_out=False,
+                                          cancelled=True, wall_seconds=.0, command=[])
+            self.assertEqual(fields['status'], 'cancelled')
+            self.assertEqual(json.loads((attempt / 'summary.json').read_text())['execution_outcome'], 'cancelled')
+            self.assertEqual(json.loads((attempt / 'parent.json').read_text())['status'], 'Cancelled')
 
     def test_completed_14dof_artifact_becomes_standard_attempt_run_record(self):
         repo = Path(__file__).resolve().parents[1]

@@ -26,7 +26,9 @@ The Maneuvers tab follows the lap-run layout: select an **Export folder**, run o
 <study>/cases/case_000/attempt_*/run_record.npz     # canonical run-record-v1
 ```
 
-Completed 14DoF cases create `run_record.npz` at precisely the same standard attempt path as lap studies. It is converted only from completed, hash-validated accepted maneuver evidence, without replaying physics, so the animator consumes it with the standard RunRecord loader. The straight-reference track used in this animator record is display-only. Failed, cancelled, timed-out, or currently unsupported planar maneuver cases remain normal indexed queue attempts but have no animator record. Use **Export animation…** to choose a fresh MP4 destination; the existing bridge still rejects an existing output rather than overwriting it.
+Completed 14DoF cases create `run_record.npz` at precisely the same standard attempt path as lap studies. It is converted only from completed, hash-validated accepted maneuver evidence, without replaying physics, so the animator consumes it with the standard RunRecord loader. The straight-reference track used in this animator record is display-only. Failed, cancelled, timed-out, or currently unsupported planar maneuver cases remain normal indexed queue attempts but have no animator record. Every terminal attempt receives attempt-root `summary.json` and `parent.json`, including queued cancellations. Use **Export animation…** to choose a fresh MP4 destination; the existing bridge still rejects an existing output rather than overwriting it.
+
+A saved `maneuver-study-v1` may contain multiple validated simulation definitions. Opening it selects its first definition for editing while preserving the full collection; invoke the application **Run Study** action from the Maneuvers tab to enqueue the entire collection through the same Queue tab. A direct Maneuvers **Run** always creates a fresh one-case study from the currently edited definition.
 
 A headless simulation run uses the same runner:
 

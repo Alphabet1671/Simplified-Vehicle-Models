@@ -439,7 +439,11 @@ def build_yaw_map_workflow(
             break
         audit = _audit_map(capability, training_domain, settings=settings, started=started)
         last_capability, last_audit = capability, audit
-        if (domain.diagnostics.complete and audit.complete) or rounds >= settings.maximum_refinement_rounds:
+        # Train to a stricter guard band than untouched validation. This is
+        # fixed a priori, never selected from the validation residuals.
+        training_ready = (audit.complete and audit.maximum_interpolation_loss is not None
+                          and audit.maximum_interpolation_loss <= audit.tolerance * 0.5)
+        if (domain.diagnostics.complete and training_ready) or rounds >= settings.maximum_refinement_rounds:
             break
         candidates = (*audit.outer_truncations, *audit.interpolation_losses)
         if not candidates:

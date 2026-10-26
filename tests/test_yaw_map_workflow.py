@@ -181,6 +181,23 @@ class YawMapWorkflowTest(unittest.TestCase):
         self.assertFalse(result.complete)
         self.assertEqual(seen, [1])
 
+    def test_negative_boundary_refines_toward_strict_supported_side(self):
+        from simplified_vehicle_models.formulations.yaw_capability import YawCapabilityGrid
+        from simplified_vehicle_models.formulations.yaw_map_workflow import AuditProbe, YawMapCompletionAudit, _refine_axes
+        from simplified_vehicle_models.solvers.yaw_profile_map import MapQueryReason
+        grid = YawCapabilityGrid([0., 10.], [0., 1.], [-17.5, -17., -16.5])
+        shape = (2, 2, 3); values = np.ones(shape)
+        # At v=5, ax=.5 only -16.5 has strict support. The negative direct
+        # boundary -17 must split toward -16.5, not the infeasible-side cell.
+        mask = np.zeros(shape, bool); mask[:, :, 2] = True
+        capability = YawCapabilityMap(grid.speed, grid.longitudinal_acceleration, grid.lateral_acceleration,
+                                      values, values, mask, 1., "physical_no_tv_v1", "negative-boundary")
+        probe = AuditProbe(5., .5, -17., ProbeStatus.FEASIBLE, MapQueryReason.MASKED_SUPPORT, .5)
+        audit = YawMapCompletionAudit((), 0, 10, False, False, (), (probe,), (), (), .5, .1)
+        _, _, ay = _refine_axes(capability, audit, self.settings(), axes_to_refine=("ay",))
+        self.assertIn(-16.75, ay)
+        self.assertNotIn(-17.25, ay)
+
     def test_outer_refinement_extends_ay_only_to_model_bound(self):
         from simplified_vehicle_models.formulations.yaw_capability import YawCapabilityGrid
         from simplified_vehicle_models.formulations.yaw_map_workflow import AuditProbe, YawMapCompletionAudit, _refine_axes

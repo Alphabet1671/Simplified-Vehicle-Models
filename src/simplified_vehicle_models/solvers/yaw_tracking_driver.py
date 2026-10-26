@@ -72,7 +72,7 @@ class ModelAwareYawDriver(PreviewDriver):
         course_error=observation.heading_error+math.atan2(observation.lateral_speed,max(speed,.25))
         desired=(math.atan(self.wheelbase*preview_curvature)-self.heading_gain*course_error
             -math.atan2(self.lateral_gain*observation.lateral_error,max(speed,1.))
-            -self.yaw_damping*(observation.yaw_rate-speed*curvature))
+            -self.yaw_damping*(observation.yaw_rate-speed*preview_curvature))
         desired=float(np.clip(desired,-self.maximum_steering,self.maximum_steering))
         steering=float(np.clip((desired-observation.steering)/self.steering_time_constant,
             -self.maximum_steering_rate,self.maximum_steering_rate))

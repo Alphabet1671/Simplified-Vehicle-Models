@@ -32,6 +32,10 @@ def parse_args(argv=None):
     p.add_argument('--replay-seconds',type=float,default=300.)
     p.add_argument('--maximum-step',type=float,default=.05)
     p.add_argument('--controller',choices=('preview','model-aware'),default='preview')
+    p.add_argument('--preview-seconds',type=float,default=None)
+    p.add_argument('--heading-gain',type=float,default=None)
+    p.add_argument('--lateral-gain',type=float,default=None)
+    p.add_argument('--yaw-damping',type=float,default=None)
     add_yaw_map_options(p)
     args=p.parse_args(argv)
     if args.yaw_map is None:p.error('--yaw-map completed artifact is required; suite never rebuilds maps')
@@ -124,7 +128,9 @@ def replay(args,output,vehicle,track,path,speed_plan,arrays,metadata):
     if args.controller!='preview':
         from simplified_vehicle_models.solvers.yaw_tracking_driver import ModelAwareYawDriver
         from simplified_vehicle_models.formulations.point_mass import point_mass_view_of_planar
-        driver=ModelAwareYawDriver.for_vehicle(speed_plan,vehicle,point_mass_view_of_planar(vehicle))
+        overrides={key:getattr(args,key) for key in ('preview_seconds','heading_gain','lateral_gain','yaw_damping')
+                   if getattr(args,key) is not None}
+        driver=ModelAwareYawDriver.for_vehicle(speed_plan,vehicle,point_mass_view_of_planar(vehicle),**overrides)
     else:
         driver=PreviewDriver(speed_plan,vehicle.wheelbase,vehicle.steering_maximum_angle,
             vehicle.steering_maximum_rate,vehicle.maximum_pedal_force)
@@ -173,6 +179,15 @@ def replay(args,output,vehicle,track,path,speed_plan,arrays,metadata):
         'lateral_error_max_m':float(np.max(np.abs(lateral))),'speed_error_rms_mps':rms(speed-target),
         'sampled_center_corridor_violation_m':float(max(violation)),'sampled_center_contained':bool(max(violation)<=1e-8),
         'footprint_containment_certified':False,'between_step_containment_certified':False}
+    controls=np.array([driver.command(observation) for observation in observations],dtype=object)
+    throttle=np.array([command.throttle for command in controls]);brake=np.array([command.brake_force for command in controls])
+    steering_rate=np.array([command.steering_rate for command in controls])
+    weighted_fraction=lambda flags:float(np.sum(dt*(flags[:-1].astype(float)+flags[1:].astype(float))*.5)/duration)
+    summary.update(throttle_max_requested=float(max(throttle)),
+        throttle_saturation_time_fraction_requested=weighted_fraction(throttle>=1.-1e-6),
+        brake_saturation_time_fraction_requested=weighted_fraction(brake>=vehicle.maximum_pedal_force*(1.-1e-6)),
+        steering_rate_saturation_time_fraction_requested=weighted_fraction(abs(steering_rate)>=vehicle.steering_maximum_rate*(1.-1e-6)),
+        control_metrics_kind='requested_commands; saved run record contains realized pedal-limited controls')
     runner.write_json(output/'summary.json',summary)
     return 0 if result.lap_completed else 3
 

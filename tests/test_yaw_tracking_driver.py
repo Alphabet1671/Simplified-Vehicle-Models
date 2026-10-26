@@ -36,6 +36,15 @@ class TrackingTests(unittest.TestCase):
         self.assertLess(a.steering_rate,0.)
         self.assertAlmostEqual(a.steering_rate,-b.steering_rate)
 
+    def test_yaw_damping_uses_same_preview_reference_as_steering(self):
+        plan=SpeedPlan(np.array([0.,10.,20.]),np.full(3,10.),np.array([0.,.01,0.]))
+        driver=self.driver(plan=plan,preview_seconds=.2,minimum_preview_m=0.)
+        observation=self.obs(distance=0.)
+        command=driver.command(observation)
+        _,preview_curvature,_=plan.sample(2.)
+        desired=np.arctan(2.*preview_curvature)+driver.yaw_damping*10.*preview_curvature
+        self.assertAlmostEqual(command.steering_rate,desired/driver.steering_time_constant)
+
     def test_steering_stop_commands_inward_rate(self):
         right=self.driver().command(self.obs(steering=.5,lateral_error=-100.))
         left=self.driver().command(self.obs(steering=-.5,lateral_error=100.))

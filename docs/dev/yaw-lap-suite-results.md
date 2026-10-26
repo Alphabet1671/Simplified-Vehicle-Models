@@ -19,7 +19,7 @@ Snapshot: 2026-10-26. This is an engineering implementation ledger, not an MIS s
 
 Every physical run/test used a process-group watchdog below 1,800 s. Longest configured run in this snapshot is the final MIS replay: 1,400 s cooperative, 1,500 s hard deadline. No longer run was approved or attempted.
 
-123 scoped regressions passed in 51.434 s before three additional saved-comparator coverage tests; the comparator/convergence pair then passed 14 tests in 0.089 s. Existing six functional line tests passed in 80.417 s under a 600 s watchdog (previously 157.908 s before shared geometry-only linearization). These are scoped suites, not a whole-repository pass claim.
+The final expanded scoped regression suite passed **128 tests in29.884 s** under a180 s process deadline. The printed0.25 s watchdog kill is an intentional descendant-kill regression, not a suite timeout. The comparator/convergence pair separately passed14 tests in0.089 s. The final six functional line tests passed in79.582 s under a600 s watchdog (previously157.908 s before shared geometry-only linearization). These are scoped suites, not a whole-repository pass claim.
 
 The matched MIS 2 m fixed profile retained exactly 61.4706029303142 s while runtime improved from approximately 40.02 s (graph 27.89 s) to 14.37 s (graph 1.97 s). Physical timings are workload/concurrency dependent.
 
@@ -62,17 +62,17 @@ Identical saved 1 m fixed plan, planned time 54.33894 s, unchanged speed targets
 
 The model-aware mode improves speed tracking/lap time but worsens lateral tracking. It is not uniformly superior. Full throttle results from physical drive-force inversion; no forced-throttle metric substitution is used. Both complete accepted/between-step solver validation; neither certifies footprint or between-step corridor containment.
 
-The current implementation subsequently aligns yaw damping with the preview curvature used for feedforward. The FSC table above is intentionally labeled with the earlier controller revision; it must not be represented as final matched-preview evidence.
+The current implementation subsequently aligns yaw damping with the preview curvature used for feedforward. The FSC table above is intentionally labeled with the earlier controller revision. The **final matched-preview revision also completes**:54.96176 s driven, speedRMS0.29239 m/s, lateralRMS0.07007 m/max0.17543 m, sampled centre-corridor violation0 m. Against the identical saved plan and legacy preview baseline58.79268 s, it is3.83091 s faster with lower speed error, but lateral RMS/max remain slightly worse than baseline0.05418/0.16037 m. Requested full-throttle time21.732%; no requested brake/steering-rate saturation. Footprint and between-step corridor containment remain uncertified.
 
 ## MIS forward tracking: matched-preview correction succeeds
 
 The early model-aware controller diverged near station 346.6 m, producing an unvalidated failure state with lateral displacement -12.17 m and a near-zero front wheel speed. This is a real tracking failure, not successful containment. Finite Newton-trial steering overshoot is now retryable without changing the physical bound, and inward steering-stop commands are tested.
 
-A longer-preview gain experiment exhausted its 550 s integration budget. Matched-preview yaw damping advanced to accepted-state validation but exhausted 550 s there. The subsequent 1,400 s cooperative / 1,500 s hard-watchdog replay **completed all solver validation**: driven64.80223 s versus planned64.16651 s, lateralRMS0.06579 m/max0.23174 m, speedRMS0.27060 m/s, sampled centre-corridor violation0 m. Requested full-throttle time23.855%, no requested steering-rate/brake saturation. This is successful fixed-line replay, not footprint/between-step corridor certification. A matched-final-revision FSC replay is underway.
+A longer-preview gain experiment exhausted its 550 s integration budget. Matched-preview yaw damping advanced to accepted-state validation but exhausted 550 s there. The subsequent 1,400 s cooperative / 1,500 s hard-watchdog replay **completed all solver validation**: driven64.80223 s versus planned64.16651 s, lateralRMS0.06579 m/max0.23174 m, speedRMS0.27060 m/s, sampled centre-corridor violation0 m. Requested full-throttle time23.855%, no requested steering-rate/brake saturation. This is successful fixed-line replay, not footprint/between-step corridor certification. The same final revision also completes FSC as reported above.
 
 ## Remaining work
 
-- Collect the matched-final-revision FSC replay; MIS final fixed-line replay now completes.
+- Extend matched fixed-line controller evidence to independent replay of the optimized lines.
 - Improve frontier/refinement efficiency enough to resolve the 0.5 m profiles within the hard runtime cap; do not widen strict tolerances.
 - Demonstrate optimizer and control-basis/spatial convergence, rather than only bounded improvement.
 - Validate optimized-line replay independently of fixed-line controller evidence.

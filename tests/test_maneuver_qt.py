@@ -20,6 +20,37 @@ class ManeuverQtTests(unittest.TestCase):
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
 
+    def test_lap_style_export_progress_log_and_completed_result(self):
+        tab = ManeuverTab(payload())
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            tab.set_export_folder(folder)
+            self.assertEqual(tab.export_folder(), folder)
+            tab.set_progress(.375)
+            self.assertEqual(tab.progress_bar.value(), 38)
+            tab.append_log('{"event":"complete"}')
+            self.assertIn('complete', tab.log_view.toPlainText())
+            requested = [{'swa_rad': 0.1, 'accelerator': 0.2, 'brake': 0.0}]
+            applied = [{'swa_rad': 0.1, 'accelerator': 0.2, 'brake': 0.0}]
+            artifact = folder / 'attempt' / 'result'
+            tab.set_completed_result({'termination_reason': 'duration'}, artifact, [0.0], requested, applied)
+            self.assertEqual(tab.preview.requested_commands, requested)
+            self.assertTrue(tab.animation_button.isEnabled())
+            self.assertIn('duration', tab.result_label.text())
+            self.assertIn(str(artifact), tab.result_label.text())
+
+    def test_shared_model_display_and_busy_controls(self):
+        tab = ManeuverTab(payload())
+        self.assertTrue(tab.shared_model_label.isReadOnly())
+        self.assertNotIn('Browse', tab.shared_model_label.text())
+        tab.set_busy(True)
+        self.assertFalse(tab.run_button.isEnabled())
+        self.assertFalse(tab.export_edit.isEnabled())
+        self.assertFalse(tab.export_browse.isEnabled())
+        self.assertFalse(tab.animation_button.isEnabled())
+        self.assertTrue(tab.stop_button.isEnabled())
+        tab.set_busy(False)
+
     def test_tab_controls_and_signals(self):
         tab = ManeuverTab()
         self.assertFalse(tab.run_button.isEnabled())

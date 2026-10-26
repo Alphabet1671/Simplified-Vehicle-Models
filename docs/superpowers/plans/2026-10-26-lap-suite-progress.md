@@ -21,7 +21,15 @@ Ruling: initial optional seeds may be bounded/sampled without supporting every d
 Ruling: proceed with staged implementation directly because user explicitly asked to resolve and carry on; no redundant execution-choice pause.
 Tool limitation: subagent API exposes no model selector; use available agent configuration and focused briefs. Existing worker reused because child limit prevents spawning fresh agents.
 
+Ruling: flying seam layers use their dedicated anchor discretization, not the33-value interior baseline grid. Mandatory seam endpoints and all valid warm seam suggestions must be included before selecting optional uniform anchors; if mandatory seam union exceeds max_seam_anchors or station budget, return typed overflow. Unioning33baseline values into default32seam cap would make every closed solve impossible. Cost if wrong: seam resolution remains explicit/finite, not unsafe support.
+
 ## Progress
 
 - Stage1 seed implementation delegated to25bd8bd4-fc97-4d1d-8375-3899bbd534b0; owns profile contracts/solver/tests.
 - Parent implemented process-group hard deadline CLI,3 tests pass including grandchild termination at0.25s. Larger-than1800s limit rejected unless explicit approval flag.
+- Seed reviewer Important positional settings compatibility fixed by appending fields. Parent caught standing optional nodes/domain snap filter/global optional budget issues; implementer fixes in progress.
+- Physical accepted-map2m probe advanced past original seed overflow, internal validated lap61.48s, but public original-order check rejected2segments. Diagnosis: rotating by cumsum changes edge ds last bits, dense ax faces amplify. Ruling: preserve exact original physical segment lengths through rotation and use same lengths in edge checks/validator/timing, not broaden tolerance or disable map masks. Cost if wrong: broader YawPath interface requires regression coverage; physical semantics preserved.
+- Probe serializer failed on ProfileValidation dataclass once; fixed with strict dataclass/enum/nonfinite handling and test.
+- Accepted dense-map physical probes at2m now pass independent original-order validation: MIS61.4706s,v10.2302..25.2006,wall40.02s; FSC51.9168s,v9.3547..20.0714,wall27.95s. Both resolutionFalse; no fine-grid/lap-controller claims.
+- Stage1 committed4d7454c after61focused tests9.66s; reviewer found mandatory warm seam removal. Fix b39132e adds dedicated seam policy, correct speed→q conversion, atomic matching anchors/global cap checks.59focused tests8.43s pass. Reviewer SPEC+QUALITY approved, no Important findings.
+- Task1: complete (commits4f8f99f..b39132e, review clean). Stage1b graph DP vectorization dispatched; physical2m graph solve28/40s motivates performance work before24-evaluation line search.

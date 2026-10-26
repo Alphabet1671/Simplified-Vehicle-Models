@@ -38,9 +38,18 @@ class VerticalManeuverTests(unittest.TestCase):
         self.assertEqual(outputs['brake_force_n'], self.calibration.brake_force(.5))
         for key in ('requested_swa_rad', 'swa_rad', 'throttle_fraction', 'body_ay_mps2',
                     'speed_mps', 'x_m', 'y_m', 'heading_rad', 'roll_rad', 'pitch_rad',
-                    'heave_m', 'wheel_speeds_rad_s', 'jounce_m', 'jounce_rates_mps'):
+                    'heave_m', 'wheel_speeds_rad_s', 'jounce_m', 'jounce_rates_mps',
+                    'acceleration-longitudinal', 'acceleration-lateral', 'roll', 'pitch',
+                    'wheel-position-x', 'wheel-position-y', 'wheel-steering-angle',
+                    'wheel-loaded-radius', 'tire-longitudinal-force', 'tire-lateral-force',
+                    'tire-vertical-force', 'tire-slip-ratio', 'tire-slip-angle'):
             self.assertIn(key, outputs)
-        self.assertEqual(len(outputs['wheel_speeds_rad_s']), 4)
+        for key in ('wheel_speeds_rad_s', 'wheel-position-x', 'wheel-position-y',
+                    'wheel-steering-angle', 'wheel-loaded-radius', 'tire-longitudinal-force',
+                    'tire-lateral-force', 'tire-vertical-force', 'tire-slip-ratio',
+                    'tire-slip-angle'):
+            self.assertEqual(len(outputs[key]), 4)
+        self.assertTrue(np.all(np.asarray(outputs['tire-vertical-force']) >= 0.))
 
     def test_straight_heading_kinematics(self):
         state = self.plant.initial_state(10., heading_rad=np.pi / 2)

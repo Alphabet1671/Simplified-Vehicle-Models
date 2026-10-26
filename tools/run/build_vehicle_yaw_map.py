@@ -30,8 +30,9 @@ def parser():
     p.add_argument('--boundary-tolerance', type=float, default=.05)
     p.add_argument('--loss-tolerance', type=float, default=.25)
     p.add_argument('--max-nodes', type=int, default=30000)
-    p.add_argument('--max-probes', type=int, default=100000)
-    p.add_argument('--audit-probes', type=int, default=30000)
+    p.add_argument('--max-probes', type=int, default=250000)
+    p.add_argument('--refinement-rounds', type=int, default=32)
+    p.add_argument('--audit-probes', type=int, default=250000)
     p.add_argument('--wall-seconds', type=float, default=600.)
     return p
 
@@ -50,15 +51,17 @@ def main(argv=None):
         probe_budget=args.max_probes, lateral_interpolation_loss_tolerance=args.loss_tolerance)
     settings = YawMapWorkflowSettings(discovery=domain_settings, maximum_lateral_cell_width=args.ay_spacing,
         maximum_map_nodes=args.max_nodes, maximum_audit_probes=args.audit_probes,
-        time_budget_seconds=args.wall_seconds)
+        maximum_refinement_rounds=args.refinement_rounds, time_budget_seconds=args.wall_seconds)
     compiled = compile_formulation(str(args.formulation)).model
     vehicle = point_mass_view_of_planar(compiled)
     speed = np.linspace(0., physical_map_speed_limit(vehicle), args.speed_points)
     ax = anchored_axis(args.ax_min, args.ax_max, args.ax_points)
     identity = build_identity(vehicle, compiled.yaw_inertia, settings, speed, ax)
     started = time.monotonic()
-    result = build_yaw_map_workflow(vehicle, speed, ax,
-        lambda v, a, y: direct_yaw_probe(vehicle, v, a, y), yaw_inertia=compiled.yaw_inertia, settings=settings)
+    from simplified_vehicle_models.formulations.yaw_map_physical import PhysicalYawEvaluator
+    evaluator = PhysicalYawEvaluator(vehicle)
+    result = build_yaw_map_workflow(vehicle, speed, ax, evaluator,
+        yaw_inertia=compiled.yaw_inertia, settings=settings, map_builder=evaluator.build)
     report = {k: json_values(v) for k, v in asdict(result).items() if k != 'capability'}
     report['wall_seconds'] = time.monotonic() - started
     report['declared_ax_domain_mps2'] = [args.ax_min, args.ax_max]

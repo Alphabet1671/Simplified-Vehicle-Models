@@ -32,7 +32,7 @@ def implementation_identity():
     root = Path(__file__).resolve().parents[1]
     digest = hashlib.sha256()
     paths = ('formulations/yaw_capability.py', 'formulations/yaw_map_domain.py',
-             'formulations/yaw_map_workflow.py', 'formulations/point_mass.py',
+             'formulations/yaw_map_workflow.py', 'formulations/yaw_map_physical.py', 'formulations/point_mass.py',
              'parameters/tire.py', 'suspension/quasi_static.py')
     for name in paths:
         digest.update(name.encode()); digest.update((root / name).read_bytes())

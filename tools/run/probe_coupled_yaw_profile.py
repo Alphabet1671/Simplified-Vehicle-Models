@@ -63,6 +63,8 @@ def run(args):
     from simplified_vehicle_models.solvers.yaw_aware_profile import yaw_aware_profile, _MapInterpolator
     from simplified_vehicle_models.tracks.profile import load_track
 
+    args.solver = getattr(args, "solver", "legacy")
+    args.wall_seconds = getattr(args, "wall_seconds", 120.)
     vehicle = compile_formulation(str(runner.PLANAR_FORMULATION)).model
     pm = point_mass_view_of_planar(vehicle)
     speed_domain = runner.physical_map_speed_limit(pm, search_limit_mps=args.maximum_speed)
@@ -100,17 +102,27 @@ def run(args):
     started = time.perf_counter()
     try:
         boundary = "flying" if path.is_closed else "standing"
-        profile = yaw_aware_profile(path, capability, boundary=boundary, maximum_speed=speed_domain)
-        doc["profile"] = {"status": "ok", "lap_time": profile.lap_time}
+        if args.solver == "coupled":
+            from simplified_vehicle_models.solvers.yaw_profile_contracts import CoupledProfileSettings
+            settings = CoupledProfileSettings(max_wall_seconds=args.wall_seconds)
+            profile = yaw_aware_profile(path, capability, boundary=boundary, maximum_speed=speed_domain,
+                                        solver="coupled", coupled_settings=settings)
+        else:
+            profile = yaw_aware_profile(path, capability, boundary=boundary, maximum_speed=speed_domain)
+        doc["profile"] = {"status": "ok", "solver": args.solver, "lap_time": profile.lap_time,
+                          "speed_min": float(profile.speed.min()), "speed_max": float(profile.speed.max()),
+                          "diagnostics": {k: v for k, v in profile.diagnostics.items()
+                                          if k not in ("refinement_waves", "refinement_windows")}}
     except Exception as error:
         # Preserve typed failure and the whole fixed path. Recover only the
         # explicit segment integer carried by the legacy exception message.
         message = str(error)
         match = re.search(r"\bsegment\s+(\d+)\b", message)
         diagnostics = getattr(error, "diagnostics", None)
-        failed_segment = (int(diagnostics["segment_index"]) if diagnostics is not None
+        failed_segment = (int(diagnostics["segment_index"]) if diagnostics is not None and "segment_index" in diagnostics
                           else (int(match.group(1)) if match else None))
-        doc["profile"] = {"status": "failed", "exception": type(error).__name__, "message": message,
+        doc["profile"] = {"status": "failed", "solver": args.solver, "exception": type(error).__name__,
+                         "profile_status": getattr(error, "status", None), "message": message,
                          "failed_segment": failed_segment, "segment_evidence": diagnostics,
                          "segment_evidence_note": ("structured legacy transition diagnostics" if diagnostics is not None else "segment parsed from exception message; no structured transition diagnostics")}
     doc["profile_seconds"] = time.perf_counter() - started
@@ -129,6 +141,8 @@ def parse_args(argv=None):
     parser.add_argument("--ay-points", type=int, default=17)
     parser.add_argument("--maximum-speed", type=float)
     parser.add_argument("--anchored", action="store_true")
+    parser.add_argument("--solver", choices=("legacy", "coupled"), default="legacy")
+    parser.add_argument("--wall-seconds", type=float, default=120.)
     args = parser.parse_args(argv)
     if args.spacing <= 0 or not np.isfinite(args.spacing):
         parser.error("--spacing must be finite and positive")

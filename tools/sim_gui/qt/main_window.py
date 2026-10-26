@@ -22,7 +22,12 @@ from PyQt6.QtGui import QDesktopServices
 
 from tools.gui_common.files import protected_directory_problem
 from tools.sim_gui import REPOSITORY_ROOT
-from tools.sim_gui.execute import prepare_case, validate_case
+from tools.sim_gui.execute import prepare_case, validate_case, child_command, finish_case, new_attempt, parse_progress
+from tools.sim_gui.maneuver_execute import (
+    ManeuverStudyDefinition, create_maneuver_study, expand_maneuvers,
+    finish_maneuver_case, maneuver_child_command, maneuver_progress,
+    new_maneuver_attempt, prepare_maneuver_case,
+)
 from tools.sim_gui.qt.model_panel import ModelPanel
 from tools.maneuver_gui.qt import ManeuverTab
 from tools.maneuver_gui.qt.controller import ManeuverController
@@ -194,11 +199,37 @@ class MainWindow(QMainWindow):
         }
 
     def _run_maneuver(self, definition) -> None:
-        if self.configuration is None or self._run_mode is not None or self.maneuver_controller.is_running():
+        """Build a native one-case study and run it through the shared queue."""
+        if self.configuration is None or self._run_mode is not None:
             return
+        data = definition.to_dict() if hasattr(definition, "to_dict") else dict(definition)
+        source = data.get("vehicle", {}).get("formulation") or data.get("vehicle", {}).get("model")
+        if not source:
+            _warn(self, "Maneuver", "Select a vehicle model before running a maneuver.")
+            return
+        study = ManeuverStudyDefinition(str(data.get("name") or "maneuver"), str(source), (data,))
+        try:
+            cases = expand_maneuvers(study)
+            directory = _study_directory(self.maneuver_tab.export_folder(), study)
+            self.study_index = create_maneuver_study(directory, study, cases)
+            self._prepared = [prepare_maneuver_case(directory, study, case) for case in cases]
+        except (OSError, ValueError) as error:
+            _warn(self, "Maneuver", str(error))
+            return
+        self._queue.study_index = self.study_index
+        self._queue.command_factory = maneuver_child_command
+        self._queue.finish_factory = finish_maneuver_case
+        self._queue.attempt_factory = new_maneuver_attempt
+        self._queue.progress_factory = maneuver_progress
+        self.queue_table.set_cases(self.study_index.cases)
+        self.maneuver_tab.clear_run()
+        self.maneuver_tab.set_busy(True)
         self._run_mode = "maneuver"
+        self._running = True
+        self._log_timer.start()
+        self.tabs.setCurrentWidget(self.queue_table)
         self._refresh_actions()
-        self.maneuver_controller.start(definition)
+        self._queue.start(self._prepared, 1)
 
     def _maneuver_busy_changed(self, busy: bool) -> None:
         if busy:
@@ -638,6 +669,21 @@ class MainWindow(QMainWindow):
         self._remember(Path(path))
 
     def _case_finished(self, key, fields) -> None:
+        if self._run_mode == "maneuver":
+            if self.study_index is not None:
+                case = next((item for item in self.study_index.cases if item.get("id") == key), {})
+                attempt = case.get("attempt")
+                if attempt:
+                    self.maneuver_tab.result_label.setText(
+                        f"Status: {case.get('status', 'failed')}\nAttempt: {self.study_index.directory / attempt}\n"
+                        f"RunRecord: {case.get('run_record') or 'not generated'}")
+                if case.get("status") == "completed" and case.get("run_record"):
+                    self.maneuver_tab.animation_button.setEnabled(True)
+                    self.maneuver_tab._completed_artifact = self.study_index.directory / attempt
+                    self.maneuver_tab._has_completed_artifact = True
+            self.queue_table.set_cases(self.study_index.cases)
+            self._refresh_status()
+            return
         if self._run_mode == "single":
             self.single_tab.set_status(str(fields.get("status", "")))
             self._refresh_single_log()
@@ -654,6 +700,19 @@ class MainWindow(QMainWindow):
     def _all_finished(self) -> None:
         """Finish the active mode without changing the other mode's widgets."""
         mode = self._run_mode
+        # The queue is configured per run kind; restore its lap defaults once
+        # a maneuver queue has drained so subsequent lap studies are unchanged.
+        if mode == "maneuver":
+            self._queue.command_factory = child_command
+            self._queue.finish_factory = finish_case
+            self._queue.attempt_factory = new_attempt
+            self._queue.progress_factory = parse_progress
+            self.maneuver_tab.set_busy(False)
+            self._running = False
+            self._log_timer.stop()
+            self._run_mode = None
+            self._refresh_actions()
+            return
         self._running = False
         self._log_timer.stop()
         self._single_log_timer.stop()

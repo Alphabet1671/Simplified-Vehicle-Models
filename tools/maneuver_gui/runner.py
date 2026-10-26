@@ -152,9 +152,17 @@ def _allowed_formulation(value: str) -> Path:
     return resolved
 
 
-def run_definition(definition_path: Path, output_root: Path, *, cancel=None, timeout_s=305) -> Path:
-    """Validate and run a definition in an isolated Python child process."""
-    attempt = create_attempt_directory(output_root)
+def run_definition(definition_path: Path, output_root: Path, *, attempt_directory: Path | None = None,
+                   cancel=None, timeout_s=305) -> Path:
+    """Validate and run a definition in an isolated Python child process.
+
+    ``attempt_directory`` lets the sim-study queue supply its already-created
+    standard attempt directory. It is intentionally optional so standalone GUI
+    and CLI use retains the immutable attempt allocation behavior.
+    """
+    attempt = Path(attempt_directory) if attempt_directory is not None else create_attempt_directory(output_root)
+    if attempt_directory is not None:
+        attempt.mkdir(parents=True, exist_ok=False)
     source = Path(definition_path).expanduser().resolve()
     stage = None
     source_copy = None
@@ -341,8 +349,10 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--definition", required=True, type=Path)
     parser.add_argument("--output-root", required=True, type=Path)
+    parser.add_argument("--attempt-directory", type=Path,
+                        help="existing-parent path where this simulation writes one standard attempt")
     args = parser.parse_args(argv)
-    attempt = run_definition(args.definition, args.output_root)
+    attempt = run_definition(args.definition, args.output_root, attempt_directory=args.attempt_directory)
     try:
         summary = json.loads((attempt / "summary.json").read_text(encoding="utf-8"))
     except Exception:

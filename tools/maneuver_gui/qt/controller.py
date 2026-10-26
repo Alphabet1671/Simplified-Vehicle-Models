@@ -165,6 +165,10 @@ class ManeuverController(QObject):
         if self.is_running():
             raise RuntimeError("a maneuver or animation is already running")
         artifact, output = Path(artifact), Path(output)
+        # Standard study attempts place immutable maneuver evidence in result/;
+        # standalone GUI completions pass that directory directly.
+        if (artifact / "result").is_dir():
+            artifact = artifact / "result"
         self.tab.set_busy(True)
         self.tab.status_label.setText("Exporting animation")
         self.busyChanged.emit(True)

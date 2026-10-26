@@ -21,6 +21,7 @@ def parse_args(argv=None):
     p.add_argument('--output-dir',type=Path,required=True)
     p.add_argument('--mode',choices=('fixed','line','replay'),default='fixed')
     p.add_argument('--plan',type=Path)
+    p.add_argument('--warm-plan',type=Path,help='validated coarser plan used only for speed-seed suggestions')
     p.add_argument('--spacing',type=float,default=2.)
     p.add_argument('--control-spacing',type=float,default=40.)
     p.add_argument('--profile-seconds',type=float,default=120.)
@@ -70,9 +71,15 @@ def run(args):
             reference=ReferenceCurve(track);spline=OffsetSpline(track,max(4.,args.spacing*100.))
             trajectory=OffsetTrajectory(reference,spline,np.zeros(spline.control_count))
             path=_sample_geometry(track,'zero-offset',args.spacing)
+            source=trajectory.station_map.to_reference(path.distance)
+            warm=None
+            if args.warm_plan:
+                _,_,warm_arrays,_,_=load_lap_plan(args.warm_plan,capability,expected_track_identity=track_identity)
+                warm=np.interp(source,warm_arrays['reference_distance'],warm_arrays['speed'])
+                if path.is_closed:warm[-1]=warm[0]
             profile=yaw_aware_profile(path,capability,boundary='flying' if path.is_closed else 'standing',
-                maximum_speed=vmax,solver='coupled',coupled_settings=settings)
-            source=trajectory.station_map.to_reference(path.distance);geometry=trajectory.evaluate(source)
+                maximum_speed=vmax,solver='coupled',coupled_settings=settings,warm_start_speed=warm)
+            geometry=trajectory.evaluate(source)
             geometry_data=dict(reference_distance=source,north=geometry.north,east=geometry.east,heading=geometry.heading)
             plan_diagnostics={'kind':'fixed_geometry','profile':dict(profile.diagnostics)}
         else:

@@ -16,7 +16,7 @@ Discovery scans both signs all the way to that enclosure. It does not stop at th
 2. Construct a rectangular strict-mask map with exact zero knots and a maximum lateral cell width. Never fill masked holes or broaden interpolation tolerances.
 3. Independently scan signed lateral rays at cell-third speed/ax holdouts and refine their direct boundary brackets.
 4. Compare directly feasible component/boundary endpoints to strict supported lateral knots at the same speed/ax. Wholly masked slices are explicitly unsupported, not assigned a fictitious small error.
-5. Refine the worst responsible rectangular cells by enclosing cell midpoints, not by inserting the training coordinate itself, within declared budgets.
+5. Refine the worst responsible rectangular cells toward strict support, using midpoint splits and measured-progress cross-axis fallback, not by inserting the training coordinate itself. Train to half the acceptance tolerance as a fixed guard band, within declared budgets.
 6. Freeze the map and perform a disjoint quarter/three-quarter holdout discovery and boundary audit. These validation points do not drive refinement. Completion requires both training and held-out validation to have no outer truncation, no unresolved LPs or exhausted budgets, and loss within the declared tolerance.
 
 This is a finite-resolution acceptance audit, not proof over the continuum. Boundary loss is conservative distance to a supported **knot**, which may overestimate distance to the supported interval. Full nonzero yaw demand must still be validated by the profile solver.
@@ -31,7 +31,7 @@ PYTHONPATH=src:. python3 tools/run/build_vehicle_yaw_map.py \
   --speed-points 12 --ax-points 9 --ax-min -6 --ax-max 3 \
   --ay-spacing .5 --scan-spacing .5 --boundary-tolerance .05 \
   --loss-tolerance .25 --max-probes 250000 --audit-probes 500000 \
-  --max-nodes 500000 --refinement-rounds 128 --wall-seconds 600
+  --max-nodes 3000000 --refinement-rounds 768 --wall-seconds 1200
 ```
 
 Exit 0 means the finite-resolution audit completed; exit 4 means it did not. Inspect the adjacent JSON report before increasing resolution or budgets. Do not loosen the loss tolerance merely to get a success status.
@@ -70,4 +70,4 @@ The IEM24 build with 12 requested speed knots and 10 zero-anchored ax knots comp
 - 430.6 s wall on this machine, with physical LP results cached across map rounds.
 - Maximum load observed at sampled feasible discovery endpoints: 2,284 N per tyre, below the peak envelope's 3,500 N table ceiling.
 
-**This map is NOT accepted:** a fresh quarter-cell validation (126,116 direct LP probes, no unresolved/budget stop) found five wholly unsupported speed/ax faces and maximum finite interpolation loss 1.21875 m/s², despite zero outer truncation. Adaptive insertion of the original audit coordinates had fitted that audit too closely. Production acceptance must separate refinement/training probes from held-out validation. The old v7 `complete` value is obsolete evidence, not an accepted default artifact.
+**The earlier v7 map is NOT accepted:** a fresh quarter-cell validation (126,116 direct LP probes, no unresolved/budget stop) found five wholly unsupported speed/ax faces and maximum finite interpolation loss 1.21875 m/s², despite zero outer truncation. Adaptive insertion of the original audit coordinates had fitted that audit too closely. Production acceptance must separate refinement/training probes from held-out validation. The old v7 `complete` value is obsolete evidence, not an accepted default artifact.

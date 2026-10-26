@@ -58,6 +58,24 @@
 - Ruling: optimize refinement before increasing budgets further. Try ay-only finite-loss split, explicitly detect no measured loss reduction, then alternate one speed/ax midpoint fallback; wholly unsupported slices need cross-axis refinement. Acceptance remains disjoint and unchanged. The previous caution against ay-only guarantees still applies; fallback is required.
 - Physical budget-failure end-to-end smoke verified CLI exits4, saves NPZ, loader rejects incomplete artifact. Artifact workflow remains honest despite performance limits.
 
+## Selective v10 outcome and solver-cost optimization
+
+- v10 selective refinement still exhausted900s at57×55×142; incomplete with deadline evidence. No accepted physical default artifact yet. Do not present scaffold as complete user request.
+- Investigating exact rear-drive no-TV LP reduction: fixed aggregate drive/brake bias uniquely fixes per-wheel Fx; remaining two axle Fy intervals can be solved by intersecting the same16-sided tyre inequalities and totalFy equality. This may remove millions of HiGHS calls without changing model semantics. Must compare to direct LP extensively and retain fallback for other driveline/TV modes and independent HiGHS holdout validation.
+
+## Reduced LP + gap-refinement evidence
+
+- Exact rear-only/noTV interval reduction matches1900 canonical LP status/moment probes plus active motor-boundary perturbations; ambiguous/numerical cases fallback to canonical LP. Independent held-out validation explicitly uses separate canonical HiGHS evaluator.4 reduced tests pass; reviewer approved.
+- v11 reduced build failed2M node cap at268rounds, residualtraining0.5/validation0.5625. Parent diagnosed wrong-side negative boundary gap split, fixed toward actual strict support; sign regression16workflow tests passes.
+- v12 corrected gap training reached0.25 in331s, shape66×63×291; heldout0.375 => incomplete. This is useful progress, NOT accepted.
+- Ruling: fixed training guard band half acceptance tolerance (0.125 vs0.25), never loosen heldout acceptance. v13 now running3Mnodes768rounds1200s. This stricter internal criterion should reduce generalization loss; independent heldout still gate.
+
+## Held-out qualified v13
+
+- v13 COMPLETE:78×75×438 (2,562,300nodes),±25.1875m/s²,466rounds710.95s. Training2,172 checks max0.125; independent canonical HiGHS validation126,116LP-coordinate probes2,158checks max0.25. No unresolved/outer truncation/budget stop.
+- Final current-code rebuild bash-1545 in progress; consumer-compatible production defaults now3Mnodes768round1200s matching proven recipe.67focused regression tests pass.
+- Final report drafted under docs/dev/vehicle-limit-yaw-map-results.md. Need current artifact identity load, MIS/FSC preflight, final suite collection and review.
+
 ## Remaining
 
 1. Finish/review workflow, especially true holdout-to-supported-domain distance and preallocation budgets.

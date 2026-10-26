@@ -12,6 +12,14 @@ from tools.run import probe_coupled_yaw_profile as probe
 
 
 class ProbeArtifactTests(unittest.TestCase):
+    def test_coupled_validation_dataclass_is_strict_json_serializable(self):
+        from simplified_vehicle_models.solvers.yaw_profile_contracts import ProfileValidation
+        value=ProfileValidation(True,0.,0.,None,(),0,0.,1.,None)
+        converted=probe._jsonable({'validation':value,'unknown':float('nan')})
+        self.assertTrue(converted['validation']['valid'])
+        self.assertIsNone(converted['unknown'])
+        json.dumps(converted,allow_nan=False)
+
     def test_writes_path_map_and_explicit_legacy_failure_when_profile_raises(self):
         capability = SimpleNamespace(feasible_mask=np.ones((2, 2, 2), bool),
             yaw_moment_into_turn=np.ones((2, 2, 2)), yaw_moment_out_of_turn=np.ones((2, 2, 2)),

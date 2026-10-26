@@ -34,6 +34,14 @@ def _jsonable(value):
         return [_jsonable(item) for item in value]
     if isinstance(value, np.generic):
         return _jsonable(value.item())
+    from dataclasses import is_dataclass, asdict
+    from enum import Enum
+    if is_dataclass(value):
+        return _jsonable(asdict(value))
+    if isinstance(value, Enum):
+        return value.value
+    if isinstance(value, float) and not np.isfinite(value):
+        return None
     return value
 
 

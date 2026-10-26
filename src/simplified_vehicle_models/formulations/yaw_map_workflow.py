@@ -302,7 +302,20 @@ def _refine_axes(capability: YawCapabilityMap, audit: YawMapCompletionAudit,
             midpoint = _axis_midpoint(axis, value)
             if midpoint is not None:
                 axis.add(midpoint)
-    ay_midpoint = _axis_midpoint(ay, probe.lateral_acceleration)
+    # Refine the gap toward existing support, not the infeasible side of the
+    # direct boundary (especially important for positive ay exactly on a knot).
+    supported = [float(value) for value in capability.lateral_acceleration
+                 if interpolator_for(capability).query_evidence(probe.speed,
+                    probe.longitudinal_acceleration, float(value))['reason'] is MapQueryReason.SUPPORTED]
+    if supported:
+        nearest = min(supported, key=lambda value: abs(value - probe.lateral_acceleration))
+        lo, hi = sorted((nearest, probe.lateral_acceleration))
+        gap_knots = sorted(value for value in ay if lo <= value <= hi)
+        gaps = list(zip(gap_knots, gap_knots[1:]))
+        ay_midpoint = (sum(max(gaps, key=lambda pair: pair[1]-pair[0])) / 2
+                       if gaps else _axis_midpoint(ay, probe.lateral_acceleration))
+    else:
+        ay_midpoint = _axis_midpoint(ay, probe.lateral_acceleration)
     if "ay" in axes_to_refine and ay_midpoint is not None:
         ay.add(ay_midpoint)
     elif "ay" in axes_to_refine and probe.map_reason is MapQueryReason.OUT_OF_DOMAIN and lateral_bound is not None:

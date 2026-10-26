@@ -222,7 +222,7 @@ class YawMapWorkflowTest(unittest.TestCase):
                                         map_builder=builder)
         self.assertFalse(result.complete)
         self.assertGreaterEqual(len(seen), 1)
-        self.assertEqual(result.capability.feasible_mask.shape, seen[0])
+        self.assertEqual(result.capability.feasible_mask.shape, seen[-1])
         self.assertGreater(len(result.audit.interpolation_losses), 0)
         self.assertLessEqual(max(int(np.prod(shape)) for shape in seen), 10)
         self.assertTrue(result.audit.budget_exhausted or result.audit.refinement_stalled)

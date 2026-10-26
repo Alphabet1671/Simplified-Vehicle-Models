@@ -53,6 +53,18 @@ class ReducedYawMapTest(unittest.TestCase):
                 self.assertEqual(direct_reduced_cell(self.vehicle, speed, ax, 0.).status,
                                  direct_yaw_cell(self.vehicle, speed, ax, 0.).status)
 
+    def test_reduced_cache_reuses_canonical_ambiguous_verdict(self):
+        from simplified_vehicle_models.formulations.yaw_map_physical import PhysicalYawEvaluator
+        from simplified_vehicle_models.formulations.yaw_map_reduced import _ReducedAmbiguous
+        evaluator=PhysicalYawEvaluator(self.vehicle,use_reduced=True)
+        sentinel=DirectYawCell(ProbeStatus.UNRESOLVED,detail='canonical numerical evidence')
+        with patch('simplified_vehicle_models.formulations.yaw_map_reduced._interval_for_axle',
+                   side_effect=_ReducedAmbiguous('fixture active boundary')), \
+             patch('simplified_vehicle_models.formulations.yaw_map_reduced.direct_yaw_cell',return_value=sentinel) as direct:
+            self.assertIs(evaluator.cell(15.,0.,0.),sentinel)
+            self.assertIs(evaluator.cell(15.,0.,0.),sentinel)
+        direct.assert_called_once()
+
     def test_nonrear_or_tv_configurations_fall_back_to_direct_evaluator(self):
         sentinel = DirectYawCell(ProbeStatus.UNRESOLVED, detail="fallback")
         with patch("simplified_vehicle_models.formulations.yaw_map_reduced.direct_yaw_cell", return_value=sentinel) as direct:

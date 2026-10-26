@@ -55,8 +55,12 @@ def validate_profile(path: YawPath, capability: YawCapabilityMap, q,
         if v0 + v1 <= 0.0:
             bad.append(i)
             continue
-        vm = math.sqrt(.5 * (v0*v0 + v1*v1))
-        ax = (v1*v1-v0*v0)/(2.*float(ds))
+        # Same arithmetic as the edge oracle (q = v*v, then midpoint and
+        # difference in q), so a value on a map knot face is classified
+        # identically by solver and validator.
+        q0, q1 = v0*v0, v1*v1
+        vm = math.sqrt((q0 + q1)/2)
+        ax = (q1 - q0)/(2*float(ds))
         ax_violation = max(0., float(capability.longitudinal_acceleration[0])-ax,
                            ax-float(capability.longitudinal_acceleration[-1]))
         max_ax_violation = max(max_ax_violation, ax_violation)

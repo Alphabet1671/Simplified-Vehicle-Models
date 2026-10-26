@@ -74,13 +74,15 @@ def _snap(q):
 
     Profiles leave the solver as speeds and the independent validator
     recomputes ``v*v``. Candidates are stored as a value ``q`` with
-    ``sqrt(q)**2 == q`` exactly, so solver edge checks and validation see
-    identical numbers. Iterating ``q <- sqrt(q)**2`` reaches such a fixed
-    point within a couple of steps for finite nonnegative floats.
+    ``s*s == q`` for ``s = sqrt(q)`` exactly (note ``s*s`` and ``s**2`` can
+    round differently; the validator uses ``v*v``), so solver edge checks and
+    validation see identical numbers. Iterating reaches a fixed point within a
+    couple of steps for finite nonnegative floats.
     """
     q = float(q)
     for _ in range(8):
-        nxt = math.sqrt(q) ** 2
+        root = math.sqrt(q)
+        nxt = root * root
         if nxt == q:
             return q
         q = nxt

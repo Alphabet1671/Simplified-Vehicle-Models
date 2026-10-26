@@ -60,9 +60,11 @@ def main(argv=None):
     identity = build_identity(vehicle, compiled.yaw_inertia, settings, speed, ax)
     started = time.monotonic()
     from simplified_vehicle_models.formulations.yaw_map_physical import PhysicalYawEvaluator
-    evaluator = PhysicalYawEvaluator(vehicle, time_budget_seconds=settings.time_budget_seconds)
+    evaluator = PhysicalYawEvaluator(vehicle, time_budget_seconds=settings.time_budget_seconds, use_reduced=True)
+    validation = PhysicalYawEvaluator(vehicle, time_budget_seconds=settings.time_budget_seconds)
     result = build_yaw_map_workflow(vehicle, speed, ax, evaluator,
-        yaw_inertia=compiled.yaw_inertia, settings=settings, map_builder=evaluator.build)
+        yaw_inertia=compiled.yaw_inertia, settings=settings, map_builder=evaluator.build,
+        validation_evaluator=validation)
     report = {k: json_values(v) for k, v in asdict(result).items() if k != 'capability'}
     report['wall_seconds'] = time.monotonic() - started
     report['declared_ax_domain_mps2'] = [args.ax_min, args.ax_max]

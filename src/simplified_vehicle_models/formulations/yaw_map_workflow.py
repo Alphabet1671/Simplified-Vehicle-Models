@@ -326,6 +326,7 @@ def build_yaw_map_workflow(
     tv_limits: TvLimits | None = None,
     settings: YawMapWorkflowSettings = YawMapWorkflowSettings(),
     map_builder: Callable[..., YawCapabilityMap] = build_physical_yaw_map,
+    validation_evaluator: Callable[[float, float, float], ProbeResult] | None = None,
 ) -> YawMapWorkflowResult:
     """Discover, build, directly audit, and finitely refine a strict map.
 
@@ -456,8 +457,12 @@ def build_yaw_map_workflow(
             break
         map_speed, map_ax, lateral = refined
         rounds += 1
+    def validation_probe(speed, ax, ay):
+        if time.monotonic() - started > settings.time_budget_seconds:
+            return ProbeResult(ProbeStatus.UNRESOLVED, 'workflow time budget exhausted')
+        return (validation_evaluator or evaluator)(speed, ax, ay)
     validation_domain = discover_yaw_map_domain(vehicle, validation_speeds, validation_ax,
-                                                 deadline_evaluator, audit_settings)
+                                                 validation_probe, audit_settings)
     validation_audit = _audit_map(capability, validation_domain, settings=settings, started=started)
     complete = (independent_holdouts and domain.diagnostics.complete
                 and training_domain.diagnostics.complete and audit.complete

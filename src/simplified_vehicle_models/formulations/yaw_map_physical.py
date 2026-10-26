@@ -9,7 +9,8 @@ from simplified_vehicle_models.formulations.point_mass_capability import capabil
 
 
 class PhysicalYawEvaluator:
-    def __init__(self, vehicle, tv_limits=None, *, time_budget_seconds=None):
+    def __init__(self, vehicle, tv_limits=None, *, time_budget_seconds=None, use_reduced=False):
+        self.use_reduced = use_reduced
         self.deadline = None if time_budget_seconds is None else time.monotonic() + time_budget_seconds
         self.vehicle = vehicle
         self.tv_limits = tv_limits
@@ -21,7 +22,11 @@ class PhysicalYawEvaluator:
             if self.deadline is not None and time.monotonic() >= self.deadline:
                 from simplified_vehicle_models.formulations.yaw_capability import DirectYawCell
                 return DirectYawCell(ProbeStatus.UNRESOLVED, detail='physical map build time budget exhausted')
-            self.cells[key] = direct_yaw_cell(self.vehicle, *key, self.tv_limits)
+            if self.use_reduced:
+                from simplified_vehicle_models.formulations.yaw_map_reduced import direct_reduced_cell
+                self.cells[key] = direct_reduced_cell(self.vehicle, *key, self.tv_limits)
+            else:
+                self.cells[key] = direct_yaw_cell(self.vehicle, *key, self.tv_limits)
         return self.cells[key]
 
     def __call__(self, speed, ax, ay):

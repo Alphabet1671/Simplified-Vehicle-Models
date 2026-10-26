@@ -58,9 +58,11 @@ def resolve_yaw_map(vehicle, yaw_inertia, speeds, ax, args, *, limited_ay=None, 
         cap, metadata = load_yaw_map(args.yaw_map, expected_identity=identity)
         return cap, metadata['report']
     from simplified_vehicle_models.formulations.yaw_map_physical import PhysicalYawEvaluator
-    evaluator = PhysicalYawEvaluator(vehicle, time_budget_seconds=settings.time_budget_seconds)
+    evaluator = PhysicalYawEvaluator(vehicle, time_budget_seconds=settings.time_budget_seconds, use_reduced=True)
+    validation = PhysicalYawEvaluator(vehicle, time_budget_seconds=settings.time_budget_seconds)
     result = build_yaw_map_workflow(vehicle, speeds, ax, evaluator,
-        yaw_inertia=yaw_inertia, settings=settings, map_builder=evaluator.build)
+        yaw_inertia=yaw_inertia, settings=settings, map_builder=evaluator.build,
+        validation_evaluator=validation)
     report = {k:json_values(v) for k,v in asdict(result).items() if k != 'capability'}
     report.update(mode=mode, declared_ax_domain_mps2=[float(min(ax)),float(max(ax))], settings=json_values(settings))
     if save_path is not None:

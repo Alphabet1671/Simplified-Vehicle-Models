@@ -33,6 +33,39 @@ class QtTests(unittest.TestCase):
         self.assertTrue(w.open_path(Path('models/tires/hoosier-43075-r20-simple.xml')))
         return w
 
+    def test_pending_steady_candidate_plots_without_live_mutation(self):
+        w = self.window()
+        from tools.tire_gui.model import with_parameters
+        old = w.snapshot
+        candidate_model = with_parameters(old, {'mu_0_y': old.values['mu_0_y'] * .9})
+        result = FitResult(old.revision, candidate_model, {}, True, (), {'mu_0_y': 'fitted'})
+        w._fit_generation = w.generation
+        w._fit_mode = 'steady'
+        w._fit_selection = None
+        w.candidate = None
+        w._fit_selection = None
+        from tools.tire_gui.segments import compatibility_selection
+        def run(run_id, tire, count):
+            z = np.zeros(count)
+            channels = {'alpha': z, 'kappa': z, 'fz': z + 600, 'fy': z, 'fx': z, 'mz': z, 'time': np.arange(count) * .01}
+            return RunData(run_id, tire, channels, {}, np.arange(count))
+        w.runs = {8: run(8, '43075 R20', 21168), 72: run(72, '43100 R20', 25992)}
+        w.full_selection = compatibility_selection(w.runs[8], w.runs[72])
+        w._populate_load_filter(); w._populate_compatibility_segments(); w._apply_selection_filters()
+        w._fit_selection = w.selection
+        w._fit_done(result)
+        self.assertIs(w.snapshot, old)
+        self.assertEqual(dict(w.snapshot.values), dict(old.values))
+        self.assertTrue(any(line.get_label() == 'Pending candidate' for line in w.steady_plot.axes[0].lines))
+        self.assertIn('mu_0_y:', w.diagnostics.toPlainText())
+        self.assertIn('Pending candidate parameters', w.diagnostics.toPlainText())
+        candidate_line = next(line for line in w.steady_plot.axes[0].lines if line.get_label() == 'Pending candidate')
+        self.assertEqual(len(candidate_line.get_ydata()), len(w.selection.lateral.target))
+        w.discard_candidate()
+        self.assertFalse(any(line.get_label() == 'Pending candidate' for line in w.steady_plot.axes[0].lines))
+        self.assertIs(w.snapshot, old)
+        w.dirty = False; w.close()
+
     def test_numeric_edit_and_stale_candidate_refused(self):
         w = self.window(); old = w.snapshot
         w.set_parameter('mu_0_y', old.values['mu_0_y'] + .1)
@@ -62,6 +95,9 @@ class QtTests(unittest.TestCase):
 
     def test_tabs_and_missing_data(self):
         w=self.window(); self.assertGreaterEqual(w.tabs.count(),3)
+        w.open_path(Path('models/tires/hoosier-43075-r20-simple.xml'))
+        self.assertTrue(any(line.get_label() == 'Current fit' for line in w.steady_plot.axes[0].lines))
+        self.assertTrue(any('No measurements — model-only sweep' in text.get_text() for text in w.steady_plot.axes[0].texts))
         with self.assertRaises(Exception):
             w.load_data_path(Path('/definitely/missing/run.mat'))
         self.assertFalse(w.fit_longitudinal_button.isEnabled()); w.dirty = False; w.close()

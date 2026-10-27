@@ -170,6 +170,8 @@ class MainWindow(QMainWindow):
 
     def _invalidate_candidate(self):
         self.candidate = None
+        self._fit_mode = None
+        self._fit_selection = None
         self.apply_button.setEnabled(False)
         self.discard_button.setEnabled(False)
 
@@ -694,6 +696,8 @@ class MainWindow(QMainWindow):
         self.fit_longitudinal_button.setEnabled(False)
         self.cancel_button.setEnabled(True)
         self._fit_generation = self.generation
+        self._fit_mode = mode
+        self._fit_selection = selection
         self.thread = QThread(self)
         self.worker = FitWorker(self.snapshot, mode, selection, self.parameter_panel.locked(), events, self.parameter_panel.bounds(), runner=getattr(self, 'worker_runner', None))
         self.worker.moveToThread(self.thread)
@@ -724,6 +728,9 @@ class MainWindow(QMainWindow):
         self.discard_button.setEnabled(True)
         self.status.setText('Candidate ready — review diagnostics, then explicitly Apply or Discard.')
         self._refresh_diagnostics(result)
+        if getattr(self, '_fit_mode', None) == 'steady':
+            self._refresh_plots()
+            self._refresh_diagnostics(result)
 
     def _fit_failed(self, text):
         self.status.setText('Fit failed: ' + text)
@@ -765,23 +772,34 @@ class MainWindow(QMainWindow):
 
     def discard_candidate(self):
         self._invalidate_candidate()
+        self._refresh_plots()
+        self._refresh_diagnostics()
         self.status.setText('Candidate discarded; live model unchanged.')
 
     def _refresh_plots(self):
         if self.snapshot is None:
             return
-        if 8 not in self.runs or 72 not in self.runs:
-            self.steady_plot.message('Load private TTC runs 8 and 72 to compare measured / current / seed predictions.\n43075 Fy/Mz; 43100 Fx and combined-slip proxy.')
-            self._refresh_diagnostics()
-            return
         try:
             from ..model import predict_steady
-            if self.full_selection is None:
+            no_measurements = 8 not in self.runs or 72 not in self.runs
+            if no_measurements:
+                from ..contracts import SampleSet, SteadySelection
+                alpha = np.linspace(-0.3, 0.3, 121)
+                kappa = np.linspace(-0.3, 0.3, 121)
+                load = min(600.0, max(100.0, self.snapshot.load_domain[1] * .4))
+                def synthetic(a, k):
+                    return SampleSet(a, k, np.full(len(a), load), np.zeros(len(a)), np.full(len(a), -1, dtype=int), raw_indices=np.arange(len(a), dtype=int))
+                lat, lon = synthetic(alpha, np.zeros_like(alpha)), synthetic(np.zeros_like(kappa), kappa)
+                mixed, mz = synthetic(alpha, kappa), synthetic(alpha, np.zeros_like(alpha))
+                data = SteadySelection(lat, lon, mixed, mixed, mz, 40.193 / 3.6)
+            elif self.full_selection is None:
                 self.full_selection = compatibility_selection(self.runs[8], self.runs[72])
                 self._populate_load_filter()
                 self._populate_compatibility_segments()
                 self._apply_selection_filters()
-            data = self.active_selection or compatibility_selection(self.runs[8], self.runs[72])
+            candidate_model = self.candidate.candidate if self.candidate is not None and getattr(self, '_fit_mode', None) == 'steady' else None
+            if not no_measurements:
+                data = (self._fit_selection if candidate_model is not None else None) or self.active_selection or compatibility_selection(self.runs[8], self.runs[72])
             groups = [
                 ('Fy vs alpha', data.lateral, 'lateral_force', data.lateral.alpha, 'alpha (rad)', 'Fy (N)'),
                 ('Fx vs kappa', data.longitudinal, 'longitudinal_force', data.longitudinal.kappa, 'kappa', 'Fx (N)'),
@@ -795,36 +813,61 @@ class MainWindow(QMainWindow):
                 prediction = predict_steady(self.snapshot, samples, data.belt_speed)
                 current = getattr(prediction, component) / denominator
                 if title.startswith('Combined slip'):
-                    fy = data.combined_fy
-                    fy_measured = {int(ix): float(val / fz) for ix, val, fz in zip(fy.raw_indices, fy.target, fy.fz)}
-                    fx_measured = {int(ix): float(val / fz) for ix, val, fz in zip(samples.raw_indices, samples.target, samples.fz)}
-                    common = sorted(set(fy_measured) & set(fx_measured))
-                    x = np.asarray([fy_measured[i] for i in common])
-                    measured = np.asarray([fx_measured[i] for i in common])
-                    fx_prediction = predict_steady(self.snapshot, samples, data.belt_speed)
-                    current_by_raw = {int(ix): float(val / fz) for ix, val, fz in zip(samples.raw_indices, fx_prediction.longitudinal_force, samples.fz)}
-                    current = np.asarray([current_by_raw[i] for i in common])
-                    order = np.argsort(x)
-                    axis.scatter(x, measured, s=5, c='#555555', label='Measured', alpha=.65)
+                    if no_measurements:
+                        x = samples.alpha
+                        order = np.argsort(x)
+                    else:
+                        fy = data.combined_fy
+                        fy_measured = {int(ix): float(val / fz) for ix, val, fz in zip(fy.raw_indices, fy.target, fy.fz)}
+                        fx_measured = {int(ix): float(val / fz) for ix, val, fz in zip(samples.raw_indices, samples.target, samples.fz)}
+                        common = sorted(set(fy_measured) & set(fx_measured))
+                        x = np.asarray([fy_measured[i] for i in common])
+                        measured = np.asarray([fx_measured[i] for i in common])
+                        fx_prediction = predict_steady(self.snapshot, samples, data.belt_speed)
+                        current_by_raw = {int(ix): float(val / fz) for ix, val, fz in zip(samples.raw_indices, fx_prediction.longitudinal_force, samples.fz)}
+                        current = np.asarray([current_by_raw[i] for i in common])
+                        order = np.argsort(x)
+                    if not no_measurements:
+                        axis.scatter(x, measured, s=5, c='#555555', label='Measured', alpha=.65)
                     axis.plot(x[order], current[order], label='Current fit', color='#1665a8')
+                    if candidate_model is not None:
+                        candidate_pred = predict_steady(candidate_model, samples, data.belt_speed)
+                        if no_measurements:
+                            axis.plot(x[order], candidate_pred.longitudinal_force[order] / denominator, label='Pending candidate', color='#238636', linestyle=':')
+                        else:
+                            candidate_by_raw = {int(ix): float(val / fz) for ix, val, fz in zip(samples.raw_indices, candidate_pred.longitudinal_force, samples.fz)}
+                            axis.plot(x[order], [candidate_by_raw[i] for i in np.asarray(common)[order]], label='Pending candidate', color='#238636', linestyle=':')
                     if self.seed:
-                        seed_pred = predict_steady(self.seed, samples, data.belt_speed)
-                        seed_by_raw = {int(ix): float(val / fz) for ix, val, fz in zip(samples.raw_indices, seed_pred.longitudinal_force, samples.fz)}
-                        axis.plot(x[order], [seed_by_raw[i] for i in np.asarray(common)[order]], label='Seed', color='#bd5a20', linestyle='--')
-                    axis.plot(x[order], (measured-current)[order], label='Residual', color='#8a3b3b', alpha=.7)
+                        if no_measurements:
+                            seed = predict_steady(self.seed, samples, data.belt_speed).longitudinal_force / denominator
+                            axis.plot(x[order], seed[order], label='Seed', color='#bd5a20', linestyle='--')
+                        else:
+                            seed_pred = predict_steady(self.seed, samples, data.belt_speed)
+                            seed_by_raw = {int(ix): float(val / fz) for ix, val, fz in zip(samples.raw_indices, seed_pred.longitudinal_force, samples.fz)}
+                            axis.plot(x[order], [seed_by_raw[i] for i in np.asarray(common)[order]], label='Seed', color='#bd5a20', linestyle='--')
+                    if not no_measurements:
+                        axis.plot(x[order], (measured-current)[order], label='Residual', color='#8a3b3b', alpha=.7)
                 else:
                     order = x.argsort()
-                    axis.scatter(x, measured, s=5, c='#555555', label='Measured', alpha=.65)
+                    if not no_measurements:
+                        axis.scatter(x, measured, s=5, c='#555555', label='Measured', alpha=.65)
                     axis.plot(x[order], current[order], label='Current fit', color='#1665a8')
-                    if self.seed:
+                    if candidate_model is not None:
+                        proposed = getattr(predict_steady(candidate_model, samples, data.belt_speed), component) / denominator
+                        axis.plot(x[order], proposed[order], label='Pending candidate', color='#238636', linestyle=':')
+                    if self.seed and not no_measurements:
                         seed = getattr(predict_steady(self.seed, samples, data.belt_speed), component) / denominator
                         axis.plot(x[order], seed[order], label='Seed', color='#bd5a20', linestyle='--')
-                    axis.plot(x[order], (measured-current)[order], label='Residual', color='#8a3b3b', alpha=.7)
+                    if not no_measurements:
+                        axis.plot(x[order], (measured-current)[order], label='Residual', color='#8a3b3b', alpha=.7)
+                if no_measurements:
+                    axis.text(.02, .98, 'No measurements — model-only sweep', transform=axis.transAxes, va='top', fontsize='small')
                 axis.set_title(title)
                 axis.set_xlabel(xlabel)
                 axis.set_ylabel(ylabel)
                 axis.grid(True, alpha=.25)
-                axis.legend(fontsize='small')
+                if axis.lines or axis.collections:
+                    axis.legend(fontsize='small')
             self.steady_plot.figure.tight_layout()
             self.steady_plot.canvas.draw_idle()
         except Exception as exc:
@@ -847,6 +890,9 @@ class MainWindow(QMainWindow):
         lines.extend(f'{name} bounds: {bounds[0]:g} … {bounds[1]:g}' for name, bounds in self.parameter_panel.bounds().items())
         if result:
             lines.extend((f'converged: {result.converged}', f'metrics: {dict(result.metrics)}', *result.warnings))
+            lines.append('Pending candidate parameters (live model unchanged until Apply):')
+            lines.extend(f'  {name}: {value:.9g} — {result.status_by_parameter.get(name, result.candidate.parameter_status.get(name, "unchanged"))}' for name, value in result.candidate.values.items() if result.candidate.values[name] != self.snapshot.values.get(name))
+            lines.extend(f'  {name}: {result.candidate.values[name]:.9g} — {result.status_by_parameter.get(name, "unchanged")}' for name in result.status_by_parameter if result.candidate.values.get(name) == self.snapshot.values.get(name))
             holdout = getattr(self, 'holdout_selection', None)
             if holdout is not None and any(len(getattr(holdout, name).target) for name in ('lateral','longitudinal','combined_fx','combined_fy','mz')):
                 from ..model import predict_steady

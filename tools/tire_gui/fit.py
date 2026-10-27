@@ -142,7 +142,7 @@ def fit_steady(snapshot: ModelSnapshot, data: SteadySelection, locked: frozenset
     for name in ('longitudinal_length_scale','lateral_length_scale','trail_pole_ratio','trail_lead_ratio'):
         transient_status[name] = 'provisional (steady fit does not identify transient dynamics)'
     current = type(current)(current.revision,current.steady,current.transient,current.values,provenance,
-                            transient_status,current.steady_fingerprint,current.load_domain)
+                            transient_status,current.steady_fingerprint,current.load_domain,current.session_metadata)
     if not converged: warnings.append('one or more optimizer stages did not converge; best finite candidate retained and not applied')
     return FitResult(snapshot.revision,current,metrics,converged,tuple(warnings),status)
 

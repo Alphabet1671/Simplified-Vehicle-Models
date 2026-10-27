@@ -1,4 +1,5 @@
 import unittest
+import tempfile
 from pathlib import Path
 import numpy as np
 
@@ -58,7 +59,19 @@ class FitTests(unittest.TestCase):
         data = self.synthesized(truth)
         locked = frozenset(set(FORCE_NAMES+TRAIL_NAMES)-{'mu_0_y'})
         before = self.seed.values['mu_0_y']
-        result = fit_steady(self.seed,data,locked,progress=lambda _:None)
+        metadata = {'selections': {'load_n': 660, 'groups': ['run8:3'], 'chosen': ['run8:3', 'run72:2']}, 'events': [{'id': 'synthetic:1', 'start': 10, 'stop': 20, 'approved': False, 'reason': 'synthetic'}], 'diagnostics': {'summary': 'synthetic-nested-1-2', 'source': 'synthetic'}}
+        from dataclasses import replace
+        source = replace(self.seed, session_metadata=metadata)
+        result = fit_steady(source,data,locked,progress=lambda _:None)
+        self.assertEqual(result.candidate.session_metadata, source.session_metadata)
+        from tools.tire_gui.save import save_session, load_session
+        with tempfile.TemporaryDirectory() as folder:
+            save_session(result.candidate, Path(folder), 'nested-meta', include_transient=True)
+            restored = load_session(Path(folder) / 'nested-meta')
+            from tools.tire_gui.save import _thaw
+            restored_meta, source_meta = _thaw(restored.session_metadata), _thaw(source.session_metadata)
+            for key, value in source_meta.items():
+                self.assertEqual(restored_meta[key], value)
         self.assertLess(result.metrics['force_objective'], 1e-5)
         self.assertAlmostEqual(result.candidate.values['mu_0_y'], truth.values['mu_0_y'], places=5)
         for name in locked: self.assertEqual(result.candidate.values[name], self.seed.values[name])

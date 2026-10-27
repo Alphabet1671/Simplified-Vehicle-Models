@@ -2,7 +2,7 @@ import os
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 try:
-    from PyQt6.QtWidgets import QApplication
+    from PyQt6.QtWidgets import QApplication, QMessageBox
     from tools.tire_gui.qt.main_window import MainWindow
 except ImportError as exc:
     import unittest
@@ -10,10 +10,16 @@ except ImportError as exc:
 
 from pathlib import Path
 import unittest
+import tempfile
+import time
 from tools.tire_gui.model import with_parameter
 from tools.tire_gui.contracts import FitResult
 from tools.tire_gui.qt.fit_worker import FitWorker
 from PyQt6.QtTest import QSignalSpy
+from PyQt6.QtCore import QThread, QTimer, QEventLoop
+from tools.tire_gui.contracts import FitCancelled, RunData
+from tools.tire_gui.events import TransientEvent
+import numpy as np
 
 
 class QtTests(unittest.TestCase):
@@ -30,7 +36,19 @@ class QtTests(unittest.TestCase):
         w = self.window(); old = w.snapshot
         w.set_parameter('mu_0_y', old.values['mu_0_y'] + .1)
         candidate = FitResult(old.revision, old, {}, True, (), {})
-        self.assertFalse(w.apply_candidate(candidate)); w.close()
+        self.assertFalse(w.apply_candidate(candidate)); w.dirty = False; w.close()
+
+    def test_dirty_close_can_be_cancelled(self):
+        from unittest.mock import patch
+        w = self.window()
+        w.show()
+        w.dirty = True
+        with patch('tools.tire_gui.qt.main_window.QMessageBox.question', return_value=QMessageBox.StandardButton.No):
+            self.assertFalse(w.close())
+        self.assertTrue(w.isVisible())
+        self.assertTrue(w.dirty)
+        with patch('tools.tire_gui.qt.main_window.QMessageBox.question', return_value=QMessageBox.StandardButton.Yes):
+            self.assertTrue(w.close())
 
     def test_bounds_locks_history_and_candidate(self):
         w=self.window(); old=w.snapshot
@@ -39,13 +57,13 @@ class QtTests(unittest.TestCase):
         self.assertTrue(w.redo()); self.assertNotEqual(w.snapshot.values['mu_0_y'],old.values['mu_0_y'])
         current=w.snapshot; candidate=FitResult(current.revision,with_parameter(current,'mu_0_y',current.values['mu_0_y']+.02),{},True,(),{})
         w._fit_generation=w.generation
-        self.assertTrue(w.apply_candidate(candidate)); w.close()
+        self.assertTrue(w.apply_candidate(candidate)); w.dirty = False; w.close()
 
     def test_tabs_and_missing_data(self):
         w=self.window(); self.assertGreaterEqual(w.tabs.count(),3)
         with self.assertRaises(Exception):
             w.load_data_path(Path('/definitely/missing/run.mat'))
-        self.assertFalse(w.fit_longitudinal_button.isEnabled()); w.close()
+        self.assertFalse(w.fit_longitudinal_button.isEnabled()); w.dirty = False; w.close()
 
     def test_spinbox_slider_locks_and_editable_bounds(self):
         w = self.window()
@@ -76,10 +94,67 @@ class QtTests(unittest.TestCase):
         self.assertEqual((lower.value(), upper.value()), (.7, 2.2))
         panel.deleteLater()
 
-    def test_worker_cancel_signal_and_thread_close(self):
+    def test_real_thread_cancel_and_close_teardown(self):
         w = self.window()
-        worker = FitWorker(w.snapshot, 'steady', None)
-        worker.cancel()
-        self.assertTrue(worker._cancel.is_set())
+        entered = __import__('threading').Event()
+        def runner(_snapshot, cancelled):
+            entered.set()
+            while not cancelled():
+                time.sleep(.005)
+            raise FitCancelled()
+        w.worker_runner = runner
+        w._start_worker('steady', None, ())
+        self.assertTrue(entered.wait(2))
+        self.assertTrue(w.thread.isRunning())
+        w.cancel_fit()
+        finished = QEventLoop()
+        w.thread.finished.connect(finished.quit)
+        QTimer.singleShot(3000, finished.quit)
+        finished.exec()
+        self.app.processEvents()
+        self.assertIsNone(w.thread)
+        self.assertIsNone(w.worker)
+        w.dirty = False
+        w.close()
+
+    def test_edited_event_boundaries_restore_exactly_from_session(self):
+        w = self.window()
+        n = 80
+        t = np.arange(n) * .01
+        z = np.zeros(n)
+        run = RunData(7, 'synthetic', {'time':t,'alpha':z,'kappa':z,'fz':z+600,'speed':z+10,'omega':z+30,'ia':z,'pressure':z+80000,'fx':z,'fy':z,'mz':z}, {}, np.arange(n))
+        w.runs[7] = run
+        w.source_files.append('/missing/run7.mat')
+        w.events = [TransientEvent(run, 10, 70, 30, False, 'lateral', ())]
+        with tempfile.TemporaryDirectory() as folder:
+            w.save_session(folder, 'event-test')
+            from tools.tire_gui.save import load_session
+            saved = load_session(Path(folder)/'event-test').session_metadata['events'][0]
+        self.assertEqual((saved['start'], saved['stop'], saved['baseline_stop']), (10,70,30))
+        self.assertEqual(saved['source_file'], '/missing/run7.mat')
+        w.dirty = False
+        w.close()
+
+    def test_real_thread_result_stale_after_generation_edit(self):
+        w = self.window()
+        entered = __import__('threading').Event()
+        release = __import__('threading').Event()
+        outcomes = []
+        def runner(snapshot, _cancelled):
+            entered.set()
+            release.wait(2)
+            return FitResult(snapshot.revision, snapshot, {}, True, (), {})
+        w.worker_runner = runner
+        w._fit_done = lambda result: outcomes.append(w._fit_generation == w.generation and result.source_revision == w.snapshot.revision)
+        w._start_worker('steady', None, ())
+        self.assertTrue(entered.wait(2))
+        w.generation += 1
+        release.set()
+        finished = QEventLoop()
+        w.thread.finished.connect(finished.quit)
+        QTimer.singleShot(3000, finished.quit)
+        finished.exec()
+        self.app.processEvents()
+        self.assertEqual(outcomes, [False])
         w.dirty = False
         w.close()

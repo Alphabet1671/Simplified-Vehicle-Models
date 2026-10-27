@@ -106,7 +106,7 @@ def _validate_metadata(metadata):
     for name, pair in bounds.items():
         if not isinstance(name, str) or not isinstance(pair, list) or len(pair) != 2 or any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) for v in pair) or pair[0] > pair[1]:
             raise ValueError('bounds must map parameter names to finite increasing numeric pairs')
-    event_keys = {'id', 'start', 'stop', 'run_id', 'axis', 'approved', 'reason', 'source_file', 'segment_id'}
+    event_keys = {'id', 'start', 'stop', 'run_id', 'axis', 'approved', 'reason', 'source_file', 'segment_id', 'baseline_stop'}
     for event in events:
         if not isinstance(event, dict) or set(event) - event_keys or not isinstance(event.get('start'), (int, float)) or isinstance(event.get('start'), bool) or not isinstance(event.get('stop'), (int, float)) or isinstance(event.get('stop'), bool) or not math.isfinite(event['start']) or not math.isfinite(event['stop']) or event['stop'] <= event['start']:
             raise ValueError('events must contain only documented scalar fields and finite increasing start/stop windows')

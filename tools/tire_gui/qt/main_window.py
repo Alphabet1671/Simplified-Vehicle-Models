@@ -21,6 +21,7 @@ from ..segments import compatibility_selection
 from .fit_worker import FitWorker
 from .parameter_panel import ParameterPanel
 from .plot_panel import PlotPanel
+from .replay_worker import ReplayWorker
 
 DEFAULT_DATA = REPOSITORY_ROOT / 'private/ttc/TTC'
 DEFAULT_OUTPUT = REPOSITORY_ROOT / 'tire_fits_out'
@@ -34,6 +35,9 @@ class MainWindow(QMainWindow):
         self.snapshot = self.seed = None
         self.runs = {}
         self.events = []
+        self.replay_cache = {}
+        self.replay_failures = set()
+        self.replay_thread = self.replay_worker = None
         self.generation = 0
         self.worker = self.thread = self.candidate = None
         self.history = []
@@ -57,7 +61,7 @@ class MainWindow(QMainWindow):
 
         self.tabs = QTabWidget()
         self.steady_plot = PlotPanel(count=4)
-        self.transient_plot = PlotPanel(count=4)
+        self.transient_plot = PlotPanel(count=6)
         self.diagnostics = QPlainTextEdit()
         self.diagnostics.setReadOnly(True)
         self.tabs.addTab(self.steady_plot, 'Steady-state')
@@ -79,9 +83,10 @@ class MainWindow(QMainWindow):
         self.event_to.setPrefix('Stop sample ')
         self.baseline_to.setPrefix('Baseline stop ')
         self.approve_button = QPushButton('Approve selected event')
+        self.condition_label = QLabel('Run conditions: load / pressure / IA / speed not loaded')
         for label, widget in (
             ('Run / tire', self.run_combo), ('Segments — check to hold out whole segment', self.segment_list),
-            ('Transient candidates (Run 7)', self.event_list), ('', self.event_from),
+            ('Transient candidates (Run 7)', self.event_list), ('', self.condition_label), ('', self.event_from),
             ('', self.baseline_to), ('', self.event_to), ('', self.approve_button),
         ):
             if label:
@@ -129,6 +134,7 @@ class MainWindow(QMainWindow):
         self.save_button.clicked.connect(self._save_dialog)
         self.fit_button.clicked.connect(self.start_steady_fit)
         self.fit_transient_button.clicked.connect(self.start_transient_fit)
+        self.fit_longitudinal_button.clicked.connect(self.start_longitudinal_fit)
         self.cancel_button.clicked.connect(self.cancel_fit)
         self.apply_button.clicked.connect(self._apply_current_candidate)
         self.discard_button.clicked.connect(self.discard_candidate)
@@ -292,6 +298,12 @@ class MainWindow(QMainWindow):
             except Exception as exc:
                 self.status.setText(f'{path.name}: {exc}')
 
+    def _source_for_run(self, run):
+        for path in reversed(self.source_files):
+            if f'run{run.run_id}' in Path(path).name.lower():
+                return str(path)
+        return str(self.source_files[-1]) if self.source_files else ''
+
     def _run_label(self, run):
         label = f'Run {run.run_id} — {run.tire_id}' + (' (43100 longitudinal proxy)' if run.run_id == 72 else '')
         if run.run_id not in [self.run_combo.itemData(i) for i in range(self.run_combo.count())]:
@@ -307,6 +319,9 @@ class MainWindow(QMainWindow):
             box.setValue(value)
             box.blockSignals(False)
         self.approve_button.setEnabled(not event.approved)
+        c = event.run.channels
+        sl = slice(event.start, event.stop)
+        self.condition_label.setText(f"Event conditions: Fz {np.mean(c['fz'][sl]):.0f} N; pressure {np.mean(c['pressure'][sl])/1000:.2f} kPa; IA {np.rad2deg(np.mean(c['ia'][sl])):.2f}°; speed {np.mean(c['speed'][sl]):.2f} m/s")
         self.status.setText('Approved event' if event.approved else ('Candidate exclusions: ' + ('; '.join(event.exclusions) if event.exclusions else 'review required')))
         self._refresh_transient_event()
 
@@ -325,6 +340,7 @@ class MainWindow(QMainWindow):
             self.event_list.item(index).setText(
                 f'Edited candidate: {updated.run.channels["time"][updated.start]:.2f}–'
                 f'{updated.run.channels["time"][updated.stop - 1]:.2f} s; approval required')
+            self.event_list.item(index).setData(Qt.ItemDataRole.UserRole, (updated.start, updated.stop, updated.baseline_stop))
             self.approve_button.setEnabled(True)
             self.status.setText('Event boundary edited; explicit approval required.')
             self._refresh_transient_event()
@@ -346,11 +362,90 @@ class MainWindow(QMainWindow):
         if 'mz' in channels:
             self.transient_plot.axes[2].plot(times, channels['mz'][start:stop], label='Measured Mz (N·m)')
         self.transient_plot.axes[3].plot(times, channels['fx'][start:stop], label='Measured Fx (N)')
+        self.transient_plot.axes[4].set_title('Replay residuals (current replay pending)')
+        self.transient_plot.axes[5].set_title('Relaxation lengths (m)')
         for axis in self.transient_plot.axes:
             axis.grid(True, alpha=.25)
             axis.legend(fontsize='small')
             axis.set_xlabel('Elapsed time (s)')
+        key = (self.snapshot.steady_fingerprint, tuple(self.snapshot.values[n] for n in ('longitudinal_length_scale','lateral_length_scale','trail_pole_ratio','trail_lead_ratio')), event.run.run_id, event.start, event.stop, event.baseline_stop, self.generation)
+        if key in self.replay_cache:
+            self._plot_replay(key, self.replay_cache[key])
+        elif key in self.replay_failures:
+            self.transient_plot.axes[1].set_title('Replay unavailable; see status')
+        elif self.replay_thread is not None:
+            self.transient_plot.axes[1].set_title('Current/seed replay queued after active replay')
+        elif self.snapshot is not None:
+            self.replay_thread = QThread(self)
+            self.replay_worker = ReplayWorker(self.snapshot, self.seed, event, self.generation)
+            self.replay_worker.moveToThread(self.replay_thread)
+            self.replay_thread.started.connect(self.replay_worker.run)
+            self.replay_worker.finished.connect(lambda result, key=key: self._replay_done(key, result))
+            self.replay_worker.failed.connect(lambda text, key=key: self._replay_failed(key, text))
+            direct = Qt.ConnectionType.DirectConnection
+            self.replay_worker.finished.connect(self.replay_thread.quit, direct)
+            self.replay_worker.failed.connect(self.replay_thread.quit, direct)
+            self.replay_thread.finished.connect(self._replay_stopped)
+            self.replay_thread.finished.connect(self.replay_thread.deleteLater)
+            self.replay_thread.start()
         self.transient_plot.figure.tight_layout()
+        self.transient_plot.canvas.draw_idle()
+
+    def _replay_done(self, key, result):
+        generation, current, seed = result
+        self.replay_cache[key] = (current, seed)
+        if generation == self.generation and key[-1] == self.generation:
+            self._plot_replay(key, (current, seed))
+
+    def _replay_failed(self, key, text):
+        # Cache against the immutable request so failed old replays cannot poison
+        # a newer selection made while the worker was still running.
+        self.replay_failures.add(key)
+        self.status.setText('Transient replay unavailable: ' + text)
+
+    def _replay_stopped(self):
+        if self.replay_worker:
+            self.replay_worker.deleteLater()
+        self.replay_worker = self.replay_thread = None
+        index = self.event_list.currentRow()
+        if 0 <= index < len(self.events):
+            event = self.events[index]
+            key = (self.snapshot.steady_fingerprint, tuple(self.snapshot.values[n] for n in ('longitudinal_length_scale','lateral_length_scale','trail_pole_ratio','trail_lead_ratio')), event.run.run_id, event.start, event.stop, event.baseline_stop, self.generation)
+            if key in self.replay_cache:
+                self._plot_replay(key, self.replay_cache[key])
+            else:
+                self._refresh_transient_event()
+
+    def _plot_replay(self, key, predictions):
+        current, seed = predictions
+        index = self.event_list.currentRow()
+        if index < 0 or index >= len(self.events):
+            return
+        event = self.events[index]
+        if (event.run.run_id, event.start, event.stop, event.baseline_stop) != (key[2], key[3], key[4], key[5]):
+            return
+        t = event.run.channels['time'][event.start:event.stop]
+        for index, (channel, units, column) in enumerate((('fx','N',0),('fy','N',1),('mz','N·m',2))):
+            if channel not in event.run.channels:
+                continue
+            measured = event.run.channels[channel][event.start:event.stop]
+            axis = self.transient_plot.axes[index + 1]
+            axis.plot(t, current[:, column], label='Current replay', color='#1665a8')
+            if seed is not None:
+                axis.plot(t, seed[:, column], label='Seed replay', color='#bd5a20', linestyle='--')
+            residual_axis = self.transient_plot.axes[4]
+            residual_axis.plot(t, measured-current[:, column], label=f'{channel.upper()} residual')
+            axis.set_ylabel(f'{channel.upper()} ({units})')
+        # Plot load-dependent relaxation lengths (m) in the fourth axis.
+        from simplified_vehicle_models.tires.unitire_transient import relaxation_lengths
+        fz = event.run.channels['fz'][event.start:event.stop]
+        sx, sy = zip(*(relaxation_lengths(self.snapshot.steady, self.snapshot.transient, float(load)) for load in fz))
+        axis = self.transient_plot.axes[5]
+        axis.plot(t, sx, label='sigma_x (m)')
+        axis.plot(t, sy, label='sigma_y (m)')
+        axis.set_ylabel('Relaxation length (m)')
+        for axis in self.transient_plot.axes:
+            axis.legend(fontsize='small')
         self.transient_plot.canvas.draw_idle()
 
     def approve_event(self):
@@ -365,6 +460,7 @@ class MainWindow(QMainWindow):
             self.generation += 1
             self._invalidate_candidate()
             self.event_list.item(index).setText(f'APPROVED {event.axis}: samples {event.start}:{event.stop}; baseline stop {event.baseline_stop}')
+            self.event_list.item(index).setData(Qt.ItemDataRole.UserRole, (event.start, event.stop, event.baseline_stop))
             self.fit_transient_button.setEnabled(True)
             self.approve_button.setEnabled(False)
             self.status.setText('Event explicitly approved after boundary/condition validation.')
@@ -402,9 +498,19 @@ class MainWindow(QMainWindow):
                 self.events = list(candidate_events(run))
             except Exception as exc:
                 self.status.setText(str(exc))
+            source = self._source_for_run(run)
+            rows = [row for row in getattr(self, '_restored_events', []) if int(row.get('run_id', -1)) == 7 and (not row.get('source_file') or row.get('source_file') == source)]
+            for row in rows:
+                start, stop = int(row['start']), int(row['stop'])
+                existing = next((i for i, event in enumerate(self.events) if event.start == start and event.stop == stop), None)
+                if existing is None and 0 <= start < int(row.get('baseline_stop', start + 20)) < stop <= len(run.raw_indices):
+                    from ..events import TransientEvent
+                    event = TransientEvent(run, start, stop, int(row['baseline_stop']), bool(row.get('approved', False)), row.get('axis', 'lateral'), ())
+                    self.events.append(event)
             for index, event in enumerate(self.events):
                 reasons = '; '.join(event.exclusions) or 'review required'
                 self.event_list.addItem(f'Candidate {index + 1}: {run.channels["time"][event.start]:.2f}–{run.channels["time"][event.stop - 1]:.2f} s; baseline {event.baseline_stop - event.start} samples; {reasons}')
+                self.event_list.item(index).setData(Qt.ItemDataRole.UserRole, (event.start, event.stop, event.baseline_stop))
             self.event_from.setRange(0, max(0, len(run.raw_indices) - 1))
             self.event_to.setRange(1, len(run.raw_indices))
             self.baseline_to.setRange(1, len(run.raw_indices))
@@ -430,6 +536,13 @@ class MainWindow(QMainWindow):
         self._refresh_plots()
 
     @staticmethod
+    def _only_segments(samples, included):
+        mask = np.asarray([(samples.run_id, int(segment)) in included for segment in samples.segment_ids], dtype=bool)
+        from ..contracts import SampleSet
+        return SampleSet(samples.alpha[mask], samples.kappa[mask], samples.fz[mask], samples.target[mask],
+                         samples.segment_ids[mask], samples.run_id, samples.tire_id, samples.raw_indices[mask])
+
+    @staticmethod
     def _without_segments(samples, excluded):
         mask = [not (samples.run_id, int(segment)) in excluded for segment in samples.segment_ids]
         from ..contracts import SampleSet
@@ -450,13 +563,33 @@ class MainWindow(QMainWindow):
 
     def start_steady_fit(self):
         try:
-            self.selection = self._selection_for_fit()
+            full = compatibility_selection(self.runs[8], self.runs[72])
+            excluded = set(self.holdout_ids)
+            self.holdout_selection = replace(full,
+                lateral=self._only_segments(full.lateral, excluded),
+                longitudinal=self._only_segments(full.longitudinal, excluded),
+                combined_fx=self._only_segments(full.combined_fx, excluded),
+                combined_fy=self._only_segments(full.combined_fy, excluded),
+                mz=self._only_segments(full.mz, excluded))
+            self.selection = replace(full,
+                lateral=self._without_segments(full.lateral, excluded),
+                longitudinal=self._without_segments(full.longitudinal, excluded),
+                combined_fx=self._without_segments(full.combined_fx, excluded),
+                combined_fy=self._without_segments(full.combined_fy, excluded),
+                mz=self._without_segments(full.mz, excluded))
             self._start_worker('steady', self.selection, ())
         except Exception as exc:
             self.status.setText(f'Steady fit requires compatible runs 8 and 72: {exc}')
 
+    def start_longitudinal_fit(self):
+        approved = tuple(event for event in self.events if event.approved and event.axis == 'longitudinal')
+        if not approved:
+            self.status.setText('No independently excited longitudinal time-series event approved. Longitudinal scale remains unidentified / provisional.')
+            return
+        self._start_worker('transient', None, approved)
+
     def start_transient_fit(self):
-        approved = tuple(event for event in self.events if event.approved)
+        approved = tuple(event for event in self.events if event.approved and event.axis == 'lateral')
         if not approved:
             self.status.setText('No approved eligible transient events. Longitudinal scale remains unidentified / provisional.')
             return
@@ -472,17 +605,19 @@ class MainWindow(QMainWindow):
         self.cancel_button.setEnabled(True)
         self._fit_generation = self.generation
         self.thread = QThread(self)
-        self.worker = FitWorker(self.snapshot, mode, selection, self.parameter_panel.locked(), events, self.parameter_panel.bounds())
+        self.worker = FitWorker(self.snapshot, mode, selection, self.parameter_panel.locked(), events, self.parameter_panel.bounds(), runner=getattr(self, 'worker_runner', None))
         self.worker.moveToThread(self.thread)
         self.thread.started.connect(self.worker.run)
         self.worker.progress.connect(self._progress)
         self.worker.finished.connect(self._fit_done)
         self.worker.failed.connect(self._fit_failed)
         self.worker.cancelled.connect(self._fit_cancelled)
-        self.worker.finished.connect(self.thread.quit)
-        self.worker.failed.connect(self.thread.quit)
-        self.worker.cancelled.connect(self.thread.quit)
+        direct = Qt.ConnectionType.DirectConnection
+        self.worker.finished.connect(self.thread.quit, direct)
+        self.worker.failed.connect(self.thread.quit, direct)
+        self.worker.cancelled.connect(self.thread.quit, direct)
         self.thread.finished.connect(self._worker_stopped)
+        self.thread.finished.connect(self.thread.deleteLater)
         self.thread.start()
         self.status.setText(f'{mode.title()} fit running on immutable snapshot…')
 
@@ -612,9 +747,20 @@ class MainWindow(QMainWindow):
             f'Revision / generation: {self.snapshot.revision} / {self.generation}',
         ]
         lines.extend(f'{name}: {status}' for name, status in self.snapshot.parameter_status.items())
+        if self.snapshot.provenance.get('transient_fit_status') in {'stale', 'provisional'}:
+            lines.append('Transient replay shown is based on current coefficients; prior transient fit status is stale/provisional after steady-model edits.')
         lines.extend(f'{name} bounds: {bounds[0]:g} … {bounds[1]:g}' for name, bounds in self.parameter_panel.bounds().items())
         if result:
             lines.extend((f'converged: {result.converged}', f'metrics: {dict(result.metrics)}', *result.warnings))
+            if getattr(self, 'holdout_selection', None) is not None and any(len(getattr(self.holdout_selection, name).target) for name in ('lateral','longitudinal','combined_fx','combined_fy','mz')):
+                from ..model import predict_steady
+                hold = self.holdout_selection
+                lines.append('Whole-segment holdout dimensional RMSE (not used in training):')
+                for key, samples, component in [('Fy',hold.lateral,'lateral_force'),('Fx',hold.longitudinal,'longitudinal_force'),('combined Fx',hold.combined_fx,'longitudinal_force'),('combined Fy',hold.combined_fy,'lateral_force'),('Mz',hold.mz,'aligning_moment')]:
+                    if len(samples.target):
+                        pred = getattr(predict_steady(result.candidate, samples, hold.belt_speed), component)
+                        rmse = float(np.sqrt(np.mean((pred-samples.target)**2)))
+                        lines.append(f'  {key}: {rmse:.6g}; n={len(samples.target)}')
         self.diagnostics.setPlainText('\n'.join(lines))
 
     def save_session(self, output_dir, stem, overwrite=False):
@@ -625,7 +771,7 @@ class MainWindow(QMainWindow):
             'bounds': {name: list(pair) for name, pair in self.parameter_panel.bounds().items()},
             'source_files': self.source_files,
             'selections': {'run_id': self.run_combo.currentData(), 'holdout_ids': [list(x) for x in sorted(self.holdout_ids)]},
-            'events': [{'id': f'{e.run.run_id}:{i}', 'start': int(e.start), 'stop': int(e.stop), 'run_id': int(e.run.run_id), 'axis': str(e.axis), 'approved': bool(e.approved), 'reason': '; '.join(e.exclusions), 'source_file': self.source_files[-1] if self.source_files else '', 'segment_id': str(i)} for i, e in enumerate(self.events)],
+            'events': [{'id': f'{e.run.run_id}:{i}', 'start': int(e.start), 'stop': int(e.stop), 'run_id': int(e.run.run_id), 'axis': str(e.axis), 'approved': bool(e.approved), 'reason': '; '.join(e.exclusions), 'source_file': self._source_for_run(e.run), 'segment_id': str(i), 'baseline_stop': int(e.baseline_stop)} for i, e in enumerate(self.events)],
             'diagnostics': {'generation': self.generation},
         }
         return save_session(self.snapshot, Path(output_dir), stem, include_transient=True, overwrite=overwrite, metadata=metadata)
@@ -678,17 +824,31 @@ class MainWindow(QMainWindow):
         if run_index >= 0:
             self.run_combo.setCurrentIndex(run_index)
         self.holdout_ids = {tuple(item) for item in selections.get('holdout_ids', [])}
+        self._restored_events = list(metadata.get('events', []))
+        self.runs = {}
+        self.run_combo.clear()
         source_paths = [Path(p) for p in self.source_files if Path(p).is_file()]
         for source in source_paths:
             try:
-                run = self.load_data_path(source)
+                self.load_data_path(source)
             except Exception:
                 continue
+        run_index = self.run_combo.findData(run_id)
+        if run_index >= 0:
+            self.run_combo.setCurrentIndex(run_index)
         saved_events = {(int(row.get('run_id', -1)), int(row['start']), int(row['stop'])): row for row in metadata.get('events', [])}
+        for run_id, run in self.runs.items():
+            for row in (row for row in metadata.get('events', []) if int(row.get('run_id', -1)) == run_id):
+                start, stop = int(row['start']), int(row['stop'])
+                if not any(e.run.run_id == run_id and e.start == start and e.stop == stop for e in self.events) and 0 <= start < int(row.get('baseline_stop', start + 20)) < stop <= len(run.raw_indices):
+                    from ..events import TransientEvent
+                    self.events.append(TransientEvent(run, start, stop, int(row['baseline_stop']), bool(row.get('approved', False)), row.get('axis', 'lateral'), ()))
         for i, event in enumerate(self.events):
             row = saved_events.get((int(event.run.run_id), int(event.start), int(event.stop)))
             if row:
-                self.events[i] = replace(event, approved=bool(row.get('approved', False)))
+                self.events[i] = replace(event, baseline_stop=int(row.get('baseline_stop', event.baseline_stop)), approved=bool(row.get('approved', False)), axis=row.get('axis', event.axis), exclusions=())
+        if self.run_combo.currentData() == 7:
+            self._refresh_run()
         for index in range(self.segment_list.count()):
             item = self.segment_list.item(index)
             if item.data(Qt.ItemDataRole.UserRole) in self.holdout_ids:
@@ -704,15 +864,28 @@ class MainWindow(QMainWindow):
                 event.ignore()
                 return
         self.settings.setValue('geometry', self.saveGeometry())
+        # Replay integration may be processing a large event; cooperatively stop it
+        # and keep the window alive until its QThread has actually returned.
+        if self.replay_worker:
+            self.replay_worker.cancel()
+            if self.replay_thread:
+                self.replay_thread.quit()
+                if not self.replay_thread.wait(5000):
+                    event.ignore()
+                    self.status.setText('Waiting for safe replay cancellation…')
+                    return
+                self.replay_worker.deleteLater()
+                self.replay_thread.deleteLater()
+                self.replay_worker = self.replay_thread = None
         if self.worker:
             self.worker.cancel()
             if self.thread:
                 self.thread.quit()
-                self.thread.wait(10000)
-                if self.thread.isRunning():
+                if not self.thread.wait(10000):
                     event.ignore()
                     self.status.setText('Waiting for safe fitting cancellation…')
                     return
             self.worker.deleteLater()
+            self.thread.deleteLater()
             self.worker = self.thread = None
         event.accept()

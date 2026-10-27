@@ -457,7 +457,7 @@ def evaluate_vertical_dynamics(vehicle, state: VerticalState, wheel_torques, ste
     # k_axle = anti*(h_cg/L)/share, with the brake bias under braking and the
     # driven-axle share under drive. See the ruling in the Task 6 roll report.
     front_drive_share, rear_drive_share = axle_drive_shares(vehicle)
-    front_brake_share = float(p.brake_bias)
+    front_brake_share = float(p.front_brake_share)
     anti = np.zeros(4)
     for axle, ix, sign, brake_share, drive_share in (
         (0, (0, 1), -1.0, front_brake_share, front_drive_share),

@@ -11,8 +11,9 @@
         <parameter name="cg_height" value="0.300" unit="m" />
         <parameter name="front_mass_fraction" value="0.45" unit="1" />
         <parameter name="lateral_load_transfer_distribution" value="0.42" unit="1" />
-        <parameter name="brake_bias" value="0.65" unit="1" />
-        <!-- Parallel steering, 3.5 in/rev Narco rack, and 65% front brake bias are user-confirmed; steering-arm/rate and hydraulic details remain provisional. -->
+        <!-- Hydraulic brake (2026-10-26): signed balance bar brake_bias 0 = neutral (+1 all front MC, -1 all rear MC); pad mu 0.40 front / 0.35 rear; constant 1.55 pedal ratio (models/data/murphy_pedal_ratio.csv). The front/rear hydraulic ratios are FABRICATED so the hydraulic torque split is 0.62 front / 0.38 rear; they are not measured. -->
+        <parameter name="brake_bias" value="0.0" unit="1" />
+        <!-- Parallel steering, 3.5 in/rev Narco rack are user-confirmed; steering-arm/rate and hydraulic details remain provisional. -->
         <parameter name="yaw_radius_of_gyration" value="0.679366" unit="m" />
         <!-- Each wheel uses a 10 kg solid cylinder with 16 inch diameter and 8 inch width. -->
         <parameter name="wheel_inertia" value="0.2064512" unit="kg*m^2" />
@@ -24,10 +25,11 @@
         <parameter name="steering_maximum_rate" value="3.141592653589793" unit="rad/s" />
         <parameter name="steer_arm_length" value="0.0651" unit="m" />
         <parameter name="maximum_pedal_force" value="1176.798" unit="N" />
-        <parameter name="hydraulic_ratio" value="2.0" unit="1" />
+        <parameter name="hydraulic_ratio_front" value="7.665" unit="1" />
+        <parameter name="hydraulic_ratio_rear" value="5.543134" unit="1" />
         <parameter name="maximum_brake_pressure" value="10000000.0" unit="Pa" />
         <parameter name="caliper_area" value="0.00114" unit="m^2" />
-        <parameter name="pad_mu_front" value="0.35" unit="1" />
+        <parameter name="pad_mu_front" value="0.40" unit="1" />
         <parameter name="pad_mu_rear" value="0.35" unit="1" />
         <parameter name="brake_effective_radius_front" value="0.077622" unit="m" />
         <parameter name="brake_effective_radius_rear" value="0.075184" unit="m" />
@@ -41,7 +43,7 @@
         <parameter name="tire_vertical_damping" value="400.0" unit="N*s/m" />
     </parameters>
     <data role="ackermann" path="../data/iem24_murphy_parallel_steering.csv" format="csv" />
-    <data role="pedal-ratio" path="../data/placeholder_pedal_ratio.csv" format="csv" />
+    <data role="pedal-ratio" path="../data/murphy_pedal_ratio.csv" format="csv" />
     <components>
         <component role="tire" ref="../tires/iem24_murphy_real_unitire.xml" />
         <component role="aero" ref="../aero/iem24_murphy_real_aero.xml" />

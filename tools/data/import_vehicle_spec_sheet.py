@@ -251,11 +251,12 @@ def build_parameters(
     # the sheet instead of a guess.
     pedal_force_1g = real["brake_pedal_force_1g_kn"] * 1000.0
     pressure_1g = real["brake_pressure_front_1g_bar"] * 1.0e5
-    # The balance bar sends only the biased share to the front circuit, so the
-    # bias belongs in the calibration.
+    # The balance bar sends only the front master-cylinder share
+    # (1 + brake_bias) / 2 to the front circuit, so the bias belongs in the
+    # calibration. brake_bias is signed: 0 neutral, +1 all front, -1 all rear.
     pedal_ratio = (
         pressure_1g * caliper_area
-        / (pedal_force_1g * hydraulic_ratio * brake_bias)
+        / (pedal_force_1g * hydraulic_ratio * 0.5 * (1.0 + brake_bias))
     )
 
     # The effective radius is a fraction of the rotor radius.
@@ -293,7 +294,8 @@ def build_parameters(
         ),
         "brake_bias": brake_bias,
         "maximum_pedal_force": round(maximum_pedal_force, 4),
-        "hydraulic_ratio": hydraulic_ratio,
+        "hydraulic_ratio_front": hydraulic_ratio,
+        "hydraulic_ratio_rear": hydraulic_ratio,
         "maximum_brake_pressure": maximum_brake_pressure,
         "caliper_area": caliper_area,
         "pad_mu_front": pad_mu,
@@ -347,7 +349,7 @@ def write_vehicle(
         " Not from the sheet, and kept exact:"
         " yaw_radius_of_gyration and wheel_inertia follow a general estimation"
         " request; steering_maximum_angle, steering_maximum_rate, brake_bias,"
-        " hydraulic_ratio, caliper_area and maximum_brake_pressure are stated"
+        " hydraulic_ratio_front/rear, caliper_area and maximum_brake_pressure are stated"
         " placeholders. The pedal ratio is calibrated from the sheet line"
         " pressure at one g, and the Ackermann table is a zero array."
     ))
@@ -373,7 +375,8 @@ def write_vehicle(
         "kingpin_inclination_angle": "rad",
         "brake_bias": "1",
         "maximum_pedal_force": "N",
-        "hydraulic_ratio": "1",
+        "hydraulic_ratio_front": "1",
+        "hydraulic_ratio_rear": "1",
         "maximum_brake_pressure": "Pa",
         "caliper_area": "m^2",
         "pad_mu_front": "1",
@@ -609,7 +612,11 @@ def main() -> None:
     parser.add_argument("--output-ackermann", type=Path, required=True)
     parser.add_argument("--output-pedal-ratio", type=Path, required=True)
     parser.add_argument("--driver-mass", type=float, default=68.0)
-    parser.add_argument("--brake-bias", type=float, default=0.65)
+    parser.add_argument(
+        "--brake-bias", type=float, default=0.3,
+        help="signed balance bar: 0 neutral, +1 all front, -1 all rear "
+             "(0.3 sends 65 %% of the pushrod force to the front)",
+    )
     parser.add_argument("--maximum-steer-deg", type=float, default=30.0)
     parser.add_argument("--maximum-steer-rate-deg-s", type=float, default=180.0)
     parser.add_argument(
@@ -776,7 +783,8 @@ def main() -> None:
         "steering_maximum_rate",
         "rack_travel_per_revolution",
         "maximum_pedal_force",
-        "hydraulic_ratio",
+        "hydraulic_ratio_front",
+        "hydraulic_ratio_rear",
         "maximum_brake_pressure",
         "caliper_area",
         "pad_mu_front",

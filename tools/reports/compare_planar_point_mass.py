@@ -83,7 +83,7 @@ def _point_mass_vehicle(planar_vehicle) -> tuple[PointMassVehicleParameters, flo
         lateral_load_transfer_distribution=(
             planar_vehicle.lateral_load_transfer_distribution
         ),
-        brake_bias=planar_vehicle.brake_bias,
+        front_brake_share=planar_vehicle.front_brake_share,
         tire=envelope,
         aero=planar_vehicle.aero,
         drivetrain=runtime,

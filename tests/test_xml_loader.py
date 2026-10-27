@@ -47,7 +47,7 @@ class XmlLoaderTests(unittest.TestCase):
         self.assertEqual(vehicle.drivetrain.power_limit, 80000.0)
         self.assertEqual(vehicle.drivetrain.efficiency, 0.95)
         self.assertEqual(vehicle.drivetrain.maximum_motor_speed, 18600.0)
-        self.assertEqual(vehicle.brake_bias, 0.65)
+        self.assertAlmostEqual(vehicle.front_brake_share, 0.62, places=6)
 
     def test_parameters_are_immutable(self) -> None:
         vehicle = load_point_mass_vehicle(FORMULATION_PATH)
@@ -80,7 +80,13 @@ class XmlLoaderTests(unittest.TestCase):
         <parameter name="cg_height" value="0.3" unit="m"/>
         <parameter name="front_mass_fraction" value="0.47" unit="1"/>
         <parameter name="lateral_load_transfer_distribution" value="0.44" unit="1"/>
-        <parameter name="brake_bias" value="0.65" unit="1"/>
+        <parameter name="brake_bias" value="0.0" unit="1"/>
+        <parameter name="hydraulic_ratio_front" value="7.665" unit="1"/>
+        <parameter name="hydraulic_ratio_rear" value="5.543134" unit="1"/>
+        <parameter name="pad_mu_front" value="0.40" unit="1"/>
+        <parameter name="pad_mu_rear" value="0.35" unit="1"/>
+        <parameter name="brake_effective_radius_front" value="0.077622" unit="m"/>
+        <parameter name="brake_effective_radius_rear" value="0.075184" unit="m"/>
     </parameters>
     <components>
         <component role="tire" ref="tire.xml"/>

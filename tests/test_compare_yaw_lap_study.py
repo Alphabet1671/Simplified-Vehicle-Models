@@ -38,6 +38,14 @@ def saved_run(root,name,*,spacing,control,map_identity='map',profile_evidence=Tr
     return path
 
 
+class ComparatorObjectiveTests(unittest.TestCase):
+    def test_segment_harmonic_objective_matches_profile_time(self):
+        speed=np.array([10.,20.,15.]); ds=np.array([2.,3.])
+        expected=float(np.sum(2.*ds/(speed[:-1]+speed[1:])))
+        trapezoid=float(np.trapezoid(1./speed,np.array([0.,2.,5.])))
+        self.assertGreater(abs(expected-trapezoid),1e-5)
+
+
 def loaded_sample(path, *, valid=True, time=.2, spacing=None, control=None, optimizer=None):
     inputs=json.loads((path/'inputs.json').read_text()); a=inputs['args']
     return (ConvergenceSample(path.name,float(spacing or a['spacing']),float(control or a['control_spacing']),time,
@@ -47,6 +55,13 @@ def loaded_sample(path, *, valid=True, time=.2, spacing=None, control=None, opti
 
 
 class SavedStudyTests(unittest.TestCase):
+    def test_distinct_plan_digests_are_allowed_across_geometry(self):
+        with tempfile.TemporaryDirectory() as td:
+            one=saved_run(Path(td),'coarse',spacing=2.,control=40.)
+            two=saved_run(Path(td),'fine',spacing=1.,control=40.)
+            _,fails,_=_preflight_runs([one,two],'geometry')
+            self.assertFalse(fails)
+
     def test_preflight_contract_mismatch_skips_loader(self):
         with tempfile.TemporaryDirectory() as td:
             one=saved_run(Path(td),'one',spacing=2.,control=10.); two=saved_run(Path(td),'two',spacing=1.,control=10.)
@@ -65,7 +80,13 @@ class SavedStudyTests(unittest.TestCase):
     def test_preflight_directly_rejects_vehicle_settings_and_missing_contracts(self):
         with tempfile.TemporaryDirectory() as td:
             one=saved_run(Path(td),'one',spacing=2.,control=10.); two=saved_run(Path(td),'two',spacing=1.,control=10.)
-            _,fails,_=_preflight_runs([one,two],'geometry'); self.assertTrue(any('must remain fixed' in f['cause'] for f in fails))
+            _,fails,_=_preflight_runs([one,two],'geometry'); self.assertFalse(fails)
+            manifest=json.loads((two/'inputs.json').read_text()); c=manifest['study_contract']
+            provenance=dict(c['provenance'],vehicle_configuration_hashes={'vehicle':'other'})
+            manifest['study_contract']=study_contract(c['arguments'],c['resolved_settings'],provenance)
+            (two/'inputs.json').write_text(json.dumps(manifest))
+            _,fails,_=_preflight_runs([one,two],'geometry')
+            self.assertTrue(any('vehicle_configuration_hashes must remain fixed' in f['cause'] for f in fails))
             old=saved_run(Path(td),'old',spacing=3.,control=10.,contract=False)
             _,fails,_=_preflight_runs([old],'geometry'); self.assertIn('missing_study_contract',{f['cause'] for f in fails})
 

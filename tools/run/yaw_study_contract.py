@@ -11,13 +11,15 @@ from pathlib import Path
 CONTRACT_VERSION = "yaw-study-contract-v1"
 _DIMENSIONS = {"geometry": "geometry_spacing_m", "control": "control_spacing_m", "replay": "replay_treatment"}
 # Explicit identity schema: unknown fields never become accidental compatibility keys.
+# Plan file/array digests are verified against each run, but excluded from the
+# cross-run identity because distinct study coordinates produce distinct plans.
 _COMMON = {"yaw_moment_tolerance", "interval_q_tolerance", "acceleration_tolerance", "map_identity", "map_file_sha256", "map_source_identity",
     "track_identity", "track_data_hashes", "vehicle_configuration_hashes", "vehicle_source_identity",
     "boundary", "boundary_type", "maximum_speed", "maximum_speed_mps", "solver", "solver_settings",
     "profile_settings", "profile_line_settings", "controller_values", "controller", "warm_start_policy", "warm_start_digest",
     "package_versions", "thread_settings", "initial_state_soc", "initial_state", "source_revision",
-    "source_dirty_hashes", "source_provenance_status", "watchdog_budget_seconds", "plan_file_digest",
-    "plan_array_digest", "mode", "duration", "maximum_step", "rtol", "atol", "method"}
+    "source_dirty_hashes", "source_provenance_status", "watchdog_budget_seconds",
+    "mode", "duration", "maximum_step", "rtol", "atol", "method"}
 _REPLAY = {"line_treatment", "controller_treatment", "replay_treatment"}
 # Minimum attestations the real runner can supply for every comparable run.
 # Geometry/control are the only coordinates permitted to vary independently.
@@ -38,6 +40,7 @@ _REQUIRED = {
         "initial_state", "initial_state_soc"},
 }
 _OUTPUT_FIELDS = {"output_dir", "output_path", "plan", "warm_plan", "timestamp", "runtime_seconds",
+    "plan_file_digest", "plan_array_digest",
     "wall_time_seconds", "elapsed_seconds", "canonical_json_sha256", "contract_version"}
 
 
@@ -182,9 +185,15 @@ def _comparison_values(contract, dimension):
     allowed = set(_COMMON)
     if dimension == "replay": allowed |= _REPLAY
     allowed |= {"geometry_spacing_m", "control_spacing_m"}
-    # Paths and runtime observations are intentionally not compatibility data;
-    # content digests and the explicit warm-start policy remain binding.
+    # Paths, runtime observations, and per-run plan digests are not compatibility
+    # data; map/source digests and warm-start lineage remain binding.
     values = {key: value for key, value in values.items() if key in allowed}
+    # The bundled profile-line settings contain both study coordinates. Remove
+    # those coordinates here; they are compared explicitly below, with only the
+    # requested dimension allowed to differ.
+    if isinstance(values.get("profile_line_settings"), dict):
+        values["profile_line_settings"] = {key: value for key, value in values["profile_line_settings"].items()
+            if key not in {"spacing", "control_spacing", "geometry_spacing_m", "control_spacing_m"}}
     missing = sorted(_REQUIRED[dimension] - values.keys())
     if missing:
         raise ValueError(f"incomplete {dimension} comparison contract; missing required fields: {', '.join(missing)}")

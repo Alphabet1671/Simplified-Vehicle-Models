@@ -23,6 +23,16 @@ The final expanded scoped regression suite passed **128 tests in29.884 s** under
 
 The matched MIS 2 m fixed profile retained exactly 61.4706029303142 s while runtime improved from approximately 40.02 s (graph 27.89 s) to 14.37 s (graph 1.97 s). Physical timings are workload/concurrency dependent.
 
+## Task 7 fresh profile and spatial-grid closure (2026-10-26)
+
+Fresh run records for this closure are preserved under `runs/yaw_lap_suite/closure-v1/`; this section does not substitute the historical 2→1 m deltas below for convergence evidence. Full commands, per-run statuses/digests, comparisons, and rulings are in `.superpowers/sdd/2026-10-26-yaw-lap-suite-methodology-closure/task-7-report.md` in the agent workspace. The completed map is unchanged. MIS track geometry is reconstructed rather than independently surveyed; the FSC edges are synthetic 3 m edges.
+
+MIS fresh 2 m and 1 m plans are independently valid but both profile-refinement-unproven; the 2→1 m geometry pair is explicitly inconclusive because required matched warm-start policy differs (cold 2m, warm 1m). MIS warm and cold 0.5 m attempts both failed strict validation and have no lap times or plan digests. No MIS 0.25 m study is eligible. FSC 2 m and 1 m plans are independently valid and profile-refinement-converged; 0.5 m warm and cold plans are valid but profile-refinement-unproven. The corrected FSC warm 1→0.5 m comparison exceeds project geometry thresholds (2.385749% time; 9.427667 m/s max speed difference; 0 m offset), but remains inconclusive because the finer profile is unproven. Exactly one bounded 0.25 m FSC warm suggestion was started because the finer 0.5 m plan was feasible and the numerical criteria failed; final outcome is appended after completion.
+
+All r24 follow-up objectives and plan digests exactly match the corresponding r16 case. No selected convergence-supported finest grid or Task8 physical basis is established by the evidence currently available. Cold/warm comparisons are sensitivity evidence only, not matched spatial refinement. Fresh full comparisons are curated in `docs/dev/yaw-lap-suite-closure/`.
+
+Task7 revealed and corrected comparator implementation errors: plan digests were incorrectly treated as cross-run identity, nested line-spacing fields caused false incompatibility, profile objective recomputation used a different integration rule, and wrapped closed-heading seam was rejected. The comparator now verifies each artifact's plan digest, contract hash and strict validation, uses the exact harmonic segment-time objective, excludes only per-run digests/study coordinates from identity, preserves warm-policy matching, and accepts wrapped-heading seam equivalence. Focused comparator and contract suite: 18 tests passed under watchdog. These corrections do not alter solver code.
+
 ## Fixed-line spatial studies
 
 | Track | 2 m plan | 1 m plan | Relative time change | Maximum speed difference |
@@ -72,8 +82,49 @@ A longer-preview gain experiment exhausted its 550 s integration budget. Matched
 
 ## Remaining work
 
-- Extend matched fixed-line controller evidence to independent replay of the optimized lines.
-- Improve frontier/refinement efficiency enough to resolve the 0.5 m profiles within the hard runtime cap; do not widen strict tolerances.
-- Demonstrate optimizer and control-basis/spatial convergence, rather than only bounded improvement.
-- Validate optimized-line replay independently of fixed-line controller evidence.
-- Preserve explicit footprint/between-step containment non-certifications.
+The new virtual driver has completed fixed-line forward laps on MIS and FSC. Bounded line optimization, saved-plan replay, and convergence reporting are implemented. What remains is to demonstrate a reliable **optimized-line planning → tracking → validation** pipeline, not to implement those components again.
+
+### 1. Resolve fine-grid profile connectivity and runtime
+
+- Diagnose the remaining candidate/frontier connectivity bottleneck and reduce interval-refinement cost. MIS 0.5 m still exhausts its 300 s profile budget without a validated path, including with squared-speed warm suggestions.
+- Obtain independently validated finer-grid profiles on both MIS and FSC without broadening support/moment tolerances, filling map masks, or introducing an arbitrary acceleration cap.
+- Keep the complete process and its children inside the **1,800 s hard deadline per run**. Improve accepted-state and between-step replay-validation efficiency as well: the successful MIS replay required a 1,400 s cooperative allowance and a 1,500 s hard watchdog, leaving little practical runtime margin.
+
+**Done when:** finer-grid planning and complete replay validation finish reproducibly within the hard limit, with useful runtime margin and explicit failure/budget diagnostics.
+
+### 2. Demonstrate convergence, separately for each numerical layer
+
+- **Profile refinement:** resolve the outstanding refinement uncertainty, including the coarse profiles and FSC 1 m case.
+- **Spatial grid:** compare genuinely finer geometry grids at fixed line-control resolution, using the same map, track, settings, and common reference-station axis. The current 2 m → 1 m lap-time changes of approximately 4.4–4.7% are not convergence evidence.
+- **Line optimizer:** demonstrate stationarity or a documented stopping criterion other than wall/evaluation/iteration exhaustion. The retained MIS/FSC improvements are feasible incumbents, not converged optima.
+- **Control basis:** refine line-control spacing while holding geometry resolution fixed and giving each search sufficient, comparable progress. The existing FSC 40 m/20 m studies do not establish basis convergence.
+- Generate fresh digest-bound study artifacts; historical unbound reports must remain exploratory/inconclusive.
+
+**Done when:** the independent profile, optimizer, spatial-grid, and control-basis checks pass their declared tolerances, or the suite explicitly reports which claim remains inconclusive. This does not establish global optimality or continuous feasibility.
+
+### 3. Validate tracking of the optimized lines
+
+- Replay the saved optimized MIS and FSC plans through the full forward plant without reoptimizing them or substituting the fixed-line speed plan.
+- Verify the physical-path/reference-station mapping, curvature and seam behavior, then collect completed-lap time, time-weighted speed/lateral errors, maximum errors, realized control saturation, and corridor violations.
+- Compare fixed and optimized lines with the same final controller revision and consistent numerical settings. Fixed-line completion alone does not show that the optimized plans are trackable or improve driven lap time.
+
+**Done when:** both optimized-line replays complete all solver validation and demonstrate their actual driven-time/tracking trade-off against the matched fixed-line baseline.
+
+### 4. Strengthen controller robustness and containment evidence
+
+- Reduce the remaining lateral-tracking trade-off. On FSC, the final driver improves speed tracking but has lateral RMS/max errors of 0.070/0.175 m versus the legacy preview driver's 0.054/0.160 m.
+- Test sensitivity to initial-state/line perturbations, rapid curvature reversals, cyclic seams, and physically justified vehicle/actuator variations; retain diagnostic failures rather than claiming robustness from two nominal laps.
+- Add whole-vehicle footprint and between-step corridor checks if stronger containment claims are required. Current zero violations concern the **sampled vehicle centre only**; accepted/between-step solver-domain validation is not a corridor-containment certificate.
+
+**Done when:** the claimed operating range and tracking/containment tolerances have explicit passing evidence. Until then, preserve the footprint and between-step corridor non-certifications.
+
+### 5. Close the measured-data and reproducibility gaps
+
+- Use the [single-replay MIS measured-data report](../validation/iem24-murphy-yaw-replay/report.md) to investigate the 64.802 s simulated versus 71.685 s measured-median lap-time gap: 6.883 s, or 9.60%. The report establishes the discrepancy, not its cause.
+- Separate controller/line/grip assumptions from battery initial-condition effects and measurement alignment. Keep reconstructed motor torque request distinct from delivered torque, and acknowledge that the reference track geometry derives from the same measured log rather than an independent survey.
+- Embed complete configuration/source/controller provenance in future run records. The compared historical record lacks a configuration-source hash; hashing it now does not recover that missing historical provenance.
+- Extend regression coverage and rerun the relevant integration tests after further changes. Existing scoped passes are not a whole-repository test-suite pass claim.
+
+**Done when:** new reports and run records are self-contained and reproducible, major comparison offsets are explained or explicitly unresolved, and every stronger performance claim is tied to the exact tested artifacts.
+
+Throughout this work, keep the legacy OCP unchanged, retain strict map semantics, and enforce the hard runtime limit. Neither further implementation nor successful nominal replay should silently upgrade the present convergence, optimality, or containment claims.

@@ -35,7 +35,11 @@ def _validate_plan_geometry(arrays, metadata, reference, track):
     if reference.is_closed:
         if not np.allclose([n[-1],e[-1]],[n[0],e[0]],rtol=0,atol=1e-7):
             raise ValueError('reference_seam_mismatch')
-        if not math.isclose(abs(float(h[-1]-h[0])),2*math.pi,rel_tol=0,abs_tol=1e-5):
+        # Heading may be stored wrapped (same endpoint value) or continuously
+        # unwrapped (one full turn); both encode the same closed tangent.
+        heading_delta=float(h[-1]-h[0])
+        wrapped_delta=(heading_delta+math.pi)%(2*math.pi)-math.pi
+        if abs(wrapped_delta)>1e-5:
             raise ValueError('reference_seam_mismatch')
     offset=(n-ref.north)*(-np.sin(ref.heading))+(e-ref.east)*np.cos(ref.heading)
     left=getattr(track,'half_width_left',None); right=getattr(track,'half_width_right',None)
@@ -112,10 +116,18 @@ def _load_sample(directory, dimension):
     if not isinstance(profile,dict): raise ValueError('missing_profile_evidence')
     if not isinstance(profile.get('validation'),dict) and not isinstance(profile.get('valid'),bool):
         raise ValueError('unbound_profile_evidence')
-    contract_digest=contract.get('canonical_json_sha256')
+    # The immutable plan stores the pre-finalization contract hash because its
+    # own file/array digests are added only after the plan is written. Rebuild
+    # that non-circular contract from the finalized manifest and verify it.
+    prefinal_provenance=dict(provenance)
+    prefinal_provenance.update(plan_file_digest='pending',plan_array_digest='pending')
+    prefinal=study_contract(contract.get('arguments',{}),contract.get('resolved_settings',{}),prefinal_provenance)
     artifact_evidence=metadata.get('provenance',{})
-    if artifact_evidence.get('study_contract_sha256')!=contract_digest:
+    if artifact_evidence.get('study_contract_sha256')!=prefinal['canonical_json_sha256']:
         raise ValueError('unbound_profile_evidence')
+    # Plan digests bind each immutable run but are not study identity: a geometry
+    # comparison necessarily compares different plan artifacts. Integrity is
+    # checked against each run's own contract and saved bytes above.
     args=inputs['args']; track_path=Path(args['track'])
     contract_args=contract.get('arguments',{})
     for key in ('track','spacing','control_spacing'):
@@ -144,7 +156,9 @@ def _load_sample(directory, dimension):
         raise ValueError('plan_source_digest_mismatch')
     diagnostic=summary.get('diagnostics',{}); kind=diagnostic.get('kind')
     optimizer=bool(diagnostic.get('diagnostics',{}).get('converged')) if kind=='optimized_line' else None
-    reported=float(summary['lap_time_s']); recomputed=float(np.trapezoid(1./arrays['speed'],arrays['distance']))
+    reported=float(summary['lap_time_s'])
+    ds=np.diff(arrays['distance']); v0=arrays['speed'][:-1]; v1=arrays['speed'][1:]
+    recomputed=float(np.sum(2.*ds/(v0+v1)))
     if not math.isfinite(reported) or not math.isclose(reported,recomputed,rel_tol=2e-5,abs_tol=2e-5):
         raise ValueError('reported_lap_time_mismatch')
     reference=ReferenceCurve(track)

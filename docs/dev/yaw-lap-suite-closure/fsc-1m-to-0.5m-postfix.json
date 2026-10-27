@@ -1,0 +1,18 @@
+{
+  "status": "inconclusive",
+  "comparisons": [],
+  "validation_evidence": [],
+  "failed_runs": [
+    {
+      "run": "runs/yaw_lap_suite/closure-v1/fsc-fixed-1m-r16",
+      "status": "inconclusive",
+      "cause": "reported_lap_time_mismatch"
+    },
+    {
+      "run": "runs/yaw_lap_suite/closure-v1/fsc-fixed-0.5m-warm-r16",
+      "status": "inconclusive",
+      "cause": "reported_lap_time_mismatch"
+    }
+  ],
+  "scope": "saved discrete plans; fresh strict profile validation against exact map and track; no continuous feasibility certification"
+}

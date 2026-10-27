@@ -23,6 +23,14 @@ Compatibility is an explicit allowlist: geometry studies vary geometry spacing o
 
 Strict completed-map semantics remain mandatory. This contract does not certify continuous feasibility, footprint containment between samples, or solver convergence beyond the evidence recorded by the existing mechanisms.
 
+## Task 7 study-specific rulings and implementation corrections
+
+For Task 7, profile rounds and profile budget must be reported separately from spatial-grid differences. A geometry pair is eligible only when both plans are independently validated and the profile-refinement criterion is met for both; otherwise report an inconclusive comparison even when numerical differences exceed project thresholds. Warm-start policy matching remains mandatory: a cold 2 m run versus a squared-speed-warm 1 m run is not a compatible spatial pair. Cold 0.5 m runs are sensitivity rows, not grid-convergence pairs against warm-start plans.
+
+Plan file/array digests are per-run integrity bindings, verified against each immutable artifact and manifest, and are not cross-resolution compatibility fields. The pre-finalized study-contract hash embedded in a plan is reconstructed from the finalized manifest with pending plan digest placeholders; do not rewrite existing plans. Segment lap time is recomputed with the solver/validator's exact harmonic segment expression, `sum(2*ds/(v_i+v_{i+1}))`. Closed-path heading seam equivalence permits wrapped-equal headings or a full-turn unwrapped difference.
+
+Project thresholds remain: profile candidate time relative difference <=0.001 and candidate speed max <=0.02 m/s; geometry lap time relative <=0.005, common-reference speed max <=0.1 m/s, and offset max <=0.05 m. These are study criteria, not paper-derived tolerances.
+
 ## Required analysis outputs
 
 For each reported experiment, include the paper-derived check/evidence above, convergence/discretization error and wall time, executed settings, provenance status, and the limitations of sampled containment and historical records. Do not transfer another model's mesh, solver tolerances, steering limits, or claims.

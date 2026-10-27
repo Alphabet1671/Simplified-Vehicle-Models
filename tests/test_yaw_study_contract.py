@@ -89,6 +89,12 @@ class StudyContractTests(unittest.TestCase):
             self.assertEqual(provenance["initial_state_soc"], .25)
             self.assertEqual(__import__('json').loads(path.read_text()), updated)
 
+    def test_plan_digests_are_run_bindings_not_geometry_identity(self):
+        coarse = complete_contract(geometry_spacing_m=2.0, plan_array_digest="array-a", plan_file_digest="file-a")
+        fine = complete_contract(geometry_spacing_m=1.0, plan_array_digest="array-b", plan_file_digest="file-b")
+        self.assertEqual(comparison_identity(coarse, "geometry"), comparison_identity(fine, "geometry"))
+        validate_comparison_pair(coarse, fine, "geometry")
+
     def test_finalized_plan_inputs_binds_immutable_plan(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "plan.npz"

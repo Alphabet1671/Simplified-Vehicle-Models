@@ -60,6 +60,17 @@ class CommandAndStatusTests(unittest.TestCase):
             (attempt/'inputs.json').write_text(json.dumps(inputs))
             (attempt/'summary.json').write_text(json.dumps({'status':'planned','lap_completed':False,'plan_artifact_sha256':digest}))
             self.assertEqual(finish_case(prepared, attempt, **kwargs)['status'], 'planned')
+            record = attempt / 'run_record.npz'
+            np.savez(record, **{'manifest.json': np.array('{"schema":"test"}'), 'time': np.arange(3.)})
+            record_digest = hashlib.sha256(record.read_bytes()).hexdigest()
+            inputs['run_record_sha256'] = record_digest
+            (attempt/'inputs.json').write_text(json.dumps(inputs))
+            (attempt/'summary.json').write_text(json.dumps({
+                'status': 'completed', 'lap_completed': True, 'solver_validation_complete': True,
+                'artifact_sha256': record_digest, 'plan_artifact_sha256': digest,
+            }))
+            with mock.patch('simplified_vehicle_models.results.run_record.load_run_record'):
+                self.assertEqual(finish_case(prepared, attempt, **kwargs)['status'], 'completed')
             plan.write_bytes(b'corrupt'); self.assertEqual(finish_case(prepared, attempt, **kwargs)['status'], 'failed')
             inputs['formulation_sha256']='mismatch'; (attempt/'inputs.json').write_text(json.dumps(inputs))
             self.assertEqual(finish_case(prepared, attempt, **kwargs)['status'], 'failed')

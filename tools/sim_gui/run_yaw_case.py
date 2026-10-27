@@ -111,7 +111,8 @@ def _yaw(case: dict, attempt: Path, settings: RunSettings, case_dir: Path) -> in
     manifest = getattr(compile_result, "manifest", None)
     inputs.update({
         "solver_kind": "yaw-aware", "source_model": source_model,
-        "solution_model": "planar-7dof", "track": str(track), "source_formulation": str(formulation),
+        "solution_model": "planar-7dof", "track": str(track), "formulation": str(formulation),
+        "source_formulation": str(formulation),
         "source_manifest": _manifest_source_ids(manifest),
         "yaw_map": str(map_path), "mode": settings.mode, "plan": str(plan) if plan else None,
         "compiled_source_subtype": "14dof-simple" if source_model == "14dof-simple" else "planar-7dof",

@@ -257,7 +257,7 @@ def finish_case(prepared: PreparedCase, attempt: Path, *, return_code: int | Non
           and matches_digest("plan.npz", inputs.get("plan_sha256"))
           and matches_digest("run_record.npz", inputs.get("run_record_sha256"))
           and valid_npz("plan.npz", ("metadata", "distance", "speed", "north", "east", "heading"))
-          and valid_yaw_plan(Path(attempt) / "plan.npz", inputs)):
+          and valid_yaw_plan(Path(attempt) / "plan.npz")):
         status, parent_status, parent_code = "completed", "Child_Completed", return_code
     elif summary["status"] == "failed":
         status, parent_status, parent_code = "failed", "Child_Failed", return_code

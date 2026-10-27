@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
 from types import MappingProxyType
+from collections.abc import Mapping as ABCMapping
 from typing import Mapping
 
 import numpy as np
@@ -25,6 +26,16 @@ class FitResult:
         object.__setattr__(self, 'metrics', MappingProxyType(dict(self.metrics)))
         object.__setattr__(self, 'status_by_parameter', MappingProxyType(dict(self.status_by_parameter)))
 
+def _deep_freeze(value):
+    if isinstance(value, ABCMapping):
+        return MappingProxyType({key: _deep_freeze(item) for key, item in value.items()})
+    if isinstance(value, (list, tuple)):
+        return tuple(_deep_freeze(item) for item in value)
+    if value is None or isinstance(value, (str, bool, int, float)):
+        return value
+    raise TypeError(f'unsupported session metadata value type: {type(value).__name__}')
+
+
 def _freeze_array(value):
     arr = np.array(value, copy=True)
     arr.setflags(write=False)
@@ -47,7 +58,7 @@ class ModelSnapshot:
         object.__setattr__(self, 'values', MappingProxyType(dict(self.values)))
         object.__setattr__(self, 'provenance', MappingProxyType(dict(self.provenance)))
         object.__setattr__(self, 'parameter_status', MappingProxyType(dict(self.parameter_status)))
-        object.__setattr__(self, 'session_metadata', MappingProxyType(dict(self.session_metadata)))
+        object.__setattr__(self, 'session_metadata', _deep_freeze(self.session_metadata))
 
 
 @dataclass(frozen=True)

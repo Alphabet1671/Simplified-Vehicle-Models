@@ -45,7 +45,7 @@ class SaveTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             save_session(self.seed, Path(folder), 'private', include_transient=False,
                          metadata={'selections': {'run': 8}, 'locks': {'mu_0_y': True},
-                                   'bounds': {'mu_0_y': [0.1, 1.2]}, 'events': [{'start': 1.0, 'end': 2.0}],
+                                   'bounds': {'mu_0_y': [0.1, 1.2]}, 'events': [{'start': 1.0, 'stop': 2.0}],
                                    'source_files': ['/private/ttc/run8.mat']})
             restored = load_session(Path(folder) / 'private')
             self.assertEqual(dict(restored.session_metadata)['selections'], {'run': 8})
@@ -53,6 +53,26 @@ class SaveTests(unittest.TestCase):
             self.assertNotIn('measurements', manifest)
             self.assertIn('source_files', manifest)
             self.assertEqual(restored.parameter_status['longitudinal_length_scale'], 'provisional')
+
+    def test_overwrite_revalidates_destination_after_staging(self):
+        with tempfile.TemporaryDirectory() as folder:
+            save_session(self.seed, Path(folder), 'racy', include_transient=False)
+            original_validate = __import__('tools.tire_gui.save', fromlist=['_validate_xml'])._validate_xml
+            mutated = False
+            def mutate_during_staging(path, transient):
+                nonlocal mutated
+                result = original_validate(path, transient)
+                if not mutated:
+                    (Path(folder) / 'racy' / 'unexpected.txt').write_text('unknown')
+                    mutated = True
+                return result
+            edited = with_parameter(self.seed, 'mu_0_y', self.seed.values['mu_0_y'] * 0.99)
+            with patch('tools.tire_gui.save._validate_xml', side_effect=mutate_during_staging):
+                with self.assertRaises(FileExistsError):
+                    save_session(edited, Path(folder), 'racy', include_transient=False, overwrite=True)
+            self.assertTrue((Path(folder) / 'racy' / 'unexpected.txt').is_file())
+            self.assertTrue((Path(folder) / 'racy' / 'racy-unitire-simple.xml').is_file())
+            self.assertFalse(list(Path(folder).glob('.racy.backup-*')))
 
     def test_overwrite_known_bundle_keeps_backup_without_deleting(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -81,7 +101,57 @@ class SaveTests(unittest.TestCase):
             restored = load_session(Path(folder) / 'edited')
             self.assertEqual(restored.session_metadata['selections'], {'run': 8})
             self.assertEqual(restored.session_metadata['locks'], {'mu_0_y': True})
-            self.assertEqual(restored.session_metadata['events'], [{'start': 2, 'stop': 9}])
+            self.assertEqual(restored.session_metadata['events'][0]['start'], 2)
+            self.assertEqual(restored.session_metadata['events'][0]['stop'], 9)
+
+    def test_nested_raw_payload_rejected(self):
+        with tempfile.TemporaryDirectory() as folder:
+            with self.assertRaises(ValueError):
+                save_session(self.seed, Path(folder), 'bad-meta', include_transient=False,
+                             metadata={'events': [{'id': 'e1', 'samples': [1.0, 2.0]}]})
+            with self.assertRaises(ValueError):
+                save_session(self.seed, Path(folder), 'bad-meta2', include_transient=False,
+                             metadata={'session_metadata': {'raw_payload': {'channels': [1, 2]}}})
+
+    def test_session_metadata_is_deeply_immutable(self):
+        source = {'selections': {'run': 8}, 'events': [{'start': 2, 'stop': 9}]}
+        snapshot = load_snapshot(SEED)
+        from tools.tire_gui.model import _make_snapshot
+        frozen = _make_snapshot(snapshot.steady, snapshot.transient, snapshot.revision,
+                                snapshot.provenance, snapshot.parameter_status, snapshot.load_domain, source)
+        source['selections']['run'] = 99
+        self.assertEqual(frozen.session_metadata['selections']['run'], 8)
+        with self.assertRaises(TypeError):
+            frozen.session_metadata['selections']['run'] = 9
+        with self.assertRaises(TypeError):
+            frozen.session_metadata['events'][0]['start'] = 10
+
+    def test_load_rejects_extra_entry_and_malformed_xml_id(self):
+        with tempfile.TemporaryDirectory() as folder:
+            save_session(self.seed, Path(folder), 'strict', include_transient=True)
+            bundle = Path(folder) / 'strict'
+            extra = bundle / 'extra.txt'
+            extra.write_text('untrusted')
+            with self.assertRaises(ValueError):
+                load_session(bundle)
+            extra.unlink()
+            xml = next(bundle.glob('*-unitire-simple.xml'))
+            text = xml.read_text()
+            xml.write_text(text.replace('id="strict-steady-', 'id="bad id-', 1))
+            with self.assertRaises(ValueError):
+                load_session(bundle)
+
+    def test_load_rejects_duplicate_model_ids(self):
+        with tempfile.TemporaryDirectory() as folder:
+            save_session(self.seed, Path(folder), 'dupid', include_transient=True)
+            bundle = Path(folder) / 'dupid'
+            steady = next(bundle.glob('*-unitire-simple.xml')).read_text()
+            transient_path = next(bundle.glob('*-unitire-transient-simple.xml'))
+            text = transient_path.read_text()
+            steady_id = steady.split('id="', 1)[1].split('"', 1)[0]
+            transient_path.write_text(text.replace(text.split('id="', 1)[1].split('"', 1)[0], steady_id, 1))
+            with self.assertRaises(ValueError):
+                load_session(bundle)
 
     def test_symlink_output_parent_escape_refused(self):
         with tempfile.TemporaryDirectory() as folder, tempfile.TemporaryDirectory() as outside:

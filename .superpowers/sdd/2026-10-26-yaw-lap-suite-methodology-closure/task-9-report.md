@@ -94,3 +94,16 @@ Ran 34 tests in 14.354s — OK
 ```
 
 No physical replay was repeated and no timeout/failure was retried. Task 7 remains spatially inconclusive; no geometry/optimizer convergence, transient optimality, or reliable-pipeline claim follows.
+
+## Review correction evidence (round 4)
+
+The comparator and contract builder now require a nonempty path-to-digest dictionary with nonempty whitespace-trimmed string keys and canonical lowercase SHA-256 hexadecimal values (exactly 64 characters from `0-9a-f`). Uppercase is rejected, not normalized, consistent with `hashlib.sha256(...).hexdigest()`. This prevents malformed source-dirty mappings from being labeled attested at contract creation and ensures the comparator requires explicit attested statuses, known equal revisions, valid mappings on both sides, and exact equality. Exploratory completion remains separate from comparison status.
+
+Fixtures using the prior invalid `hash` digest were replaced with valid 64-character SHA-256 hex strings. Regressions cover empty/nonmapping mappings, sentinel/arbitrary values, whitespace, incorrect length, nonhex, uppercase, malformed keys, and nonstring digests; malformed matching mappings remain inconclusive while exploratory completion stays true. The immutable historical comparison report was regenerated without replaying physics. It remains inconclusive because its historical source provenance is absent/unknown.
+
+Focused watchdog command:
+
+```text
+PYTHONPATH=src:. python3 tools/run/run_with_deadline.py --seconds 180 -- python3 -m unittest tests.test_yaw_planning_replay tests.test_yaw_study_contract -q
+Ran 23 tests in 0.028s — OK
+```

@@ -74,9 +74,11 @@ def _attested(value):
 
 
 def _hash_mapping(value):
-    """A transitive-source/hash attestation is a nonempty string→digest map."""
+    """A transitive-source/hash attestation is path→canonical SHA-256 hex."""
     return (isinstance(value, dict) and bool(value) and
-            all(isinstance(key, str) and bool(key) and _attested(digest)
+            all(isinstance(key, str) and bool(key) and key == key.strip() and
+                isinstance(digest, str) and len(digest) == 64 and
+                all(char in "0123456789abcdef" for char in digest)
                 for key, digest in value.items()))
 
 

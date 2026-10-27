@@ -9,8 +9,8 @@ from tools.run.yaw_study_contract import comparison_identity, finalized_plan_inp
 def complete_contract(**overrides):
     values = {"geometry_spacing_m": 1.0, "control_spacing_m": 40.0,
         "yaw_moment_tolerance": 1e-7, "interval_q_tolerance":1e-8, "acceleration_tolerance":1e-7, "map_identity": "map-a", "map_file_sha256": "maphash",
-        "map_source_identity": "map-source", "track_identity": "track-a", "track_data_hashes": {"track": "hash"},
-        "vehicle_configuration_hashes": {"vehicle": "hash"}, "boundary_type": "flying",
+        "map_source_identity": "map-source", "track_identity": "track-a", "track_data_hashes": {"track": "a" * 64},
+        "vehicle_configuration_hashes": {"vehicle": "b" * 64}, "boundary_type": "flying",
         "maximum_speed_mps": 70.0, "warm_start_policy": "cold", "warm_start_digest": "none",
         "solver": {"method": "BDF"}, "duration": 150.0, "maximum_step": .05,
         "rtol": 1e-6, "atol": 1e-8, "method": "BDF", "initial_state": "unknown",

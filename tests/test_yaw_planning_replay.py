@@ -4,7 +4,9 @@ import json
 from pathlib import Path
 import numpy as np
 from simplified_vehicle_models.planning.yaw_replay_metrics import yaw_approximation_diagnostics, tangential_acceleration_from_body, periodic_centered_derivative, _periodic_nonuniform_derivative
-from tools.reports.compare_yaw_planning_replay import replay_info, plan_info
+from tools.reports.compare_yaw_planning_replay import replay_info, plan_info, _hash_mapping
+
+VALID_DIRTY_HASHES = {'file': 'a' * 64}
 
 class YawApproximationTests(unittest.TestCase):
     def test_constant_radius_zero_sideslip(self):
@@ -69,8 +71,8 @@ class YawApproximationTests(unittest.TestCase):
     def test_known_source_revision_mismatch_is_inconclusive(self):
         with tempfile.TemporaryDirectory() as td:
             root=Path(td); (root/'summary.json').write_text(json.dumps({'lap_completed':True,'solver_validation_complete':True}))
-            (root/'inputs.json').write_text(json.dumps({'args':{'track':'track','plan':'plan.npz'},'map_identity':'map','study_contract':{'provenance':{'plan_array_digest':'digest','plan_file_digest':'placeholder','source_revision':'replay-r2','source_provenance_status':'attested','source_dirty_hashes':{'file':'hash'}}}}))
-            row=replay_info(root,'plan.npz',expected_track='track',expected_map='map',plan_digest='digest',plan_source_revision='plan-r1',plan_source_status='attested',plan_dirty_hashes={'file':'hash'})
+            (root/'inputs.json').write_text(json.dumps({'args':{'track':'track','plan':'plan.npz'},'map_identity':'map','study_contract':{'provenance':{'plan_array_digest':'digest','plan_file_digest':'placeholder','source_revision':'replay-r2','source_provenance_status':'attested','source_dirty_hashes':VALID_DIRTY_HASHES}}}))
+            row=replay_info(root,'plan.npz',expected_track='track',expected_map='map',plan_digest='digest',plan_source_revision='plan-r1',plan_source_status='attested',plan_dirty_hashes=VALID_DIRTY_HASHES)
             self.assertTrue(row['exploratory_completion'])
             self.assertFalse(row['identity_checks']['source_revision_match'])
             self.assertEqual(row['comparison_status'],'inconclusive')
@@ -95,10 +97,41 @@ class YawApproximationTests(unittest.TestCase):
             self.assertFalse(row['identity_checks']['replay_source_dirty_hashes_attested'])
             self.assertEqual(row['comparison_status'],'inconclusive')
 
+    def test_source_dirty_hash_mapping_requires_canonical_sha256(self):
+        valid = {'src/file.py': '0123456789abcdef' * 4}
+        self.assertTrue(_hash_mapping(valid))
+        malformed = [
+            {}, [], 'unknown', {'src/file.py': ''}, {'src/file.py': ' ' * 64},
+            {'src/file.py': 'hash'}, {'src/file.py': 'a' * 63},
+            {'src/file.py': 'g' * 64}, {'src/file.py': 'A' * 64},
+            {' src/file.py': 'a' * 64}, {'src/file.py ': 'a' * 64},
+            {'src/file.py': None}, {1: 'a' * 64},
+        ]
+        for dirty in malformed:
+            with self.subTest(dirty=dirty):
+                self.assertFalse(_hash_mapping(dirty))
+
+    def test_malformed_dirty_hashes_make_comparison_inconclusive(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td)
+            (root/'summary.json').write_text(json.dumps({'lap_completed':True,'solver_validation_complete':True}))
+            for bad in ('hash', ' ' * 64, 'a' * 63, 'g' * 64, 'A' * 64):
+                dirty={'file':bad}
+                prov={'plan_array_digest':'digest','plan_file_digest':'placeholder','source_revision':'same-r',
+                      'source_provenance_status':'attested','source_dirty_hashes':dirty}
+                (root/'inputs.json').write_text(json.dumps({'args':{'track':'track','plan':'plan.npz'},'map_identity':'map',
+                    'study_contract':{'provenance':prov}}))
+                row=replay_info(root,'plan.npz',expected_track='track',expected_map='map',plan_digest='digest',
+                    plan_source_revision='same-r',plan_source_status='attested',plan_dirty_hashes=dirty)
+                self.assertTrue(row['exploratory_completion'])
+                self.assertFalse(row['identity_checks']['plan_source_dirty_hashes_attested'])
+                self.assertFalse(row['identity_checks']['replay_source_dirty_hashes_attested'])
+                self.assertEqual(row['comparison_status'],'inconclusive')
+
     def test_historical_unknown_status_blocks_matching_revision(self):
         with tempfile.TemporaryDirectory() as td:
             root=Path(td); (root/'summary.json').write_text(json.dumps({'lap_completed':True,'solver_validation_complete':True}))
-            dirty={'file':'hash'}
+            dirty=VALID_DIRTY_HASHES
             prov={'plan_array_digest':'digest','plan_file_digest':'placeholder','source_revision':'same-r','source_provenance_status':'historical_unknown','source_dirty_hashes':dirty}
             (root/'inputs.json').write_text(json.dumps({'args':{'track':'track','plan':'plan.npz'},'map_identity':'map','study_contract':{'provenance':prov}}))
             row=replay_info(root,'plan.npz',expected_track='track',expected_map='map',plan_digest='digest',plan_source_revision='same-r',plan_source_status='historical_unknown',plan_dirty_hashes=dirty)
@@ -109,7 +142,7 @@ class YawApproximationTests(unittest.TestCase):
     def test_bare_top_level_plan_revision_is_not_attested(self):
         with tempfile.TemporaryDirectory() as td:
             root=Path(td); (root/'summary.json').write_text(json.dumps({'lap_completed':True,'solver_validation_complete':True}))
-            dirty={'file':'hash'}
+            dirty=VALID_DIRTY_HASHES
             prov={'plan_array_digest':'digest','plan_file_digest':'placeholder','source_revision':'same-r','source_provenance_status':'attested','source_dirty_hashes':dirty}
             (root/'inputs.json').write_text(json.dumps({'args':{'track':'track','plan':'plan.npz'},'map_identity':'map','source_revision':'same-r','study_contract':{'provenance':prov}}))
             row=replay_info(root,'plan.npz',expected_track='track',expected_map='map',plan_digest='digest',plan_source_revision=None,plan_source_status=None,plan_dirty_hashes=dirty)

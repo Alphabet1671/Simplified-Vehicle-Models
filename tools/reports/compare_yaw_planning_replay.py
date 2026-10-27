@@ -26,8 +26,17 @@ def _attested(value):
 
 
 def _hash_mapping(value):
+    """Accept only nonempty path→canonical lowercase SHA-256 mappings.
+
+    Digests match hashlib.sha256(...).hexdigest(): exactly 64 lowercase hex
+    characters. Uppercase is rejected (not normalized) so the attestation has
+    one canonical representation, consistent with the study contract.
+    """
     return (isinstance(value, dict) and bool(value) and
-            all(isinstance(k,str) and bool(k) and _attested(v) for k,v in value.items()))
+            all(isinstance(k, str) and bool(k) and k == k.strip() and
+                isinstance(v, str) and len(v) == 64 and
+                all(c in '0123456789abcdef' for c in v)
+                for k, v in value.items()))
 
 
 def _source_status(value):

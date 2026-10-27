@@ -10,6 +10,12 @@ from simplified_vehicle_models.planning.yaw_lap_artifact import ARRAYS,_digest,S
 from tools.run.yaw_study_contract import study_contract
 
 
+VALID_HASH = 'a' * 64
+VEHICLE_HASHES = {'/models/vehicle.xml': VALID_HASH}
+TRACK_HASHES = {'/tracks/synthetic.csv': VALID_HASH}
+SOURCE_HASHES = {'/src/module.py': VALID_HASH}
+
+
 def saved_run(root,name,*,spacing,control,map_identity='map',profile_evidence=True,contract=True,report_time=.2):
     path=root/name; path.mkdir()
     arrays={key:np.array([0.,1.,2.]) for key in ARRAYS}; arrays['speed']=np.array([10.,10.,10.])
@@ -17,16 +23,16 @@ def saved_run(root,name,*,spacing,control,map_identity='map',profile_evidence=Tr
     args={'track':'synthetic','spacing':spacing,'control_spacing':control}
     # plan artifact captures the pre-finalized contract digest, as the runner does.
     preliminary=study_contract(args,{'geometry_spacing_m':spacing,'control_spacing_m':control},{'map_identity':map_identity,'track_identity':'track','map_file_sha256':'maphash','map_source_identity':map_identity,
-        'track_data_hashes':{'track':'hash'},'vehicle_configuration_hashes':{'vehicle':'hash'},'boundary_type':'flying','maximum_speed_mps':70.,
+        'track_data_hashes':TRACK_HASHES,'vehicle_configuration_hashes':VEHICLE_HASHES,'boundary_type':'flying','maximum_speed_mps':70.,
         'warm_start_policy':'cold','warm_start_digest':'none','yaw_moment_tolerance':1e-7,'interval_q_tolerance':1e-8,'acceleration_tolerance':1e-7,
-        'source_revision':'src','source_dirty_hashes':{'source':'digest'}})
+        'source_revision':'src','source_dirty_hashes':SOURCE_HASHES})
     metadata['provenance']={'study_contract_sha256':preliminary['canonical_json_sha256'],'study_contract_version':'yaw-study-contract-v1'}
     np.savez(path/'plan.npz',**arrays,metadata=np.array(json.dumps(metadata)))
     provenance={'map_identity':map_identity,'track_identity':'track','map_file_sha256':'maphash','map_source_identity':map_identity,
-        'track_data_hashes':{'track':'hash'},'vehicle_configuration_hashes':{'vehicle':'hash'},
+        'track_data_hashes':TRACK_HASHES,'vehicle_configuration_hashes':VEHICLE_HASHES,
         'boundary_type':'flying','maximum_speed_mps':70.,'warm_start_policy':'cold','warm_start_digest':'none',
         'yaw_moment_tolerance':1e-7,'interval_q_tolerance':1e-8,'acceleration_tolerance':1e-7,
-        'source_revision':'src','source_dirty_hashes':{'source':'digest'},'plan_array_digest':metadata['array_digest'],
+        'source_revision':'src','source_dirty_hashes':SOURCE_HASHES,'plan_array_digest':metadata['array_digest'],
         'plan_file_digest':__import__('hashlib').sha256((path/'plan.npz').read_bytes()).hexdigest()}
     manifest={'map_identity':map_identity,'track_identity':'track','args':args}
     if contract: manifest['study_contract']=study_contract(args,{'geometry_spacing_m':spacing,'control_spacing_m':control},provenance)
@@ -65,7 +71,7 @@ class SavedStudyTests(unittest.TestCase):
     def test_preflight_contract_mismatch_skips_loader(self):
         with tempfile.TemporaryDirectory() as td:
             one=saved_run(Path(td),'one',spacing=2.,control=10.); two=saved_run(Path(td),'two',spacing=1.,control=10.)
-            manifest=json.loads((two/'inputs.json').read_text()); c=manifest['study_contract']; c['provenance']['vehicle_configuration_hashes']={'vehicle':'other'}
+            manifest=json.loads((two/'inputs.json').read_text()); c=manifest['study_contract']; c['provenance']['vehicle_configuration_hashes']={'/models/vehicle.xml':'b'*64}
             c2=study_contract(c['arguments'],c['resolved_settings'],c['provenance']); manifest['study_contract']=c2; (two/'inputs.json').write_text(json.dumps(manifest))
             # Rebind plan metadata to the modified contract so only compatibility is under test.
             with np.load(two/'plan.npz',allow_pickle=False) as z:
@@ -82,7 +88,7 @@ class SavedStudyTests(unittest.TestCase):
             one=saved_run(Path(td),'one',spacing=2.,control=10.); two=saved_run(Path(td),'two',spacing=1.,control=10.)
             _,fails,_=_preflight_runs([one,two],'geometry'); self.assertFalse(fails)
             manifest=json.loads((two/'inputs.json').read_text()); c=manifest['study_contract']
-            provenance=dict(c['provenance'],vehicle_configuration_hashes={'vehicle':'other'})
+            provenance=dict(c['provenance'],vehicle_configuration_hashes={'/models/vehicle.xml':'b'*64})
             manifest['study_contract']=study_contract(c['arguments'],c['resolved_settings'],provenance)
             (two/'inputs.json').write_text(json.dumps(manifest))
             _,fails,_=_preflight_runs([one,two],'geometry')
@@ -109,7 +115,6 @@ class SavedStudyTests(unittest.TestCase):
             with patch('tools.run.compare_yaw_lap_study._load_sample') as loader:
                 result=compare_runs([run],dimension='geometry')
             loader.assert_not_called(); self.assertEqual(result['comparisons'],[])
-
 
     def test_digest_consistent_physically_invalid_plan_reported_inconclusive(self):
         with tempfile.TemporaryDirectory() as td:

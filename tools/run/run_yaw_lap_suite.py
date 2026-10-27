@@ -272,12 +272,14 @@ def replay(args,output,vehicle,track,path,speed_plan,arrays,metadata):
     replay_diagnostics={}
     try:
         initial_state=plant.initial_state(float(speed_plan.speed[0]))
-        if args.initial_state_overrides is not None:
-            overrides=json.loads(args.initial_state_overrides.read_text())
+        initial_state_overrides=getattr(args,'initial_state_overrides',None)
+        if initial_state_overrides is not None:
+            overrides=json.loads(initial_state_overrides.read_text())
             initial_state=apply_initial_state_overrides(initial_state,overrides,closed=path.is_closed,
                 minimum_speed=plant.minimum_speed)
-        if args.plant_variation is not None:
-            variation=json.loads(args.plant_variation.read_text())
+        plant_variation=getattr(args,'plant_variation',None)
+        if plant_variation is not None:
+            variation=json.loads(plant_variation.read_text())
             if not isinstance(variation,dict) or set(variation)-{'steering','pedal'}:
                 raise ValueError('plant variation may only declare steering and pedal lag multipliers')
             if any(isinstance(v,bool) or not isinstance(v,(int,float)) or not np.isfinite(v) or v<=0 for v in variation.values()):

@@ -52,7 +52,7 @@ Tire force X/Y and aligning-moment channels plus wheel body positions are presen
 
 ## Identity/status gates and artifacts
 
-The comparison tool now binds case track to each plan’s recorded track, checks plan file and array digests from replay provenance, confirms replay plan path, map identity, track identity and source revision. Any missing/mismatched identity yields `comparison_status: inconclusive`; `exploratory_completion` remains separately true for an actually completed, solver-validated lap. It does not conflate completion with pairing success or containment. The corrected JSON has identity status `pass` for both pairs; historical unknown fields remain explicit.
+The comparison tool now binds case track to each plan’s recorded track, checks plan file and array digests from replay provenance, confirms replay plan path, map identity, track identity and source revision. Any missing/mismatched identity yields `comparison_status: inconclusive`; `exploratory_completion` remains separately true for an actually completed, solver-validated lap. It does not conflate completion with pairing success or containment. The first corrected JSON's apparent identity `pass` was overstated: review round 2 found that replay revision was checked only for presence, not equality to the source revision of each plan. After correction, both historical pairs have identity status `inconclusive_or_mismatch`; the replay records report revision `eb37c4402cbdc7492ae390975c37517f6273b1e6`, but source revision is not stored in either plan NPZ metadata or adjacent historical inputs. Thus the exploratory runs completed, but identity-bound comparison status is inconclusive. No revision or dirty hash is inferred.
 
 The report JSON also provides detailed actuator/residual interval lists, curvature-reversal events, moment evidence, filter metadata and raw/filtered statistics. The ignored worktree report is this file; source/test/report paths were committed, generated replay outputs remain local evidence.
 
@@ -65,6 +65,19 @@ Focused validation command, enforced by the process watchdog:
 ```text
 PYTHONPATH=src:. python3 tools/run/run_with_deadline.py --seconds 180 -- python3 -m unittest tests.test_yaw_planning_replay tests.test_yaw_replay_binding tests.test_yaw_replay_metrics tests.test_yaw_lap_suite tests.test_yaw_lap_artifact tests.test_yaw_aware_record_path -q
 Ran 29 tests in 14.395s — OK
+```
+
+## Review correction evidence (round 2)
+
+The second re-review identified that round 1 required only replay `source_revision` presence and did not bind that value to a plan source revision. `plan_info` now extracts source revision and source dirty hashes only from actual saved plan provenance or adjacent recorded study-contract provenance; absence stays `unknown_or_unavailable`. Identity checks now require both revisions to be known and exactly equal. If plan source dirty hashes are attested, they must also exactly match the replay's recorded dirty hashes; if not available, the report records that as unavailable and the source revision equality gate still applies. Tests cover known-but-mismatched revisions and unknown plan provenance; in both, `exploratory_completion` remains separate while `comparison_status` is inconclusive.
+
+The comparison JSON was regenerated from existing plan artifacts and immutable replay records, with no physical reruns. All four historical plans lack source revision and dirty-hash provenance in both their NPZ metadata and adjacent inputs. Replay record inputs carry revision `eb37c4402cbdc7492ae390975c37517f6273b1e6` with `source_provenance_status: historical_unknown`, but a replay revision cannot establish the source revision of the historical plan. Therefore both MIS and FSC pair identities are now `inconclusive_or_mismatch`, and per-replay comparison status is `inconclusive`; exploratory lap completion remains true. This precludes a provenance-bound paired comparison claim even though measured results are reported descriptively above.
+
+Focused watchdog suite after round 2 changes:
+
+```text
+PYTHONPATH=src:. python3 tools/run/run_with_deadline.py --seconds 180 -- python3 -m unittest tests.test_yaw_planning_replay tests.test_yaw_replay_binding tests.test_yaw_replay_metrics tests.test_yaw_lap_suite tests.test_yaw_lap_artifact tests.test_yaw_aware_record_path -q
+Ran 31 tests in 14.610s — OK
 ```
 
 No physical replay was repeated and no timeout/failure was retried. Task 7 remains spatially inconclusive; no geometry/optimizer convergence, transient optimality, or reliable-pipeline claim follows.

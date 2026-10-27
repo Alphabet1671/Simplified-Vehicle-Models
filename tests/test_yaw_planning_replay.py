@@ -4,8 +4,7 @@ import json
 from pathlib import Path
 import numpy as np
 from simplified_vehicle_models.planning.yaw_replay_metrics import yaw_approximation_diagnostics, tangential_acceleration_from_body, periodic_centered_derivative, _periodic_nonuniform_derivative
-from tools.reports.compare_yaw_planning_replay import replay_info
-from tools.reports.compare_yaw_planning_replay import plan_info, replay_info
+from tools.reports.compare_yaw_planning_replay import replay_info, plan_info
 
 class YawApproximationTests(unittest.TestCase):
     def test_constant_radius_zero_sideslip(self):
@@ -66,6 +65,24 @@ class YawApproximationTests(unittest.TestCase):
             self.assertTrue(row['exploratory_completion'])
             self.assertEqual(row['comparison_status'],'inconclusive')
             self.assertEqual(row['identity_checks']['status'],'inconclusive_or_mismatch')
+
+    def test_known_source_revision_mismatch_is_inconclusive(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td); (root/'summary.json').write_text(json.dumps({'lap_completed':True,'solver_validation_complete':True}))
+            (root/'inputs.json').write_text(json.dumps({'args':{'track':'track','plan':'plan.npz'},'map_identity':'map','study_contract':{'provenance':{'plan_array_digest':'digest','plan_file_digest':'placeholder','source_revision':'replay-r2','source_dirty_hashes':{}}}}))
+            row=replay_info(root,'plan.npz',expected_track='track',expected_map='map',plan_digest='digest',plan_source_revision='plan-r1',plan_dirty_hashes={})
+            self.assertTrue(row['exploratory_completion'])
+            self.assertFalse(row['identity_checks']['source_revision_match'])
+            self.assertEqual(row['comparison_status'],'inconclusive')
+
+    def test_unknown_plan_source_provenance_is_inconclusive(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td); (root/'summary.json').write_text(json.dumps({'lap_completed':True,'solver_validation_complete':True}))
+            (root/'inputs.json').write_text(json.dumps({'args':{'track':'track','plan':'plan.npz'},'map_identity':'map','study_contract':{'provenance':{'plan_array_digest':'digest','plan_file_digest':'placeholder','source_revision':'r1','source_dirty_hashes':{}}}}))
+            row=replay_info(root,'plan.npz',expected_track='track',expected_map='map',plan_digest='digest',plan_source_revision=None,plan_dirty_hashes=None)
+            self.assertTrue(row['exploratory_completion'])
+            self.assertFalse(row['identity_checks']['plan_source_revision_known'])
+            self.assertEqual(row['comparison_status'],'inconclusive')
 
     def test_missing_evidence_is_inconclusive_unknown(self):
         with tempfile.TemporaryDirectory() as td:

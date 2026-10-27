@@ -33,7 +33,21 @@ def _array_digest(path):
 def plan_info(path):
     path=Path(path); inputs=read_json(path.parent/'inputs.json'); summary=read_json(path.parent/'summary.json')
     args=(inputs or {}).get('args') or {}
+    meta={}
+    try:
+        with np.load(path,allow_pickle=False) as z: meta=json.loads(str(z['metadata'].item()))
+    except Exception: pass
+    plan_prov=meta.get('provenance') or {}
+    # Older historical artifacts lack source revision in both NPZ metadata and
+    # adjacent inputs.json; newer writers may preserve it in either location.
+    plan_inputs_prov=((inputs or {}).get('study_contract') or {}).get('provenance') or {}
+    plan_source=(plan_prov.get('source_revision') or plan_prov.get('git_revision') or
+                 plan_inputs_prov.get('source_revision') or (inputs or {}).get('source_revision'))
+    plan_dirty=(plan_prov.get('source_dirty_hashes') if 'source_dirty_hashes' in plan_prov else
+                plan_inputs_prov.get('source_dirty_hashes', (inputs or {}).get('source_dirty_hashes')))
     return {'path':str(path),'exists':path.is_file(),'file_sha256':sha256(path),'array_digest':_array_digest(path),
+        'source_revision':plan_source,'source_revision_status':'known' if plan_source not in (None,'','unknown') else 'unknown_or_unavailable',
+        'source_dirty_hashes':plan_dirty,
         'lap_time_s':(summary or {}).get('lap_time_s'),'solver_validation':(summary or {}).get('profile_validation',{}).get('valid'),
         'plan_status':(summary or {}).get('status'),'track':args.get('track'),'map_identity':(inputs or {}).get('map_identity'),
         'track_identity':(inputs or {}).get('track_identity'),'inputs':inputs}
@@ -130,16 +144,27 @@ def _yaw_audit(path):
         return {'status':'unknown','reason':f'{type(e).__name__}: {e}'}
 
 
-def replay_info(path, plan, *, expected_track=None, expected_map=None, plan_digest=None):
+def replay_info(path, plan, *, expected_track=None, expected_map=None, plan_digest=None,
+                plan_source_revision=None, plan_dirty_hashes=None):
     path=Path(path); summary=read_json(path/'summary.json'); inputs=read_json(path/'inputs.json')
     if summary is None: return {'path':str(path),'plan':str(plan),'status':'missing','exploratory_completion':False,'comparison_status':'inconclusive','identity_checks':{'status':'unknown','reason':'summary/inputs missing'},'yaw_approximation_audit':_yaw_audit(path)}
     args=(inputs or {}).get('args') or {}; provenance=((inputs or {}).get('study_contract') or {}).get('provenance') or {}
+    replay_revision=provenance.get('source_revision')
+    plan_revision_known=plan_source_revision not in (None,'','unknown')
+    replay_revision_known=replay_revision not in (None,'','unknown')
+    dirty_match=(plan_dirty_hashes == provenance.get('source_dirty_hashes')) if plan_dirty_hashes is not None else None
     checks={'track_match':args.get('track')==expected_track,'map_identity_match':(inputs or {}).get('map_identity')==expected_map,
             'plan_path_match':Path(args.get('plan','')).resolve()==Path(plan).resolve(),
             'plan_array_digest_match':provenance.get('plan_array_digest')==plan_digest if plan_digest else False,
             'plan_file_digest_match':provenance.get('plan_file_digest')==sha256(plan) if sha256(plan) else False,
-            'source_revision_known':provenance.get('source_revision') not in (None,'','unknown')}
-    checks['status']='pass' if all(checks.values()) else 'inconclusive_or_mismatch'
+            'plan_source_revision':plan_source_revision,'replay_source_revision':replay_revision,
+            'plan_source_revision_known':plan_revision_known,'replay_source_revision_known':replay_revision_known,
+            'source_revision_match':bool(plan_revision_known and replay_revision_known and plan_source_revision==replay_revision),
+            'plan_source_dirty_hashes':plan_dirty_hashes,'replay_source_dirty_hashes':provenance.get('source_dirty_hashes'),
+            'source_dirty_identity_match':dirty_match}
+    required_checks=[v for k,v in checks.items() if k not in ('plan_source_revision','replay_source_revision','plan_source_dirty_hashes','replay_source_dirty_hashes','source_dirty_identity_match')]
+    if dirty_match is not None: required_checks.append(dirty_match)
+    checks['status']='pass' if all(required_checks) else 'inconclusive_or_mismatch'
     fv=summary.get('footprint_validation') or {}
     row={k:summary.get(k) for k in ('driven_time_s','speed_error_rms_mps','speed_error_max_abs_mps','lateral_error_rms_m','lateral_error_max_m','throttle_saturation_time_fraction_realized','brake_saturation_time_fraction_realized','steering_rate_saturation_time_fraction_realized','solver_validation_complete','sampled_center_contained','between_step_containment_certified')}
     row.update(path=str(path),plan=str(plan),status=summary.get('status'),lap_completed=summary.get('lap_completed'),
@@ -157,8 +182,10 @@ def build_case(spec):
     op=plan_info(opt); fp=plan_info(fixed)
     expected_map=op['map_identity'] if op['map_identity']==fp['map_identity'] else None
     expected_track=track
-    optrow=replay_info(opt_run,opt,expected_track=expected_track,expected_map=expected_map,plan_digest=op['array_digest'])
-    fixedrow=replay_info(fixed_run,fixed,expected_track=expected_track,expected_map=expected_map,plan_digest=fp['array_digest'])
+    optrow=replay_info(opt_run,opt,expected_track=expected_track,expected_map=expected_map,plan_digest=op['array_digest'],
+                       plan_source_revision=op['source_revision'],plan_dirty_hashes=op['source_dirty_hashes'])
+    fixedrow=replay_info(fixed_run,fixed,expected_track=expected_track,expected_map=expected_map,plan_digest=fp['array_digest'],
+                         plan_source_revision=fp['source_revision'],plan_dirty_hashes=fp['source_dirty_hashes'])
     pair_ok=bool(op['exists'] and fp['exists'] and op['solver_validation'] is True and fp['solver_validation'] is True and
         op['track']==track and fp['track']==track and expected_map and op['track_identity']==fp['track_identity'] and
         optrow.get('identity_checks',{}).get('status')=='pass' and fixedrow.get('identity_checks',{}).get('status')=='pass')

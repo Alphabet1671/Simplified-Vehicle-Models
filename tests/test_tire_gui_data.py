@@ -60,6 +60,23 @@ class DataTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'descriptor'):
                 load_run(bad)
 
+    def test_nonmonotonic_time_strict_by_default_and_retained_for_steady_mode(self):
+        channel = {'name': np.array(['ET', 'SA', 'FZ', 'FX', 'FY', 'MZ', 'SL']),
+                   'units': np.array(['sec', 'deg', 'N', 'N', 'N', 'N-m', 'none'])}
+        arrays = {'ET': np.array([0., .01, .01, .03]), 'SA': np.arange(4.),
+                  'FZ': -np.full(4, 100.), 'FX': np.arange(4.), 'FY': np.arange(4.),
+                  'MZ': np.arange(4.), 'SL': np.arange(4.)/10, 'RUN': np.full(4, 72),
+                  'tireid': 'Hoosier 43100 R20'}
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'duplicate-time.mat'
+            savemat(path, {**arrays, 'channel': channel})
+            with self.assertRaisesRegex(ValueError, 'nonmonotonic'):
+                load_run(path)
+            steady = load_run(path, require_monotonic_time=False)
+            np.testing.assert_array_equal(steady.channels['time'], arrays['ET'])
+            np.testing.assert_array_equal(steady.raw_indices, np.arange(4))
+            self.assertIn('nonmonotonic', steady.metadata['time_warning'])
+
     def test_compatibility_rejects_wrong_tire_identity(self):
         def run(run_id, tire):
             a = np.zeros(26000)

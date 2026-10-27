@@ -9,7 +9,8 @@ Implemented on `feature/ttc-tire-correlation-pyqt`, starting at `596e535b474eb94
 - RED: `PYTHONPATH=src:. python3 -m unittest tests.test_tire_gui_fit -q` failed at import because `tools.tire_gui.fit` did not exist.
 - GREEN: `PYTHONPATH=src:. python3 -m unittest tests.test_tire_gui_data tests.test_tire_gui_model tests.test_tire_gui_fit -v` — 18 tests passed.
 - GREEN: `PYTHONPATH=src:. python3 -m unittest tests.test_tire_gui_data tests.test_tire_gui_model tests.test_tire_gui_fit tests.test_unitire_simple tests.test_unitire_transient -q` — 56 tests passed.
-- Synthetic coverage exercises separate group RMS, empty-group rejection, zero residual at known parameters, single unlocked-parameter improvement with exact lock preservation, immutable seed, and cancellation before prediction. Objective test uses exact expected result 8.25.
+- Synthetic coverage exercises separate group RMS, empty-group rejection, zero residual at known parameters, single unlocked-parameter improvement with exact lock preservation, immutable seed, cancellation before prediction, NaN prediction rejection, boundary saturation reporting, and nonconvergence status with finite best candidate retention. Objective test uses exact expected result 8.25.
+- GREEN correction: `PYTHONPATH=src:. python3 -m unittest tests.test_tire_gui_data tests.test_tire_gui_model tests.test_tire_gui_fit -v` — 22 tests passed.
 
 ## Implementation
 
@@ -20,14 +21,14 @@ Implemented on `feature/ttc-tire-correlation-pyqt`, starting at `596e535b474eb94
 
 ## Private acceptance
 
-Private source: `private/ttc/unitire_simple_fit.mat`; reference fitData dimension inspection matched the stated counts: lateral 1080, longitudinal 720, combined 1440, Mz 1080. MAT `vBelt` was 11.1647222222 m/s. Comparison of measured selection arrays and objective was **blocked**: the local run-72 MAT has eight duplicate ET timestamps. The existing ingestion contract rejects nonmonotonic elapsed time (`ValueError: Elapsed-time channel is nonmonotonic`), appropriately preventing silently altered source data. No measured arrays, residuals, or comparisons were written into a report or tracked fixture.
+Private source: `private/ttc/unitire_simple_fit.mat` with local runs 8 and 72. Added `load_run(..., require_monotonic_time=False)` as explicit steady-only mode: it preserves the normalized time vector, all original channel rows and raw indices, and records a metadata warning. Default remains strict and rejects duplicate ET for transient/event work. No source row was removed. Reference fitData dimensions and selected arrays exactly match: lateral 1080, longitudinal 720, combined Fx 1440, combined Fy 1440, Mz 1080; max absolute difference for alpha/kappa/target arrays was zero in every group; belt-speed difference was zero. Force compatibility objective on both selection and fitData was 0.7960860084349208 (delta zero); trail normalized objective was 0.06309355126176772. Detailed private acceptance evidence is at ignored `tire_fits_out/task3_private_acceptance.txt`; no measurements or residual arrays are tracked.
 
 ## Known concerns
 
 - SciPy and MATLAB optimizer trajectories need not match; the named compatibility behavior matches objective, bounded logistic transform, optimizer, iteration/evaluation limits, and tolerances.
 - The fit entrypoint is core-only; UI orchestration must keep candidate application explicit and must not auto-apply nonconverged results.
-- Local private numeric parity remains unverified until source duplicate-time handling can be reconciled with the source selection contract without modifying raw data.
+- SciPy and MATLAB optimizer trajectories need not match; objective/data compatibility is verified, optimizer path parity is not claimed.
 
 ## Commit
 
-Pending at report creation; commit expected: `feat: implement staged steady tire correlation`.
+Initial implementation: `008dca11e24bbc9d86b4f3bdf741267bc4906040`. Follow-up correction commit records explicit steady ingestion mode, private acceptance outcome, and robustness tests. The report is an intentional scoped force-add exception because the user expressly required this exact `.superpowers/...` destination; all other `.superpowers/` content remains ignored.

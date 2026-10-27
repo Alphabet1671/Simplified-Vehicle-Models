@@ -63,6 +63,43 @@ class FitTests(unittest.TestCase):
         with self.assertRaises(FitCancelled):
             fit_steady(self.seed,self.synthesized(self.seed),frozenset(set(FORCE_NAMES+TRAIL_NAMES)-{'mu_0_y'}),cancel=lambda:True)
 
+    def test_nan_prediction_fails_cleanly(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        bad = SimpleNamespace(longitudinal_force=np.full(13,np.nan), lateral_force=np.zeros(13), aligning_moment=np.zeros(13))
+        with patch('tools.tire_gui.fit.predict_steady', return_value=bad):
+            with self.assertRaisesRegex(ValueError,'nonfinite steady prediction'):
+                import tools.tire_gui.fit as module
+                module._safe_cost(self.seed,self.synthesized(self.seed),lambda:False)
+
+    def test_bound_saturation_is_reported(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from scipy.special import logit
+        def fake_minimize(fun,x0,**kwargs):
+            fun(x0)
+            return SimpleNamespace(x=np.array([logit(1-1e-12)]), success=True, nit=2)
+        locked=frozenset(set(FORCE_NAMES+TRAIL_NAMES)-{'mu_0_y'})
+        with patch('tools.tire_gui.fit.minimize',side_effect=fake_minimize):
+            result=fit_steady(self.seed,self.synthesized(self.seed),locked)
+        self.assertEqual(result.status_by_parameter['mu_0_y'],'bound-saturated')
+        self.assertTrue(any('mu_0_y' in warning and 'bound' in warning for warning in result.warnings))
+
+    def test_nonconvergence_retains_finite_candidate_and_status(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        def fake_minimize(fun,x0,**kwargs):
+            fun(x0)
+            return SimpleNamespace(x=x0, success=False, nit=3)
+        locked=frozenset(set(FORCE_NAMES+TRAIL_NAMES)-{'mu_0_y'})
+        with patch('tools.tire_gui.fit.minimize',side_effect=fake_minimize):
+            result=fit_steady(self.seed,self.synthesized(self.seed),locked)
+        self.assertFalse(result.converged)
+        self.assertEqual(result.status_by_parameter['mu_0_y'],'not converged')
+        self.assertTrue(np.isfinite(result.metrics['force_objective']))
+        self.assertTrue(any('not converge' in warning for warning in result.warnings))
+        self.assertEqual(self.seed.values['mu_0_y'],result.candidate.values['mu_0_y'])
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -60,8 +60,14 @@ def contiguous_slices(time: np.ndarray, maximum_gap: float = .02) -> tuple[slice
     return tuple(slice(int(a), int(b)) for a, b in zip(bounds[:-1], bounds[1:]) if b > a)
 
 
-def load_run(path: Path) -> RunData:
-    """Load a TTC MAT v5 run using its explicit channel descriptor table."""
+def load_run(path: Path, *, require_monotonic_time: bool = True) -> RunData:
+    """Load a TTC MAT v5 run using its explicit channel descriptor table.
+
+    Steady sweeps may explicitly opt out of time monotonicity validation because
+    time is not used by their compatibility selection. All original rows and
+    the normalized time channel are retained. Transient/event consumers must
+    keep the strict default.
+    """
     try:
         from scipy.io import loadmat
     except ImportError as exc:
@@ -92,5 +98,7 @@ def load_run(path: Path) -> RunData:
         raise ValueError('Channel vectors have mismatched lengths')
     count = len(normalized.get('time', next(iter(normalized.values()))))
     if 'time' in normalized and np.any(np.diff(normalized['time']) <= 0):
-        raise ValueError('Elapsed-time channel is nonmonotonic')
+        if require_monotonic_time:
+            raise ValueError('Elapsed-time channel is nonmonotonic')
+        metadata['time_warning'] = 'Elapsed-time channel is nonmonotonic; retained unchanged for steady-only use'
     return RunData(int(metadata.get('run_id', 0)), metadata.get('tire_id', 'unknown'), normalized, metadata, np.arange(count))

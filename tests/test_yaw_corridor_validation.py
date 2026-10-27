@@ -2,7 +2,7 @@ import unittest
 import numpy as np
 
 from simplified_vehicle_models.planning.yaw_corridor_validation import (
-    check_footprint_samples, check_swept_footprint,
+    check_footprint_samples, check_swept_footprint, IntervalClearanceBoundProvider,
 )
 from simplified_vehicle_models.tracks.corridor import Corridor
 
@@ -26,6 +26,9 @@ class FootprintTests(unittest.TestCase):
         self.assertEqual(result['status'],'unknown')
         self.assertEqual(result['wheel_contact']['status'],'pass')
         self.assertEqual(result['body_envelope']['status'],'unknown')
+        for key in ('minimum_clearance_m','worst_time_s','worst_station_m','model_identity',
+                    'edge_identity','geometric_representation'):
+            self.assertIn(key,result)
 
     def test_body_and_wheels_pass_straight(self):
         result=check_footprint_samples([1.],[50.],[0.],[0.],[50.],self.corridor,self.ref,
@@ -60,6 +63,37 @@ class FootprintTests(unittest.TestCase):
         self.assertFalse(result['between_step_containment_certified'])
         self.assertFalse(result['rigorous_interval_bounds']['certified'])
         self.assertEqual(result['status'], 'unknown')
+
+    def test_provider_certifies_analytic_straight_corridor(self):
+        class StraightProvider(IntervalClearanceBoundProvider):
+            geometry_model_identity='linear-corridor-v1'
+            vehicle_motion_model_identity='constant-pose-v1'
+            def lower_bound(self, **interval): return 2.0
+        result=check_swept_footprint([1.,2.],[20.,21.],[0.,0.],[0.,0.],[20.,21.],
+            self.corridor,self.ref,front_extent=1.,rear_extent=1.,half_width=.5,
+            interval_bound_provider=StraightProvider())
+        self.assertEqual(result['status'],'pass')
+        self.assertTrue(result['rigorous_interval_bounds']['certified'])
+        self.assertTrue(result['between_step_containment_certified'])
+        self.assertFalse(result['empirical_dense_sampling']['certified'])
+
+    def test_provider_subdivides_quarter_excursion_and_never_passes(self):
+        class CubicProvider(IntervalClearanceBoundProvider):
+            geometry_model_identity='straight-corridor-v1'
+            vehicle_motion_model_identity='known-cubic-y-v1'
+            def lower_bound(self, start_time_s, end_time_s, **interval):
+                # Exact extrema of the known polynomial over the current closed interval.
+                roots=((3.-np.sqrt(3.))/6.,(3.+np.sqrt(3.))/6.)
+                q=[start_time_s,end_time_s]+[r for r in roots if start_time_s<=r<=end_time_s]
+                y=80*np.asarray(q)*(1-np.asarray(q))*(np.asarray(q)-.5)
+                return 3.0-float(np.max(np.abs(y)))-.2
+        u=np.array([0.,1.]); y=80.*u*(1.-u)*(u-.5)
+        result=check_swept_footprint(u,50.+0*u,y,np.zeros_like(u),50.+0*u,
+            self.corridor,self.ref,front_extent=.1,rear_extent=.1,half_width=.2,
+            interval_bound_provider=CubicProvider(),subdivision_budget=128)
+        self.assertIn(result['status'],('unknown','fail'))
+        self.assertGreater(result['rigorous_interval_bounds']['subdivision_count'],0)
+        self.assertFalse(result['between_step_containment_certified'])
 
     def test_dense_cubic_quarter_excursion_cannot_pass(self):
         # p(u)=80u(1-u)(u-.5) has zero at u=0,.5,1 but a large

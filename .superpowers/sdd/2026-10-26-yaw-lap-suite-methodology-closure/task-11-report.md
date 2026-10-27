@@ -16,6 +16,17 @@ Added tests for the quarter-step cubic excursion (endpoints and midpoint zero, q
 - Full unit suite and replay checker were not run in this correction pass.
 - No OCP or map semantics changed.
 
+## Completion update (2026-10-26)
+
+Implemented `IntervalClearanceBoundProvider`, an explicit interface whose implementations bind conservative whole-subinterval clearance lower bounds to nonempty geometry and vehicle-motion model identities. `check_swept_footprint` now adaptively bisects any interval that does not receive a proven positive lower bound; absent/invalid providers, exhausted budgets, and nonpositive/unknown terminal bounds remain `unknown`. Bare numeric `interval_bounds` remain untrusted and cannot certify. The result keeps empirical sample fields separate from rigorous interval bounds and records provider/model identities and subdivision metadata. Missing body dimensions now still return the common top-level status, clearance, worst time/station, model/edge identity, and representation fields (unknown values are `None`).
+
+Added a provider-backed analytic straight-corridor enclosure test and a constructed cubic quarter excursion tested through the production subdivision path; the latter forces subdivision and cannot pass. Kept the Task 6 branch-aware projection, empirical finite-edge unknown behavior, and no-false-certification policy.
+
+## Verification
+
+- Focused command: `PYTHONPATH=src python3 -m unittest tests.test_yaw_corridor_validation -q` — 12 tests passed (0.018 s), with the run governed by a 175 s Python process wait watchdog.
+- No Task 7 comparator/runner artifacts were changed.
+
 ## Remaining limitation
 
-A sound adaptive interval bound for arbitrary vehicle motion and boundary geometry is not implemented. The checker correctly returns `unknown` absent such proof. No footprint-containment certification is claimed.
+The provider contract is intentionally narrow: mathematical soundness of a concrete provider implementation remains its implementer's responsibility. No provider for arbitrary real-track geometry or arbitrary trajectories is included; without a sound provider, swept containment remains `unknown`. No generalized footprint-containment certification is claimed.

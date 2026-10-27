@@ -65,6 +65,10 @@ def check_footprint_samples(time, x, y, heading, station_hint, corridor, referen
         body=_result('unknown',np.nan,None,None,model_identity,None,'whole-body envelope unavailable',
                      edge_uncertainty,reason='explicit_front_rear_extents_and_half_width_required',sampled=True)
         return dict(status='unknown', wheel_contact=wheel_result, body_envelope=body,
+                    minimum_clearance_m=None,worst_time_s=None,worst_station_m=None,
+                    model_identity=model_identity,edge_identity=None,
+                    geometric_representation=body['geometric_representation'],
+                    edge_uncertainty=edge_uncertainty,
                     between_step_containment_certified=False, empirical_samples=len(t))
     dims=np.asarray([front_extent,rear_extent,half_width],float)
     if not np.all(np.isfinite(dims)) or min(dims)<=0: raise ValueError('body extents and half-width must be positive')
@@ -111,33 +115,82 @@ def _motion_clearance_lower_bound(endpoint_clearance, translation_bound, angular
     return float(endpoint_clearance - translation_bound - body_radius * angular_change_bound)
 
 
-def check_swept_footprint(*args, interval_bounds=None, subdivision_budget=10000, **kwargs):
-    """Check sampled evidence plus explicit conservative interval bounds.
+class IntervalClearanceBoundProvider:
+    """Explicit provider contract for conservative swept-clearance enclosures.
 
-    A caller must supply sound lower bounds per interval; absent bounds or an
-    exhausted budget produce unknown, never a sampling-based certificate.
+    Implementations must bind the returned bound to both ``geometry_model_identity``
+    and ``vehicle_motion_model_identity`` and return a proven lower bound in metres,
+    or None when unable to enclose the entire interval. Numeric arrays and arbitrary
+    callbacks are deliberately not accepted as providers.
     """
-    result=check_footprint_samples(*args,**kwargs)
-    bounds=interval_bounds
-    if bounds is None:
-        result.update(status='unknown', rigorous_interval_bounds={'available':False,'certified':False},
-                      between_step_containment_certified=False,
-                      certification_limitation='sound conservative interval bounds unavailable')
-        return result
-    # Bare numbers are not a proof: callers cannot establish provenance or
-    # soundness by passing an array of purported lower bounds. This interface
-    # currently has no interval geometry provider, so never certify from it.
-    values=np.asarray(bounds,float)
-    if values.ndim!=1 or not np.all(np.isfinite(values)) or np.any(np.diff(values)<0):
-        result.update(status='unknown',rigorous_interval_bounds={'available':False,'certified':False},
-                      between_step_containment_certified=False,certification_limitation='invalid interval bounds')
-        return result
-    # Supplied scalar bounds have no binding to an interval's geometry/motion,
-    # so retain them as unverified metadata, not certification evidence.
-    result['rigorous_interval_bounds']={'available':False,'supplied_unverified_lower_bounds_m':values.tolist(),
-        'certified':False,'subdivision_count':0,'budget_exhausted':False}
-    result['empirical_dense_sampling']={'samples':result.get('empirical_samples',0),'certified':False}
+    geometry_model_identity = None
+    vehicle_motion_model_identity = None
+
+    def lower_bound(self, *, interval_index, start_time_s, end_time_s, start_state,
+                    end_state, trajectory, corridor, reference, footprint_geometry):
+        raise NotImplementedError
+
+
+def check_swept_footprint(time, x, y, heading, station_hint, corridor, reference, *,
+                          interval_bound_provider=None, interval_bounds=None,
+                          subdivision_budget=10000, **kwargs):
+    """Check empirical samples and adaptively certify provider-enclosed intervals.
+
+    Only an ``IntervalClearanceBoundProvider`` with nonempty model identities can
+    certify. Every interval is bisected until the provider proves a positive bound;
+    unavailable bounds, nonpositive terminal bounds, or budget exhaustion remain
+    unknown. Sampled clearance and rigorous interval evidence are kept separate.
+    """
+    result=check_footprint_samples(time,x,y,heading,station_hint,corridor,reference,**kwargs)
+    t,x,y,h,hint=np.broadcast_arrays(*map(lambda a: np.asarray(a,float),
+                                      (time,x,y,heading,station_hint)))
+    valid=(isinstance(interval_bound_provider,IntervalClearanceBoundProvider) and
+           bool(interval_bound_provider.geometry_model_identity) and
+           bool(interval_bound_provider.vehicle_motion_model_identity))
+    rigorous={'available':valid,'certified':False,'provider_identity':type(interval_bound_provider).__name__ if valid else None,
+              'geometry_model_identity':getattr(interval_bound_provider,'geometry_model_identity',None) if valid else None,
+              'vehicle_motion_model_identity':getattr(interval_bound_provider,'vehicle_motion_model_identity',None) if valid else None,
+              'certified_intervals':0,'subdivision_count':0,'budget_exhausted':False,
+              'interval_lower_bounds_m':[]}
+    result['empirical_dense_sampling']={'samples':int(len(t)),'minimum_clearance_m':result.get('minimum_clearance_m'),
+                                         'certified':False}
+    result['rigorous_interval_bounds']=rigorous
     result['between_step_containment_certified']=False
-    result['status']='unknown'
-    result['certification_limitation']='sound interval geometry and vehicle-motion bounds unavailable'
+    result['swept_model_identity']={'vehicle':result.get('model_identity'),
+        'geometry':rigorous['geometry_model_identity'],'motion':rigorous['vehicle_motion_model_identity']}
+    if not valid:
+        result.update(status='unknown',certification_limitation='sound interval geometry and vehicle-motion provider unavailable')
+        return result
+    if not isinstance(subdivision_budget,(int,np.integer)) or subdivision_budget<0:
+        raise ValueError('subdivision_budget must be a nonnegative integer')
+    # Bound calls cover the whole subinterval, not merely endpoint clearance.
+    stack=[(i,float(t[i]),float(t[i+1]),np.array([x[i],y[i],h[i],hint[i]]),
+            np.array([x[i+1],y[i+1],h[i+1],hint[i+1]]),0) for i in range(len(t)-1)]
+    unknown=False; budget=int(subdivision_budget)
+    while stack:
+        i,a,b,sa,sb,depth=stack.pop()
+        try:
+            bound=interval_bound_provider.lower_bound(interval_index=i,start_time_s=a,end_time_s=b,
+                start_state=sa.copy(),end_state=sb.copy(),trajectory=(t.copy(),x.copy(),y.copy(),h.copy(),hint.copy()),
+                corridor=corridor,reference=reference,
+                footprint_geometry={key:kwargs.get(key) for key in ('front_extent','rear_extent','half_width')})
+            bound=float(bound) if bound is not None else np.nan
+        except (NotImplementedError,ValueError,ArithmeticError):
+            bound=np.nan
+        if np.isfinite(bound) and bound>0:
+            rigorous['certified_intervals']+=1; rigorous['interval_lower_bounds_m'].append(bound); continue
+        if budget<=0 or b<=a:
+            unknown=True; rigorous['interval_lower_bounds_m'].append(None); continue
+        mid=(a+b)/2; frac=(mid-a)/(b-a); sm=sa+(sb-sa)*frac
+        budget-=1; rigorous['subdivision_count']+=1
+        stack.extend([(i,mid,b,sm,sb,depth+1),(i,a,mid,sa,sm,depth+1)])
+    rigorous['budget_exhausted']=budget==0 and unknown
+    rigorous['certified']=bool(rigorous['certified_intervals']==len(t)-1 and not unknown)
+    result['between_step_containment_certified']=rigorous['certified']
+    if rigorous['certified']:
+        result['status']='pass' if result.get('status')!='fail' else 'fail'
+        result['certification_limitation']=None if result['status']=='pass' else 'empirical footprint violation detected'
+    else:
+        result['status']='fail' if result.get('status')=='fail' else 'unknown'
+        result['certification_limitation']='one or more swept intervals lack a proven positive lower bound'
     return result

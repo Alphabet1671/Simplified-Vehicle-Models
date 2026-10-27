@@ -37,10 +37,15 @@ def _make_snapshot(steady, transient, revision, provenance, statuses=None, load_
             stiffness = float(polynomial(load / steady.f_z_rated))
             if not np.isfinite(stiffness) or stiffness <= 0:
                 raise ValueError(f'{name} slip stiffness must be finite and positive over load domain at {load:g} N: {stiffness}')
-    for load in np.linspace(load_domain[0], load_domain[1], 501):
-        sigma_x, sigma_y = (transient.longitudinal_length_scale * np.polyval(steady.k_x, load / steady.f_z_rated) / max(steady.k_cx, steady.stiff_eps), transient.lateral_length_scale * np.polyval(steady.k_y, load / steady.f_z_rated) / max(steady.k_cy, steady.stiff_eps))
-        if not (np.isfinite(sigma_x) and np.isfinite(sigma_y) and sigma_x > 0 and sigma_y > 0):
-            raise ValueError(f'relaxation lengths must be finite and positive at {load:g} N')
+    # The steady stiffness polynomials were checked at domain endpoints and
+    # every real interior extremum above. Relaxation lengths are positive scalar
+    # multiples of those polynomials, so a dense 501-point repeat here is
+    # mathematically redundant (and prohibitive inside optimizer objectives).
+    for name, value in (('k_cx', steady.k_cx), ('k_cy', steady.k_cy),
+                        ('longitudinal_length_scale', transient.longitudinal_length_scale),
+                        ('lateral_length_scale', transient.lateral_length_scale)):
+        if not np.isfinite(value) or value <= 0:
+            raise ValueError(f'{name} must be finite and positive')
     return ModelSnapshot(revision, steady, transient, values, provenance, statuses or {}, _fingerprint(values), load_domain)
 
 def load_snapshot(steady_xml: Path, transient_xml: Path | None = None, load_domain: tuple[float, float] = (0.0, 1500.0)) -> ModelSnapshot:

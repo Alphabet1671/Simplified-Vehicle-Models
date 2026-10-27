@@ -8,6 +8,23 @@ from simplified_vehicle_models.parameters.tire import UniTireSimpleParameters
 from simplified_vehicle_models.tires.unitire_transient import TransientTireParameters
 
 
+class FitCancelled(Exception):
+    """Raised when a fitting operation is cancelled."""
+
+
+@dataclass(frozen=True)
+class FitResult:
+    source_revision: int
+    candidate: 'ModelSnapshot'
+    metrics: Mapping[str, float]
+    converged: bool
+    warnings: tuple[str, ...] = ()
+    status_by_parameter: Mapping[str, str] = field(default_factory=dict)
+
+    def __post_init__(self):
+        object.__setattr__(self, 'metrics', MappingProxyType(dict(self.metrics)))
+        object.__setattr__(self, 'status_by_parameter', MappingProxyType(dict(self.status_by_parameter)))
+
 def _freeze_array(value):
     arr = np.array(value, copy=True)
     arr.setflags(write=False)

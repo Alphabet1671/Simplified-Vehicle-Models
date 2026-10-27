@@ -2,6 +2,11 @@ import unittest
 from pathlib import Path
 import numpy as np
 
+try:
+    import scipy.optimize  # noqa: F401
+except ImportError as exc:
+    raise unittest.SkipTest(f'tire GUI fit tests require optional scipy: {exc}')
+
 from tools.tire_gui.fit import force_cost, fit_steady, FORCE_NAMES, TRAIL_NAMES
 from tools.tire_gui.contracts import SampleSet, SteadySelection, FitCancelled
 from tools.tire_gui.model import load_snapshot, predict_steady, with_parameters

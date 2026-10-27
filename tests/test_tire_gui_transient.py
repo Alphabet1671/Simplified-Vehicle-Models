@@ -3,6 +3,12 @@ import unittest
 
 import numpy as np
 
+try:
+    import scipy.integrate  # noqa: F401
+    import scipy.optimize  # noqa: F401
+except ImportError as exc:
+    raise unittest.SkipTest(f'tire GUI transient tests require optional scipy: {exc}')
+
 from tools.tire_gui.contracts import RunData, FitCancelled
 from tools.tire_gui.events import TransientEvent, candidate_events
 from tools.tire_gui.model import load_snapshot

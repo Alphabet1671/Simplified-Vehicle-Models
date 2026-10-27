@@ -3,7 +3,11 @@ from pathlib import Path
 import tempfile
 
 import numpy as np
-from scipy.io import savemat
+
+try:
+    from scipy.io import savemat
+except ImportError as exc:
+    raise unittest.SkipTest(f'tire GUI data tests require optional scipy: {exc}')
 
 from tools.tire_gui.data import contiguous_slices, normalize_channels, load_run
 from tools.tire_gui.segments import compatibility_selection, matlab_segment_indices

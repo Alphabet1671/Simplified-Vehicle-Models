@@ -9,6 +9,7 @@ Python models for point-mass laps and driven planar 7-DoF transients. **Simulati
 - [Forward driver solver (7DoF and 14DoF)](docs/dev/forward-driver.md)
 - [Computational cost by model](docs/dev/computational-cost.md)
 - [Simulation GUI](docs/dev/simulation-gui.md)
+- [TTC tire correlation GUI](docs/dev/tire-correlation-gui.md)
 - [MIS report standard](docs/standards/mis-2024-report-standard.md)
 
 ## Install and run

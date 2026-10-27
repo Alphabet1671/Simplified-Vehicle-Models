@@ -3,6 +3,11 @@ import unittest
 
 import numpy as np
 
+try:
+    import scipy.io  # noqa: F401
+except ImportError as exc:
+    raise unittest.SkipTest(f'tire GUI model tests require optional scipy: {exc}')
+
 from tools.tire_gui.data import normalize_channels
 from tools.tire_gui.parameters import MAT_SCALAR_FIELDS, MAT_VECTOR_FIELDS, VECTOR_DEGREES, flatten_steady, unflatten_steady
 from tools.tire_gui.model import import_mat_seed, load_snapshot, predict_steady, with_parameter

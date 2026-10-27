@@ -36,16 +36,65 @@ def sha(p):
 def metric(a,b):
  e=a-b; sd=np.std(b)
  return {"rmse":float(np.sqrt(np.mean(e*e))),"mae":float(np.mean(abs(e))),"bias":float(np.mean(e)),"correlation":float(np.corrcoef(a,b)[0,1]),"normalised_rmse":float(np.sqrt(np.mean(e*e))/sd) if sd else None}
-def cumulative_time_on_reference(t, reference_s, physical_s, reference_grid):
-  """Cumulative elapsed time vs station through saved monotone path Jacobian."""
-  t=np.asarray(t,float); reference_s=np.asarray(reference_s,float); physical_s=np.asarray(physical_s,float)
-  if len(t)!=len(reference_s) or len(t)!=len(physical_s): raise ValueError('time and mapped stations must have equal length')
-  if np.any(np.diff(reference_s)<0) or np.any(np.diff(physical_s)<0): raise ValueError('physical/reference station mappings must be monotonic')
-  # reference_s is already obtained by applying the saved physical->reference map
-  # at each sample. Interpolation preserves actual elapsed time at station.
-  if np.any(np.diff(reference_s)==0):
-   unique=np.unique(reference_s); t=np.array([t[np.flatnonzero(reference_s==s)[-1]] for s in unique]); reference_s=unique
-  return np.interp(reference_grid,reference_s,t)
+def cumulative_time_on_reference(t, reference_s, physical_s, reference_grid, *, lap_length=None, boundary_tolerance=1.0):
+  """Interpolate elapsed time only when full-lap station endpoints are evidenced.
+
+  Reference station is sampled through the plan Jacobian. Physical station is
+  retained for monotonicity validation but is never substituted for reference.
+  """
+  t=np.asarray(t,float); rs=np.asarray(reference_s,float); ps=np.asarray(physical_s,float); grid=np.asarray(reference_grid,float)
+  if t.ndim!=1 or len(t)<2 or len(t)!=len(rs) or len(t)!=len(ps): raise ValueError('time and mapped stations must have equal length')
+  if not np.all(np.isfinite(t)) or not np.all(np.isfinite(rs)) or not np.all(np.isfinite(ps)) or np.any(np.diff(t)<=0): raise ValueError('time/station samples must be finite with strictly increasing time')
+  if np.any(np.diff(rs)<-1e-8) or np.any(np.diff(ps)<-1e-8): raise ValueError('physical/reference station mappings must be monotonic')
+  if lap_length is None: lap_length=float(grid[-1]) if grid.size else None
+  if lap_length is None or not np.isfinite(lap_length) or lap_length<=0: raise ValueError('full-lap length is required')
+  rs=rs-rs[0];ps=ps-ps[0]
+  if rs[0]>boundary_tolerance or ps[0]>boundary_tolerance or rs[-1]<lap_length-boundary_tolerance or ps[-1]<lap_length-boundary_tolerance: raise ValueError('full-lap boundary mapping not established within tolerance')
+  origin=float(t[0])
+  if abs(rs[-1]-lap_length)>boundary_tolerance or abs(ps[-1]-lap_length)>boundary_tolerance: raise ValueError('physical/reference lap periods disagree with requested length')
+  reverse_unique=np.unique(rs[::-1],return_index=True)[1];keep=np.sort(len(rs)-1-reverse_unique);rs=rs[keep];ps=ps[keep];t=t[keep]-origin
+  rs[0]=0.;ps[0]=0.;rs[-1]=lap_length
+  if np.any(np.diff(rs)<=0): raise ValueError('reference station map is not strictly monotone after duplicate handling')
+  if np.any(np.diff(ps)<-1e-8): raise ValueError('physical station map reverses after duplicate handling')
+  if np.any(grid<0) or np.any(grid>lap_length): raise ValueError('requested interpolation station lies outside evidenced lap')
+  return np.interp(grid,rs,t)
+
+def prepare_full_lap(time, station, lap_length, *, start_time=None, boundary_duration=None, boundary_tolerance=1.0):
+  """Derive full-lap endpoints locally from a monotone, already-unwrapped lap."""
+  t=np.asarray(time,float); raw_s=np.asarray(station,float); L=float(lap_length)
+  if t.ndim!=1 or raw_s.ndim!=1 or len(t)<2 or len(t)!=len(raw_s): raise ValueError('lap time/station arrays must be equal-length vectors')
+  if not np.all(np.isfinite(t)) or not np.all(np.isfinite(raw_s)) or np.any(np.diff(t)<=0) or np.any(np.diff(raw_s)<-1e-8): raise ValueError('lap samples must be finite, time-increasing, and station-monotone')
+  start=float(t[0] if start_time is None else start_time); s=raw_s-raw_s[0]
+  if s[-1]<L-boundary_tolerance or s[-1]>L+boundary_tolerance: raise ValueError('full-lap traversal endpoints unsupported by measured samples')
+  if boundary_duration is not None and (not np.isfinite(boundary_duration) or boundary_duration<=0): raise ValueError('declared lap boundary duration must be finite and positive')
+  def local_time(target):
+   j=int(np.searchsorted(s,target,side='left'))
+   if j<len(s) and abs(s[j]-target)<1e-9: return float(t[j]-start)
+   if j==0:
+    if s[0]-target>boundary_tolerance or s[1]<=s[0]: raise ValueError('full-lap start boundary cannot be derived locally')
+    f=(target-s[0])/(s[1]-s[0]); return max(0.,float(t[0]+f*(t[1]-t[0])-start))
+   if j==len(s):
+    if target-s[-1]>boundary_tolerance or s[-1]<=s[-2]: raise ValueError('full-lap end boundary cannot be derived locally')
+    f=(target-s[-2])/(s[-1]-s[-2]); return float(t[-2]+f*(t[-1]-t[-2])-start)
+   f=(target-s[j-1])/(s[j]-s[j-1]); return float(t[j-1]+f*(t[j]-t[j-1])-start)
+  start_elapsed=local_time(0.)
+  end_elapsed=float(boundary_duration) if boundary_duration is not None else local_time(L)
+  keep=np.r_[s[1:]!=s[:-1],True]; s=s[keep]; elapsed=t[keep]-start
+  if np.any(np.diff(s)<=0): raise ValueError('duplicate station samples cannot define strict full-lap map')
+  if s[0]>boundary_tolerance or s[-1]<L-boundary_tolerance: raise ValueError('full-lap seam samples do not support exact endpoints')
+  s[0]=0.;s[-1]=L;elapsed[0]=start_elapsed;elapsed[-1]=end_elapsed
+  return elapsed,s
+
+def map_lap_through_plan(physical_s, plan_physical, plan_reference, lap_length, *, tolerance=1.0):
+  """Apply the saved path Jacobian; extend exact endpoints only when periods agree."""
+  p=np.asarray(physical_s,float); xp=np.asarray(plan_physical,float); yr=np.asarray(plan_reference,float); L=float(lap_length)
+  if len(xp)<2 or len(xp)!=len(yr) or np.any(np.diff(xp)<=0) or np.any(np.diff(yr)<=0): raise ValueError('saved physical-to-reference mapping is not strictly monotone')
+  period=float(xp[-1]-xp[0])
+  if abs(period-L)>tolerance or abs(float(yr[-1]-yr[0])-L)>tolerance: raise ValueError('saved Jacobian does not establish requested lap period')
+  if p[0]>tolerance or p[-1]<period-tolerance or p[-1]>period+tolerance: raise ValueError('physical lap endpoints unsupported by saved Jacobian')
+  mapped=np.interp(p,xp-xp[0],yr-yr[0])
+  mapped[0]=0.;mapped[-1]=L
+  return mapped
 
 def sector_time_gaps(t, reference_s, physical_s, sector=50.):
   """Return 50 m reference sectors plus remainder using the declared path map."""
@@ -62,12 +111,14 @@ def sector_time_gaps(t, reference_s, physical_s, sector=50.):
    rows.append({'start_m':float(a),'end_m':float(b),'duration_s':float(t[ib]-t[ia]),'physical_distance_m':float(ps[ib]-ps[ia])})
   return rows
 
-def paired_sector_gap_table(sim_time,sim_reference,meas_time,meas_reference,L,sector=50.):
-  """Align cumulative elapsed time on common reference station; signed sim-minus-meas sectors."""
+def paired_sector_gap_table(sim_time,sim_reference,meas_time,meas_reference,L,sector=50.,*,sim_physical=None,meas_physical=None):
+  """Align full-lap elapsed-time traces after explicit boundary validation."""
   sim_reference=np.asarray(sim_reference,float); meas_reference=np.asarray(meas_reference,float)
+  sim_physical=sim_reference if sim_physical is None else np.asarray(sim_physical,float)
+  meas_physical=meas_reference if meas_physical is None else np.asarray(meas_physical,float)
   edges=list(np.arange(0.,L,sector))+[float(L)]
-  sim_cumulative=cumulative_time_on_reference(sim_time,sim_reference,sim_reference,edges)
-  meas_cumulative=cumulative_time_on_reference(meas_time,meas_reference,meas_reference,edges)
+  sim_cumulative=cumulative_time_on_reference(sim_time,sim_reference,sim_physical,edges,lap_length=L)
+  meas_cumulative=cumulative_time_on_reference(meas_time,meas_reference,meas_physical,edges,lap_length=L)
   return [{'start_m':float(a),'end_m':float(b),'simulated_s':float(sim_cumulative[i+1]-sim_cumulative[i]),'measured_s':float(meas_cumulative[i+1]-meas_cumulative[i]),'signed_gap_sim_minus_meas_s':float((sim_cumulative[i+1]-sim_cumulative[i])-(meas_cumulative[i+1]-meas_cumulative[i]))} for i,(a,b) in enumerate(zip(edges[:-1],edges[1:]))]
 
 def _not_available(reason): return {'status':'unavailable','reason':reason}
@@ -102,9 +153,15 @@ def validate_record_plan(record, plan_metadata, *, require_complete=True):
   # Older records bind the exact plan arrays and track/map identities but omit
   # solver/settings fields from the record manifest; retain that as unknown.
   for name in REQUIRED_CHANNELS:
-   if not np.all(record.channel_validity(name)):
+   values=np.asarray(record.channel_values(name),dtype=float)
+   if values.shape[0]!=t.size or not np.all(record.channel_validity(name)) or not np.all(np.isfinite(values)):
     raise ValueError(f"record channel {name!r} has invalid/missing values")
   return True
+
+def reconstruct_torque_request(throttle, limit=LIMIT):
+  throttle=np.asarray(throttle,float)
+  if not np.isfinite(limit) or limit<=0 or not np.all(np.isfinite(throttle)): raise ValueError('torque limit and throttle must be finite; torque limit positive')
+  return throttle*float(limit)
 
 def record_profile(path, plan_path, grid, L, *, torque_limit=LIMIT):
  r=load_run_record(path,verify_sources=False); t=np.asarray(r.time); tu=np.arange(t[0],t[-1]+DT*.25,DT)
@@ -122,11 +179,12 @@ def record_profile(path, plan_path, grid, L, *, torque_limit=LIMIT):
  if profile_metadata.get('track_identity') != metadata.get('track_identity'): raise ValueError(f'{plan_path}: does not match replay track identity')
  if profile_metadata.get('map_identity') != metadata.get('map_identity'): raise ValueError(f'{plan_path}: does not match replay map identity')
  physical=arrays['distance']; reference=arrays['reference_distance']
- if physical.size != reference.size or physical.size < 2: raise ValueError(f'{plan_path}: invalid station map')
+ if physical.size != reference.size or physical.size < 2 or np.any(np.diff(physical)<=0) or np.any(np.diff(reference)<=0): raise ValueError(f'{plan_path}: invalid station map')
+ if d[0] < physical[0]-1e-6 or d[-1] > physical[-1]+1e-6: raise ValueError('replay physical station exceeds saved plan mapping')
  # Saved plan maps plant physical station to the immutable signed-centreline station.
  # This is a source mapping, not a fitted rescaling of the replay.
  reference_d=np.interp(d,physical,reference)
- raw={"speed_mps":chan('speed'),"longitudinal_acceleration_mps2":chan('acceleration-longitudinal'),"lateral_acceleration_mps2":chan('acceleration-lateral'),"yaw_rate_rad_s":np.interp(tu,t,r.state_column('yaw_rate')),"motor_torque_request_nm":chan('throttle')*torque_limit,"delivered_wheel_torque_nm":np.mean(np.asarray(r.channel_values('wheel-drive-torque'),float)[:,2:4],axis=1) if False else np.mean(np.column_stack([np.interp(tu,t,np.asarray(r.channel_values('wheel-drive-torque'),float)[:,i]) for i in (2,3)]),axis=1),"bus_power_w":chan('bus-power') if r.has_channel('bus-power') else None,"brake_force_n":chan('brake-force') if r.has_channel('brake-force') else None,"brake_fraction":chan('brake-fraction') if r.has_channel('brake-fraction') else None,"steering_rate_rad_s":chan('steering-rate') if r.has_channel('steering-rate') else None,"pack_voltage_v":chan('bus-voltage'),"soc":chan('soc'),"throttle":chan('throttle')}
+ raw={"speed_mps":chan('speed'),"longitudinal_acceleration_mps2":chan('acceleration-longitudinal'),"lateral_acceleration_mps2":chan('acceleration-lateral'),"yaw_rate_rad_s":np.interp(tu,t,r.state_column('yaw_rate')),"motor_torque_request_nm":reconstruct_torque_request(chan('throttle'),torque_limit),"delivered_wheel_torque_nm":np.mean(np.column_stack([np.interp(tu,t,np.asarray(r.channel_values('wheel-drive-torque'),float)[:,i]) for i in (2,3)]),axis=1),"bus_power_w":chan('bus-power') if r.has_channel('bus-power') else None,"brake_force_n":chan('brake-force') if r.has_channel('brake-force') else None,"brake_fraction":chan('brake-fraction') if r.has_channel('brake-fraction') else None,"steering_rate_rad_s":chan('steering-rate') if r.has_channel('steering-rate') else None,"pack_voltage_v":chan('bus-voltage'),"soc":chan('soc'),"throttle":chan('throttle')}
  accepted={"speed_mps":np.asarray(r.channel_values('speed'),float),"pack_voltage_v":np.asarray(r.channel_values('bus-voltage'),float),"soc":np.asarray(r.channel_values('soc'),float)}
  filtered={k:zero_phase_lowpass(v,DT,CUTOFF,order=1) if v is not None else None for k,v in raw.items()}
  profile={k:interp_periodic(np.mod(reference_d,L),v,grid,L) for k,v in filtered.items() if v is not None and k not in ('soc','throttle')}
@@ -244,15 +302,18 @@ def main():
  p=argparse.ArgumentParser();p.add_argument('--record',type=Path,required=True);p.add_argument('--measured-dir',type=Path,required=True);p.add_argument('--output-dir',type=Path,required=True);p.add_argument('--plan',type=Path,default=Path('runs/yaw_lap_suite/mis-fixed-1m/plan.npz'));p.add_argument('--torque-limit',type=float,default=LIMIT);p.add_argument('--track',type=Path,default=Path('models/tracks/2024_michigan_endurance_closed_edged.xml'));a=p.parse_args();out=a.output_dir;out.mkdir(parents=True,exist_ok=True)
  measured=load_table(a.measured_dir/'measured_stint.csv');ex=json.loads((a.measured_dir/'telemetry_extraction.json').read_text());track=load_track(ROOT/a.track);path=track.path_coordinates;L=path.lap_length;laps=flying_lap_indices(measured);off,fit0=fit_position_offset(measured,path);td,res=project_onto_track(measured,path,off);grid,folded=fold_laps(measured,laps,tuple(x[0] for x in CHANNELS),track_distance=td,lap_length=L,bins=BINS);med={k:np.median(v,0) for k,v in folded.items()};r,tu,d,reference_d,raw,accepted,filtered,sim,physical_length,reference_length,plan_physical,plan_reference=record_profile(a.record,a.plan,grid,L,torque_limit=a.torque_limit)
  lap=float(r.time[-1]-r.time[0]);# Lap duration is evidence from this record, not an admissibility constant.
- sim_cum=cumulative_time_on_reference(tu,reference_d,d,grid).tolist()
+ sim_cum=[]
  measured_mask=measured['lap_index']==laps[0]; measured_time=np.asarray(measured['time_s'][measured_mask],float)
  measured_physical=unwrap_track_distance(np.asarray(td[measured_mask],float),L,measured['lap_index'][measured_mask])
- measured_ref=np.interp(measured_physical,plan_physical,plan_reference)
- # The complete measured lap has its own physical boundary duration, retained in the comparison metadata.
  try:
-  sector_rows=paired_sector_gap_table(tu,reference_d,measured_time,measured_ref,L)
-  sector_data={'status':'available','reference_lap_index':int(laps[0]),'rows':sector_rows,'largest_positive':sorted(sector_rows,key=lambda x:x['signed_gap_sim_minus_meas_s'],reverse=True)[:5],'largest_negative':sorted(sector_rows,key=lambda x:x['signed_gap_sim_minus_meas_s'])[:5]}
- except (ValueError,IndexError) as exc: sector_data={'status':'unavailable','reason':f'measured lap/reference mapping lacks full-lap cumulative timing: {exc}'}
+  measured_elapsed,measured_physical=prepare_full_lap(measured_time,measured_physical,L,start_time=float(ex['laps'][int(laps[0])]['start_s']),boundary_duration=float(ex['laps'][int(laps[0])]['lap_time_s']))
+  measured_ref=map_lap_through_plan(measured_physical,plan_physical,plan_reference,L)
+  sim_elapsed,sim_physical=prepare_full_lap(tu,d,physical_length,start_time=float(tu[0]))
+  sim_ref=map_lap_through_plan(sim_physical,plan_physical,plan_reference,L)
+  sector_rows=paired_sector_gap_table(sim_elapsed,sim_ref,measured_elapsed,measured_ref,L,sim_physical=sim_physical,meas_physical=measured_physical)
+  sim_cum=cumulative_time_on_reference(sim_elapsed,sim_ref,sim_physical,grid,lap_length=L).tolist()
+  sector_data={'status':'available','reference_lap_index':int(laps[0]),'rows':sector_rows,'largest_positive':sorted(sector_rows,key=lambda x:x['signed_gap_sim_minus_meas_s'],reverse=True)[:5],'largest_negative':sorted(sector_rows,key=lambda x:x['signed_gap_sim_minus_meas_s'])[:5],'measured_boundary_elapsed_s':float(measured_elapsed[-1]),'replay_boundary_elapsed_s':float(sim_elapsed[-1]),'mapping':'measured projected station unwrapped within lap; physical→reference map from saved plan'}
+ except (ValueError,IndexError) as exc: sector_data={'status':'unavailable','reason':f'full-lap endpoint or saved-Jacobian mapping not established: {exc}'}
  trace_specs=[('requested_motor_torque_per_motor_nm',raw['motor_torque_request_nm'],'N·m',''),('delivered_rear_wheel_torque_nm',raw.get('delivered_wheel_torque_nm'),'N·m','wheel-drive-torque channel absent'),('electrical_bus_power_w',raw.get('bus_power_w'),'W','bus-power channel absent'),('electrical_power_limit_w',None,'W','no configured electrical-limit channel in saved record'),('pack_terminal_voltage_v',raw['pack_voltage_v'],'V',''),('battery_soc',raw['soc'],'1',''),('throttle_saturation',np.isclose(raw['throttle'],1.,atol=1e-6),'1',''),('brake_force_n',raw.get('brake_force_n'),'N','brake-force channel absent'),('brake_fraction',raw.get('brake_fraction'),'1','brake-fraction channel absent'),('brake_saturation',None,'1','actuator saturation state not recorded'),('steering_rate_rad_s',raw.get('steering_rate_rad_s'),'rad/s','steering-rate channel absent'),('steering_rate_saturation',None,'1','actuator saturation state not recorded')]
  operational={name:({'status':'available','unit':unit,'sample_count':int(np.asarray(vals).size),'values':np.asarray(vals).tolist()} if vals is not None else {'status':'unavailable','unit':unit,'reason':reason}) for name,vals,unit,reason in trace_specs}
  metrics={k:metric(sim[k],med[k]) for k,_,_ in CHANNELS}; rawmat=Path.home()/'Desktop/0615CompEndurance.mat';summary={'metrics':metrics,'ablations':[

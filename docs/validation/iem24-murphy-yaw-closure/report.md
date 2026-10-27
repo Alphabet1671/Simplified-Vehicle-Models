@@ -36,28 +36,28 @@ Measured positions are fitted by a constant translation and projected/folded ont
 
 Cumulative per-lap times and sector comparison use monotone unwrapped physical traversals mapped through the saved physical-to-reference Jacobian. Measured lap-boundary elapsed time is preserved; fixed 50 m sectors include the final remainder. `1/V` is not treated as `dt/ds_reference`.
 
-0–50 m: replay 3.890 s, measured 3.499 s, signed gap +0.391 s
-50–100 m: replay 3.601 s, measured 3.925 s, signed gap -0.324 s
-100–150 m: replay 2.691 s, measured 3.125 s, signed gap -0.433 s
+0–50 m: replay 3.890 s, measured 3.949 s, signed gap -0.059 s
+50–100 m: replay 3.601 s, measured 3.799 s, signed gap -0.198 s
+100–150 m: replay 2.691 s, measured 3.051 s, signed gap -0.360 s
 150–200 m: replay 2.112 s, measured 2.675 s, signed gap -0.563 s
 200–250 m: replay 3.047 s, measured 3.175 s, signed gap -0.127 s
-250–300 m: replay 2.816 s, measured 4.096 s, signed gap -1.280 s
-300–350 m: replay 2.832 s, measured 4.799 s, signed gap -1.967 s
-350–400 m: replay 2.993 s, measured 4.449 s, signed gap -1.456 s
-400–450 m: replay 2.435 s, measured 3.079 s, signed gap -0.644 s
-450–500 m: replay 3.486 s, measured 3.949 s, signed gap -0.463 s
-500–550 m: replay 3.850 s, measured 4.718 s, signed gap -0.868 s
-550–600 m: replay 3.798 s, measured 4.055 s, signed gap -0.257 s
-600–650 m: replay 2.996 s, measured 3.324 s, signed gap -0.329 s
-650–700 m: replay 2.856 s, measured 3.275 s, signed gap -0.418 s
-700–750 m: replay 2.228 s, measured 2.791 s, signed gap -0.563 s
-750–800 m: replay 3.198 s, measured 4.099 s, signed gap -0.901 s
-800–850 m: replay 3.031 s, measured 3.633 s, signed gap -0.602 s
-850–900 m: replay 3.547 s, measured 3.599 s, signed gap -0.052 s
-900–950 m: replay 3.714 s, measured 4.324 s, signed gap -0.610 s
-950–1000 m: replay 4.081 s, measured 4.388 s, signed gap -0.307 s
-1000–1017 m: replay 1.598 s, measured 2.322 s, signed gap -0.724 s
-Largest positive: 0–50 m (+0.391 s), 850–900 m (-0.052 s), 200–250 m (-0.127 s), 550–600 m (-0.257 s), 950–1000 m (-0.307 s); largest negative: 300–350 m (-1.967 s), 350–400 m (-1.456 s), 250–300 m (-1.280 s), 750–800 m (-0.901 s), 500–550 m (-0.868 s)
+250–300 m: replay 2.816 s, measured 4.296 s, signed gap -1.480 s
+300–350 m: replay 2.832 s, measured 4.841 s, signed gap -2.010 s
+350–400 m: replay 2.993 s, measured 4.286 s, signed gap -1.293 s
+400–450 m: replay 2.435 s, measured 3.020 s, signed gap -0.585 s
+450–500 m: replay 3.486 s, measured 4.004 s, signed gap -0.518 s
+500–550 m: replay 3.850 s, measured 4.893 s, signed gap -1.043 s
+550–600 m: replay 3.798 s, measured 3.849 s, signed gap -0.051 s
+600–650 m: replay 2.996 s, measured 3.306 s, signed gap -0.310 s
+650–700 m: replay 2.856 s, measured 3.250 s, signed gap -0.393 s
+700–750 m: replay 2.228 s, measured 2.875 s, signed gap -0.646 s
+750–800 m: replay 3.198 s, measured 4.074 s, signed gap -0.876 s
+800–850 m: replay 3.031 s, measured 3.690 s, signed gap -0.659 s
+850–900 m: replay 3.547 s, measured 3.534 s, signed gap +0.013 s
+900–950 m: replay 3.714 s, measured 4.414 s, signed gap -0.700 s
+950–1000 m: replay 4.081 s, measured 4.499 s, signed gap -0.418 s
+1000–1017 m: replay 1.600 s, measured 1.832 s, signed gap -0.232 s
+Largest positive: 850–900 m (+0.013 s), 550–600 m (-0.051 s), 0–50 m (-0.059 s), 200–250 m (-0.127 s), 50–100 m (-0.198 s); largest negative: 300–350 m (-2.010 s), 250–300 m (-1.480 s), 350–400 m (-1.293 s), 500–550 m (-1.043 s), 750–800 m (-0.876 s)
 
 Operational trace availability (full samples: `operational_traces.csv`; unavailable values are left blank):
 

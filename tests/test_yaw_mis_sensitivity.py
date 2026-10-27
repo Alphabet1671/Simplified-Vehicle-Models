@@ -10,7 +10,7 @@ class SensitivityMathTests(unittest.TestCase):
         states=('s','yaw_rate')
         manifest=SimpleNamespace(segment={'lap_completed':completed},channel_names=channels,channel_units=('',)*len(channels),channel_frames=('',)*len(channels),state_names=states, sources={},
             model={'yaw_profile':{'array_digest':'a','track_identity':'t','map_identity':'m','solver':'solver','profile_settings':{}},'controller':'model-aware'})
-        return SimpleNamespace(time=np.array([0.,duration]),manifest=manifest,channel_validity=lambda n:np.ones(2,dtype=bool))
+        return SimpleNamespace(time=np.array([0.,duration]),manifest=manifest,channel_validity=lambda n:np.ones(2,dtype=bool),channel_values=lambda n:np.zeros(2))
     def test_any_completed_duration_admitted(self):
         self.assertTrue(validate_record_plan(self.record(duration=61.25),{'array_digest':'a','track_identity':'t','map_identity':'m'}))
     def test_incomplete_lap_rejected(self):

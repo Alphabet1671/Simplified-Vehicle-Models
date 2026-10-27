@@ -12,6 +12,8 @@ from pathlib import Path
 
 STATE_FIELDS = {"lateral_error", "heading_error", "speed", "yaw_rate"}
 LAG_FIELDS = {"steering", "pedal"}
+CASE_FIELDS = {"plan", "plan_sha256", "initial_state_override", "controller", "plant_variation"}
+CONTROLLER_FIELDS = {"preview_seconds", "yaw_damping", "heading_gain", "lateral_gain", "minimum_preview_m"}
 
 
 def apply_state_overrides(initial_state, overrides, *, closed=True, minimum_speed=0.25):
@@ -45,26 +47,48 @@ def synthetic_path_fixtures(samples=401):
             "half_width": width, "seam_index": seam}
 
 
+def _finite_number(value):
+    return not isinstance(value, bool) and isinstance(value, (int, float)) and math.isfinite(value)
+
+
 def validate_case(case):
+    """Validate a complete, single-run immutable case tuple."""
     if not isinstance(case, dict):
         raise ValueError("case must be an object")
-    state = case.get("initial_state_override", {})
-    controller = case.get("controller", {})
-    variation = case.get("plant_variation", {})
+    missing = CASE_FIELDS - set(case)
+    unknown = set(case) - CASE_FIELDS
+    if missing:
+        raise ValueError(f"case is missing required fields: {sorted(missing)}")
+    if unknown:
+        raise ValueError(f"case has unknown top-level fields: {sorted(unknown)}")
+    if not isinstance(case["plan"], str) or not case["plan"].strip():
+        raise ValueError("plan must be a nonempty immutable saved-plan path")
+    digest = case["plan_sha256"]
+    if not isinstance(digest, str) or len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
+        raise ValueError("plan_sha256 must be lowercase SHA-256 hex")
+    state, controller, variation = (case["initial_state_override"], case["controller"], case["plant_variation"])
     if not isinstance(state, dict) or set(state) - STATE_FIELDS:
-        raise ValueError("initial-state override has unknown fields")
+        raise ValueError("initial-state override must be a dictionary with only supported fields")
     for name, value in state.items():
-        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        if not _finite_number(value):
             raise ValueError(f"initial-state override {name} must be finite")
-    if not isinstance(controller, dict) or set(controller) - {"preview_seconds", "yaw_damping", "heading_gain", "lateral_gain"}:
-        raise ValueError("invalid resolved controller dictionary")
+    if not isinstance(controller, dict) or set(controller) != CONTROLLER_FIELDS:
+        raise ValueError(f"resolved controller dictionary must contain exactly {sorted(CONTROLLER_FIELDS)}")
     for name, value in controller.items():
-        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        if not _finite_number(value):
             raise ValueError(f"controller {name} must be finite")
+    if (controller["preview_seconds"] < 0.0 or controller["yaw_damping"] < 0.0
+            or controller["heading_gain"] <= 0.0 or controller["lateral_gain"] <= 0.0
+            or controller["minimum_preview_m"] < 0.0):
+        raise ValueError("controller preview/damping/floor must be nonnegative and gains positive")
+    if controller["heading_gain"] != 1.8 or controller["lateral_gain"] != 2.0:
+        raise ValueError("controller gains must retain the declared first-sweep values 1.8 and 2.0")
+    if controller["minimum_preview_m"] != 1.0:
+        raise ValueError("minimum_preview_m must preserve the declared 1 m preview floor")
     if not isinstance(variation, dict) or set(variation) - LAG_FIELDS:
-        raise ValueError("plant variation may only declare actuator lag multipliers")
+        raise ValueError("plant variation must be a dictionary with only steering/pedal lag multipliers")
     for name, multiplier in variation.items():
-        if isinstance(multiplier, bool) or not isinstance(multiplier, (int, float)) or not math.isfinite(multiplier) or multiplier <= 0:
+        if not _finite_number(multiplier) or multiplier <= 0:
             raise ValueError(f"{name} lag multiplier must be finite and positive")
     return case
 
@@ -78,8 +102,6 @@ def main(argv=None):
     # identity, no physical replay is launched on a guessed baseline. The
     # runner deliberately launches no partial case that could be mistaken for a
     # completed measurement.
-    if not case.get("plan") or not case.get("plan_sha256"):
-        p.error("case requires immutable plan path and SHA-256 binding")
     import hashlib
     plan = Path(case["plan"])
     if not plan.is_file() or hashlib.sha256(plan.read_bytes()).hexdigest() != case["plan_sha256"]:

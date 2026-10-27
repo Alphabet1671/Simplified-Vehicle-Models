@@ -5,7 +5,7 @@ import numpy as np
 from scipy.integrate import solve_ivp
 from scipy.optimize import least_squares
 from simplified_vehicle_models.tires.unitire_transient import (TransientTireState,
-    steady_rolling_state, evaluate_transient_unitire)
+    steady_rolling_state, evaluate_transient_unitire, relaxation_lengths)
 from .contracts import FitCancelled, FitResult, ModelSnapshot
 from .events import TransientEvent, validate_event
 from .model import with_parameters
@@ -15,6 +15,21 @@ _BOUNDS={'longitudinal_length_scale':(.05,10.),'lateral_length_scale':(.05,10.),
 
 def _cancel(cancel):
     if cancel(): raise FitCancelled()
+
+def _excited_bandwidth(values, dt):
+    values=np.asarray(values,dtype=float)
+    centered=values-np.mean(values)
+    if len(centered)<4 or not np.any(np.abs(centered)>0):
+        return None
+    power=np.abs(np.fft.rfft(centered))**2
+    frequency=np.fft.rfftfreq(len(centered),dt)
+    power[0]=0.
+    total=float(np.sum(power))
+    if total<=0: return None
+    cumulative=np.cumsum(power)/total
+    ix=int(np.searchsorted(cumulative,.95))
+    return float(frequency[min(ix,len(frequency)-1)])
+
 
 def _inputs(run, ix):
     c=run.channels
@@ -66,14 +81,12 @@ def fit_transient(snapshot: ModelSnapshot, events: tuple[TransientEvent,...], lo
     candidate=snapshot; metrics={}; statuses={}; warnings=[]; converged=True
     def fit_group(group, names, output_col):
         nonlocal candidate,converged
-        active=[n for n in names if n not in locked]
+        original_names=tuple(names)
+        active=[n for n in original_names if n not in locked]
         if not active:
             for n in names: statuses[n]='locked'
             return
         base=candidate
-        if any(n in locked for n in names):
-            for n in names: statuses[n]='locked' if n in locked else 'unchanged (fit group locked)'
-            return
         # Save prediction targets and normalized weights; one RMS contribution per event.
         targets=[]
         for e in group:
@@ -96,41 +109,81 @@ def fit_transient(snapshot: ModelSnapshot, events: tuple[TransientEvent,...], lo
                 pred=simulate_event(trial,e,.01,_cancel_check=cancel)
                 chunks.append((pred[:,col]-target)/scale/np.sqrt(len(target)*len(targets)))
             return np.concatenate(chunks)
-        result=least_squares(residual,x0,bounds=(bounds[:,0],bounds[:,1]),max_nfev=100, diff_step=1e-3)
+        result=least_squares(residual,x0,bounds=(bounds[:,0],bounds[:,1]),max_nfev=100, diff_step=1e-3, callback=lambda _: _cancel(cancel))
         _cancel(cancel)
-        # Numerical response times below two samples cannot be distinguished;
-        # do not accept a nominal full-rank optimizer result in that case.
-        dt=float(np.median(np.diff(group[0].run.channels['time'][group[0].start:group[0].stop])))
-        from simplified_vehicle_models.tires.unitire_transient import relaxation_lengths
-        load0=float(np.median(group[0].run.channels['fz'][group[0].start:group[0].stop]))
-        relevant='longitudinal_length_scale' if output_col=='fx' else 'lateral_length_scale'
-        sigma=relaxation_lengths(base.steady,base.transient,load0)[0 if output_col=='fx' else 1]
-        max_time_constant=(_BOUNDS[relevant][1]/max(base.values[relevant],1e-12))*sigma/max(group[0].run.channels['speed'][group[0].start],.5) if relevant in active else sigma/max(group[0].run.channels['speed'][group[0].start],.5)
-        time_resolved=max_time_constant >= 2*dt
+        # Judge the candidate's actual physical time constants, not the maximum
+        # search bound. Check every load/speed pair across every contributing event.
+        dt_by_event=[]
+        tau_by_parameter={name:[] for name in active}
+        tau_trial=with_parameters(base,dict(zip(active,result.x)))
+        for e in group:
+            ec=e.run.channels
+            dt_by_event.append(float(np.median(np.diff(ec['time'][e.start:e.stop]))))
+            for fz,vx in zip(ec['fz'][e.start:e.stop],ec['speed'][e.start:e.stop]):
+                sx,sy=relaxation_lengths(tau_trial.steady,tau_trial.transient,float(fz))
+                tau={'longitudinal_length_scale':sx/max(abs(float(vx)),.5),
+                     'lateral_length_scale':sy/max(abs(float(vx)),.5),
+                     'trail_pole_ratio':sy/(tau_trial.transient.trail_pole_ratio*max(abs(float(vx)),.5)),
+                     'trail_lead_ratio':sy/max(abs(float(vx)),.5)}
+                for name in active: tau_by_parameter[name].append(tau[name])
+        time_resolved=True
+        ratio_by_parameter={name:[] for name in active}
+        offset=0
+        for event_index,e in enumerate(group):
+            count=e.stop-e.start
+            for name in active:
+                ratio_event=min(tau_by_parameter[name][offset:offset+count])/(2*dt_by_event[event_index])
+                metrics[f'{name}_event_{event_index}_tau_over_2dt']=float(ratio_event)
+                if ratio_event < 1:
+                    warnings.append(f'{name} candidate response time is below two sample intervals for event {event_index}')
+                    time_resolved=False
+            offset+=count
+        for name in active:
+            ratio=min(metrics[f'{name}_event_{i}_tau_over_2dt'] for i in range(len(group)))
+            metrics[f'{name}_minimum_tau_seconds']=float(min(tau_by_parameter[name]))
+            metrics[f'{name}_minimum_tau_over_2dt']=float(ratio)
+            if ratio < 1:
+                warnings.append(f'{name} candidate response time is below two sample intervals for at least one event')
+                time_resolved=False
         jac=np.asarray(result.jac,float); s=np.linalg.svd(jac,compute_uv=False)
         rank=int(np.sum(s > (s[0]*1e-6 if len(s) and s[0]>0 else np.inf)))
         cond=float(s[0]/s[-1]) if len(s) and s[-1]>0 else float('inf')
         metrics[f'{group[0].axis}_sensitivity_rank']=float(rank); metrics[f'{group[0].axis}_sensitivity_condition']=cond
-        identified=result.success and rank==len(active) and cond<=1e6 and time_resolved
+        bound_hit=False
+        for name,value,(lower,upper) in zip(active,result.x,bounds):
+            hit=bool(value <= lower + 1e-6 * max(1.,abs(lower)) or value >= upper - 1e-6 * max(1.,abs(upper)))
+            metrics[f'{name}_bound_hit']=hit
+            if hit:
+                bound_hit=True
+                warnings.append(f'{name} candidate reached a search bound')
+        identified=result.success and rank==len(active) and cond<=1e6 and time_resolved and not bound_hit
         if not time_resolved: warnings.append(f'{group[0].axis} response time is below two sample intervals')
         if identified:
             candidate=with_parameters(base,dict(zip(active,result.x)))
         else:
             warnings.append(f'{group[0].axis} transient sensitivity is rank-deficient or ill-conditioned; parameter changes reverted')
         converged &= bool(identified)
-        for n in names: statuses[n]='fitted' if identified and n in active else ('locked' if n in locked else 'unidentified / provisional')
-        metrics[f'{group[0].axis}_response_bandwidth_hz']=float(1/(2*np.median(np.diff(group[0].run.channels['time'][group[0].start:group[0].stop]))))
+        for n in original_names: statuses[n]='fitted' if identified and n in active else ('locked' if n in locked else 'unidentified / provisional')
+        dt=float(np.median(np.diff(group[0].run.channels['time'][group[0].start:group[0].stop])))
+        metrics[f'{group[0].axis}_nyquist_hz']=float(.5/dt)
+        measured_bandwidth=_excited_bandwidth(group[0].run.channels['alpha' if group[0].axis=='lateral' else 'kappa'][group[0].start:group[0].stop],dt)
+        metrics[f'{group[0].axis}_excited_input_bandwidth_95_hz']=float(measured_bandwidth) if measured_bandwidth is not None else float('nan')
         progress({'stage':group[0].axis,'cost':float(result.cost),'rank':rank,'condition':cond})
     if lat:
         fit_group(lat,['lateral_length_scale'],'fy')
         # Only attempt trail after lateral is identified and Mz is present.
-        if any('mz' not in e.run.channels for e in lat):
-            raise ValueError('Mz/moment channel required for trail fit')
-        if statuses.get('lateral_length_scale')=='fitted' and not any(n in locked for n in ('trail_pole_ratio','trail_lead_ratio')):
-            fit_group(lat,['trail_pole_ratio','trail_lead_ratio'],'mz')
-        elif statuses.get('lateral_length_scale')=='fitted':
-            for n in ('trail_pole_ratio','trail_lead_ratio'):
-                statuses[n]='locked' if n in locked else 'unchanged (other trail coefficient locked)'
+        # Missing Mz only excludes trail fitting; it does not invalidate Fy.
+        # A trusted locked lateral scale can identify trail dynamics even when
+        # this run's Fy fit is intentionally disabled.
+        lateral_usable = statuses.get('lateral_length_scale') == 'fitted' or 'lateral_length_scale' in locked
+        if lateral_usable:
+            trail_events=[e for e in lat if 'mz' in e.run.channels]
+            if trail_events:
+                fit_group(trail_events,['trail_pole_ratio','trail_lead_ratio'],'mz')
+            else:
+                warnings.append('Mz unavailable; trail coefficients were not fitted')
+                for n in ('trail_pole_ratio','trail_lead_ratio'):
+                    statuses[n]='locked' if n in locked else 'unidentified / provisional (Mz unavailable)'
         else:
             statuses['trail_pole_ratio']=statuses['trail_lead_ratio']='unidentified / provisional'
     else:

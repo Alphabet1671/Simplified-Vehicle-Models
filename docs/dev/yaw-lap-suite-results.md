@@ -80,51 +80,28 @@ The early model-aware controller diverged near station 346.6 m, producing an unv
 
 A longer-preview gain experiment exhausted its 550 s integration budget. Matched-preview yaw damping advanced to accepted-state validation but exhausted 550 s there. The subsequent 1,400 s cooperative / 1,500 s hard-watchdog replay **completed all solver validation**: driven64.80223 s versus planned64.16651 s, lateralRMS0.06579 m/max0.23174 m, speedRMS0.27060 m/s, sampled centre-corridor violation0 m. Requested full-throttle time23.855%, no requested steering-rate/brake saturation. This is successful fixed-line replay, not footprint/between-step corridor certification. The same final revision also completes FSC as reported above.
 
-## Remaining work
+## Task 13 closure — five prior work items adjudicated
 
-The new virtual driver has completed fixed-line forward laps on MIS and FSC. Bounded line optimization, saved-plan replay, and convergence reporting are implemented. What remains is to demonstrate a reliable **optimized-line planning → tracking → validation** pipeline, not to implement those components again.
+Task 13 closes the evidence ledger without upgrading unresolved claims. Full status cells, artifact identities, manifests, failures, and report links are indexed in [the closure index](yaw-lap-suite-closure/index.md). Historical values and comparisons above remain untouched and keep their original labels.
 
-### 1. Resolve fine-grid profile connectivity and runtime
+### 1. Fine-grid profile connectivity and runtime — **inconclusive**
 
-- Diagnose the remaining candidate/frontier connectivity bottleneck and reduce interval-refinement cost. MIS 0.5 m still exhausts its 300 s profile budget without a validated path, including with squared-speed warm suggestions.
-- Obtain independently validated finer-grid profiles on both MIS and FSC without broadening support/moment tolerances, filling map masks, or introducing an arbitrary acceleration cap.
-- Keep the complete process and its children inside the **1,800 s hard deadline per run**. Improve accepted-state and between-step replay-validation efficiency as well: the successful MIS replay required a 1,400 s cooperative allowance and a 1,500 s hard watchdog, leaving little practical runtime margin.
+MIS 0.5 m warm and cold closure-v1 attempts both fail strict validation; no plan digest/lap time exists. Earlier polynomial-consistency failure and later local-polynomial frontier budget exhaustion are distinct historical failures and remain preserved. FSC profiles are strict-valid through 0.25 m, but 0.5/0.25 m profile refinement is unproven. Runtime margins are case-specific: Task 5's three instrumented MIS replays passed its 1,200 s cooperative target under 1,500 s hard watchdog (median 164.3855 s, maximum 172.0019 s); no universal runtime-margin gate follows.
 
-**Done when:** finer-grid planning and complete replay validation finish reproducibly within the hard limit, with useful runtime margin and explicit failure/budget diagnostics.
+### 2. Numerical convergence and stopping — **inconclusive**
 
-### 2. Demonstrate convergence, separately for each numerical layer
+FSC 0.5→0.25 m valid-plan comparison misses project thresholds (1.976319% relative time; 3.698577 m/s maximum speed difference) and both profiles are refinement-unproven. FSC 1→0.5 m is likewise inconclusive (2.385749%; 9.427667 m/s; fine profile unproven). MIS 2→1 m is warm-policy incompatible; MIS 1→0.5 m has no strictly valid fine plan. No common validated grid exists, so Task 8 physical basis studies were not applicable and not run. Historical optimizer exits are budget/iteration stops, not convergence. No global optimality claim.
 
-- **Profile refinement:** resolve the outstanding refinement uncertainty, including the coarse profiles and FSC 1 m case.
-- **Spatial grid:** compare genuinely finer geometry grids at fixed line-control resolution, using the same map, track, settings, and common reference-station axis. The current 2 m → 1 m lap-time changes of approximately 4.4–4.7% are not convergence evidence.
-- **Line optimizer:** demonstrate stationarity or a documented stopping criterion other than wall/evaluation/iteration exhaustion. The retained MIS/FSC improvements are feasible incumbents, not converged optima.
-- **Control basis:** refine line-control spacing while holding geometry resolution fixed and giving each search sufficient, comparable progress. The existing FSC 40 m/20 m studies do not establish basis convergence.
-- Generate fresh digest-bound study artifacts; historical unbound reports must remain exploratory/inconclusive.
+### 3. Optimized-line tracking — **inconclusive identity; exploratory laps completed**
 
-**Done when:** the independent profile, optimizer, spatial-grid, and control-basis checks pass their declared tolerances, or the suite explicitly reports which claim remains inconclusive. This does not establish global optimality or continuous feasibility.
+Task 9 completed solver-validated fixed and historical optimized replays on MIS/FSC at BDF `rtol=1e-6`, `atol=1e-8`, max step 0.05 s, 150 s duration, 1,200 s cooperative / 1,500 s process watchdog. However plan source revisions/dirty hashes are absent, so paired identity and the planning→tracking→validation gate remain inconclusive. Sampled center passed; sampled wheel-contact checks failed. The MIS-only max-step 0.025 s replay repeated printed metrics; FSC integration sensitivity was not tested.
 
-### 3. Validate tracking of the optimized lines
+### 4. Robustness and containment — **inconclusive / not certified**
 
-- Replay the saved optimized MIS and FSC plans through the full forward plant without reoptimizing them or substituting the fixed-line speed plan.
-- Verify the physical-path/reference-station mapping, curvature and seam behavior, then collect completed-lap time, time-weighted speed/lateral errors, maximum errors, realized control saturation, and corridor violations.
-- Compare fixed and optimized lines with the same final controller revision and consistent numerical settings. Fixed-line completion alone does not show that the optimized plans are trackable or improve driven lap time.
+Task 10's perturbation and actuator matrix is planned, not physically run; there is no selected controller candidate and no FSC lateral-penalty-removal claim. Task 11 provides a provider-based checker, but no actual provider-run certificate binds to the Task 9 replays. Sampled wheel-contact violations fail; body dimensions are unavailable and whole-body/swept containment remain unknown. Sampled-center status does not imply footprint or between-step containment.
 
-**Done when:** both optimized-line replays complete all solver validation and demonstrate their actual driven-time/tracking trade-off against the matched fixed-line baseline.
+### 5. Measured-data attribution and reproducibility — **inconclusive**
 
-### 4. Strengthen controller robustness and containment evidence
+Task 12 reproduces 64.802231718 s simulated versus 71.685012818 s measured median (6.882781099 s; 9.60%), with ten flying laps and standing-start exclusion. All controlled treatments (controller, line, battery, grip/map/replan, alignment) remain not run/inconclusive; historical configuration-source provenance is unknown. The historical report is not rewritten, and no causal contribution is assigned.
 
-- Reduce the remaining lateral-tracking trade-off. On FSC, the final driver improves speed tracking but has lateral RMS/max errors of 0.070/0.175 m versus the legacy preview driver's 0.054/0.160 m.
-- Test sensitivity to initial-state/line perturbations, rapid curvature reversals, cyclic seams, and physically justified vehicle/actuator variations; retain diagnostic failures rather than claiming robustness from two nominal laps.
-- Add whole-vehicle footprint and between-step corridor checks if stronger containment claims are required. Current zero violations concern the **sampled vehicle centre only**; accepted/between-step solver-domain validation is not a corridor-containment certificate.
-
-**Done when:** the claimed operating range and tracking/containment tolerances have explicit passing evidence. Until then, preserve the footprint and between-step corridor non-certifications.
-
-### 5. Close the measured-data and reproducibility gaps
-
-- Use the [single-replay MIS measured-data report](../validation/iem24-murphy-yaw-replay/report.md) to investigate the 64.802 s simulated versus 71.685 s measured-median lap-time gap: 6.883 s, or 9.60%. The report establishes the discrepancy, not its cause.
-- Separate controller/line/grip assumptions from battery initial-condition effects and measurement alignment. Keep reconstructed motor torque request distinct from delivered torque, and acknowledge that the reference track geometry derives from the same measured log rather than an independent survey.
-- Embed complete configuration/source/controller provenance in future run records. The compared historical record lacks a configuration-source hash; hashing it now does not recover that missing historical provenance.
-- Extend regression coverage and rerun the relevant integration tests after further changes. Existing scoped passes are not a whole-repository test-suite pass claim.
-
-**Done when:** new reports and run records are self-contained and reproducible, major comparison offsets are explained or explicitly unresolved, and every stronger performance claim is tied to the exact tested artifacts.
-
-Throughout this work, keep the legacy OCP unchanged, retain strict map semantics, and enforce the hard runtime limit. Neither further implementation nor successful nominal replay should silently upgrade the present convergence, optimality, or containment claims.
+Task 13 scoped yaw regressions: **fail** (188 tests; 4 failures and 2 errors in 23.638 s under 180 s); physical-window functional tests: **pass** (2 tests in 3.716 s under 600 s); complete repository suite: **timeout** (exit 124 at 1,800 s, process group killed; run once only). Thus no whole-repository green claim. Exact commands and failure causes are recorded in the ignored Task 13 report and [closure index](yaw-lap-suite-closure/index.md). Legacy OCP, strict map semantics, tolerance values, masks, and controller defaults remain unchanged; no hidden acceleration cap or discarded failure record is accepted as part of this closure.

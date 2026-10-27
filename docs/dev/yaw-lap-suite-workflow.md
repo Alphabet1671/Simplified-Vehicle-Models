@@ -62,11 +62,14 @@ The comparator verifies plan array integrity and the run-summary bound digest be
 
 For fixed-geometry refinement, `--warm-plan` accepts a validated coarser saved plan as squared-speed seed suggestions. This is not a feasibility shortcut.
 
-## Evidence and non-certifications
+## Evidence, failures, and non-certifications
 
 - A successful plan is an independently validated **discrete** profile, not continuous feasibility or global optimality.
-- Optimizer stationarity, profile refinement, geometry-grid convergence and control-basis convergence are separate statuses.
-- Successful replay requires integration and accepted/between-step checks to finish within budget.
-- Sampled vehicle-centre containment is separate from footprint and between-step corridor containment. The latter two are not certified here.
+- Optimizer stopping, profile refinement, geometry-grid convergence, and control-basis convergence are separate statuses. Consult [the closure index](yaw-lap-suite-closure/index.md) for current evidence and each exact status cell.
+- The closure-v1 map source identity is `f8658cafbd35dc60cd195153ca4761db21d9a9d8b4819f1112a4f46ad7322419`. MIS track identity is `69bce5525e17c12bf17655760e6aedd5e1a98af7bd2d23b1bb05f8fccafad66f` (reconstructed geometry); FSC identity is `9d23af92a8e943aad7a90da5581f73f2733ab3cbed3fbb454f8843bb5fc797eb` (synthetic 3 m edges). Fresh manifests carry plan file/array digests, contract hash, source/vehicle/track hashes where available, effective settings, and watchdog budget. Missing historical source identity stays `unknown`.
+- Keep failures and budget stops in comparisons. In the closure-v1 matrix MIS 0.5 m warm and cold both failed strict validation; no plan digest or lap time exists. FSC 0.5→0.25 m strict-valid plans are still refinement-unproven and miss grid criteria; see curated manifests and raw ignored runs from the index.
+- Successful replay requires integration and accepted/between-step solver checks to finish within budget, but those solver-domain checks are not a corridor-containment certificate. Task 9 historical replays completed, but optimized/fixed pair identity remains inconclusive because saved plan source provenance is absent.
+- Sampled vehicle-centre containment is distinct from wheel-contact, whole-body footprint, and swept containment. Task 9 sampled wheel contacts failed; body dimensions are unavailable; no actual provider-run swept certificate is attached to those replay records.
 - Requested command saturation metrics are labeled requested. The saved run record contains realized pedal-limited controls.
 - Failures have a summary. Unsuccessful IVP results retain a bounded last solver state, explicitly marked unvalidated, and the latest rejected trial cause. A timeout inside integration cannot invent an accepted solver state.
+- Preserve the parked Important `//` source-path-key limitation and cost in the closure index's final-deferred section; do not normalize historical contract keys silently.

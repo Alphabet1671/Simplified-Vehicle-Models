@@ -31,6 +31,18 @@ Plan file/array digests are per-run integrity bindings, verified against each im
 
 Project thresholds remain: profile candidate time relative difference <=0.001 and candidate speed max <=0.02 m/s; geometry lap time relative <=0.005, common-reference speed max <=0.1 m/s, and offset max <=0.05 m. These are study criteria, not paper-derived tolerances.
 
+## Closure-v1 adjudication and unresolved gates
+
+The closure-v1 evidence is indexed in [`yaw-lap-suite-closure/index.md`](yaw-lap-suite-closure/index.md). Treat the following as frozen outcomes, not invitations to relabel an incomplete gate:
+
+- Spatial grid: **inconclusive**. MIS 2→1 m comparison is incompatible because cold/warm policy differs; MIS 0.5 m warm and cold both fail strict validation. FSC 0.5→0.25 m is strict-valid but refinement-unproven and outside the project thresholds (1.976319% time, 3.698577 m/s speed difference). The paired corrected comparison manifest is linked from the index.
+- Physical control-basis refinement: **not applicable/not run**, because no common validated grid was selected. Optimizer stopping is separate; historical bounded/iteration-stopped incumbents are not stationary solutions.
+- Task 9 optimized replay: exploratory laps and full solver validation completed, but comparison identity is **inconclusive** because historical plan source provenance is unknown. Sampled wheel-contact containment failed; whole body is unknown and no actual swept-provider certificate is attached.
+- Task 10 physical perturbation robustness: **inconclusive/not run**. Task 11 provider-based checker implementation does not constitute provider execution on those runs. Task 12 reproduces the measured discrepancy but controlled treatments all remain not-run/inconclusive.
+- The accepted `//`-prefixed root-source path key is a parked Important portability/identity limitation. Preserve literal path keys and expose the potential lookup/identity loss cost if a reconstruction normalizes spelling; do not rewrite historical manifests.
+
+For every future comparison, keep plan/map/track/source/controller identities, effective settings, process budget, strict validation output, failures, and budget stops in the artifact record. Use `unknown` for absent historical provenance. No claim here weakens strict map support, fills masks, changes tolerances, adds a speed cap, changes controller defaults, or certifies continuous feasibility.
+
 ## Required analysis outputs
 
 For each reported experiment, include the paper-derived check/evidence above, convergence/discretization error and wall time, executed settings, provenance status, and the limitations of sampled containment and historical records. Do not transfer another model's mesh, solver tolerances, steering limits, or claims.

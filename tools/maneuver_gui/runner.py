@@ -171,6 +171,7 @@ def run_definition(definition_path: Path, output_root: Path, *, attempt_director
     source_copy = None
     temp_summary = None
     final = None
+    canonical_record = None
     try:
         from simplified_vehicle_models.controls.maneuvers.schema import load_definition
         definition = load_definition(source)  # strict validation before child execution
@@ -321,6 +322,17 @@ except Exception as e:
         summary_doc = json.loads(summary_bytes)
         if summary_doc.get("execution_outcome") != "completed":
             raise ValueError("child result is not completed")
+        # Canonical handoff is produced from the checked evidence before result
+        # publication; raw result/run_record.npz remains immutable solver evidence.
+        from simplified_vehicle_models.results.maneuver_run_record import write_maneuver_run_record
+        manifest = load_manifest(stage)
+        canonical_record = (attempt / "run_record.npz").resolve()
+        write_maneuver_run_record(canonical_record, manifest["definition"], stage,
+                                  model_kind=manifest["model_kind"])
+        from simplified_vehicle_models.results.maneuver_run_record import load_maneuver_run_record
+        load_maneuver_run_record(canonical_record, stage)
+        summary_doc["run_record"] = str(canonical_record)
+        summary_bytes = (json.dumps(summary_doc, indent=2, sort_keys=True) + "\n").encode()
         temp_summary = attempt / f".summary.{uuid.uuid4().hex}.tmp"
         temp_summary.write_bytes(summary_bytes)
         source_copy.unlink(missing_ok=True)
@@ -333,6 +345,10 @@ except Exception as e:
         import shutil
         if final is not None:
             shutil.rmtree(final, ignore_errors=True)
+        if canonical_record is not None:
+            expected = (attempt / "run_record.npz").resolve()
+            if canonical_record == expected and canonical_record.is_file():
+                canonical_record.unlink()
         if stage is not None:
             shutil.rmtree(stage, ignore_errors=True)
             stage = None

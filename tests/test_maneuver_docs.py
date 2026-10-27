@@ -8,7 +8,6 @@ from simplified_vehicle_models.controls.maneuvers.csv_source import CsvMapping, 
 from simplified_vehicle_models.controls.maneuvers.types import ManeuverDefinition
 
 ROOT = Path(__file__).resolve().parents[1]
-GUIDE = ROOT / "docs/dev/maneuver-gui.md"
 EXAMPLE = ROOT / "docs/dev/examples/step-steer.maneuver.json"
 
 
@@ -28,20 +27,6 @@ class ManeuverDocumentationTests(unittest.TestCase):
         loaded = load_csv_source(source, mapping)
         self.assertGreaterEqual(len(loaded.commands), 2)
         self.assertEqual(loaded.mapping, mapping)
-
-    def test_guide_documents_native_study_and_animator_contract(self):
-        text = GUIDE.read_text()
-        for phrase in ("sim-study-v1", "cases/case_000/attempt_", "run_record.npz",
-                       "run-record-v1", "hash-validated", "simulation-only"):
-            self.assertIn(phrase, text)
-
-    def test_guide_covers_presets_and_hardware_boundary(self):
-        text = GUIDE.read_text().lower()
-        for preset in ("step_steer", "ramp_steer", "sine_steer", "straight_maintain",
-                       "straight_accel_brake", "circular_skidpad", "csv_playback"):
-            self.assertIn(preset, text)
-        for phrase in ("not vehicle authorization", "no can", "commissioning", "fake backend"):
-            self.assertIn(phrase, text)
 
 
 if __name__ == "__main__":

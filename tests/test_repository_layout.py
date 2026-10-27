@@ -7,8 +7,12 @@ from pathlib import Path
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
-#: Markdown files allowed at the repository root (navigation entry points).
-ROOT_MARKDOWN = frozenset({"README.md", "AGENTS.md"})
+#: Markdown files that are not a directory ``README.md``.
+OTHER_MARKDOWN = frozenset({
+    "AGENTS.md",
+    "docs/model-data/provenance.md",
+    "docs/validation/iem24-murphy/seven_dof_track_pair/tube_v2_protocol.md",
+})
 
 #: Agent workspaces and scratch directories that must never be tracked.
 IGNORED_AGENT_PATHS = (
@@ -43,28 +47,33 @@ def _tracked_files(*pathspec):
 
 
 class MarkdownPlacementTests(unittest.TestCase):
-    def test_tracked_markdown_is_under_docs_except_root_entry_points(self):
+    def test_tracked_markdown_is_a_directory_readme_or_allowed(self):
         offenders = [
             path
             for path in _tracked_files("*.md")
-            if path not in ROOT_MARKDOWN and not path.startswith("docs/")
+            if Path(path).name != "README.md" and path not in OTHER_MARKDOWN
         ]
-        self.assertEqual(offenders, [], "Markdown outside docs/: %s" % offenders)
+        self.assertEqual(offenders, [], "central documentation is not tracked: %s" % offenders)
 
     def test_root_entry_points_exist(self):
-        for name in sorted(ROOT_MARKDOWN):
+        for name in ("README.md", "AGENTS.md"):
             self.assertTrue((REPOSITORY_ROOT / name).is_file(), name)
 
-    def test_model_data_provenance_moved_to_docs(self):
+    def test_every_tracked_directory_with_files_has_a_readme(self):
+        tracked = [p for p in _tracked_files() if "/attempt_" not in p]
+        directories = {str(Path(p).parent) for p in tracked}
+        missing = sorted(d for d in directories if (d + "/README.md").lstrip("./") not in tracked
+                         and not (d == "." and "README.md" in tracked))
+        self.assertEqual(missing, [], "directories without README.md: %s" % missing)
+
+    def test_model_data_provenance_stays_with_the_data_docs(self):
         self.assertFalse((REPOSITORY_ROOT / "models/data/provenance.md").exists())
         self.assertIn("docs/model-data/provenance.md", _tracked_files("docs/model-data"))
 
-    def test_sdd_logs_are_tracked_under_docs_only(self):
+    def test_agent_working_docs_are_not_tracked(self):
         self.assertEqual(_tracked_files(".superpowers"), [])
-        self.assertTrue(
-            [p for p in _tracked_files("docs/superpowers/sdd") if p.endswith(".md")],
-            "expected tracked SDD Markdown under docs/superpowers/sdd/",
-        )
+        self.assertEqual(_tracked_files("docs/superpowers"), [])
+        self.assertEqual(_tracked_files("docs/standards"), [])
 
 
 class AgentIgnoreTests(unittest.TestCase):
@@ -74,13 +83,13 @@ class AgentIgnoreTests(unittest.TestCase):
                 result = _git("check-ignore", "-q", "--no-index", path, check=False)
                 self.assertEqual(result.returncode, 0, "%s is not ignored" % path)
 
-    def test_docs_sdd_is_not_ignored(self):
+    def test_docs_superpowers_is_ignored(self):
         result = _git(
             "check-ignore", "-q", "--no-index",
             "docs/superpowers/sdd/example/task-1-report.md",
             check=False,
         )
-        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.returncode, 0)
 
     def test_no_ignored_agent_paths_are_tracked(self):
         for prefix in (".superpowers", ".worktrees", ".claude", ".codex", ".cursor",

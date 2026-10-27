@@ -54,6 +54,27 @@ class ManeuverRunRecordTests(unittest.TestCase):
             self.assertEqual((frames.times[0], frames.times[-1]), (time[0], time[-1]))
             self.assertTrue(frames.has_channel("position-x")); self.assertTrue(frames.has_channel("speed"))
 
+    def test_planar_model_exports_cartesian_kinematics_without_fabricating_forces(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            definition = ManeuverDefinition.from_dict({
+                "schema":"maneuver-v1", "name":"planar", "preset":"step_steer", "backend":"simulation",
+                "vehicle":{"model":"models/formulations/iem24_murphy_real_planar_7dof.xml"},
+                "initial":{"speed_mps":10.,"x_m":0.,"y_m":0.,"heading_rad":0.},
+                "clock":{"controller_tick_s":.01}, "steering":{"mode":"peak_swa","amplitude_rad":.2},
+                "longitudinal":{"mode":"constant_accelerator","accelerator":.1},
+                "profile":{"duration_s":.5}, "limits":{}, "termination":{"duration_s":.5},
+                "calibration":None,"csv":None}).to_dict()
+            from simplified_vehicle_models.solvers.maneuver_planar import ManeuverPlanarPlant
+            state=np.zeros((2,len(ManeuverPlanarPlant.state_names))); state[:,0]=[3.,4.]; state[:,1]=[5.,6.]; state[:,2]=[.1,.2]; state[:,3]=[3.,4.]; state[:,4]=[4.,3.]
+            result=SimpleNamespace(time_s=np.array([0.,.1]),state=state,state_rate=np.zeros_like(state),
+                applied_commands=(RobotCommand(0.,0.,0.),)*2,channels=({},{}),execution_outcome="completed",termination_reason="duration")
+            artifact=Path(tmp)/"artifact"; artifact.mkdir(); write_artifacts(artifact,definition,result,{},model_kind="planar-7dof")
+            target=Path(tmp)/"run_record.npz"; write_maneuver_run_record(target,definition,artifact,model_kind="planar-7dof")
+            record=load_run_record(target,verify_sources=False)
+            self.assertEqual(record.manifest.state_names,tuple(ManeuverPlanarPlant.state_names))
+            self.assertNotIn("tire-vertical-force",record.manifest.channel_names)
+            frames=FrameSource(record,10); self.assertTrue(frames.has_channel("position-x")); self.assertAlmostEqual(frames.scalar_at("speed",0),5.)
+
     def test_rejects_channel_tamper_and_noncompleted(self):
         with tempfile.TemporaryDirectory() as tmp:
             artifact, definition, _, _ = self._artifact(Path(tmp))

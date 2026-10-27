@@ -154,29 +154,33 @@ def finish_maneuver_case(prepared: PreparedManeuverCase, attempt: Path, *, retur
         summary = {"execution_outcome": status, "input_fidelity": "not_evaluated",
                    "objective": "not_evaluated", "error": status}
     record = None
+    loaded = None
     error = None
     if not cancelled and not timed_out and return_code == 0:
         try:
-            artifact, summary = _native_result(attempt)
+            artifact, runner_summary = _native_result(attempt)
+            summary.update(runner_summary)
             if summary.get("execution_outcome") != "completed":
                 raise ValueError("maneuver evidence is not completed")
             from tools.maneuver_gui.artifacts import load_artifact_evidence
             manifest, _arrays, _channels = load_artifact_evidence(artifact)
-            if manifest.get("model_kind") != "14dof-simple":
-                raise ValueError("standard maneuver RunRecord requires completed 14dof-simple evidence")
-            from simplified_vehicle_models.results.maneuver_run_record import write_maneuver_run_record
-            record = attempt / "run_record.npz"
-            write_maneuver_run_record(record, manifest["definition"], artifact,
-                                      model_kind="14dof-simple")
+            if manifest.get("model_kind") not in {"14dof-simple", "planar-7dof"}:
+                raise ValueError("unsupported maneuver model kind")
+            from simplified_vehicle_models.results.maneuver_run_record import load_maneuver_run_record
+            record = (Path(attempt) / "run_record.npz").resolve()
+            loaded = load_maneuver_run_record(record, artifact)
             status = "completed"
         except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
             error = f"{type(exc).__name__}: {exc}"
+            record = None
+            loaded = None
     parent_status = {"completed": "Child_Completed", "cancelled": "Cancelled",
                      "timed_out": "Timed_Out"}.get(status, "Child_Rejected")
     parent = {"status": parent_status, "return_code": return_code, "total_wall_seconds": wall_seconds,
               "within_wall_limit": not timed_out, "timeout_seconds": prepared.timeout_seconds,
               "requested_wall_seconds": prepared.timeout_seconds, "elapsed_wall_seconds": wall_seconds,
-              "model": "14dof-simple", "command": list(command), "attempt": str(attempt)}
+              "model": (record and loaded.manifest.model.get("kind")) or "unknown",
+              "command": list(command), "attempt": str(attempt)}
     _atomic(attempt / "parent.json", parent)
     # Every terminal queue path leaves the standard attempt-root summary, even
     # when a kill happened before the runner could publish immutable evidence.
@@ -186,7 +190,7 @@ def finish_maneuver_case(prepared: PreparedManeuverCase, attempt: Path, *, retur
         if error is not None:
             summary["error"] = error
     _atomic(attempt / "summary.json", summary)
-    study_root = prepared.directory.parent.parent
-    return {"status": status, "attempt": attempt.relative_to(study_root).as_posix(),
+    study_root = prepared.directory.parent.parent.resolve()
+    return {"status": status, "attempt": Path(attempt).resolve().relative_to(study_root).as_posix(),
             "run_record": record.relative_to(study_root).as_posix() if record else None,
             "summary": summary}

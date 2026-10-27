@@ -5,3 +5,12 @@ scipy>=1.11
 
 [gui]
 PyQt6>=6.5
+
+[no-tv]
+scipy>=1.11
+casadi<4,>=3.6
+
+[tire-gui]
+PyQt6>=6.5
+scipy>=1.11
+matplotlib>=3.8

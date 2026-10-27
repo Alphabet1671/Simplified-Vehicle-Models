@@ -4,7 +4,7 @@ The capture is a single ZIP/NPZ container holding the state, the solver's own
 state derivative, the realized control, and the algebraic outputs ("channels")
 at every accepted integrator step, plus a ``manifest.json`` that names every
 column and pins the sources. See
-``docs/superpowers/specs/2026-10-16-run-result-file.md``.
+the run-result-file spec (``2026-10-16-run-result-file.md``, agent doc, no longer tracked).
 
 This module is NumPy-only and never recomputes physics: a consumer resamples the
 recorded values, it does not re-evaluate a plant.

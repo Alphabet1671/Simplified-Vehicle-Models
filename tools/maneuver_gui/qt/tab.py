@@ -19,7 +19,6 @@ class ManeuverTab(QWidget):
     runRequested = pyqtSignal(object)
     stopRequested = pyqtSignal()
     calibrationRequested = pyqtSignal(object)
-    animationRequested = pyqtSignal(object, object)
 
     def __init__(self, config=None, parent=None):
         super().__init__(parent)
@@ -47,8 +46,6 @@ class ManeuverTab(QWidget):
         self.log_view = QPlainTextEdit(self)
         self.log_view.setReadOnly(True)
         self.log_view.setMaximumBlockCount(MAXIMUM_LOG_LINES)
-        self.animation_button = QPushButton("Export animation…", self)
-        self.animation_button.setEnabled(False)
         self.calibration_button = QPushButton("Calibration", self)
         self.hardware_arm_button = QPushButton("Arm hardware", self)
         self.hardware_arm_button.setEnabled(False)
@@ -64,7 +61,6 @@ class ManeuverTab(QWidget):
         run_row.addWidget(self.run_button)
         run_row.addWidget(self.stop_button)
         run_row.addWidget(self.progress_bar, 1)
-        run_row.addWidget(self.animation_button)
 
         self.layout = QVBoxLayout(self)
         self.layout.addWidget(self.backend_label)
@@ -81,7 +77,6 @@ class ManeuverTab(QWidget):
         self.stop_button.clicked.connect(self.stopRequested.emit)
         self.calibration_button.clicked.connect(self._calibrate)
         self.export_browse.clicked.connect(self._browse_export)
-        self.animation_button.clicked.connect(self._browse_animation)
         if config is not None:
             self.set_vehicle_configuration(config)
         self.set_busy(False)
@@ -118,16 +113,20 @@ class ManeuverTab(QWidget):
         self.result_label.clear()
         self.log_view.clear()
         self.preview.set_trace([], [], [])
-        self.animation_button.setEnabled(False)
+        self._completed_artifact = None
+        self._has_completed_artifact = False
 
     def set_completed_result(self, summary: dict, artifact: Path, time_s, requested, applied):
         self.preview.set_trace(list(time_s), list(requested), list(applied))
         self._has_completed_artifact = True
         self._completed_artifact = Path(artifact)
         reason = summary.get("termination_reason", "completed") if isinstance(summary, dict) else "completed"
-        self.result_label.setText(f"Termination: {reason}\nArtifact: {Path(artifact)}")
+        record = summary.get("run_record") if isinstance(summary, dict) else None
+        record_path = Path(record) if record else Path(artifact).parent / "run_record.npz"
+        self.result_label.setText(
+            f"Termination: {reason}\nSimulation result: {record_path}\n"
+            "Open this run_record.npz in the animator GUI for visualization or video export.")
         self.status_label.setText("Completed")
-        self.animation_button.setEnabled(not self._busy)
 
     def set_preflight_context(self, calibration=None, csv_snapshot=None):
         """Set calibration metadata and loaded-CSV snapshot used before runs."""
@@ -156,7 +155,6 @@ class ManeuverTab(QWidget):
         self.run_button.setEnabled(not self._busy and self._refresh_validity()[0] is not None)
         self.export_edit.setEnabled(not self._busy)
         self.export_browse.setEnabled(not self._busy)
-        self.animation_button.setEnabled(not self._busy and getattr(self, "_has_completed_artifact", False))
         self.calibration_button.setEnabled(not self._busy)
         self.stop_button.setEnabled(self._busy)
         if self.editor:
@@ -197,13 +195,6 @@ class ManeuverTab(QWidget):
         folder = QFileDialog.getExistingDirectory(self, "Select export folder", str(self.export_folder()))
         if folder:
             self.set_export_folder(Path(folder))
-
-    def _browse_animation(self):
-        if self._busy or not self._has_completed_artifact:
-            return
-        output, _ = QFileDialog.getSaveFileName(self, "Export animation", "", "MP4 (*.mp4)")
-        if output:
-            self.animationRequested.emit(self._completed_artifact, Path(output))
 
     def _calibrate(self):
         if self.editor:

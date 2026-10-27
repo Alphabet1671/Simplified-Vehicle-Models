@@ -1,4 +1,4 @@
-"""Qt lifecycle wrapper for simulation-only maneuver runs and animations."""
+"""Qt lifecycle wrapper for simulation-only maneuver result generation."""
 from __future__ import annotations
 
 import csv
@@ -18,30 +18,25 @@ class ManeuverController(QObject):
     busyChanged = pyqtSignal(bool)
     finished = pyqtSignal(object)
     progress = pyqtSignal(object)
-    animationFinished = pyqtSignal(object)
 
     def __init__(self, tab, *, output_root: Path, parent=None) -> None:
         super().__init__(parent)
         self.tab = tab
         self.output_root = Path(output_root)
         self._job = ProcessJob(self)
-        self._animation_job = ProcessJob(self)
         self._definition_file: Path | None = None
         self._run_root: Path | None = None
         self._log_file: Path | None = None
         self._completed_artifact: Path | None = None
         self._job.line.connect(self._line)
         self._job.finished.connect(self._finished)
-        self._animation_job.line.connect(self._animation_line)
-        self._animation_job.finished.connect(self._animation_finished)
-        self.tab.animationRequested.connect(self.export_animation)
 
     def is_running(self) -> bool:
-        return self._job.running() or self._animation_job.running()
+        return self._job.running()
 
     def start(self, definition) -> None:
         if self.is_running():
-            raise RuntimeError("a maneuver or animation is already running")
+            raise RuntimeError("a maneuver is already running")
         payload = definition.to_dict() if hasattr(definition, "to_dict") else dict(definition)
         self._run_root = Path(self.tab.export_folder() if hasattr(self.tab, "export_folder") else self.output_root)
         self._run_root.mkdir(parents=True, exist_ok=True)
@@ -57,12 +52,7 @@ class ManeuverController(QObject):
                          "--output-root", str(self._run_root)])
 
     def cancel(self) -> None:
-        # Retain the common process wrapper's idempotent simulation cancel
-        # contract; it is also the path exercised by the main-window Stop action.
-        if self._animation_job.running():
-            self._animation_job.cancel()
-        else:
-            self._job.cancel()
+        self._job.cancel()
 
     def _append_log(self, line: str) -> None:
         self.tab.append_log(line)
@@ -104,6 +94,8 @@ class ManeuverController(QObject):
         manifest, arrays, _channels = load_artifact_evidence(artifact)
         if manifest.get("execution_outcome") != "completed":
             raise ValueError("artifact is not completed")
+        from simplified_vehicle_models.results.maneuver_run_record import load_maneuver_run_record
+        load_maneuver_run_record(attempts[0] / "run_record.npz", artifact)
         commands = self._commands(artifact / "commands.csv")
         if len(commands) != len(arrays["time_s"]):
             raise ValueError("accepted command count does not match evidence time")
@@ -133,26 +125,14 @@ class ManeuverController(QObject):
                 summary = self._failure_summary(code, state)
                 self.tab.set_result(summary)
             else:
-                try:
-                    attempt, artifact, manifest, arrays, commands = self._completed_result()
-                except ValueError as error:
-                    # A mocked ProcessJob success has no child artifact.  Preserve the
-                    # historical terminal signal for the Qt lifecycle test, while real
-                    # runs remain artifact-gated before preview/export is enabled.
-                    if "expected exactly one completed maneuver attempt" not in str(error):
-                        raise
-                    summary = {"status": "Completed", "execution_outcome": "completed", "exit_code": code,
-                               "process_state": state}
-                    self.tab.set_result(summary)
-                else:
-                    self._completed_artifact = artifact
-                    summary = {"status": "Completed", "execution_outcome": "completed", "exit_code": code,
-                               "process_state": state, "attempt": str(attempt), "artifact": str(artifact),
-                               "termination_reason": manifest.get("termination_reason", "duration")}
-                    # Maneuver artifacts preserve the accepted/applied command series. It is
-                    # deliberately used for both preview traces until requested commands are
-                    # added as a separately hash-covered artifact payload.
-                    self.tab.set_completed_result(summary, artifact, arrays["time_s"], commands, commands)
+                attempt, artifact, manifest, arrays, commands = self._completed_result()
+                self._completed_artifact = artifact
+                summary = {"status": "Completed", "execution_outcome": "completed", "exit_code": code,
+                           "process_state": state, "attempt": str(attempt), "artifact": str(artifact),
+                           "termination_reason": manifest.get("termination_reason", "duration"),
+                           "run_record": str(attempt / "run_record.npz")}
+                # Only accepted/applied commands are stored as checked evidence.
+                self.tab.set_completed_result(summary, artifact, arrays["time_s"], commands, commands)
         except (OSError, ValueError, KeyError) as error:
             summary = {"status": "Failed", "execution_outcome": "failed", "exit_code": code,
                        "process_state": state, "error": str(error)}
@@ -160,30 +140,3 @@ class ManeuverController(QObject):
         self.tab.set_busy(False)
         self.busyChanged.emit(False)
         self.finished.emit(summary)
-
-    def export_animation(self, artifact, output) -> None:
-        if self.is_running():
-            raise RuntimeError("a maneuver or animation is already running")
-        artifact, output = Path(artifact), Path(output)
-        # Standard study attempts place immutable maneuver evidence in result/;
-        # standalone GUI completions pass that directory directly.
-        if (artifact / "result").is_dir():
-            artifact = artifact / "result"
-        self.tab.set_busy(True)
-        self.tab.status_label.setText("Exporting animation")
-        self.busyChanged.emit(True)
-        self._animation_job.start(["-m", "tools.maneuver_gui.export_animation", "--artifact", str(artifact),
-                                   "--output", str(output), "--frame-rate", "30"])
-
-    def _animation_line(self, line: str) -> None:
-        self._append_log(line)
-
-    def _animation_finished(self, code: int, state: str) -> None:
-        completed = code == 0 and state == "done"
-        result = {"status": "Animation completed" if completed else "Animation failed",
-                  "execution_outcome": "completed" if completed else "failed", "exit_code": code,
-                  "process_state": state}
-        self.tab.status_label.setText(result["status"])
-        self.tab.set_busy(False)
-        self.busyChanged.emit(False)
-        self.animationFinished.emit(result)

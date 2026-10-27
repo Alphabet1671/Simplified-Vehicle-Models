@@ -35,9 +35,11 @@ class ManeuverQtTests(unittest.TestCase):
             artifact = folder / 'attempt' / 'result'
             tab.set_completed_result({'termination_reason': 'duration'}, artifact, [0.0], requested, applied)
             self.assertEqual(tab.preview.requested_commands, requested)
-            self.assertTrue(tab.animation_button.isEnabled())
+            self.assertFalse(hasattr(tab, 'animation_button'))
+            self.assertFalse(hasattr(tab, 'animationRequested'))
+            self.assertIn('animator GUI', tab.result_label.text())
             self.assertIn('duration', tab.result_label.text())
-            self.assertIn(str(artifact), tab.result_label.text())
+            self.assertIn(str(artifact.parent / 'run_record.npz'), tab.result_label.text())
 
     def test_shared_model_display_and_busy_controls(self):
         tab = ManeuverTab(payload())
@@ -47,7 +49,7 @@ class ManeuverQtTests(unittest.TestCase):
         self.assertFalse(tab.run_button.isEnabled())
         self.assertFalse(tab.export_edit.isEnabled())
         self.assertFalse(tab.export_browse.isEnabled())
-        self.assertFalse(tab.animation_button.isEnabled())
+        self.assertFalse(hasattr(tab, 'animation_button'))
         self.assertTrue(tab.stop_button.isEnabled())
         tab.set_busy(False)
 

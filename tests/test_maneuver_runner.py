@@ -18,7 +18,7 @@ def definition():
         'clock':{'controller_tick_s':.01},'steering':{'mode':'peak_swa','amplitude_rad':0.1},
         'longitudinal':{'mode':'constant_accelerator','accelerator':0.1},
         'profile':{'duration_s':.02},'limits':{},'termination':{'duration_s':.02},
-        'calibration':None,'csv':None})
+        'calibration':{'maximum_swa_rad':8.,'maximum_swa_rate_rad_s':2.,'rack_travel_per_revolution_m':.04,'steer_arm_length_m':.10,'maximum_road_wheel_angle_rad':.6,'ackermann_inner_angle_rad':[0.,.6],'ackermann_outer_offset_rad':[0.,.1],'accelerator_travel':[0.,1.],'accelerator_force_n':[0.,10.5],'brake_travel':[0.,1.],'brake_force_n':[0.,500.]},'csv':None})
 
 
 class ArtifactTests(unittest.TestCase):
@@ -87,14 +87,21 @@ class ArtifactTests(unittest.TestCase):
             def fake_child(command, **kwargs):
                 stage=Path(command[-1]); observed['stage']=stage
                 d=validate_definition(json.loads(Path(command[-2]).read_text()))
-                result=SimpleNamespace(time_s=np.array([0.,.01]),state=np.zeros((2,2)),state_rate=np.ones((2,2)),
-                    events=(),applied_commands=(),execution_outcome='completed',termination_reason='duration')
-                write_artifacts(stage,d,result,{'execution_outcome':'completed'})
+                from simplified_vehicle_models.solvers.maneuver_planar import ManeuverPlanarPlant
+                n=len(ManeuverPlanarPlant.state_names)
+                result=SimpleNamespace(time_s=np.array([0.,.01]),state=np.zeros((2,n)),state_rate=np.ones((2,n)),
+                    events=(),applied_commands=(SimpleNamespace(swa_rad=0.,accelerator=0.,brake=0.),)*2,
+                    channels=({},{}),execution_outcome='completed',termination_reason='duration')
+                write_artifacts(stage,d,result,{'execution_outcome':'completed'},model_kind='planar-7dof')
                 return 0
             with patch('tools.maneuver_gui.runner.run_child', side_effect=fake_child):
                 attempt=run_definition(source, root/'out')
             self.assertTrue((attempt/'result'/'manifest.json').is_file(), (attempt, list(attempt.iterdir()), (attempt/'summary.json').read_text()))
-            self.assertEqual(json.loads((attempt/'summary.json').read_text())['execution_outcome'],'completed')
+            summary=json.loads((attempt/'summary.json').read_text())
+            self.assertEqual(summary['execution_outcome'],'completed')
+            self.assertEqual(Path(summary['run_record']), (attempt/'run_record.npz').resolve())
+            from simplified_vehicle_models.results.run_record import load_run_record
+            self.assertEqual(load_run_record(attempt/'run_record.npz', verify_sources=False).manifest.schema, 'run-record-v1')
             self.assertFalse(observed['stage'].exists())
 
     def test_post_publish_exception_removes_result_and_keeps_failure_summary(self):
@@ -109,9 +116,12 @@ class ArtifactTests(unittest.TestCase):
             def fake_child(command, **kwargs):
                 stage=Path(command[-1]); observed['stage']=stage
                 d=validate_definition(json.loads(Path(command[-2]).read_text()))
-                result=SimpleNamespace(time_s=np.array([0.,.01]),state=np.zeros((2,2)),state_rate=np.ones((2,2)),
-                    events=(),applied_commands=(),execution_outcome='completed',termination_reason='duration')
-                write_artifacts(stage,d,result,{'execution_outcome':'completed'})
+                from simplified_vehicle_models.solvers.maneuver_planar import ManeuverPlanarPlant
+                n=len(ManeuverPlanarPlant.state_names)
+                result=SimpleNamespace(time_s=np.array([0.,.01]),state=np.zeros((2,n)),state_rate=np.ones((2,n)),
+                    events=(),applied_commands=(SimpleNamespace(swa_rad=0.,accelerator=0.,brake=0.),)*2,
+                    channels=({},{}),execution_outcome='completed',termination_reason='duration')
+                write_artifacts(stage,d,result,{'execution_outcome':'completed'},model_kind='planar-7dof')
                 return 0
             real_replace=os.replace
             failed_once={'value':False}

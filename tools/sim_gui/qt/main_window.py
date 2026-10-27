@@ -106,7 +106,6 @@ class MainWindow(QMainWindow):
         self.maneuver_controller.busyChanged.connect(self._maneuver_busy_changed)
         self.maneuver_controller.progress.connect(self._maneuver_progress)
         self.maneuver_controller.finished.connect(self._maneuver_finished)
-        self.maneuver_controller.animationFinished.connect(self._maneuver_animation_finished)
         self.maneuver_tab.log_view.textChanged.connect(self._mirror_maneuver_log)
         self.track_tab.trackChanged.connect(self._track_changed)
         stored = self.settings_store.value("single_run_output")
@@ -162,14 +161,12 @@ class MainWindow(QMainWindow):
         self.stop_action.setEnabled(False)
 
     def _refresh_actions(self) -> None:
-        """Enable actions only when source and selected workflow are compatible."""
-        enabled = self.configuration is not None and self.configuration.runnable and self._run_mode is None
-        if enabled:
-            from tools.sim_gui.settings import solution_model_for
-            try:
-                solution_model_for(self.settings_tab._settings, self.configuration.model)
-            except ValueError:
-                enabled = False
+        """Enable the run actions only for a runnable, idle configuration."""
+        enabled = (
+            self.configuration is not None
+            and self.configuration.runnable
+            and self._run_mode is None
+        )
         self.go_action.setEnabled(enabled)
         self.run_study_action.setEnabled(enabled)
         self.stop_action.setEnabled(self._run_mode is not None)
@@ -298,14 +295,9 @@ class MainWindow(QMainWindow):
         status = summary.get("status", "Finished") if isinstance(summary, dict) else "Finished"
         self.status.showMessage(f"Maneuver {status.lower()}")
 
-    def _maneuver_animation_finished(self, summary: dict) -> None:
-        status = summary.get("status", "Animation finished") if isinstance(summary, dict) else "Animation finished"
-        self.status.showMessage(f"Maneuver {status.lower()}")
-
     def _settings_changed(self, settings) -> None:
         if self.study_tab is not None:
             self.study_tab.settings = settings
-        self._refresh_actions()
 
     def open_output_folder(self) -> None:
         folder = self.study_index.directory if self.study_index is not None else self.output_root
@@ -377,19 +369,9 @@ class MainWindow(QMainWindow):
         """Prepare and validate the current study cases."""
         if self._run_mode is not None or self._validation_thread is not None:
             return
-        try:
-            definition = self._definition()
-        except ValueError as error:
-            _warn(self, "Study", str(error))
-            return
+        definition = self._definition()
         if not definition.track:
             _warn(self, "Study", "Select a track model.")
-            return
-        try:
-            from tools.sim_gui.settings import validate
-            validate(definition.settings, definition.model, Path(definition.track))
-        except ValueError as error:
-            _warn(self, "Study", str(error))
             return
         try:
             cases = expand(definition)
@@ -574,20 +556,13 @@ class MainWindow(QMainWindow):
             _warn(self, "Single run", f"cannot create {export_folder}: {error}")
             return
         self.settings_store.setValue("single_run_output", str(export_folder))
-        settings = self.settings_tab._settings
-        try:
-            from tools.sim_gui.settings import validate
-            validate(settings, self.configuration.model, track)
-        except ValueError as error:
-            _warn(self, "Single run", str(error))
-            return
         definition = StudyDefinition(
             "single-run",
             str(self.configuration.source),
             track.as_posix(),
             self.configuration.model,
             {key: str(value) for key, value in self.configuration.choices.items()},
-            settings,
+            self.settings_tab.settings(),
             "one-at-a-time",
             (),
         )
@@ -755,9 +730,10 @@ class MainWindow(QMainWindow):
                         f"Status: {case.get('status', 'failed')}\nAttempt: {self.study_index.directory / attempt}\n"
                         f"RunRecord: {case.get('run_record') or 'not generated'}")
                 if case.get("status") == "completed" and case.get("run_record"):
-                    self.maneuver_tab.animation_button.setEnabled(True)
-                    self.maneuver_tab._completed_artifact = self.study_index.directory / attempt
-                    self.maneuver_tab._has_completed_artifact = True
+                    record = self.study_index.directory / case["run_record"]
+                    self.maneuver_tab.result_label.setText(
+                        f"Status: completed\nSimulation result: {record}\n"
+                        "Open this run_record.npz in the animator GUI for visualization or video export.")
             self.queue_table.set_cases(self.study_index.cases)
             self._refresh_status()
             return

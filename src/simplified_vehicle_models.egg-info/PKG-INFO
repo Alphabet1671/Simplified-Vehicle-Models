@@ -7,6 +7,13 @@ License-File: LICENSE
 Requires-Dist: numpy>=2.0
 Provides-Extra: forward
 Requires-Dist: scipy>=1.11; extra == "forward"
+Provides-Extra: no-tv
+Requires-Dist: scipy>=1.11; extra == "no-tv"
+Requires-Dist: casadi<4,>=3.6; extra == "no-tv"
 Provides-Extra: gui
 Requires-Dist: PyQt6>=6.5; extra == "gui"
+Provides-Extra: tire-gui
+Requires-Dist: PyQt6>=6.5; extra == "tire-gui"
+Requires-Dist: scipy>=1.11; extra == "tire-gui"
+Requires-Dist: matplotlib>=3.8; extra == "tire-gui"
 Dynamic: license-file

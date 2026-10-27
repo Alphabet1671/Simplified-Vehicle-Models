@@ -45,7 +45,9 @@ class ManeuverControllerTests(unittest.TestCase):
             self.assertTrue(definition_path.exists())
             controller._finished(0, "done")
             self.assertFalse(tab.stop_button.isEnabled())
-            self.assertEqual(emitted[-1]["execution_outcome"], "completed")
+            self.assertEqual(emitted[-1]["execution_outcome"], "failed")
+            self.assertIn('expected exactly one completed maneuver attempt', emitted[-1]['error'])
+            self.assertNotIn('run_record', emitted[-1])
             self.assertFalse(definition_path.exists())
             controller._finished(9, "cancelled")
             self.assertEqual(emitted[-1]["execution_outcome"], "cancelled")
@@ -65,6 +67,9 @@ class ManeuverControllerTests(unittest.TestCase):
                 applied_commands=(RobotCommand(.1, .2, 0.), RobotCommand(.1, .2, 0.)),
                 channels=({}, {}), execution_outcome='completed', termination_reason='duration')
             write_artifacts(artifact, definition, result, {}, model_kind='planar-7dof')
+            from simplified_vehicle_models.results.maneuver_run_record import write_maneuver_run_record
+            write_maneuver_run_record(attempt / 'run_record.npz', definition, artifact,
+                                      model_kind='planar-7dof')
             controller._line(json.dumps({'event': 'progress', 'fraction': .5, 'time_s': .1, 'phase': 'hold'}))
             self.assertEqual(tab.progress_bar.value(), 50)
             self.assertIn('hold', tab.log_view.toPlainText())
@@ -72,7 +77,10 @@ class ManeuverControllerTests(unittest.TestCase):
             controller._finished(0, 'done')
             self.assertEqual(received[-1]['execution_outcome'], 'completed')
             self.assertEqual(received[-1]['artifact'], str(artifact))
-            self.assertTrue(tab.animation_button.isEnabled())
+            self.assertFalse(hasattr(tab, 'animation_button'))
+            self.assertFalse(hasattr(controller, '_animation_job'))
+            self.assertFalse(hasattr(controller, 'export_animation'))
+            self.assertEqual(received[-1]['run_record'], str(attempt / 'run_record.npz'))
             self.assertEqual(len(tab.preview.requested_commands), 2)
 
     def test_cancel_delegates_to_common_process_job(self):

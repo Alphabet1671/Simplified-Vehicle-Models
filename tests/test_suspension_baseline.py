@@ -1,6 +1,6 @@
 """Regression gate: the IEM24 14DoF suspension numbers must not move in a refactor.
 
-The suspension-layout work (docs/superpowers/plans/2026-10-17-suspension-layouts.md)
+The suspension-layout work (agent plan 2026-10-17-suspension-layouts, no longer tracked)
 reshapes how the vertical model reaches its suspension. The independent-corner
 layout must reproduce the numbers recorded here. The fixture
 ``tests/fixtures/suspension_baseline.json`` was recorded from the code before the

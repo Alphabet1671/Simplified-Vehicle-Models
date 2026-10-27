@@ -2,7 +2,8 @@ __pycache__/
 *.py[cod]
 .venv/
 
-# Agent workspaces and scratch (tracked SDD logs live in docs/superpowers/sdd/)
+# Agent workspaces and scratch. Agent plans, specs, task reports and SDD logs are
+# not tracked; archive them under .superpowers/archive/.
 .superpowers/
 .worktrees/
 .claude/
@@ -14,16 +15,18 @@ __pycache__/
 .agents/
 .omx/
 .serena/
+docs/superpowers/
 
 # Tool caches
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
 .ipynb_checkpoints/
+*.egg-info/
 .DS_Store
 
 # Licensed TTC measurements and local correlation artifacts; never commit.
-/private/ttc/
+/private/
 /tire_fits_out/
 
 # Private real-car source files; never commit this directory.
@@ -49,8 +52,6 @@ docs/validation/**/attempt_*/*_channels.csv
 # tools/anim/export_animation.py (see docs/dev/animation-export.md). Keep them in videos/.
 /videos/
 /runs/
-# Local archive of retired implementation sources; never stage these copies.
-/local-backups/
 # Default output folder of tools/track_gui.
 /tracks_out/
 # Default output folder of tools/vehicle_gui.

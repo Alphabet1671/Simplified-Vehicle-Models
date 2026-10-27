@@ -15,5 +15,9 @@ no-tv = ["scipy>=1.11", "casadi>=3.6,<4"]
 gui = ["PyQt6>=6.5"]
 tire-gui = ["PyQt6>=6.5", "scipy>=1.11", "matplotlib>=3.8"]
 
+[project.scripts]
+tire-gui = "simplified_vehicle_models.gui_launchers:tire_main"
+maneuver-gui = "simplified_vehicle_models.gui_launchers:maneuver_main"
+
 [tool.setuptools.packages.find]
 where = ["src"]

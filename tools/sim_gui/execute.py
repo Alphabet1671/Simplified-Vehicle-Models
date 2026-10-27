@@ -78,6 +78,8 @@ def prepare_case(study_dir: Path, definition: StudyDefinition, case: CaseSpec) -
         argv = []  # Point-mass options are loaded from immutable case.json.
 
     track_path = track.resolve()
+    replay_plan = (Path(settings.plan).expanduser().resolve()
+                   if settings.solver_kind == "yaw-aware" and settings.mode == "replay" else None)
     payload = {
         "id": case.id, "label": case.label, "model": case.model, "track": str(track_path),
         "settings": settings.to_json(), "solver_kind": settings.solver_kind,
@@ -94,7 +96,9 @@ def prepare_case(study_dir: Path, definition: StudyDefinition, case: CaseSpec) -
                            "formulation": str(files.formulation.resolve()),
                            "formulation_sha256": hashlib.sha256(files.formulation.read_bytes()).hexdigest(),
                            "yaw_map": settings.yaw_map or None,
-                           "yaw_map_sha256": hashlib.sha256(Path(settings.yaw_map).read_bytes()).hexdigest() if settings.solver_kind == "yaw-aware" else None},
+                           "yaw_map_sha256": hashlib.sha256(Path(settings.yaw_map).read_bytes()).hexdigest() if settings.solver_kind == "yaw-aware" else None,
+                            "replay_plan": str(replay_plan) if replay_plan else None,
+                            "replay_plan_sha256": hashlib.sha256(replay_plan.read_bytes()).hexdigest() if replay_plan else None},
     }
     _atomic_json(directory / "case.json", payload)
     timeout = (settings.point_mass_duration if settings.solver_kind == "point-mass"

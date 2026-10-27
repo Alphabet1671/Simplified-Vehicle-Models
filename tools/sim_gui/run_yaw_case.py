@@ -68,6 +68,10 @@ def _yaw(case: dict, attempt: Path, settings: RunSettings, case_dir: Path) -> in
     if plan is not None and not plan.is_file():
         raise ValueError(f"replay plan does not exist: {plan}")
     if plan is not None:
+        expected_plan = case.get("input_identity", {}).get("replay_plan")
+        expected_digest = case.get("input_identity", {}).get("replay_plan_sha256")
+        if str(plan) != expected_plan or hashlib.sha256(plan.read_bytes()).hexdigest() != expected_digest:
+            raise ValueError("replay plan differs from immutable case identity")
         if "--plan" not in argv:
             raise ValueError("replay case argv is missing --plan")
         argv[argv.index("--plan") + 1] = str(plan)

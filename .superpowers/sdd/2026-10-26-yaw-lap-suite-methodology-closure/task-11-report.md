@@ -30,3 +30,9 @@ Added a provider-backed analytic straight-corridor enclosure test and a construc
 ## Remaining limitation
 
 The provider contract is intentionally narrow: mathematical soundness of a concrete provider implementation remains its implementer's responsibility. No provider for arbitrary real-track geometry or arbitrary trajectories is included; without a sound provider, swept containment remains `unknown`. No generalized footprint-containment certification is claimed.
+
+## Re-review correction (2026-10-26)
+
+Swept certification now requires at least one sampled interval; a one-sample trajectory remains `unknown`, records zero certified intervals, and cannot pass despite a positive provider implementation. Explicit front extent, rear extent, and half-width are also mandatory for whole-body certification: a positive interval-provider bound cannot override missing dimensions or the sampled whole-body `unknown` result. Provider identity and both model-identity strings remain reported. Results explicitly label these model identities as provider assertions and state that corridor/model compatibility has not been independently verified by the checker; a string alone is not compatibility evidence.
+
+Added regressions for a one-sample positive provider, missing body dimensions with a positive provider, and the legitimate two-sample positive-provider path (including its provider/model provenance). Focused command `PYTHONPATH=src python3 -c "import subprocess,sys; p=subprocess.run([sys.executable,'-m','unittest','tests.test_yaw_corridor_validation','-q'],timeout=175); raise SystemExit(p.returncode)"` — 14 tests passed under the 175-second process watchdog.

@@ -154,12 +154,21 @@ def check_swept_footprint(time, x, y, heading, station_hint, corridor, reference
               'interval_lower_bounds_m':[]}
     result['empirical_dense_sampling']={'samples':int(len(t)),'minimum_clearance_m':result.get('minimum_clearance_m'),
                                          'certified':False}
+    rigorous['provider_identity_kind'] = 'implementation_name'
+    rigorous['model_identities_are_provider_assertions'] = True
+    rigorous['verified_corridor_or_model_compatibility'] = False
     result['rigorous_interval_bounds']=rigorous
     result['between_step_containment_certified']=False
     result['swept_model_identity']={'vehicle':result.get('model_identity'),
         'geometry':rigorous['geometry_model_identity'],'motion':rigorous['vehicle_motion_model_identity']}
     if not valid:
         result.update(status='unknown',certification_limitation='sound interval geometry and vehicle-motion provider unavailable')
+        return result
+    if len(t) < 2:
+        result.update(status='unknown', certification_limitation='at least one time interval is required for swept certification')
+        return result
+    if any(kwargs.get(key) is None for key in ('front_extent', 'rear_extent', 'half_width')):
+        result.update(status='unknown', certification_limitation='explicit whole-body dimensions are required for swept certification')
         return result
     if not isinstance(subdivision_budget,(int,np.integer)) or subdivision_budget<0:
         raise ValueError('subdivision_budget must be a nonnegative integer')

@@ -64,6 +64,30 @@ class FootprintTests(unittest.TestCase):
         self.assertFalse(result['rigorous_interval_bounds']['certified'])
         self.assertEqual(result['status'], 'unknown')
 
+    def test_one_sample_provider_cannot_certify_without_interval(self):
+        class PositiveProvider(IntervalClearanceBoundProvider):
+            geometry_model_identity='linear-corridor-v1'
+            vehicle_motion_model_identity='constant-pose-v1'
+            def lower_bound(self, **interval): return 2.0
+        result=check_swept_footprint([1.],[20.],[0.],[0.],[20.],self.corridor,self.ref,
+            front_extent=1.,rear_extent=1.,half_width=.5,interval_bound_provider=PositiveProvider())
+        self.assertEqual(result['status'],'unknown')
+        self.assertFalse(result['rigorous_interval_bounds']['certified'])
+        self.assertEqual(result['rigorous_interval_bounds']['certified_intervals'],0)
+        self.assertFalse(result['between_step_containment_certified'])
+
+    def test_provider_cannot_override_missing_body_dimensions(self):
+        class PositiveProvider(IntervalClearanceBoundProvider):
+            geometry_model_identity='linear-corridor-v1'
+            vehicle_motion_model_identity='constant-pose-v1'
+            def lower_bound(self, **interval): return 2.0
+        result=check_swept_footprint([1.,2.],[20.,21.],[0.,0.],[0.,0.],[20.,21.],
+            self.corridor,self.ref,interval_bound_provider=PositiveProvider())
+        self.assertEqual(result['status'],'unknown')
+        self.assertEqual(result['body_envelope']['status'],'unknown')
+        self.assertFalse(result['rigorous_interval_bounds']['certified'])
+        self.assertFalse(result['between_step_containment_certified'])
+
     def test_provider_certifies_analytic_straight_corridor(self):
         class StraightProvider(IntervalClearanceBoundProvider):
             geometry_model_identity='linear-corridor-v1'
@@ -76,6 +100,12 @@ class FootprintTests(unittest.TestCase):
         self.assertTrue(result['rigorous_interval_bounds']['certified'])
         self.assertTrue(result['between_step_containment_certified'])
         self.assertFalse(result['empirical_dense_sampling']['certified'])
+        rigorous=result['rigorous_interval_bounds']
+        self.assertTrue(rigorous['provider_identity'])
+        self.assertTrue(rigorous['geometry_model_identity'])
+        self.assertTrue(rigorous['vehicle_motion_model_identity'])
+        self.assertTrue(rigorous['model_identities_are_provider_assertions'])
+        self.assertFalse(rigorous['verified_corridor_or_model_compatibility'])
 
     def test_provider_subdivides_quarter_excursion_and_never_passes(self):
         class CubicProvider(IntervalClearanceBoundProvider):

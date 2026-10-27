@@ -10,7 +10,7 @@ from tools.sim_gui import REPOSITORY_ROOT, child_environment
 from tools.sim_gui.catalogue import candidates, scan_catalogue, tracks
 from tools.sim_gui.vehicle import VehicleConfiguration
 from tools.sim_gui.variant import VariantFiles, write_variant
-from tools.sim_gui.settings import RunSettings, runner_argv, validate
+from tools.sim_gui.settings import RunSettings, solution_model_for, yaw_runner_argv, validate
 from tools.sim_gui.study import (
     StudyDefinition, StudyIndex, TooManyCases, Dimension, expand, dimension_from_sweep,
 )
@@ -19,38 +19,51 @@ from simplified_vehicle_models.compiler.compile import compile_formulation
 
 
 class SettingsTests(unittest.TestCase):
-    def test_reference_preset_arguments(self):
-        settings = RunSettings(timeout_seconds=900.0)
-        argv = runner_argv(settings, "14dof-simple", REPOSITORY_ROOT / "models/tracks/2024_michigan_endurance_closed.xml")
-        from tools.run.run_iem24_forward_driver import parse_args
-        parsed = parse_args(argv)
-        self.assertEqual(parsed.model, "14dof-simple")
-        self.assertEqual(parsed.planner, "live")
-        self.assertEqual(parsed.maximum_speed, 60.0)
-        self.assertEqual(parsed.timeout_seconds, 900.0)
-        self.assertEqual(parsed.duration, 300.0)
-        self.assertEqual(parsed.pedal_travel_time, 0.175)
-        self.assertEqual(parsed.maximum_step, 0.008)
-        self.assertEqual(parsed.rtol, 1e-5)
-        self.assertEqual(parsed.method, "BDF")
-        self.assertEqual(parsed.spacing, 0.5)
-        self.assertTrue(parsed.record)
+    def test_yaw_cli_contract_and_strict_legacy_field_rejection(self):
+        settings = RunSettings(yaw_map="maps/completed.npz", mode="fixed")
+        argv = yaw_runner_argv(settings, Path("track.xml"))
+        self.assertEqual(argv[argv.index("--yaw-map") + 1], "maps/completed.npz")
+        self.assertEqual(argv[argv.index("--mode") + 1], "fixed")
+        self.assertNotIn("--planner", argv)
+        for legacy in ("planner", "lateral_acceleration", "maximum_speed", "quasi_static_attitude"):
+            with self.subTest(legacy=legacy), self.assertRaisesRegex(ValueError, "unknown run setting"):
+                RunSettings.from_json({legacy: 1})
+        point = RunSettings(solver_kind="point-mass")
+        validate(point, "14dof-simple", Path("track.xml"))
+        self.assertEqual(solution_model_for(point, "14dof-simple"), "point-mass")
+        with self.assertRaisesRegex(ValueError, "unsupported"):
+            validate(RunSettings(solver_kind="yaw-aware"), "point-mass", Path("track.xml"))
 
-    def test_model_defaults_and_unknown_json(self):
-        self.assertEqual(RunSettings.for_model("planar-7dof").timeout_seconds, 300.0)
-        self.assertEqual(RunSettings.for_model("14dof-simple").timeout_seconds, 3600.0)
+    def test_model_and_solver_resolution_mapping(self):
+        for source in ("point-mass", "planar-7dof", "14dof-simple"):
+            with self.subTest(source=source):
+                self.assertEqual(solution_model_for(RunSettings(solver_kind="point-mass"), source), "point-mass")
+        self.assertEqual(solution_model_for(RunSettings(), "planar-7dof"), "planar-7dof")
+        self.assertEqual(solution_model_for(RunSettings(), "14dof-simple"), "planar-7dof")
+        with self.assertRaisesRegex(ValueError, "unsupported"):
+            solution_model_for(RunSettings(), "point-mass")
+        with self.assertRaisesRegex(ValueError, "unsupported"):
+            solution_model_for(RunSettings(), "unknown")
+
+    def test_settings_serialization_and_validation(self):
+        self.assertEqual(RunSettings.from_json(RunSettings().to_json()), RunSettings())
         with self.assertRaisesRegex(ValueError, "unknown run setting"):
             RunSettings.from_json({"unknown": 1})
-
-    def test_validation(self):
-        track = REPOSITORY_ROOT / "models/tracks/2024_michigan_endurance_closed.xml"
-        with self.assertRaisesRegex(ValueError, "wall limit"):
-            validate(RunSettings(timeout_seconds=301), "planar-7dof", track)
-        with self.assertRaisesRegex(ValueError, "quasi-static attitude applies to planar-7dof only"):
-            validate(RunSettings(quasi_static_attitude=True), "14dof-simple", track)
-
-    def test_json_round_trip(self):
-        self.assertEqual(RunSettings.from_json(RunSettings().to_json()), RunSettings())
+        with self.assertRaisesRegex(ValueError, "completed yaw-map artifact is required"):
+            validate(RunSettings(), "planar-7dof", Path("track.xml"))
+        with self.assertRaisesRegex(ValueError, "requires a saved plan"):
+            validate(RunSettings(yaw_map="missing", mode="replay"), "planar-7dof", Path("track.xml"))
+        with tempfile.TemporaryDirectory() as folder:
+            plan = Path(folder) / "plan.npz"
+            plan.touch()
+            with mock.patch("tools.sim_gui.settings._validate_map") as map_check:
+                validate(RunSettings(yaw_map="artifact.npz", mode="replay", plan=str(plan)), "14dof-simple", Path("track.xml"))
+                map_check.assert_called_once()
+        for field in ("profile_seconds", "line_seconds", "spacing", "line_evaluations", "maximum_step"):
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                validate(RunSettings(yaw_map="missing", **{field: 0}), "planar-7dof", Path("track.xml"))
+        with self.assertRaisesRegex(ValueError, "yaw map, mode, and plan"):
+            validate(RunSettings(solver_kind="point-mass", mode="line"), "planar-7dof", Path("track.xml"))
 
 
 class StudyTests(unittest.TestCase):
@@ -90,15 +103,21 @@ class StudyTests(unittest.TestCase):
 
     def test_five_cases_when_no_dimension_matches_baseline(self):
         definition = StudyDefinition(
-            "x", "", "t", "point-mass", {"tire": "x"}, RunSettings(), "one-at-a-time",
+            "x", "", "t", "planar-7dof", {"tire": "x"}, RunSettings(), "one-at-a-time",
             (Dimension("tire", ("a", "b")),
              Dimension("model", ("planar-7dof", "14dof-simple"))),
         )
-        self.assertEqual(len(expand(definition)), 5)
+        self.assertEqual(len(expand(definition)), 4)
+
+    def test_study_accepts_supported_source_models(self):
+        for model in ("point-mass", "planar-7dof", "14dof-simple"):
+            StudyDefinition("x", "", "t", model, {}, RunSettings(solver_kind="point-mass"), "one-at-a-time", ())
+        with self.assertRaisesRegex(ValueError, "unsupported GUI model"):
+            StudyDefinition("x", "", "t", "unknown", {}, RunSettings(), "one-at-a-time", ())
 
     def test_case_cap(self):
         definition = StudyDefinition(
-            "x", "", "t", "m", {}, RunSettings(), "full-factorial",
+            "x", "", "t", "point-mass", {}, RunSettings(solver_kind="point-mass"), "full-factorial",
             (Dimension("x", tuple(str(i) for i in range(501))),),
         )
         with self.assertRaises(TooManyCases):
@@ -107,7 +126,7 @@ class StudyTests(unittest.TestCase):
     def test_case_cap_is_checked_before_factorial_product(self):
         dimensions = tuple(Dimension(str(i), tuple(str(j) for j in range(1000)))
                            for i in range(3))
-        definition = StudyDefinition("x", "", "t", "m", {}, RunSettings(),
+        definition = StudyDefinition("x", "", "t", "point-mass", {}, RunSettings(solver_kind="point-mass"),
                                      "full-factorial", dimensions)
         with self.assertRaises(TooManyCases):
             expand(definition)
@@ -122,7 +141,7 @@ class StudyTests(unittest.TestCase):
 
     def test_duplicate_key(self):
         with self.assertRaisesRegex(ValueError, "slot tire is already swept"):
-            StudyDefinition("x", "", "t", "m", {}, RunSettings(), "one-at-a-time", (Dimension("tire", ("a",)), Dimension("tire", ("b",))))
+            StudyDefinition("x", "", "t", "point-mass", {}, RunSettings(solver_kind="point-mass"), "one-at-a-time", (Dimension("tire", ("a",)), Dimension("tire", ("b",))))
 
     def test_index_update_is_atomic(self):
         with tempfile.TemporaryDirectory() as d:
@@ -217,7 +236,7 @@ class StudyTests(unittest.TestCase):
             self.assertEqual(dimension.points[1], {"sweep": str(folder.resolve()), "index": 1,
                                                    "target": "parameter:mu_0_x", "operation": "scale", "x": 1.1, "unit": "1"})
             choices = {key: path.relative_to(REPOSITORY_ROOT).as_posix() for key, path in baseline.choices.items()}
-            definition = StudyDefinition("sweep", source.as_posix(), "track", "14dof-simple", choices,
+            definition = StudyDefinition("sweep", source.as_posix(), "track", "planar-7dof", choices,
                                          RunSettings(), "one-at-a-time", (dimension,))
             cases = expand(definition)
             self.assertEqual(len(cases), 3)
@@ -240,7 +259,7 @@ class StudyTests(unittest.TestCase):
             self.assertEqual(len(dimension.values), 3)
             self.assertEqual(dimension.labels, ("rc_height_front -0.01 m", "rc_height_front +0 m", "rc_height_front +0.01 m"))
             choices = {key: path.relative_to(REPOSITORY_ROOT).as_posix() for key, path in configuration.choices.items()}
-            definition = StudyDefinition("sweep", source.as_posix(), "track", "14dof-simple", choices,
+            definition = StudyDefinition("sweep", source.as_posix(), "track", "planar-7dof", choices,
                                          RunSettings(), "one-at-a-time", (dimension,))
             cases = expand(definition)
             self.assertEqual(len(cases), 4)
@@ -339,10 +358,10 @@ class VehicleTests(unittest.TestCase):
         self.assertEqual(configuration.choices["powertrain/power-plant"], expected)
         self.assertEqual(configuration.changed_from(VehicleConfiguration.open(self.FORMULATION_14))[0], "powertrain")
 
-    def test_point_mass_formulation_opens_but_names_no_runner(self):
+    def test_point_mass_formulation_is_supported_source(self):
         configuration = VehicleConfiguration.open(REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_point_mass.xml")
         self.assertEqual(configuration.model, "point-mass")
-        self.assertFalse(configuration.runnable)
+        self.assertTrue(configuration.runnable)
 
 
 class VariantTests(unittest.TestCase):
@@ -440,35 +459,39 @@ class ExecutionTests(unittest.TestCase):
         self.assertEqual(parse_progress('{"rhs_time": 400}', 300.0), 1.0)
         self.assertIsNone(parse_progress('not json', 300.0))
 
-    def test_child_command_records_attempt(self):
+    def test_child_command_uses_yaw_suite_and_exact_map(self):
         from tools.sim_gui.execute import PreparedCase
-        prepared = PreparedCase(Path('/tmp/case'), Path('/tmp/formulation.xml'), Path('/tmp/vehicle.xml'),
-                                ['--model', 'planar-7dof', '--record'])
+        argv = yaw_runner_argv(RunSettings(yaw_map="/tmp/completed.npz"), Path("track.xml"))
+        prepared = PreparedCase(Path('/tmp/case'), Path('/tmp/formulation.xml'), Path('/tmp/vehicle.xml'), argv)
         command = child_command(prepared, Path('/tmp/case/attempt_A'))
-        self.assertEqual(command[-2:], ['--child-attempt', '/tmp/case/attempt_A'])
-        self.assertEqual(command.count('--record'), 1)
-        for bad in (['--model', 'planar-7dof'],
-                    ['--model', 'planar-7dof', '--record', '--record'],
-                    ['--model', 'planar-7dof', '--record', '--child-attempt', 'x'],
-                    ['--model', 'planar-7dof', '--record', '--output-root', 'x']):
-            with self.subTest(bad=bad), self.assertRaises(ValueError):
-                child_command(PreparedCase(prepared.directory, prepared.formulation, prepared.vehicle, bad),
-                              Path('/tmp/case/attempt_A'))
+        self.assertTrue(command[2].endswith("tools/run/run_yaw_lap_suite.py"))
+        self.assertEqual(command[command.index("--yaw-map") + 1], "/tmp/completed.npz")
+        self.assertEqual(command[-2:], ["--output-dir", "/tmp/case/attempt_A"])
+        self.assertNotIn("run_iem24_forward_driver", " ".join(command))
+        with self.assertRaises(ValueError):
+            child_command(PreparedCase(prepared.directory, prepared.formulation, prepared.vehicle, []), Path('/tmp/a'))
 
-    def test_finish_case_uses_prepared_timeout_and_model(self):
+    def test_point_mass_child_keeps_current_runner_contract(self):
+        from tools.sim_gui.execute import PreparedCase
+        argv = ["--model", "14dof-simple", "--track", "track.xml", "--planner", "live", "--record"]
+        prepared = PreparedCase(Path('/tmp/case'), Path('/tmp/formulation.xml'), Path('/tmp/vehicle.xml'), argv)
+        command = child_command(prepared, Path('/tmp/case/attempt_A'))
+        self.assertTrue(command[2].endswith("tools/sim_gui/run_case.py"))
+        self.assertIn("--model", command)
+        self.assertIn("14dof-simple", command)
+        self.assertIn("--planner", command)
+        self.assertEqual(command[command.index("--planner") + 1], "live")
+
+    def test_finish_case_records_timeout_without_legacy_solver(self):
         from tools.sim_gui.execute import PreparedCase
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
-            prepared = PreparedCase(root, root / 'f.xml', root / 'v.xml', ['--record'],
-                                    model='14dof-simple', timeout_seconds=120.0)
-            attempt = root / 'attempt_A'
-            attempt.mkdir()
-            finish_case(prepared, attempt, return_code=2, timed_out=False, cancelled=False,
-                        wall_seconds=1.25, command=['cmd'])
+            prepared = PreparedCase(root, root / 'f.xml', root / 'v.xml', [], timeout_seconds=120.0)
+            attempt = root / 'attempt_A'; attempt.mkdir()
+            finish_case(prepared, attempt, return_code=2, timed_out=False, cancelled=False, wall_seconds=1.25, command=['cmd'])
             parent = json.loads((attempt / 'parent.json').read_text())
             self.assertEqual(parent['timeout_seconds'], 120.0)
-            from tools.run.run_iem24_forward_driver import solver_wall_budget
-            self.assertEqual(parent['solver_wall_budget_seconds'], solver_wall_budget(120.0, '14dof-simple'))
+            self.assertEqual(parent['solver_wall_budget_seconds'], 120.0)
 
     def test_finish_case_status_mapping(self):
         from tools.sim_gui.execute import PreparedCase

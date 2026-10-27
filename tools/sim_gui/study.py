@@ -70,6 +70,8 @@ class StudyDefinition:
     dimensions: tuple[Dimension, ...]
 
     def __post_init__(self) -> None:
+        if self.model not in {"planar-7dof", "14dof-simple", "point-mass"}:
+            raise ValueError(f"unsupported GUI model: {self.model}")
         seen: set[str] = set()
         for dimension in self.dimensions:
             if dimension.key in seen:
@@ -90,6 +92,13 @@ class StudyDefinition:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> "StudyDefinition":
+        allowed = {"name", "source", "track", "model", "choices", "settings", "mode", "dimensions"}
+        unknown = set(data) - allowed
+        if unknown:
+            raise ValueError(f"unknown study field(s): {', '.join(sorted(unknown))}")
+        missing = allowed - set(data)
+        if missing:
+            raise ValueError(f"missing study field(s): {', '.join(sorted(missing))}")
         return cls(
             data["name"], data["source"], data["track"], data["model"],
             dict(data.get("choices", {})), RunSettings.from_json(data["settings"]),

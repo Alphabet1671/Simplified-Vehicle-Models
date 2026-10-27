@@ -19,7 +19,6 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from tools.run import run_iem24_forward_driver as runner
 from tools.sim_gui.catalogue import candidates, read_entry, scan_catalogue
 from tools.sim_gui.vehicle import VehicleConfiguration
 
@@ -116,13 +115,14 @@ class ModelPanel(QWidget):
     def _rebuild(self) -> None:
         if self._cfg is None or self._baseline is None:
             return
+        was_building = self._building
         self._building = True
         self._clear_form()
         self._source.setText(str(self._cfg.source))
         self._update_source_text()
 
         model = QComboBox()
-        model_names = list(runner.MODELS)
+        model_names = ["planar-7dof", "14dof-simple", "point-mass"]
         if self._cfg.model not in model_names:
             model_names.append(self._cfg.model)
         model.addItems(model_names)
@@ -165,12 +165,10 @@ class ModelPanel(QWidget):
             self._form.addRow(slot.label, row)
             self._slot_widgets[slot.key] = (combo, browse, reset)
 
-        self._building = False
+        self._building = was_building
         if self._cfg.slots():
             self._show_params(self._cfg.slots()[0].key)
-        self._error.setText(
-            "" if self._cfg.runnable else "no forward runner for point-mass; select planar-7dof or 14dof-simple"
-        )
+        self._error.setText("" if self._cfg.runnable else f"unsupported GUI model: {self._cfg.model}")
 
     def _change_model(self, name: str) -> None:
         if self._building or self._cfg is None:

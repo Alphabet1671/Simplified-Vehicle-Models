@@ -1,7 +1,15 @@
-"""Run one GUI study case: the runner child with the case's variant vehicle."""
+"""Run one point-mass GUI case through the existing forward runner.
+
+Point-mass consumes a point-mass view of the selected vehicle; this remains
+its Task 2 bridge until Task 3 formalizes adaptation.
+"""
 from __future__ import annotations
-import argparse, dataclasses, json, sys
+
+import argparse
+import dataclasses
+import json
 from pathlib import Path
+import sys
 
 
 def main(argv=None):
@@ -10,15 +18,19 @@ def main(argv=None):
     pre.add_argument("--case-dir", type=Path, required=True)
     known, rest = pre.parse_known_args(argv)
     case = json.loads((known.case_dir / "case.json").read_text())
+    if case.get("solver_kind") != "point-mass":
+        raise SystemExit("run_case.py accepts point-mass cases only")
     import tools.run.run_iem24_forward_driver as runner
-    args = runner.parse_args(rest)
-    if args.child_attempt is None:
+    parsed = runner.parse_args(rest)
+    if parsed.child_attempt is None:
         raise SystemExit("run_case.py runs only as a child: pass --child-attempt")
-    spec = runner.MODELS[args.model]
-    runner.MODELS[args.model] = dataclasses.replace(
+    if parsed.model not in runner.MODELS:
+        raise SystemExit(f"unsupported selected source model: {parsed.model}")
+    spec = runner.MODELS[parsed.model]
+    runner.MODELS[parsed.model] = dataclasses.replace(
         spec, formulation=runner.canonical_path(known.case_dir / case["formulation"]),
         vehicle=runner.canonical_path(known.case_dir / case["vehicle"]))
-    return runner.child(args)
+    return runner.child(parsed)
 
 
 if __name__ == "__main__":

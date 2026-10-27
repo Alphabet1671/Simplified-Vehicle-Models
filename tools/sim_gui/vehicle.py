@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import importlib
 from pathlib import Path
 from xml.etree import ElementTree
 
@@ -56,8 +55,8 @@ class VehicleConfiguration:
 
     @property
     def runnable(self) -> bool:
-        runner = importlib.import_module("tools.run.run_iem24_forward_driver")
-        return self.model in runner.MODELS
+        """Return whether a supported GUI solver can consume this source model."""
+        return self.model in {"point-mass", "planar-7dof", "14dof-simple"}
 
     def with_choice(self, key: str, path: Path) -> "VehicleConfiguration":
         path = Path(path).resolve()
@@ -76,8 +75,7 @@ class VehicleConfiguration:
         return VehicleConfiguration(self.source, self.formulation, self.assembly, self.model, choices)
 
     def with_model(self, name: str) -> "VehicleConfiguration":
-        runner = importlib.import_module("tools.run.run_iem24_forward_driver")
-        if name not in runner.MODELS:
+        if name not in {"planar-7dof", "14dof-simple", "point-mass"}:
             raise ValueError(f"unknown model {name}")
         return VehicleConfiguration(self.source, self.formulation, self.assembly, name, dict(self.choices))
 

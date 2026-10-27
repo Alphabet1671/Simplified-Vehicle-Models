@@ -120,14 +120,14 @@ class ModelPanelTests(unittest.TestCase):
         powertrain.setCurrentIndex(1 if powertrain.currentIndex() == 0 else 0)
         self.assertTrue(self._combo("tire").font().bold())
 
-    def test_point_mass_model_is_shown_without_emission(self):
+    def test_point_mass_model_is_supported_source(self):
         point_mass = VehicleConfiguration.open(
             REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_point_mass.xml"
         )
         panel = ModelPanel(point_mass)
         try:
             self.assertEqual(panel._model.currentText(), "point-mass")
-            self.assertIn("no forward runner", panel._error.text())
+            self.assertEqual(panel._error.text(), "")
             emitted = []
             panel.configurationChanged.connect(emitted.append)
             panel._model.setCurrentText("planar-7dof")
@@ -304,49 +304,37 @@ class SettingsTabTests(unittest.TestCase):
     def tearDown(self):
         self.tab.deleteLater()
 
-    def test_quasi_static_disabled_for_14dof(self):
-        self.tab.set_model("14dof-simple")
-        self.assertFalse(self.tab.quasi_static_attitude.isEnabled())
+    def test_workflow_fields_and_replay_visibility(self):
+        self.assertIn("completed, identity-checked", self.tab.prerequisite.text())
+        self.assertIn("sampled/discrete", self.tab.limitation.text())
+        self.assertEqual(self.tab.solver_kind.currentData(), "yaw-aware")
+        self.assertTrue(self.tab.plan_row.isHidden())
+        self.tab.mode.setCurrentText("replay")
+        self.assertFalse(self.tab.plan_row.isHidden())
+        self.assertEqual(self.tab._settings.mode, "replay")
+        self.assertTrue(hasattr(self.tab, "profile_seconds"))
+        self.assertTrue(hasattr(self.tab, "point_mass_maximum_speed"))
+        self.assertFalse(hasattr(self.tab, "planner"))
+        self.assertFalse(hasattr(self.tab, "quasi_static_attitude"))
 
-    def test_planar_timeout_maximum(self):
-        self.tab.set_model("planar-7dof")
-        self.assertEqual(self.tab.timeout_seconds.maximum(), 300.0)
-
-    def test_14dof_clears_quasi_static_and_uses_long_timeout(self):
-        self.tab.quasi_static_attitude.setChecked(True)
-        self.tab.set_model("14dof-simple")
-        self.assertFalse(self.tab.quasi_static_attitude.isChecked())
-        self.assertFalse(self.tab.settings().quasi_static_attitude)
-        self.assertEqual(self.tab.timeout_seconds.value(), 3600.0)
-        self.assertEqual(self.tab.timeout_seconds.maximum(), 1e6)
-
-    def test_set_settings_emits_once_and_sets_lateral_cap(self):
+    def test_workflow_switch_and_model_validation(self):
         emitted = []
         self.tab.settingsChanged.connect(emitted.append)
-        from tools.sim_gui.settings import RunSettings
-        self.tab.set_settings(RunSettings(lateral_acceleration=2.0))
-        self.assertEqual(len(emitted), 1)
-        self.assertTrue(self.tab.lateral_cap.isChecked())
-        self.assertTrue(self.tab.lateral_value.isEnabled())
-
-    def test_preset_emits_once(self):
-        emitted = []
-        self.tab.settingsChanged.connect(emitted.append)
-        self.tab.preset_button.click()
-        self.assertEqual(len(emitted), 1)
-        self.assertEqual(emitted[0], RunSettings.for_model("planar-7dof"))
-
-    def test_nonplanar_settings_clear_quasi_static_and_validate(self):
+        self.tab.solver_kind.setCurrentIndex(self.tab.solver_kind.findData("point-mass"))
+        self.assertEqual(self.tab._settings.solver_kind, "point-mass")
         self.tab.set_model("14dof-simple")
-        self.tab.set_settings(RunSettings(quasi_static_attitude=True))
-        self.assertFalse(self.tab.settings().quasi_static_attitude)
+        self.assertEqual(self.tab.settings().solver_kind, "point-mass")
+        self.assertTrue(emitted)
+        self.assertTrue(self.tab.profile_seconds.isHidden())
+        self.tab.solver_kind.setCurrentIndex(self.tab.solver_kind.findData("yaw-aware"))
+        self.assertFalse(self.tab.profile_seconds.isHidden())
 
-    def test_choice_lists_match_runner_parser(self):
-        from tools.run import run_iem24_forward_driver as runner
-        for name, values in self.tab._CHOICES.items():
-            for value in values:
-                args = runner.parse_args(["--model", "planar-7dof", f"--{name.replace('_', '-')}", value])
-                self.assertEqual(getattr(args, name), value)
+    def test_map_browser_selects_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "map.npz"
+            with mock.patch("tools.sim_gui.qt.settings_tab.QFileDialog.getOpenFileName", return_value=(str(path), "")):
+                self.tab._browse_map()
+            self.assertEqual(self.tab.yaw_map.text(), str(path))
 
 
 @unittest.skipIf(QApplication is None, "PyQt6 is not installed")
@@ -538,6 +526,14 @@ class MainWindowTests(unittest.TestCase):
             app.processEvents()
             time.sleep(0.01)
         self.assertTrue(condition())
+
+    def test_main_window_point_mass_source_workflow_gate(self):
+        window = self._window()
+        window.open_model(REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_point_mass.xml")
+        window.settings_tab.solver_kind.setCurrentIndex(window.settings_tab.solver_kind.findData("point-mass"))
+        self.assertTrue(window.go_action.isEnabled())
+        window.settings_tab.solver_kind.setCurrentIndex(window.settings_tab.solver_kind.findData("yaw-aware"))
+        self.assertFalse(window.go_action.isEnabled())
 
     def test_main_window_end_to_end_case(self):
         output = REPOSITORY_ROOT / "runs" / "_test"
@@ -883,15 +879,18 @@ class MainWindowTests(unittest.TestCase):
         self.assertEqual(window.tabs.tabText(0), "Single Run")
         self.assertEqual(window.tabs.tabText(1), "Track")
 
-    def test_point_mass_disables_run(self):
+    def test_point_mass_source_can_run_point_mass_but_not_yaw_aware(self):
         store_dir = Path(tempfile.mkdtemp())
-        self.addCleanup(lambda: __import__("shutil").rmtree(store_dir, ignore_errors=True))
+        self.addCleanup(lambda: shutil.rmtree(store_dir, ignore_errors=True))
         store = QSettings(str(store_dir / "settings.ini"), QSettings.Format.IniFormat)
         output = Path(tempfile.mkdtemp())
-        self.addCleanup(lambda: __import__("shutil").rmtree(output, ignore_errors=True))
+        self.addCleanup(lambda: shutil.rmtree(output, ignore_errors=True))
         window = MainWindow(output_root=output, settings_store=store)
         self.addCleanup(window.close)
         window.open_model(REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_point_mass.xml")
+        window.settings_tab.solver_kind.setCurrentIndex(window.settings_tab.solver_kind.findData("point-mass"))
+        self.assertTrue(window.go_action.isEnabled())
+        window.settings_tab.solver_kind.setCurrentIndex(window.settings_tab.solver_kind.findData("yaw-aware"))
         self.assertFalse(window.go_action.isEnabled())
 
     def test_save_open_study_round_trip(self):

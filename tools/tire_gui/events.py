@@ -1,0 +1,104 @@
+"""Candidate detection and physical screening for transient tire events."""
+from __future__ import annotations
+from dataclasses import dataclass
+import numpy as np
+from .contracts import RunData
+
+
+@dataclass(frozen=True)
+class TransientEvent:
+    run: RunData
+    start: int
+    stop: int
+    baseline_stop: int
+    approved: bool = False
+    axis: str = 'lateral'
+    exclusions: tuple[str, ...] = ()
+
+
+_REQUIRED = ('time','alpha','kappa','fz','speed','omega','ia','pressure','fx','fy')
+
+
+def validate_event(event: TransientEvent, *, require_approval=True):
+    run = event.run
+    if require_approval and not event.approved:
+        raise ValueError('transient event requires approved status from explicit user approval')
+    if event.axis not in ('lateral','longitudinal'):
+        raise ValueError('event axis must be lateral or longitudinal')
+    if any(name not in run.channels for name in _REQUIRED):
+        raise ValueError('event is missing required input or output channels')
+    if event.axis == 'lateral' and 'fy' not in run.channels:
+        raise ValueError('lateral event is missing Fy')
+    if event.axis == 'longitudinal' and 'fx' not in run.channels:
+        raise ValueError('longitudinal event is missing Fx')
+    n = len(run.raw_indices)
+    if any(np.asarray(value).size != n for value in run.channels.values()):
+        raise ValueError('event channels and raw indices have mismatched lengths')
+    if not (0 <= event.start < event.baseline_stop < event.stop <= n):
+        raise ValueError('invalid event or baseline bounds')
+    if event.baseline_stop - event.start < 20:
+        raise ValueError('baseline must contain at least 0.2 seconds of samples')
+    channels = run.channels
+    if event.axis == 'lateral' and 'mz' not in channels:
+        raise ValueError('Mz/moment channel required for lateral trail fit')
+    t = channels['time'][event.start:event.stop]
+    if len(t) < 4 or not np.all(np.isfinite(t)) or np.any(np.diff(t) <= 0):
+        raise ValueError('event elapsed time must be strictly increasing')
+    if np.any(np.diff(t) > .02 + 1e-12):
+        raise ValueError('event crosses a time gap; event must be contiguous')
+    baseline = slice(event.start,event.baseline_stop)
+    required = _REQUIRED + (('mz',) if event.axis == 'lateral' else ())
+    for name in required:
+        if name not in channels:
+            raise ValueError(f'event is missing required channel {name}')
+        if not np.all(np.isfinite(channels[name][event.start:event.stop])):
+            raise ValueError(f'event channel {name} contains nonfinite values')
+    fz = channels['fz'][baseline]
+    ia = channels['ia'][baseline]
+    pressure = channels['pressure'][baseline]
+    speed = channels['speed'][baseline]
+    if np.mean(fz) <= 0 or (np.max(fz)-np.min(fz))/np.mean(fz) > .10:
+        raise ValueError('baseline load is not stable within 10%')
+    if np.max(np.abs(ia)) > np.deg2rad(.25):
+        raise ValueError('baseline inclination is outside +/-0.25 degrees')
+    if np.mean(pressure) <= 0 or (np.max(pressure)-np.min(pressure)) > 3000:
+        raise ValueError('baseline pressure is not stable within 3 kPa')
+    if np.mean(speed) <= .5 or (np.max(speed)-np.min(speed))/np.mean(speed) > .10:
+        raise ValueError('baseline speed is not stable within 10% or below runtime floor')
+    return True
+
+
+def candidate_events(run: RunData) -> tuple[TransientEvent, ...]:
+    c = run.channels
+    missing = [n for n in _REQUIRED if n not in c]
+    if missing:
+        return ()
+    t = c['time']
+    if not np.all(np.isfinite(t)) or np.any(np.diff(t) <= 0):
+        raise ValueError('event detection requires strictly increasing elapsed time')
+    # Split at temporal gaps and condition changes; each continuous stable regime
+    # is independently searched for an angle transition.
+    cuts = set((np.flatnonzero(np.diff(t) > .02)+1).tolist())
+    for name, tol in (('fz',.1),('ia',np.deg2rad(.25)),('pressure',3000.),('speed',.1)):
+        x = c[name]
+        scale = max(float(np.nanmedian(np.abs(x))), 1.)
+        jumps = np.flatnonzero(np.abs(np.diff(x)) > (tol*scale if name in ('fz','speed') else tol))+1
+        cuts.update(jumps.tolist())
+    bounds = [0,*sorted(cuts),len(t)]
+    found=[]
+    for lo,hi in zip(bounds[:-1],bounds[1:]):
+        if hi-lo < 25: continue
+        alpha=c['alpha'][lo:hi]
+        # detect each material change against a preceding 0.2 s baseline
+        candidates=np.flatnonzero(np.abs(np.diff(alpha)) >= np.deg2rad(1.0))+lo+1
+        for edge in candidates:
+            base=max(lo,edge-20)
+            end=min(hi,edge+max(20,int(round(1.0/np.median(np.diff(t[lo:hi]))))))
+            if edge-base < 20 or end-edge < 3: continue
+            event=TransientEvent(run,lo,end,edge,False,'lateral',('requires explicit user review/approval',))
+            reasons=[]
+            try: validate_event(event,require_approval=False)
+            except ValueError as exc: reasons.append(str(exc))
+            found.append(TransientEvent(run,lo,end,edge,False,'lateral',tuple(reasons or event.exclusions)))
+            break
+    return tuple(found)

@@ -57,6 +57,9 @@ class PlanarForwardPlant:
         "omega_fl", "omega_fr", "omega_rl", "omega_rr", "soc", "steering",
     )
     periodic_indices = (1, 2, 3, 4, 5, 6, 7, 8, 9, 11)
+    #: XY is reconstructed from path station/lateral state; yaw uses the explicit
+    #: heading-error state, not the path tangent alone.
+    footprint_state_indices = {"station": 0, "lateral": 1, "heading_error": 2}
     #: One tolerance per ``periodic_indices`` entry, in the same order. These are
     #: the values the forward runner recorded before the plant published its
     #: metadata: 1 mm for ``n``, 1 mrad for ``heading_error`` and ``steering``,

@@ -52,6 +52,8 @@ def parse_args(argv=None):
     args=p.parse_args(argv)
     if args.yaw_map is None:p.error('--yaw-map completed artifact is required; suite never rebuilds maps')
     if args.mode=='replay' and args.plan is None:p.error('replay requires --plan')
+    if args.line_outer_passes <= 0:p.error('--line-outer-passes must be positive')
+    if args.line_optimizer_iterations <= 0:p.error('--line-optimizer-iterations must be positive')
     return args
 
 
@@ -74,9 +76,9 @@ def _failure_summary(error):
             'wall_seconds':diagnostics.get('wall_seconds'),
             'validation_timings':diagnostics.get('validation_timings'),
             'validation_counts':diagnostics.get('validation_counts')}
-    elapsed=__import__('time').perf_counter()-summary_started
+    summary_construction_seconds=__import__('time').perf_counter()-summary_started
     if 'replay_validation_diagnostics' in summary:
-        summary['replay_validation_diagnostics']['summary_construction_seconds']=elapsed
+        summary['replay_validation_diagnostics']['summary_construction_seconds']=summary_construction_seconds
     return summary
 
 
@@ -152,7 +154,9 @@ def run(args):
         'duration':args.duration,'maximum_step':args.maximum_step,'rtol':1e-6,'atol':1e-8,'method':'BDF',
         'profile_line_settings':{'spacing':args.spacing,'control_spacing':args.control_spacing,
             'profile_seconds':args.profile_seconds,'profile_rounds':args.profile_rounds,
-            'line_evaluations':args.line_evaluations,'line_seconds':args.line_seconds}}
+            'line_evaluations':args.line_evaluations,'line_seconds':args.line_seconds,
+             'line_outer_passes_requested':args.line_outer_passes,'line_outer_passes_effective':min(3,args.line_outer_passes),
+             'line_optimizer_iterations':args.line_optimizer_iterations,'line_directional_poll':args.line_directional_poll}}
     contract=study_contract(vars(args),resolved,provenance)
     manifest={'args':vars(args),'map_identity':capability.source_identity,
         'track_identity':track_identity,'continuous_feasibility_certified':False,'study_contract':contract}
@@ -187,7 +191,8 @@ def run(args):
             line=optimize_yaw_aware_line(track,None,capability,settings=YawLineSettings(
                 control_spacing=args.control_spacing,grid_spacing=args.spacing,maximum_speed=vmax,
                 profile_settings=settings,maximum_profile_evaluations=args.line_evaluations,
-                maximum_wall_seconds=args.line_seconds))
+                maximum_wall_seconds=args.line_seconds, maximum_outer_passes=args.line_outer_passes,
+                optimizer_max_iterations=args.line_optimizer_iterations, directional_poll=args.line_directional_poll))
             trajectory=line.trajectory;profile=line.profile
             from simplified_vehicle_models.solvers.yaw_aware_profile import YawPath
             source=trajectory.station_map.to_reference(profile.distance);geometry=trajectory.evaluate(source)
@@ -228,7 +233,8 @@ def replay(args,output,vehicle,track,path,speed_plan,arrays,metadata):
     from simplified_vehicle_models.tracks.types import PathCoordinates
     from simplified_vehicle_models.results.plant_channels import RunRecordSink
     from simplified_vehicle_models.tracks.corridor import corridor_from_track,SIGNED_POLICY
-    from simplified_vehicle_models.planning.yaw_replay_metrics import time_weighted_rms,time_weighted_fraction,project_xy_to_reference
+    from simplified_vehicle_models.planning.yaw_replay_metrics import periodic_interpolate
+    from simplified_vehicle_models.planning.yaw_replay_metrics import time_weighted_rms,time_weighted_fraction,project_xy_to_reference,periodic_interpolate
     from simplified_vehicle_models.tracks.line_trajectory import ReferenceCurve
     from tools.run.yaw_study_contract import update_replay_initial_state
     if args.controller!='preview':
@@ -290,12 +296,38 @@ def replay(args,output,vehicle,track,path,speed_plan,arrays,metadata):
     lateral=np.array([o.lateral_error for o in observations]);speed=np.array([o.speed for o in observations])
     target=np.array([speed_plan.sample(o.distance)[0] for o in observations])
     summary_started=__import__('time').perf_counter()
+    from simplified_vehicle_models.planning.yaw_corridor_validation import check_footprint_samples
+    dense_time=result.dense_sample_time if result.dense_sample_time is not None else np.array([])
+    dense_state=result.dense_sample_state if result.dense_sample_state is not None else np.empty((0,plant.state_size))
+    if len(dense_time):
+        dense_obs=[plant.observe(row) for row in dense_state]
+        dense_station=dense_state[:,0]
+        dense_path_x=periodic_interpolate(dense_station,path.distance,arrays['north'],closed=path.is_closed)
+        dense_path_y=periodic_interpolate(dense_station,path.distance,arrays['east'],closed=path.is_closed)
+        dense_hv=periodic_interpolate(dense_station,path.distance,heading_vectors,closed=path.is_closed)
+        dense_heading=np.arctan2(dense_hv[:,1],dense_hv[:,0])+dense_state[:,2]
+        dense_x=dense_path_x-dense_state[:,1]*np.sin(np.arctan2(dense_hv[:,1],dense_hv[:,0]))
+        dense_y=dense_path_y+dense_state[:,1]*np.cos(np.arctan2(dense_hv[:,1],dense_hv[:,0]))
+        dense_source=periodic_interpolate(dense_station,path.distance,arrays['reference_distance'],closed=path.is_closed)
+        result_time=np.r_[result.time,dense_time]; result_x=np.r_[driven_x,dense_x]; result_y=np.r_[driven_y,dense_y]
+        result_heading=np.r_[np.arctan2(hv[:,1],hv[:,0])+np.asarray(result.state[2]),dense_heading]
+        result_source=np.r_[local_source,dense_source]
+        order=np.argsort(result_time); result_time,result_x,result_y,result_heading,result_source=(a[order] for a in (result_time,result_x,result_y,result_heading,result_source))
+    else:
+        result_time,result_x,result_y=result.time,driven_x,driven_y
+        result_heading=np.arctan2(hv[:,1],hv[:,0])+np.asarray(result.state[2]); result_source=local_source
+    footprint=check_footprint_samples(result_time,result_x,result_y,
+        result_heading,result_source,corridor,reference,
+        wheelbase=vehicle.wheelbase,track_width=vehicle.track_width,model_identity='planar-7dof',
+        edge_identity='track-corridor',edge_uncertainty={'provenance':corridor.provenance,
+        'conditional':corridor.is_conditional})
     summary={'status':'completed' if result.lap_completed else 'incomplete','lap_completed':bool(result.lap_completed),
         'controller':args.controller,'driven_time_s':float(result.time[-1]),'lateral_error_rms_m':time_weighted_rms(result.time,lateral),
         'lateral_error_max_m':float(np.max(np.abs(lateral))),'speed_error_rms_mps':time_weighted_rms(result.time,speed-target),
         'speed_error_max_abs_mps':float(np.max(np.abs(speed-target))),
         'sampled_center_corridor_violation_m':float(max(violation)),'sampled_center_contained':bool(max(violation)<=1e-8),
         'footprint_containment_certified':False,'between_step_containment_certified':False,
+        'footprint_validation':footprint,
         'replay_validation_diagnostics':replay_diagnostics}
     from simplified_vehicle_models.results.run_record import load_run_record
     record=load_run_record(output/'run_record.npz')
@@ -321,7 +353,7 @@ def replay(args,output,vehicle,track,path,speed_plan,arrays,metadata):
         steering_rate_saturation_time_fraction_realized=time_weighted_fraction(record_time,abs(realized_steering)>=vehicle.steering_maximum_rate*(1.-1e-6)),
         path_digest=metadata.get('array_digest'),map_digest=metadata.get('map_identity'),
         controller_digest=hashlib.sha256(json.dumps({'controller':args.controller,'overrides':{k:getattr(args,k) for k in ('preview_seconds','heading_gain','lateral_gain','yaw_damping')}},sort_keys=True).encode()).hexdigest(),
-        solver_validation_complete=bool(replay_diagnostics.get('counts',{}).get('accepted_states_validated',0)>0 and replay_diagnostics.get('counts',{}).get('dense_probes_validated',0)>=0),
+        solver_validation_complete=bool(validation_complete),
         control_metrics_kind='requested_commands_and_saved_realized_channels')
     # Build the diagnostics-bearing summary before writing it once.
     summary['replay_validation_diagnostics']=replay_diagnostics

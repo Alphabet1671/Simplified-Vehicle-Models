@@ -514,6 +514,9 @@ class ForwardResult:
     #: is informational evidence about the interpolant, not a bound on it.
     dense_samples: int = 0
     dense_defect_scaled_max: float = float("nan")
+    #: Empirical midpoint times and interpolated plant states; not interval bounds.
+    dense_sample_time: np.ndarray | None = None
+    dense_sample_state: np.ndarray | None = None
 
 
 @dataclass(frozen=True)
@@ -761,6 +764,8 @@ def solve_forward(plant: ForwardPlant, driver: PreviewDriver, initial_state,
     # from the integrator's dense solution, including its pedal coordinate.
     defect_max = 0.
     samples = 0
+    dense_sample_times = []
+    dense_sample_states = []
     for left, right in zip(result.t[:-1], result.t[1:]):
         if perf_counter() - start >= wall_seconds:
             diagnostics = {"failure_kind": "validation_timeout", "last_state_kind": "solver_accepted_unvalidated",
@@ -773,6 +778,8 @@ def solve_forward(plant: ForwardPlant, driver: PreviewDriver, initial_state,
                                           result.y[:, -1], result.t[-1])
         midpoint = (left + right) / 2.
         dense_state = result.sol(midpoint)
+        dense_sample_times.append(float(midpoint))
+        dense_sample_states.append(np.array(dense_state[:plant_size], dtype=float, copy=True))
         domain_started = perf_counter()
         rates = state_rates(midpoint, dense_state)
         timings["dense_state_domain_validation_seconds"] += perf_counter() - domain_started
@@ -802,7 +809,8 @@ def solve_forward(plant: ForwardPlant, driver: PreviewDriver, initial_state,
     summary_started = perf_counter()
     forward_result = ForwardResult(result.t, result.y[:plant_size], bool(result.t_events[0].size),
                          elapsed, evaluations, result.message, rejected_domain_trials, pedal, True,
-                         dense_bounds, dense_polynomials, samples, defect_max)
+                         dense_bounds, dense_polynomials, samples, defect_max,
+                          np.asarray(dense_sample_times), np.asarray(dense_sample_states))
     timings["summary_construction_seconds"] = perf_counter() - summary_started
     if diagnostics_sink is not None:
         diagnostics_sink({"timings": dict(timings), "counts": dict(counts),

@@ -162,12 +162,14 @@ class MainWindow(QMainWindow):
         self.stop_action.setEnabled(False)
 
     def _refresh_actions(self) -> None:
-        """Enable the run actions only for a runnable, idle configuration."""
-        enabled = (
-            self.configuration is not None
-            and self.configuration.runnable
-            and self._run_mode is None
-        )
+        """Enable actions only when source and selected workflow are compatible."""
+        enabled = self.configuration is not None and self.configuration.runnable and self._run_mode is None
+        if enabled:
+            from tools.sim_gui.settings import solution_model_for
+            try:
+                solution_model_for(self.settings_tab._settings, self.configuration.model)
+            except ValueError:
+                enabled = False
         self.go_action.setEnabled(enabled)
         self.run_study_action.setEnabled(enabled)
         self.stop_action.setEnabled(self._run_mode is not None)
@@ -303,6 +305,7 @@ class MainWindow(QMainWindow):
     def _settings_changed(self, settings) -> None:
         if self.study_tab is not None:
             self.study_tab.settings = settings
+        self._refresh_actions()
 
     def open_output_folder(self) -> None:
         folder = self.study_index.directory if self.study_index is not None else self.output_root
@@ -374,9 +377,19 @@ class MainWindow(QMainWindow):
         """Prepare and validate the current study cases."""
         if self._run_mode is not None or self._validation_thread is not None:
             return
-        definition = self._definition()
+        try:
+            definition = self._definition()
+        except ValueError as error:
+            _warn(self, "Study", str(error))
+            return
         if not definition.track:
             _warn(self, "Study", "Select a track model.")
+            return
+        try:
+            from tools.sim_gui.settings import validate
+            validate(definition.settings, definition.model, Path(definition.track))
+        except ValueError as error:
+            _warn(self, "Study", str(error))
             return
         try:
             cases = expand(definition)
@@ -561,13 +574,20 @@ class MainWindow(QMainWindow):
             _warn(self, "Single run", f"cannot create {export_folder}: {error}")
             return
         self.settings_store.setValue("single_run_output", str(export_folder))
+        settings = self.settings_tab._settings
+        try:
+            from tools.sim_gui.settings import validate
+            validate(settings, self.configuration.model, track)
+        except ValueError as error:
+            _warn(self, "Single run", str(error))
+            return
         definition = StudyDefinition(
             "single-run",
             str(self.configuration.source),
             track.as_posix(),
             self.configuration.model,
             {key: str(value) for key, value in self.configuration.choices.items()},
-            self.settings_tab.settings(),
+            settings,
             "one-at-a-time",
             (),
         )

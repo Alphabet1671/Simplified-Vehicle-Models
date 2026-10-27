@@ -1,0 +1,210 @@
+"""Compare saved lap-suite runs without repeating planning or replay."""
+import argparse
+import hashlib
+import json
+import math
+from pathlib import Path
+import numpy as np
+from simplified_vehicle_models.planning.yaw_convergence import ConvergenceSample,convergence_study
+from tools.run.yaw_study_contract import comparison_identity, validate_comparison_pair, study_contract
+
+
+class ProfileValidationError(ValueError):
+    """A saved plan failed fresh strict physical validation."""
+
+
+def _validate_plan_geometry(arrays, metadata, reference, track):
+    """Check saved geometry/stations against the exact track reference."""
+    station=np.asarray(arrays['reference_distance'],float)
+    distance=np.asarray(arrays['distance'],float)
+    if any(np.asarray(v).shape!=station.shape for v in arrays.values()):
+        raise ValueError('wrong_reference_geometry')
+    if station.ndim!=1 or station.size<2 or not np.all(np.isfinite(station)) or np.any(np.diff(station)<=0):
+        raise ValueError('duplicate_or_invalid_reference_spacing')
+    if not np.all(np.isfinite(distance)) or np.any(np.diff(distance)<=0):
+        raise ValueError('wrong_reference_geometry')
+    if bool(metadata.get('is_closed'))!=bool(reference.is_closed):
+        raise ValueError('reference_seam_mismatch')
+    tol=max(1e-8,abs(reference.end-reference.start)*1e-9)
+    if abs(station[0]-reference.start)>tol or abs(station[-1]-reference.end)>tol:
+        raise ValueError('wrong_reference_domain')
+    ref=reference.evaluate(station)
+    n=np.asarray(arrays['north'],float); e=np.asarray(arrays['east'],float); h=np.asarray(arrays['heading'],float)
+    if any(not np.all(np.isfinite(v)) for v in (n,e,h)):
+        raise ValueError('wrong_reference_geometry')
+    if reference.is_closed:
+        if not np.allclose([n[-1],e[-1]],[n[0],e[0]],rtol=0,atol=1e-7):
+            raise ValueError('reference_seam_mismatch')
+        # Heading may be stored wrapped (same endpoint value) or continuously
+        # unwrapped (one full turn); both encode the same closed tangent.
+        heading_delta=float(h[-1]-h[0])
+        wrapped_delta=(heading_delta+math.pi)%(2*math.pi)-math.pi
+        if abs(wrapped_delta)>1e-5:
+            raise ValueError('reference_seam_mismatch')
+    offset=(n-ref.north)*(-np.sin(ref.heading))+(e-ref.east)*np.cos(ref.heading)
+    left=getattr(track,'half_width_left',None); right=getattr(track,'half_width_right',None)
+    if left is not None and right is not None:
+        left=np.interp(station,track.distance,left); right=np.interp(station,track.distance,right)
+        if np.any(offset>left+1e-6) or np.any(offset < -right-1e-6):
+            raise ValueError('wrong_reference_geometry')
+    if not np.all(np.isfinite(offset)):
+        raise ValueError('wrong_reference_geometry')
+    return offset
+
+
+def _preflight_runs(paths, dimension):
+    """Load contracts and reject incompatible comparison sets before physics."""
+    manifests=[]; failures=[]; pair_errors=[]; identities=set()
+    for directory in paths:
+        try:
+            inputs=json.loads((directory/'inputs.json').read_text())
+            contract=inputs.get('study_contract')
+            if not isinstance(contract,dict): raise ValueError('missing_study_contract')
+            identities.add((inputs.get('map_identity'),inputs.get('track_identity')))
+            comparison_identity(contract,dimension)  # validates completeness, not merely calculates identity
+            manifests.append((directory,inputs,contract))
+        except Exception as error:
+            failures.append({'run':str(directory),'status':'inconclusive','cause':str(error)})
+    for i,(p,_,a) in enumerate(manifests):
+        for q,_,b in manifests[i+1:]:
+            try: validate_comparison_pair(a,b,dimension)
+            except ValueError as error:
+                pair_errors.append(str(error)); failures.append({'runs':[str(p),str(q)],'status':'inconclusive','cause':str(error)})
+    if len(identities)>1:
+        pair_errors.append('mismatched_map_or_track_identity')
+        failures.append({'status':'inconclusive','cause':'mismatched_map_or_track_identity'})
+    if len(manifests)!=len(paths) and not any(x.get('cause')=='missing_study_contract' for x in failures):
+        pass
+    return manifests,failures,pair_errors
+
+
+def _load_sample(directory, dimension):
+    from simplified_vehicle_models.planning.yaw_lap_artifact import load_lap_plan
+    from tools.run import run_yaw_aware_forward_driver as runner
+    from tools.run.yaw_map_options import resolve_yaw_map
+    from simplified_vehicle_models.compiler.compile import compile_formulation
+    from simplified_vehicle_models.formulations.point_mass import point_mass_view_of_planar
+    from simplified_vehicle_models.tracks.profile import load_track
+    from simplified_vehicle_models.tracks.line_trajectory import ReferenceCurve
+    d=Path(directory); summary=json.loads((d/'summary.json').read_text()); inputs=json.loads((d/'inputs.json').read_text())
+    if summary.get('status')!='planned': raise ValueError('run_not_planned:'+str(summary.get('cause') or summary.get('status')))
+    contract=inputs.get('study_contract')
+    if not isinstance(contract,dict): raise ValueError('missing_study_contract')
+    provenance=contract.get('provenance',{})
+    if not provenance.get('map_file_sha256') or not provenance.get('plan_array_digest') or not provenance.get('plan_file_digest'):
+        raise ValueError('unbound_plan_summary')
+    if summary.get('plan_array_digest')!=provenance['plan_array_digest']:
+        raise ValueError('unbound_plan_summary')
+    plan_path=d/'plan.npz'
+    from simplified_vehicle_models.planning.yaw_lap_artifact import _digest, ARRAYS, SCHEMA
+    with np.load(plan_path,allow_pickle=False) as artifact:
+        metadata=json.loads(str(artifact['metadata'].item()))
+        raw={key:np.array(artifact[key],float,copy=True) for key in ARRAYS}
+    if metadata.get('schema')!=SCHEMA or _digest(raw)!=metadata.get('array_digest'):
+        raise ValueError('plan_array_integrity_mismatch')
+    station=raw['reference_distance']
+    if not np.all(np.isfinite(station)) or np.any(np.diff(station)<=0): raise ValueError('duplicate_or_invalid_reference_spacing')
+    if any(not np.all(np.isfinite(value)) for value in raw.values()): raise ValueError('nonfinite_plan_samples')
+    if hashlib.sha256(plan_path.read_bytes()).hexdigest()!=provenance['plan_file_digest']:
+        raise ValueError('plan_source_digest_mismatch')
+    if summary.get('plan_array_digest')!=provenance['plan_array_digest']:
+        raise ValueError('unbound_plan_summary')
+    expected=contract.get('canonical_json_sha256')
+    rebuilt=study_contract(contract.get('arguments',{}),contract.get('resolved_settings',{}),provenance)
+    if not expected or rebuilt['canonical_json_sha256']!=expected: raise ValueError('study_contract_digest_mismatch')
+    profile=summary.get('profile_validation')
+    if not isinstance(profile,dict): raise ValueError('missing_profile_evidence')
+    if not isinstance(profile.get('validation'),dict) and not isinstance(profile.get('valid'),bool):
+        raise ValueError('unbound_profile_evidence')
+    # The immutable plan stores the pre-finalization contract hash because its
+    # own file/array digests are added only after the plan is written. Rebuild
+    # that non-circular contract from the finalized manifest and verify it.
+    prefinal_provenance=dict(provenance)
+    prefinal_provenance.update(plan_file_digest='pending',plan_array_digest='pending')
+    prefinal=study_contract(contract.get('arguments',{}),contract.get('resolved_settings',{}),prefinal_provenance)
+    artifact_evidence=metadata.get('provenance',{})
+    if artifact_evidence.get('study_contract_sha256')!=prefinal['canonical_json_sha256']:
+        raise ValueError('unbound_profile_evidence')
+    # Plan digests bind each immutable run but are not study identity: a geometry
+    # comparison necessarily compares different plan artifacts. Integrity is
+    # checked against each run's own contract and saved bytes above.
+    args=inputs['args']; track_path=Path(args['track'])
+    contract_args=contract.get('arguments',{})
+    for key in ('track','spacing','control_spacing'):
+        if key in args and key in contract_args and args[key]!=contract_args[key]:
+            raise ValueError('study_contract_argument_mismatch:'+key)
+    vehicle=compile_formulation(str(runner.PLANAR_FORMULATION)).model; pm=point_mass_view_of_planar(vehicle); vmax=runner.physical_map_speed_limit(pm)
+    class A: pass
+    map_args=A()
+    for key,value in args.items(): setattr(map_args,key,value)
+    map_args.yaw_map=Path(args['yaw_map'])
+    if hashlib.sha256(map_args.yaw_map.read_bytes()).hexdigest()!=provenance.get('map_file_sha256'):
+        raise ValueError('map_source_digest_mismatch')
+    capability,_=resolve_yaw_map(pm,vehicle.yaw_inertia,np.linspace(0.,vmax,12),runner.anchored_axis(args.get('yaw_map_ax_min',-6.),args.get('yaw_map_ax_max',3.),9),map_args)
+    track=load_track(track_path)
+    from simplified_vehicle_models.formulations.yaw_map_artifact import source_provenance
+    track_identity=hashlib.sha256(json.dumps(source_provenance(str(track_path)),sort_keys=True).encode()).hexdigest()
+    if capability.source_identity!=inputs.get('map_identity') or track_identity!=inputs.get('track_identity'):
+        raise ValueError('run_map_or_track_identity_mismatch')
+    try:
+        _,_,arrays,metadata,validation=load_lap_plan(plan_path,capability,expected_track_identity=track_identity)
+    except ValueError as error:
+        if str(error)=='saved lap plan fails independent strict profile validation': raise ProfileValidationError('profile_invalid') from error
+        raise
+    if metadata['array_digest']!=provenance['plan_array_digest']: raise ValueError('plan_digest_binding_mismatch')
+    if metadata['map_identity']!=provenance.get('map_identity') or metadata['track_identity']!=provenance.get('track_identity'):
+        raise ValueError('plan_source_digest_mismatch')
+    diagnostic=summary.get('diagnostics',{}); kind=diagnostic.get('kind')
+    optimizer=bool(diagnostic.get('diagnostics',{}).get('converged')) if kind=='optimized_line' else None
+    reported=float(summary['lap_time_s'])
+    ds=np.diff(arrays['distance']); v0=arrays['speed'][:-1]; v1=arrays['speed'][1:]
+    recomputed=float(np.sum(2.*ds/(v0+v1)))
+    if not math.isfinite(reported) or not math.isclose(reported,recomputed,rel_tol=2e-5,abs_tol=2e-5):
+        raise ValueError('reported_lap_time_mismatch')
+    reference=ReferenceCurve(track)
+    offset=_validate_plan_geometry(arrays,metadata,reference,track)
+    sample=ConvergenceSample(d.name,float(args['spacing']),float(args['control_spacing']),reported,
+        arrays['reference_distance'],arrays['speed'],offset,bool(validation.valid),
+        bool(summary.get('profile_resolution_converged',False)),optimizer,
+        diagnostic.get('diagnostics',{}).get('search_stop_reason') or profile.get('budget_reason'))
+    evidence={'run':d.name,'plan_array_digest':metadata['array_digest'],'plan_file_digest':provenance['plan_file_digest'],
+        'map_identity':metadata['map_identity'],'track_identity':metadata['track_identity'],
+        'study_contract_sha256':expected,'strict_profile_validation':'valid' if validation.valid else 'invalid'}
+    return sample,evidence
+
+
+def compare_runs(directories,*,dimension):
+    paths=list(map(Path,directories)); rows=[]; evidence=[]
+    manifests,failures,pair_errors=_preflight_runs(paths,dimension)
+    # No plan physics, interpolation, or comparison rows are constructed unless every input is bound and compatible.
+    if failures or len(manifests)!=len(paths):
+        return {'status':'inconclusive','comparisons':[],'validation_evidence':[],'failed_runs':failures,
+                'scope':'saved discrete plans; fresh strict profile validation against exact map and track; no continuous feasibility certification'}
+    contracts=[(p,c) for p,_,c in manifests]
+    for directory,_,_ in manifests:
+        try:
+            sample,record=_load_sample(directory,dimension); rows.append(sample);evidence.append(record)
+        except Exception as error:
+            failures.append({'run':str(directory),'status':'inconclusive','cause':str(error)})
+    if failures:
+        return {'status':'inconclusive','comparisons':[],'validation_evidence':evidence,'failed_runs':failures,
+                'scope':'saved discrete plans; fresh strict profile validation against exact map and track; no continuous feasibility certification'}
+    result=convergence_study(rows,dimension=dimension)
+    result['comparison_identity']=comparison_identity(contracts[0][1],dimension)
+    result['validation_evidence']=evidence;result['failed_runs']=failures
+    result['scope']='saved discrete plans; fresh strict profile validation against exact map and track; no continuous feasibility certification'
+    return result
+
+
+def main(argv=None):
+    p=argparse.ArgumentParser(description=__doc__)
+    p.add_argument('runs',nargs='+',type=Path);p.add_argument('--dimension',choices=('geometry','control'),required=True)
+    p.add_argument('--output',type=Path,required=True);args=p.parse_args(argv)
+    if args.output.exists():p.error('output already exists')
+    result=compare_runs(args.runs,dimension=args.dimension)
+    args.output.parent.mkdir(parents=True,exist_ok=True)
+    with args.output.open('x') as out:json.dump(result,out,indent=2,allow_nan=False);out.write('\n')
+    print(json.dumps(result,indent=2));return 0
+
+
+if __name__=='__main__':raise SystemExit(main())

@@ -1,0 +1,390 @@
+{
+  "task": "Task 1 frozen yaw-profile evidence",
+  "fixtures": [
+    {
+      "file": "task1-synthetic-window.json",
+      "sha256": "ce57b45cdc4970dddcebd539813ead77b58dea9d2fdb60b5861eea83296fdc08",
+      "geometry_identity": "synthetic open path; not raw-centerline or zero-offset physical geometry",
+      "anchoring_alone_removes_failure": null
+    },
+    {
+      "file": "fsc-raw-anchored-window.json",
+      "sha256": "ed6a07aec9eecb52cd3e13135bc103adc755ae72f460631fd3a73961fc83dec7",
+      "source_output": "runs/yaw_aware_driver/task1-probes-structured/fsc-raw-anchored.json",
+      "source_output_sha256": "5f0ff2d7edebe8ae1ff4b8c724416c2708ce4ccdab59f1fabf057081f7789075",
+      "geometry": "raw-centerline",
+      "anchored": true,
+      "track": "models/tracks/fsc_may_2026_synthetic_3m_edged.xml",
+      "failed_segment": 83,
+      "window_m": [
+        0,
+        14.199977337170637
+      ],
+      "failure_status": "failed",
+      "command": [
+        "PYTHONPATH=src:.",
+        "python3",
+        "tools/run/probe_coupled_yaw_profile.py",
+        "--track",
+        "models/tracks/fsc_may_2026_synthetic_3m_edged.xml",
+        "--output",
+        "<ignored-output.json>",
+        "--geometry",
+        "raw-centerline",
+        "--spacing",
+        "0.05",
+        "--speed-points",
+        "12",
+        "--ax-points",
+        "9",
+        "--ay-points",
+        "17",
+        "--anchored"
+      ]
+    },
+    {
+      "file": "fsc-raw-original-window.json",
+      "sha256": "80dca8b45197389591a918ed150d591a5c48579f5f92a744080f03289c4fbdc8",
+      "source_output": "runs/yaw_aware_driver/task1-probes-structured/fsc-raw-original.json",
+      "source_output_sha256": "627aa4a3f646a9eee359314017fe39cdb1e1bfb251cfa62ba9538a80a2b88406",
+      "geometry": "raw-centerline",
+      "anchored": false,
+      "track": "models/tracks/fsc_may_2026_synthetic_3m_edged.xml",
+      "failed_segment": 83,
+      "window_m": [
+        0,
+        14.199977337170637
+      ],
+      "failure_status": "failed",
+      "command": [
+        "PYTHONPATH=src:.",
+        "python3",
+        "tools/run/probe_coupled_yaw_profile.py",
+        "--track",
+        "models/tracks/fsc_may_2026_synthetic_3m_edged.xml",
+        "--output",
+        "<ignored-output.json>",
+        "--geometry",
+        "raw-centerline",
+        "--spacing",
+        "0.05",
+        "--speed-points",
+        "12",
+        "--ax-points",
+        "9",
+        "--ay-points",
+        "17"
+      ]
+    },
+    {
+      "file": "fsc-zero-anchored-window.json",
+      "sha256": "28337022ae517ecb5ddc5906f336078f13f7805dd6f917679c1df400f7ce854e",
+      "source_output": "runs/yaw_aware_driver/task1-probes-structured/fsc-zero-anchored.json",
+      "source_output_sha256": "523130e198392ed57aa1e3fc54b9ed6762a9b0f2a7ed3e4ef24e4721885c2186",
+      "geometry": "zero-offset",
+      "anchored": true,
+      "track": "models/tracks/fsc_may_2026_synthetic_3m_edged.xml",
+      "failed_segment": 7,
+      "window_m": [
+        0,
+        10.399982511671954
+      ],
+      "failure_status": "failed",
+      "command": [
+        "PYTHONPATH=src:.",
+        "python3",
+        "tools/run/probe_coupled_yaw_profile.py",
+        "--track",
+        "models/tracks/fsc_may_2026_synthetic_3m_edged.xml",
+        "--output",
+        "<ignored-output.json>",
+        "--geometry",
+        "zero-offset",
+        "--spacing",
+        "0.05",
+        "--speed-points",
+        "12",
+        "--ax-points",
+        "9",
+        "--ay-points",
+        "17",
+        "--anchored"
+      ]
+    },
+    {
+      "file": "fsc-zero-original-window.json",
+      "sha256": "f04a2e1236344d845d1f0768bc2e617595fcd12243fe8549a64e8608b5725ed3",
+      "source_output": "runs/yaw_aware_driver/task1-probes-structured/fsc-zero-original.json",
+      "source_output_sha256": "dc7170c314181a0f78c91f8bbecf9e188e941b07520c38f022639cc69b72cfcc",
+      "geometry": "zero-offset",
+      "anchored": false,
+      "track": "models/tracks/fsc_may_2026_synthetic_3m_edged.xml",
+      "failed_segment": 7,
+      "window_m": [
+        0,
+        10.399982511671954
+      ],
+      "failure_status": "failed",
+      "command": [
+        "PYTHONPATH=src:.",
+        "python3",
+        "tools/run/probe_coupled_yaw_profile.py",
+        "--track",
+        "models/tracks/fsc_may_2026_synthetic_3m_edged.xml",
+        "--output",
+        "<ignored-output.json>",
+        "--geometry",
+        "zero-offset",
+        "--spacing",
+        "0.05",
+        "--speed-points",
+        "12",
+        "--ax-points",
+        "9",
+        "--ay-points",
+        "17"
+      ]
+    },
+    {
+      "file": "mis-raw-anchored-window.json",
+      "sha256": "e464709d2d320745bbdf27baa18f18b2c3d718245241d2e9785bce15612d4faa",
+      "source_output": "runs/yaw_aware_driver/task1-probes-structured/mis-raw-anchored.json",
+      "source_output_sha256": "a2d6b76b195cc69cfc217fcea78da56bf8c32a6d466ae7c5692db2bf3b638ba0",
+      "geometry": "raw-centerline",
+      "anchored": true,
+      "track": "models/tracks/2024_michigan_endurance_closed_edged.xml",
+      "failed_segment": 10,
+      "window_m": [
+        0,
+        10.549973304425375
+      ],
+      "failure_status": "failed",
+      "command": [
+        "PYTHONPATH=src:.",
+        "python3",
+        "tools/run/probe_coupled_yaw_profile.py",
+        "--track",
+        "models/tracks/2024_michigan_endurance_closed_edged.xml",
+        "--output",
+        "<ignored-output.json>",
+        "--geometry",
+        "raw-centerline",
+        "--spacing",
+        "0.05",
+        "--speed-points",
+        "12",
+        "--ax-points",
+        "9",
+        "--ay-points",
+        "17",
+        "--anchored"
+      ]
+    },
+    {
+      "file": "mis-raw-centerline-original-window.json",
+      "sha256": "64f422befddf26a565e297bdb2d9be1269aea05a5f9ac4e372b4fdfdaae01d9e",
+      "source_output": "runs/yaw_aware_driver/task1-probes/mis-raw-centerline-original.json",
+      "source_output_sha256": "9e8ef13bb689153a22762de73e05174ad810afcce784d3b45cdf01509da6d156",
+      "geometry": "raw-centerline",
+      "anchored": false,
+      "track": "models/tracks/2024_michigan_endurance_closed.xml",
+      "failed_segment": 10,
+      "window_m": [
+        0,
+        10.549973304425375
+      ],
+      "failure_status": "failed",
+      "command": [
+        "PYTHONPATH=src:.",
+        "python3",
+        "tools/run/probe_coupled_yaw_profile.py",
+        "--track",
+        "models/tracks/2024_michigan_endurance_closed.xml",
+        "--output",
+        "<ignored-output.json>",
+        "--geometry",
+        "raw-centerline",
+        "--spacing",
+        "0.05",
+        "--speed-points",
+        "12",
+        "--ax-points",
+        "9",
+        "--ay-points",
+        "17"
+      ]
+    },
+    {
+      "file": "mis-raw-original-window.json",
+      "sha256": "34a8ec4c63d1afc83b593186d0a7c87720bb218f126434e48cad35646e21e2da",
+      "source_output": "runs/yaw_aware_driver/task1-probes-structured/mis-raw-original.json",
+      "source_output_sha256": "8455e05306d0e393788295d0592b30c0c2ca1762aad550b3ad5e3aa7dba3003e",
+      "geometry": "raw-centerline",
+      "anchored": false,
+      "track": "models/tracks/2024_michigan_endurance_closed_edged.xml",
+      "failed_segment": 10,
+      "window_m": [
+        0,
+        10.549973304425375
+      ],
+      "failure_status": "failed",
+      "command": [
+        "PYTHONPATH=src:.",
+        "python3",
+        "tools/run/probe_coupled_yaw_profile.py",
+        "--track",
+        "models/tracks/2024_michigan_endurance_closed_edged.xml",
+        "--output",
+        "<ignored-output.json>",
+        "--geometry",
+        "raw-centerline",
+        "--spacing",
+        "0.05",
+        "--speed-points",
+        "12",
+        "--ax-points",
+        "9",
+        "--ay-points",
+        "17"
+      ]
+    },
+    {
+      "file": "mis-zero-anchored-window.json",
+      "sha256": "c28b816de17018bf4107e8a217c413e5b9992c295aa28cadf2c4224d48a9e0e8",
+      "source_output": "runs/yaw_aware_driver/task1-probes-structured/mis-zero-anchored.json",
+      "source_output_sha256": "09aa14527de43d0e193b1dee2f1ca0404be0d33dd60d5afb4f3be9838f8e21a2",
+      "geometry": "zero-offset",
+      "anchored": true,
+      "track": "models/tracks/2024_michigan_endurance_closed_edged.xml",
+      "failed_segment": 15,
+      "window_m": [
+        0,
+        10.799981256367454
+      ],
+      "failure_status": "failed",
+      "command": [
+        "PYTHONPATH=src:.",
+        "python3",
+        "tools/run/probe_coupled_yaw_profile.py",
+        "--track",
+        "models/tracks/2024_michigan_endurance_closed_edged.xml",
+        "--output",
+        "<ignored-output.json>",
+        "--geometry",
+        "zero-offset",
+        "--spacing",
+        "0.05",
+        "--speed-points",
+        "12",
+        "--ax-points",
+        "9",
+        "--ay-points",
+        "17",
+        "--anchored"
+      ]
+    },
+    {
+      "file": "mis-zero-original-window.json",
+      "sha256": "8daf2be6e5fbb15cf2dc77d53753a108cc7f46e863e20af3f733303fa174577d",
+      "source_output": "runs/yaw_aware_driver/task1-probes-structured/mis-zero-original.json",
+      "source_output_sha256": "3b660009ba549f32b448c9d4ba0585cb16add52c1fa163ea21f26fa95fc0f9a3",
+      "geometry": "zero-offset",
+      "anchored": false,
+      "track": "models/tracks/2024_michigan_endurance_closed_edged.xml",
+      "failed_segment": 14,
+      "window_m": [
+        0,
+        10.749982427844488
+      ],
+      "failure_status": "failed",
+      "command": [
+        "PYTHONPATH=src:.",
+        "python3",
+        "tools/run/probe_coupled_yaw_profile.py",
+        "--track",
+        "models/tracks/2024_michigan_endurance_closed_edged.xml",
+        "--output",
+        "<ignored-output.json>",
+        "--geometry",
+        "zero-offset",
+        "--spacing",
+        "0.05",
+        "--speed-points",
+        "12",
+        "--ax-points",
+        "9",
+        "--ay-points",
+        "17"
+      ]
+    }
+  ],
+  "legacy_evidence_unavailable": [
+    "legacy q0 state",
+    "legacy yaw margin"
+  ],
+  "interpretation": "Physical probes retain structured transition diagnostics from the actual structured artifacts. All four paired original/anchored comparisons remain failed; anchoring alone does not remove the observed failure. Compact windows retain +/-10 m around each failure segment and bracketing samples; legacy q0 and yaw-margin states remain unavailable. The synthetic fixture remains only a feasible witness.",
+  "model_revision": "4a4e4befefc115e50b4481839ba632145a714452",
+  "generation_command": "PYTHONPATH=src:. python3 -m unittest tests.test_yaw_aware_profile.YawProfileTests.test_explicit_lower_speed_witness_passes_strict_oracle_on_fine_grid -v",
+  "comparisons": [
+    {
+      "geometry": "raw-centerline",
+      "track": "models/tracks/2024_michigan_endurance_closed_edged.xml",
+      "original_fixture": "mis-raw-original-window.json",
+      "anchored_fixture": "mis-raw-anchored-window.json",
+      "original_observation": {
+        "status": "failed",
+        "failed_segment": 10
+      },
+      "anchored_observation": {
+        "status": "failed",
+        "failed_segment": 10
+      },
+      "anchoring_alone_removes_failure": false
+    },
+    {
+      "geometry": "zero-offset",
+      "track": "models/tracks/2024_michigan_endurance_closed_edged.xml",
+      "original_fixture": "mis-zero-original-window.json",
+      "anchored_fixture": "mis-zero-anchored-window.json",
+      "original_observation": {
+        "status": "failed",
+        "failed_segment": 14
+      },
+      "anchored_observation": {
+        "status": "failed",
+        "failed_segment": 15
+      },
+      "anchoring_alone_removes_failure": false
+    },
+    {
+      "geometry": "raw-centerline",
+      "track": "models/tracks/fsc_may_2026_synthetic_3m_edged.xml",
+      "original_fixture": "fsc-raw-original-window.json",
+      "anchored_fixture": "fsc-raw-anchored-window.json",
+      "original_observation": {
+        "status": "failed",
+        "failed_segment": 83
+      },
+      "anchored_observation": {
+        "status": "failed",
+        "failed_segment": 83
+      },
+      "anchoring_alone_removes_failure": false
+    },
+    {
+      "geometry": "zero-offset",
+      "track": "models/tracks/fsc_may_2026_synthetic_3m_edged.xml",
+      "original_fixture": "fsc-zero-original-window.json",
+      "anchored_fixture": "fsc-zero-anchored-window.json",
+      "original_observation": {
+        "status": "failed",
+        "failed_segment": 7
+      },
+      "anchored_observation": {
+        "status": "failed",
+        "failed_segment": 7
+      },
+      "anchoring_alone_removes_failure": false
+    }
+  ]
+}

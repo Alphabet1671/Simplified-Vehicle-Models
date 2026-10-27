@@ -1,0 +1,23 @@
+{
+  "status": "inconclusive",
+  "comparisons": [],
+  "validation_evidence": [
+    {
+      "run": "mis-fixed-1m-r16",
+      "plan_array_digest": "2f3c264d1877a3d21da5f303f2fd1686dc4f727f93ee0b5993bfa22994e765e1",
+      "plan_file_digest": "7422e941b1a3ca5f1bd84deb89ea7c10dd6ed7b67e6817045e15a70d5dc3de60",
+      "map_identity": "f8658cafbd35dc60cd195153ca4761db21d9a9d8b4819f1112a4f46ad7322419",
+      "track_identity": "69bce5525e17c12bf17655760e6aedd5e1a98af7bd2d23b1bb05f8fccafad66f",
+      "study_contract_sha256": "bc191b6826e8341e4ade838aa7a4bc054a0d912633789033ec3502870c707f7f",
+      "strict_profile_validation": "valid"
+    }
+  ],
+  "failed_runs": [
+    {
+      "run": "runs/yaw_lap_suite/closure-v1/mis-fixed-0.5m-warm-r16",
+      "status": "inconclusive",
+      "cause": "run_not_planned:strict_validation_failed"
+    }
+  ],
+  "scope": "saved discrete plans; fresh strict profile validation against exact map and track; no continuous feasibility certification"
+}

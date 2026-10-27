@@ -1,0 +1,9 @@
+{
+  "fixture_type": "deterministic_synthetic_feasible_witness",
+  "geometry_identity": "synthetic open path; not raw-centerline or zero-offset physical geometry",
+  "distance_m": [0.0,0.05,0.1,0.15000000000000002,0.2,0.25,0.30000000000000004,0.35000000000000003,0.4,0.45,0.5],
+  "curvature_per_m": [0.01,0.017,0.024,0.031,0.038,0.045000000000000005,0.052000000000000005,0.059000000000000004,0.066,0.07300000000000001,0.08],
+  "explicit_feasible_speed_witness_mps": [0.0,0.22360679774997896,0.31622776601683794,0.3872983346207417,0.4472135954999579,0.5,0.5477225575051661,0.5916079783099616,0.6324555320336759,0.6708203932499369,0.7071067811865476],
+  "map": {"speed_axis_mps": "linspace(0,8,17)", "ax_axis_mps2": "linspace(-2,2,9)", "ay_axis_mps2": "linspace(-2,2,17)", "mask_rule": "at each speed index i, feasible iff abs(ay) <= max(0.25, 1.25 - 0.12*speed[i]); all ax slices otherwise feasible", "yaw_moments": 1000000.0, "yaw_inertia": 1.0},
+  "verification": "tests.test_yaw_aware_profile.YawProfileTests.test_explicit_lower_speed_witness_passes_strict_oracle_on_fine_grid verifies every 0.05 m edge through _MapInterpolator and _segment_acceleration"
+}

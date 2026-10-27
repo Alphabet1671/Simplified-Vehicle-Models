@@ -1,0 +1,429 @@
+"""Bounded yaw lap studies with separate planning and saved-plan replay.
+
+Always invoke through run_with_deadline.py (<=1800s). This entrypoint also
+self-guards when launched directly, so test/planner cooperative budgets are not
+its only wall-clock protection.
+"""
+from __future__ import annotations
+import argparse
+from dataclasses import asdict
+import hashlib
+import json
+from pathlib import Path
+import sys
+import numpy as np
+
+
+def _validation_complete(diagnostics):
+    counts=diagnostics.get('counts') if isinstance(diagnostics,dict) else None
+    accepted=counts.get('accepted_states_validated') if isinstance(counts,dict) else None
+    dense=counts.get('dense_probes_validated') if isinstance(counts,dict) else None
+    steps=diagnostics.get('accepted_steps') if isinstance(diagnostics,dict) else None
+    return (isinstance(accepted,int) and isinstance(dense,int) and isinstance(steps,int)
+            and steps>0 and accepted==steps+1 and dense==steps)
+
+
+def parse_args(argv=None):
+    from tools.run.yaw_map_options import add_yaw_map_options
+    p=argparse.ArgumentParser(description=__doc__)
+    p.add_argument('--track',type=Path,required=True)
+    p.add_argument('--output-dir',type=Path,required=True)
+    p.add_argument('--mode',choices=('fixed','line','replay'),default='fixed')
+    p.add_argument('--plan',type=Path)
+    p.add_argument('--warm-plan',type=Path,help='validated coarser plan used only for speed-seed suggestions')
+    p.add_argument('--spacing',type=float,default=2.)
+    p.add_argument('--control-spacing',type=float,default=40.)
+    p.add_argument('--profile-seconds',type=float,default=120.)
+    p.add_argument('--profile-rounds',type=int,default=8)
+    p.add_argument('--line-evaluations',type=int,default=24)
+    p.add_argument('--line-seconds',type=float,default=900.)
+    p.add_argument('--line-outer-passes',type=int,default=3)
+    p.add_argument('--line-optimizer-iterations',type=int,default=8)
+    p.add_argument('--line-directional-poll',action='store_true')
+    p.add_argument('--duration',type=float,default=150.)
+    p.add_argument('--replay-seconds',type=float,default=300.)
+    p.add_argument('--maximum-step',type=float,default=.05)
+    p.add_argument('--controller',choices=('preview','model-aware'),default='preview')
+    p.add_argument('--preview-seconds',type=float,default=None)
+    p.add_argument('--heading-gain',type=float,default=None)
+    p.add_argument('--lateral-gain',type=float,default=None)
+    p.add_argument('--yaw-damping',type=float,default=None)
+    p.add_argument('--initial-state-overrides',type=Path,help='JSON dictionary of explicit state deltas for one replay')
+    p.add_argument('--plant-variation',type=Path,help='JSON dictionary of declared actuator lag multipliers')
+    add_yaw_map_options(p)
+    p.add_argument('--formulation',type=Path,default=Path('models/formulations/iem24_murphy_real_planar_7dof.xml'),
+                   help='explicit selected vehicle formulation; GUI supplies its variant')
+    p.add_argument('--solution-model',choices=('planar-7dof','14dof-simple'),default='planar-7dof')
+    args=p.parse_args(argv)
+    if args.yaw_map is None:p.error('--yaw-map completed artifact is required; suite never rebuilds maps')
+    if args.mode=='replay' and args.plan is None:p.error('replay requires --plan')
+    if args.line_outer_passes <= 0:p.error('--line-outer-passes must be positive')
+    if args.line_optimizer_iterations <= 0:p.error('--line-optimizer-iterations must be positive')
+    return args
+
+
+def apply_initial_state_overrides(initial_state, overrides, *, closed=True, minimum_speed=0.25):
+    """Apply named state deltas without clipping inadmissible values."""
+    state=np.asarray(initial_state,dtype=float).copy()
+    indices={'lateral_error':1,'heading_error':2,'speed':3,'yaw_rate':5}
+    if state.ndim!=1 or state.size<6 or not np.all(np.isfinite(state)):
+        raise ValueError('initial plant state must be a finite vector with published state layout')
+    if not isinstance(overrides,dict) or set(overrides)-set(indices):
+        raise ValueError('initial-state override has unsupported fields')
+    for key,delta in overrides.items():
+        if isinstance(delta,bool) or not np.isfinite(delta):
+            raise ValueError(f'initial-state override {key} must be finite')
+        state[indices[key]]+=float(delta)
+    if state[3]<minimum_speed or (closed and state[3]<=1.0):
+        raise ValueError('perturbed initial speed is inadmissible')
+    return state
+
+
+def _failure_summary(error):
+    summary_started=__import__('time').perf_counter()
+    summary={'status':'failed','exception':type(error).__name__,'message':str(error),
+        'cause':getattr(error,'status',None),'diagnostics':getattr(error,'diagnostics',None)}
+    if hasattr(error,'last_state'):
+        diagnostics=getattr(error,'diagnostics',{}) or {}
+        summary['last_state_snapshot']='integration_failure.json'
+        summary['snapshot_validated']=False
+        summary['replay_validation_diagnostics']={
+            'failure_kind':diagnostics.get('failure_kind'),
+            'last_state_kind':diagnostics.get('last_state_kind'),
+            'last_accepted_time':diagnostics.get('last_accepted_time'),
+            'accepted_step_count':diagnostics.get('accepted_step_count'),
+            'rhs_evaluations':diagnostics.get('rhs_evaluations'),
+            'rejected_domain_trials':diagnostics.get('rejected_domain_trials'),
+            'elapsed_wall_seconds':diagnostics.get('elapsed_wall_seconds'),
+            'wall_seconds':diagnostics.get('wall_seconds'),
+            'validation_timings':diagnostics.get('validation_timings'),
+            'validation_counts':diagnostics.get('validation_counts')}
+    summary_construction_seconds=__import__('time').perf_counter()-summary_started
+    if 'replay_validation_diagnostics' in summary:
+        summary['replay_validation_diagnostics']['summary_construction_seconds']=summary_construction_seconds
+    return summary
+
+
+def run(args):
+    from tools.run import run_yaw_aware_forward_driver as runner
+    # Share the exact variant and solution form with downstream compilation.
+    from tools.run.yaw_map_options import resolve_yaw_map
+    from simplified_vehicle_models.compiler.compile import compile_formulation
+    from simplified_vehicle_models.formulations.point_mass import point_mass_view_of_planar
+    from simplified_vehicle_models.tracks.profile import load_track
+    from simplified_vehicle_models.solvers.yaw_aware_profile import yaw_aware_profile
+    from simplified_vehicle_models.solvers.yaw_profile_contracts import CoupledProfileSettings,YawProfileSolveError
+    from simplified_vehicle_models.planning.yaw_lap_artifact import save_lap_plan,load_lap_plan
+    output=runner.prepare_output(args.output_dir)
+    formulation=Path(args.formulation).expanduser().resolve()
+    compiled_source=compile_formulation(str(formulation)).model
+    if args.solution_model=='14dof-simple':
+        from simplified_vehicle_models.formulations.vertical_14dof import VerticalVehicleParameters
+        if not isinstance(compiled_source,VerticalVehicleParameters):
+            raise ValueError('selected 14dof-simple formulation did not compile as 14dof-simple')
+        vehicle=compiled_source.planar
+    else:
+        vehicle=compiled_source
+        if getattr(vehicle,'model_type',None)!='planar-7dof':
+            raise ValueError(f'yaw-aware suite requires planar-7dof, received {getattr(vehicle,"model_type",None)!r}')
+    pm=point_mass_view_of_planar(vehicle);vmax=runner.physical_map_speed_limit(pm)
+    capability,map_report=resolve_yaw_map(pm,vehicle.yaw_inertia,np.linspace(0.,vmax,12),
+        runner.anchored_axis(args.yaw_map_ax_min,args.yaw_map_ax_max,9),args)
+    track=load_track(args.track)
+    # Include transitive track/data bytes, not merely the XML pathname.
+    from simplified_vehicle_models.formulations.yaw_map_artifact import source_provenance
+    track_provenance=source_provenance(args.track)
+    track_identity=hashlib.sha256(json.dumps(track_provenance,sort_keys=True).encode()).hexdigest()
+    settings=CoupledProfileSettings(max_wall_seconds=args.profile_seconds,max_refinement_rounds=args.profile_rounds)
+    from tools.run.yaw_study_contract import study_contract, finalized_plan_inputs, update_replay_initial_state
+    try:
+        import scipy, casadi
+        packages={'scipy':scipy.__version__,'casadi':casadi.__version__}
+    except ImportError as error:
+        packages={'unavailable':str(error)}
+    source_revision='unknown';dirty_hashes='unknown'
+    try:
+        import subprocess
+        root=Path(__file__).resolve().parents[3]
+        source_revision=subprocess.check_output(['git','rev-parse','HEAD'],cwd=root,text=True).strip()
+        changed=subprocess.check_output(['git','status','--porcelain'],cwd=root,text=True).splitlines()
+        dirty_hashes={}
+        for entry in changed:
+            name=entry[3:]
+            target=(root/name)
+            if target.is_file():dirty_hashes[name]=hashlib.sha256(target.read_bytes()).hexdigest()
+    except (OSError,subprocess.SubprocessError):
+        source_revision='unknown';dirty_hashes='unknown'
+    provenance={'source_revision':source_revision,'source_dirty_hashes':dirty_hashes,
+        'vehicle_configuration_hashes':source_provenance(str(formulation)),
+        'track_data_hashes':track_provenance,'map_file_sha256':hashlib.sha256(args.yaw_map.read_bytes()).hexdigest(),
+        'map_source_identity':capability.source_identity,'plan_file_digest':'pending','plan_array_digest':'pending',
+        # Planning has no forward-plant state; replay records its actual initial
+        # state at invocation below. Unknown is never an attestation.
+        'initial_state_soc':'unknown','initial_state':'unknown',
+        'map_identity':capability.source_identity,'track_identity':track_identity,
+        'maximum_speed_mps':vmax,'boundary_type':'flying' if track.is_closed else 'standing',
+        'package_versions':packages,
+        'thread_settings':{key:value for key,value in __import__('os').environ.items() if 'THREAD' in key.upper()},
+        # The runner self-guards at 1800 s; callers may impose a shorter outer
+        # watchdog which must be recorded by their run wrapper.
+        'watchdog_budget_seconds':1800}
+    controller_overrides={key:getattr(args,key) for key in ('preview_seconds','heading_gain','lateral_gain','yaw_damping')}
+    warm_digest = (hashlib.sha256(args.warm_plan.read_bytes()).hexdigest()
+                   if args.warm_plan is not None else 'none')
+    resolved={'profile_settings':{key:getattr(settings,key) for key in settings.__dataclass_fields__},
+        'controller':args.controller,'controller_overrides':controller_overrides,
+        'warm_start_policy':'squared_speed_prolongation' if args.warm_plan is not None else 'cold',
+        'warm_start_digest':warm_digest,
+        'yaw_moment_tolerance':settings.yaw_moment_tolerance,
+        'interval_q_tolerance':settings.interval_q_tolerance,'acceleration_tolerance':settings.acceleration_tolerance,
+        'geometry_spacing_m':args.spacing,'control_spacing_m':args.control_spacing,
+        'map_identity':capability.source_identity,'map_file_sha256':hashlib.sha256(args.yaw_map.read_bytes()).hexdigest(),
+        'map_source_identity':capability.source_identity,'track_identity':track_identity,
+        'track_data_hashes':track_provenance,'vehicle_configuration_hashes':source_provenance(str(formulation)),
+        'boundary_type':'flying' if track.is_closed else 'standing','maximum_speed_mps':vmax,
+        'replay_treatment':args.controller,
+        'solver':{'method':'BDF','rtol':1e-6,'atol':1e-8,'maximum_step':args.maximum_step},
+        'duration':args.duration,'maximum_step':args.maximum_step,'rtol':1e-6,'atol':1e-8,'method':'BDF',
+        'profile_line_settings':{'spacing':args.spacing,'control_spacing':args.control_spacing,
+            'profile_seconds':args.profile_seconds,'profile_rounds':args.profile_rounds,
+            'line_evaluations':args.line_evaluations,'line_seconds':args.line_seconds,
+             'line_outer_passes_requested':args.line_outer_passes,'line_outer_passes_effective':min(3,args.line_outer_passes),
+             'line_optimizer_iterations':args.line_optimizer_iterations,'line_directional_poll':args.line_directional_poll}}
+    contract=study_contract(vars(args),resolved,provenance)
+    manifest={'args':vars(args),'map_identity':capability.source_identity,
+        'track_identity':track_identity,'continuous_feasibility_certified':False,'study_contract':contract}
+    runner.write_json(output/'inputs.json',manifest)
+    try:
+        if args.mode=='replay':
+            path,speed_plan,arrays,metadata,validation=load_lap_plan(args.plan,capability,expected_track_identity=track_identity)
+            finalized=finalized_plan_inputs(vars(args),resolved,provenance,args.plan,metadata['array_digest'],
+                map_identity=capability.source_identity,track_identity=track_identity)
+            runner.write_json(output/'inputs.json',finalized)
+            return replay(args,output,vehicle,track,path,speed_plan,arrays,metadata)
+        if args.mode=='fixed':
+            from tools.run.probe_coupled_yaw_profile import _sample_geometry
+            from simplified_vehicle_models.tracks.line_trajectory import ReferenceCurve,OffsetTrajectory
+            from simplified_vehicle_models.tracks.offset_spline import OffsetSpline
+            reference=ReferenceCurve(track);spline=OffsetSpline(track,max(4.,args.spacing*100.))
+            trajectory=OffsetTrajectory(reference,spline,np.zeros(spline.control_count))
+            path=_sample_geometry(track,'zero-offset',args.spacing)
+            source=trajectory.station_map.to_reference(path.distance)
+            warm=None
+            if args.warm_plan:
+                _,_,warm_arrays,_,_=load_lap_plan(args.warm_plan,capability,expected_track_identity=track_identity)
+                warm=np.sqrt(np.maximum(0.,np.interp(source,warm_arrays['reference_distance'],warm_arrays['speed']**2)))
+                if path.is_closed:warm[-1]=warm[0]
+            profile=yaw_aware_profile(path,capability,boundary='flying' if path.is_closed else 'standing',
+                maximum_speed=vmax,solver='coupled',coupled_settings=settings,warm_start_speed=warm)
+            geometry=trajectory.evaluate(source)
+            geometry_data=dict(reference_distance=source,north=geometry.north,east=geometry.east,heading=geometry.heading)
+            plan_diagnostics={'kind':'fixed_geometry','profile':dict(profile.diagnostics)}
+        else:
+            from simplified_vehicle_models.planning.yaw_aware_line import optimize_yaw_aware_line,YawLineSettings
+            line=optimize_yaw_aware_line(track,None,capability,settings=YawLineSettings(
+                control_spacing=args.control_spacing,grid_spacing=args.spacing,maximum_speed=vmax,
+                profile_settings=settings,maximum_profile_evaluations=args.line_evaluations,
+                maximum_wall_seconds=args.line_seconds, maximum_outer_passes=args.line_outer_passes,
+                optimizer_max_iterations=args.line_optimizer_iterations, directional_poll=args.line_directional_poll))
+            trajectory=line.trajectory;profile=line.profile
+            from simplified_vehicle_models.solvers.yaw_aware_profile import YawPath
+            source=trajectory.station_map.to_reference(profile.distance);geometry=trajectory.evaluate(source)
+            from simplified_vehicle_models.solvers.yaw_aware_profile import curvature_rate_from_samples
+            path=YawPath(profile.distance,geometry.curvature,curvature_rate_from_samples(profile.distance,
+                geometry.curvature,is_closed=track.is_closed),track.is_closed)
+            geometry_data=dict(reference_distance=source,north=geometry.north,east=geometry.east,heading=geometry.heading)
+            plan_diagnostics={'kind':'optimized_line','status':line.status,'diagnostics':dict(line.diagnostics),
+                              'coefficients':line.coefficients.tolist()}
+        save_lap_plan(output/'plan.npz',yaw_path=path,speed=profile.speed,geometry=geometry_data,
+            map_identity=capability.source_identity,track_identity=track_identity,maximum_speed=vmax,
+            profile_settings=settings,provenance={**plan_diagnostics,'study_contract_version':contract['contract_version'],
+                'study_contract_sha256':contract['canonical_json_sha256']})
+        plan_path=output/'plan.npz'
+        with np.load(plan_path,allow_pickle=False) as archive:
+            saved_metadata=json.loads(str(archive['metadata'].item()))
+        provenance.update(plan_file_digest=hashlib.sha256(plan_path.read_bytes()).hexdigest(),
+                          plan_array_digest=saved_metadata['array_digest'])
+        contract=study_contract(vars(args),resolved,provenance)
+        runner.write_json(output/'inputs.json',{'args':vars(args),'map_identity':capability.source_identity,
+            'track_identity':track_identity,'continuous_feasibility_certified':False,'study_contract':contract})
+        # Load once through the strict replay gate before declaring a usable plan.
+        _,_,_,saved_metadata,_=load_lap_plan(plan_path,capability,expected_track_identity=track_identity)
+        summary={'plan_array_digest':saved_metadata['array_digest'],'status':'planned','lap_time_s':profile.lap_time,'speed_min_mps':float(min(profile.speed)),
+            'plan_artifact_sha256':hashlib.sha256(plan_path.read_bytes()).hexdigest(),
+            'speed_max_mps':float(max(profile.speed)),'profile_resolution_converged':profile.diagnostics.get('resolution_converged'),
+            'profile_validation':profile.diagnostics.get('validation'),'diagnostics':plan_diagnostics,
+            'lap_completed':False,'sampled_center_contained':None}
+        runner.write_json(output/'summary.json',summary);return 0
+    except (YawProfileSolveError,ValueError,RuntimeError,TimeoutError) as error:
+        summary=_failure_summary(error)
+        runner.write_json(output/'summary.json',summary);return 4
+
+
+def replay(args,output,vehicle,track,path,speed_plan,arrays,metadata):
+    from tools.run import run_yaw_aware_forward_driver as runner
+    from simplified_vehicle_models.solvers.forward_driver import PreviewDriver,solve_forward
+    from simplified_vehicle_models.solvers.planar_forward import PlanarForwardPlant
+    from simplified_vehicle_models.tracks.types import PathCoordinates
+    from simplified_vehicle_models.results.plant_channels import RunRecordSink
+    from simplified_vehicle_models.tracks.corridor import corridor_from_track,SIGNED_POLICY
+    from simplified_vehicle_models.planning.yaw_replay_metrics import periodic_interpolate
+    from simplified_vehicle_models.planning.yaw_replay_metrics import time_weighted_rms,time_weighted_fraction,project_xy_to_reference,periodic_interpolate
+    from simplified_vehicle_models.tracks.line_trajectory import ReferenceCurve
+    from tools.run.yaw_study_contract import update_replay_initial_state
+    if args.controller!='preview':
+        from simplified_vehicle_models.solvers.yaw_tracking_driver import ModelAwareYawDriver
+        from simplified_vehicle_models.formulations.point_mass import point_mass_view_of_planar
+        overrides={key:getattr(args,key) for key in ('preview_seconds','heading_gain','lateral_gain','yaw_damping')
+                   if getattr(args,key) is not None}
+        driver=ModelAwareYawDriver.for_vehicle(speed_plan,vehicle,point_mass_view_of_planar(vehicle),**overrides)
+    else:
+        driver=PreviewDriver(speed_plan,vehicle.wheelbase,vehicle.steering_maximum_angle,
+            vehicle.steering_maximum_rate,vehicle.maximum_pedal_force)
+    geometry=PathCoordinates(path.distance,arrays['north'],arrays['east'],arrays['heading'],path.curvature,
+        is_closed=path.is_closed,reference_distance=arrays['reference_distance'])
+    plant=PlanarForwardPlant(vehicle,speed_plan)
+    sink=RunRecordSink(plant,geometry,output/'run_record.npz',precision='float64')
+    replay_diagnostics={}
+    try:
+        initial_state=plant.initial_state(float(speed_plan.speed[0]))
+        initial_state_overrides=getattr(args,'initial_state_overrides',None)
+        if initial_state_overrides is not None:
+            overrides=json.loads(initial_state_overrides.read_text())
+            initial_state=apply_initial_state_overrides(initial_state,overrides,closed=path.is_closed,
+                minimum_speed=plant.minimum_speed)
+        plant_variation=getattr(args,'plant_variation',None)
+        if plant_variation is not None:
+            variation=json.loads(plant_variation.read_text())
+            if not isinstance(variation,dict) or set(variation)-{'steering','pedal'}:
+                raise ValueError('plant variation may only declare steering and pedal lag multipliers')
+            if any(isinstance(v,bool) or not isinstance(v,(int,float)) or not np.isfinite(v) or v<=0 for v in variation.values()):
+                raise ValueError('actuator lag multipliers must be finite and positive')
+            # Sensitivity requires changing explicit physical lag parameters. The
+            # current plant has fixed steering/pedal response, so refuse rather
+            # than silently ignore requested variations.
+            if variation:
+                raise ValueError('actuator lag variation is not wired to plant dynamics; sensitivity case not run')
+        update_replay_initial_state(output/'inputs.json',initial_state,plant.state_names)
+        result=solve_forward(plant,driver,initial_state,duration=args.duration,
+            wall_seconds=args.replay_seconds,maximum_wall_seconds=min(1500.,args.replay_seconds),
+            maximum_step=args.maximum_step,rtol=1e-6,atol=1e-8,method='BDF',step_sink=sink,
+            diagnostics_sink=lambda data: replay_diagnostics.update(data))
+    except (RuntimeError,TimeoutError,ValueError) as error:
+        if hasattr(error,'last_state'):
+            runner.write_json(output/'integration_failure.json',{'diagnostics':getattr(error,'diagnostics',{}),
+                'last_solver_time':error.last_time,'last_solver_state':error.last_state,
+                'snapshot_validated':False,'state_names':plant.state_names})
+        try:
+            sink.close({'model':{'yaw_profile':metadata,'controller':args.controller},
+                        'segment':{'lap_completed':False,'exception':str(error)}})
+        except RuntimeError:
+            pass
+        raise
+    sink.close({'model':{'yaw_profile':metadata,'controller':args.controller},
+                'segment':{'lap_completed':bool(result.lap_completed)}})
+    np.savetxt(output/'trace.csv',np.column_stack((result.time,result.state.T)),delimiter=',',comments='',
+        header=','.join(('time',*plant.state_names)))
+    observations=[plant.observe(row) for row in result.state.T]
+    # Reconstruct driven XY from the path frame, then project locally onto the
+    # reference curve. This remains correct when selected/reference normals differ.
+    reference=ReferenceCurve(track)
+    physical=np.array([o.distance for o in observations])
+    local_source=periodic_interpolate(physical,path.distance,arrays['reference_distance'],closed=path.is_closed)
+    path_x=periodic_interpolate(physical,path.distance,arrays['north'],closed=path.is_closed)
+    path_y=periodic_interpolate(physical,path.distance,arrays['east'],closed=path.is_closed)
+    # Interpolate heading through unit vectors to avoid angle discontinuities.
+    heading_vectors=np.column_stack((np.cos(arrays['heading']),np.sin(arrays['heading'])))
+    hv=periodic_interpolate(physical,path.distance,heading_vectors,closed=path.is_closed)
+    path_heading=np.arctan2(hv[:,1],hv[:,0])
+    lateral_track=np.array([o.lateral_error for o in observations])
+    driven_x=path_x-lateral_track*np.sin(path_heading)
+    driven_y=path_y+lateral_track*np.cos(path_heading)
+    source,center=project_xy_to_reference(reference,driven_x,driven_y,local_source,
+        window=max(15.,float(np.median(np.diff(arrays['reference_distance'])))*8.))
+    corridor=corridor_from_track(track,margin=0.,policy=SIGNED_POLICY,reference=reference)
+    lo=np.interp(source,corridor.distance,corridor.minimum);hi=np.interp(source,corridor.distance,corridor.maximum)
+    violation=np.maximum(np.maximum(lo-center,center-hi),0.)
+    lateral=np.array([o.lateral_error for o in observations]);speed=np.array([o.speed for o in observations])
+    target=np.array([speed_plan.sample(o.distance)[0] for o in observations])
+    summary_started=__import__('time').perf_counter()
+    from simplified_vehicle_models.planning.yaw_corridor_validation import check_footprint_samples
+    dense_time=result.dense_sample_time if result.dense_sample_time is not None else np.array([])
+    dense_state=result.dense_sample_state if result.dense_sample_state is not None else np.empty((0,plant.state_size))
+    if len(dense_time):
+        dense_obs=[plant.observe(row) for row in dense_state]
+        dense_station=dense_state[:,0]
+        dense_path_x=periodic_interpolate(dense_station,path.distance,arrays['north'],closed=path.is_closed)
+        dense_path_y=periodic_interpolate(dense_station,path.distance,arrays['east'],closed=path.is_closed)
+        dense_hv=periodic_interpolate(dense_station,path.distance,heading_vectors,closed=path.is_closed)
+        dense_heading=np.arctan2(dense_hv[:,1],dense_hv[:,0])+dense_state[:,2]
+        dense_x=dense_path_x-dense_state[:,1]*np.sin(np.arctan2(dense_hv[:,1],dense_hv[:,0]))
+        dense_y=dense_path_y+dense_state[:,1]*np.cos(np.arctan2(dense_hv[:,1],dense_hv[:,0]))
+        dense_source=periodic_interpolate(dense_station,path.distance,arrays['reference_distance'],closed=path.is_closed)
+        result_time=np.r_[result.time,dense_time]; result_x=np.r_[driven_x,dense_x]; result_y=np.r_[driven_y,dense_y]
+        result_heading=np.r_[np.arctan2(hv[:,1],hv[:,0])+np.asarray(result.state[2]),dense_heading]
+        result_source=np.r_[local_source,dense_source]
+        order=np.argsort(result_time); result_time,result_x,result_y,result_heading,result_source=(a[order] for a in (result_time,result_x,result_y,result_heading,result_source))
+    else:
+        result_time,result_x,result_y=result.time,driven_x,driven_y
+        result_heading=np.arctan2(hv[:,1],hv[:,0])+np.asarray(result.state[2]); result_source=local_source
+    footprint=check_footprint_samples(result_time,result_x,result_y,
+        result_heading,result_source,corridor,reference,
+        wheelbase=vehicle.wheelbase,track_width=vehicle.track_width,model_identity='planar-7dof',
+        edge_identity='track-corridor',edge_uncertainty={'provenance':corridor.provenance,
+        'conditional':corridor.is_conditional})
+    summary={'status':'completed' if result.lap_completed else 'incomplete','lap_completed':bool(result.lap_completed),
+        'controller':args.controller,'driven_time_s':float(result.time[-1]),'lateral_error_rms_m':time_weighted_rms(result.time,lateral),
+        'lateral_error_max_m':float(np.max(np.abs(lateral))),'speed_error_rms_mps':time_weighted_rms(result.time,speed-target),
+        'speed_error_max_abs_mps':float(np.max(np.abs(speed-target))),
+        'sampled_center_corridor_violation_m':float(max(violation)),'sampled_center_contained':bool(max(violation)<=1e-8),
+        'footprint_containment_certified':False,'between_step_containment_certified':False,
+        'footprint_validation':footprint,
+        'replay_validation_diagnostics':replay_diagnostics}
+    from simplified_vehicle_models.results.run_record import load_run_record
+    record=load_run_record(output/'run_record.npz')
+    channels={name:record.channel_values(name) for name in record.manifest.channel_names}
+    required=('throttle','brake-force','steering-rate')
+    missing=[name for name in required if name not in channels]
+    if missing: raise ValueError(f'realized replay channels missing: {missing}')
+    requested=np.array([driver.command(observation) for observation in observations],dtype=object)
+    throttle_requested=np.array([command.throttle for command in requested])
+    brake_requested=np.array([command.brake_force for command in requested])
+    steering_requested=np.array([command.steering_rate for command in requested])
+    realized_throttle=np.asarray(channels['throttle'],float).reshape(-1)
+    realized_brake=np.asarray(channels['brake-force'],float).reshape(-1)
+    realized_steering=np.asarray(channels['steering-rate'],float).reshape(-1)
+    record_time=np.asarray(record.time,float)
+    validation_complete=_validation_complete(replay_diagnostics)
+    summary.update(throttle_max_requested=float(max(throttle_requested)),
+        throttle_saturation_time_fraction_requested=time_weighted_fraction(result.time,throttle_requested>=1.-1e-6),
+        brake_saturation_time_fraction_requested=time_weighted_fraction(result.time,brake_requested>=vehicle.maximum_pedal_force*(1.-1e-6)),
+        steering_rate_saturation_time_fraction_requested=time_weighted_fraction(result.time,abs(steering_requested)>=vehicle.steering_maximum_rate*(1.-1e-6)),
+        throttle_saturation_time_fraction_realized=time_weighted_fraction(record_time,realized_throttle>=1.-1e-6),
+        brake_saturation_time_fraction_realized=time_weighted_fraction(record_time,realized_brake>=vehicle.maximum_pedal_force*(1.-1e-6)),
+        steering_rate_saturation_time_fraction_realized=time_weighted_fraction(record_time,abs(realized_steering)>=vehicle.steering_maximum_rate*(1.-1e-6)),
+        path_digest=metadata.get('array_digest'),map_digest=metadata.get('map_identity'),
+        controller_digest=hashlib.sha256(json.dumps({'controller':args.controller,'overrides':{k:getattr(args,k) for k in ('preview_seconds','heading_gain','lateral_gain','yaw_damping')}},sort_keys=True).encode()).hexdigest(),
+        solver_validation_complete=bool(validation_complete),
+        control_metrics_kind='requested_commands_and_saved_realized_channels')
+    # Build the diagnostics-bearing summary before writing it once.
+    summary['replay_validation_diagnostics']=replay_diagnostics
+    summary['artifact_sha256']=hashlib.sha256((output/'run_record.npz').read_bytes()).hexdigest()
+    summary['plan_artifact_sha256']=hashlib.sha256((output/'plan.npz').read_bytes()).hexdigest()
+    replay_diagnostics.setdefault('timings',{})['summary_construction_seconds'] = __import__('time').perf_counter()-summary_started
+    runner.write_json(output/'summary.json',summary)
+    return 0 if result.lap_completed else 3
+
+
+def main(argv=None):
+    return run(parse_args(argv))
+
+
+if __name__=='__main__':
+    from tools.run.run_with_deadline import run_with_deadline
+    import os
+    if os.environ.get('YAW_PROCESS_WATCHDOG_ACTIVE')=='1':
+        # Stay in the existing guarded process group: starting another session
+        # here would let a nested child escape the shorter outer hard deadline.
+        raise SystemExit(main())
+    raise SystemExit(run_with_deadline([sys.executable,__file__,*sys.argv[1:]],seconds=1800))

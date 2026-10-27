@@ -1,0 +1,190 @@
+import unittest
+import numpy as np
+
+from simplified_vehicle_models.solvers.yaw_aware_profile import YawPath, yaw_aware_profile
+from simplified_vehicle_models.solvers.yaw_profile_contracts import CoupledProfileSettings
+from simplified_vehicle_models.solvers.yaw_profile_validation import validate_profile, validate_profile_object
+from simplified_vehicle_models.solvers.yaw_profile_map import _MapInterpolator, SUPPORT_WEIGHT_TOLERANCE
+from tests.test_yaw_aware_profile import yaw_map
+
+
+class ProfileValidationTests(unittest.TestCase):
+    def setUp(self):
+        self.distance = np.linspace(0., 10., 11)
+        self.path = YawPath(self.distance, np.zeros(11), np.zeros(11), False)
+        self.cap = yaw_map()
+        self.settings = CoupledProfileSettings()
+        self.profile = yaw_aware_profile(self.path, self.cap, boundary="standing", maximum_speed=10.)
+
+    def test_recomputes_q_and_rejects_lowered_corrupt_node(self):
+        q = self.profile.speed.copy()
+        self.assertTrue(validate_profile(self.path, self.cap, q, maximum_speed=10., boundary="standing", settings=self.settings).valid)
+        q[5] = 0.
+        result = validate_profile(self.path, self.cap, q, maximum_speed=10., boundary="standing", settings=self.settings)
+        self.assertFalse(result.valid)
+        self.assertTrue(set((4, 5)) & set(result.invalid_segment_indices))
+
+    def test_zero_zero_nan_and_boundary_are_rejected(self):
+        q = self.profile.speed.copy(); q[4:6] = 0.
+        self.assertFalse(validate_profile(self.path, self.cap, q, maximum_speed=10., boundary="standing", settings=self.settings).valid)
+        q = self.profile.speed.copy(); q[4] = np.nan
+        result = validate_profile(self.path, self.cap, q, maximum_speed=10., boundary="standing", settings=self.settings)
+        self.assertFalse(result.valid)
+        self.assertIsNone(result.recomputed_time)
+
+    def test_flying_seam_tolerance_and_closed_rate(self):
+        closed = YawPath(self.distance, np.zeros(11), np.zeros(11), True)
+        q = np.ones(11); q[-1] += 4e-11
+        edge = validate_profile(closed, self.cap, q, maximum_speed=10., boundary="flying", settings=self.settings)
+        self.assertTrue(edge.valid)
+        q[-1] += 7e-11
+        result = validate_profile(closed, self.cap, q, maximum_speed=10., boundary="flying", settings=self.settings)
+        self.assertFalse(result.valid)
+
+    def test_standing_start_is_exactly_zero(self):
+        q = self.profile.speed.copy(); q[0] = 1e-15
+        result = validate_profile(self.path, self.cap, q, maximum_speed=10., boundary="standing", settings=self.settings)
+        self.assertFalse(result.valid)
+
+    def test_object_time_and_elapsed_corruption_fails_validation(self):
+        p = self.profile
+        valid = validate_profile_object(self.path, self.cap, p, maximum_speed=10., boundary="standing", settings=self.settings)
+        self.assertTrue(valid.valid)
+        altered_lap = type(p)(p.distance, p.speed, p.longitudinal_acceleration, p.elapsed_time,
+                              p.lap_time + 0.1, p.converged, p.iterations, p.maximum_speed_change, p.diagnostics)
+        self.assertFalse(validate_profile_object(self.path, self.cap, altered_lap, maximum_speed=10., boundary="standing", settings=self.settings).valid)
+        elapsed = p.elapsed_time.copy(); elapsed[-1] += 0.1
+        altered_elapsed = type(p)(p.distance, p.speed, p.longitudinal_acceleration, elapsed,
+                                  p.lap_time, p.converged, p.iterations, p.maximum_speed_change, p.diagnostics)
+        self.assertFalse(validate_profile_object(self.path, self.cap, altered_elapsed, maximum_speed=10., boundary="standing", settings=self.settings).valid)
+        unknown_diag = dict(p.diagnostics); unknown_diag.pop("terminal_acceleration_convention")
+        unknown = type(p)(p.distance, p.speed, p.longitudinal_acceleration, p.elapsed_time,
+                          p.lap_time, p.converged, p.iterations, p.maximum_speed_change, unknown_diag)
+        self.assertFalse(validate_profile_object(self.path, self.cap, unknown, maximum_speed=10., boundary="standing", settings=self.settings).valid)
+
+    def test_acceleration_domain_violation_reported_even_when_support_rejected(self):
+        q = self.profile.speed.copy()
+        q[1] = np.sqrt(q[0]**2 + 40.)
+        result = validate_profile(self.path, self.cap, q, maximum_speed=10., boundary="standing", settings=self.settings)
+        self.assertGreater(result.maximum_acceleration_domain_violation, 0.)
+        self.assertGreater(result.invalid_support_count, 0)
+
+    def test_dense_audit_is_reported(self):
+        result = validate_profile(self.path, self.cap, self.profile.speed, maximum_speed=10., boundary="standing", settings=self.settings, dense=True)
+        self.assertIsInstance(result.dense_sample_valid, bool)
+
+    def test_dense_queries_use_squared_speed_at_five_fractions(self):
+        from unittest.mock import patch
+        closed = YawPath(np.array([0., 100., 200.]), np.zeros(3), np.zeros(3), True)
+        seen = []
+        class Instrumented:
+            def __init__(self, _): pass
+            def query_evidence(self, v, ax, ay):
+                seen.append(v)
+                return {"reason": type("R", (), {"value": "supported"})(), "moments": (1e9, 1e9)}
+        speed = np.array([10., 20., 10.])
+        with patch("simplified_vehicle_models.solvers.yaw_profile_validation._MapInterpolator", Instrumented):
+            validate_profile(closed, self.cap, speed, maximum_speed=30., boundary="flying", settings=self.settings, dense=True)
+        audited = seen[1:6]
+        expected = [np.sqrt((1-f)*100+f*400) for f in (0., .25, .5, .75, 1.)]
+        np.testing.assert_allclose(audited, expected, rtol=0., atol=1e-14)
+
+    def test_physical_q_interpolation_rejects_support_that_linear_speed_would_accept(self):
+        from unittest.mock import patch
+        closed = YawPath(np.array([0., 100., 200.]), np.zeros(3), np.zeros(3), True)
+        seen = []
+        class Instrumented:
+            def __init__(self, _): pass
+            def query_evidence(self, v, ax, ay):
+                seen.append(v)
+                # Linear interpolation's midpoint 15 is supported, but the
+                # physical squared-speed midpoint sqrt(250) is masked.
+                reason = "masked_support" if 13.0 <= v <= 13.5 else "supported"  # q-linear quarter point; v-linear is 12.5
+                return {"reason": type("R", (), {"value": reason})(), "moments": (1e9, 1e9)}
+        with patch("simplified_vehicle_models.solvers.yaw_profile_validation._MapInterpolator", Instrumented):
+            result = validate_profile(closed, self.cap, np.array([10., 20., 10.]), maximum_speed=30., boundary="flying", settings=self.settings, dense=True)
+        self.assertFalse(result.dense_sample_valid)
+        self.assertFalse(result.valid)
+
+    def test_dense_audit_runs_after_unsupported_midpoint(self):
+        from unittest.mock import patch
+        closed = YawPath(np.array([0., 100., 200.]), np.zeros(3), np.zeros(3), True)
+        calls = []
+        class Instrumented:
+            def __init__(self, _): pass
+            def query_evidence(self, v, ax, ay):
+                calls.append(v)
+                reason = "masked_support" if len(calls) == 1 else "supported"
+                return {"reason": type("R", (), {"value": reason})(), "moments": (1e9, 1e9)}
+        with patch("simplified_vehicle_models.solvers.yaw_profile_validation._MapInterpolator", Instrumented):
+            result = validate_profile(closed, self.cap, np.array([10., 20., 10.]), maximum_speed=30., boundary="flying", settings=self.settings, dense=True)
+        self.assertFalse(result.dense_sample_valid)
+        self.assertEqual(len(calls), 12)  # midpoint plus five required samples per segment
+        self.assertIn(0, result.invalid_segment_indices)
+
+    def test_dense_failure_reports_only_its_segment(self):
+        from unittest.mock import patch
+        closed = YawPath(np.array([0., 100., 200.]), np.zeros(3), np.zeros(3), True)
+        calls = 0
+        class Instrumented:
+            def __init__(self, _): pass
+            def query_evidence(self, v, ax, ay):
+                nonlocal calls
+                calls += 1
+                reason = "masked_support" if calls == 4 else "supported"
+                return {"reason": type("R", (), {"value": reason})(), "moments": (1e9, 1e9)}
+        with patch("simplified_vehicle_models.solvers.yaw_profile_validation._MapInterpolator", Instrumented):
+            result = validate_profile(closed, self.cap, np.array([10., 20., 10.]), maximum_speed=30., boundary="flying", settings=self.settings, dense=True)
+        self.assertEqual(result.invalid_segment_indices, (0,))
+
+    def test_terminal_acceleration_conventions_for_legacy_and_coupled(self):
+        legacy = self.profile
+        self.assertEqual(legacy.diagnostics["terminal_acceleration_convention"], "repeat_last_segment")
+        self.assertTrue(validate_profile_object(self.path, self.cap, legacy, maximum_speed=10., boundary="standing", settings=self.settings).valid)
+        coupled_path = YawPath(np.linspace(0., 10., 11), np.zeros(11), np.zeros(11), True)
+        coupled = yaw_aware_profile(coupled_path, self.cap, boundary="flying", maximum_speed=10., solver="coupled", coupled_settings=self.settings)
+        self.assertEqual(coupled.diagnostics["terminal_acceleration_convention"], "repeat_first_segment_if_closed_else_last")
+        self.assertTrue(validate_profile_object(coupled_path, self.cap, coupled, maximum_speed=10., boundary="flying", settings=self.settings).valid)
+
+    def test_object_rejects_interior_redundant_field_corruption_and_distance(self):
+        p = self.profile
+        def altered(**kw):
+            return type(p)(kw.get("distance", p.distance), p.speed,
+                kw.get("acceleration", p.longitudinal_acceleration), kw.get("elapsed", p.elapsed_time),
+                p.lap_time, p.converged, p.iterations, p.maximum_speed_change, p.diagnostics)
+        elapsed = p.elapsed_time.copy(); elapsed[4] += .01
+        ax = p.longitudinal_acceleration.copy(); ax[4] += .01
+        wrong_distance = p.distance.copy(); wrong_distance[4] += .1
+        for candidate in (altered(elapsed=elapsed), altered(acceleration=ax), altered(distance=wrong_distance)):
+            self.assertFalse(validate_profile_object(self.path, self.cap, candidate, maximum_speed=10., boundary="standing", settings=self.settings).valid)
+
+    def test_exact_grid_face_ignores_zero_weight_masked_corner_but_positive_weight_fails(self):
+        cap0 = yaw_map(ax=(-1., 0., 1.), ay=(-1., 0., 1.))
+        mask = np.array(cap0.feasible_mask, copy=True)
+        mask[20, 1, 2] = False
+        cap = type(cap0)(cap0.speed, cap0.longitudinal_acceleration, cap0.lateral_acceleration,
+                         cap0.yaw_moment_into_turn, cap0.yaw_moment_out_of_turn, mask,
+                         cap0.yaw_inertia, cap0.source_kind, cap0.source_identity)
+        interp = _MapInterpolator(cap)
+        exact = interp.query_evidence(float(cap.speed[20]), 0., 0.)
+        self.assertEqual(exact["reason"].value, "supported")
+        self.assertEqual(exact["support_weight_tolerance"], SUPPORT_WEIGHT_TOLERANCE)
+        near = interp.query_evidence(float(cap.speed[20]), 0., 0.1)
+        self.assertEqual(near["reason"].value, "masked_support")
+
+    def test_closed_path_requires_curvature_rate_seam_match(self):
+        with self.assertRaisesRegex(ValueError, "curvature rate"):
+            YawPath(self.distance, np.zeros(11), np.r_[np.zeros(10), 1e-10], True)
+
+    def test_settings_reject_invalid_counts_and_tolerances(self):
+        for kw in ({"q_seed_count": True}, {"q_seed_count": 1}, {"max_refinement_rounds": 0},
+                   {"max_candidates_per_station": 0}, {"max_total_nodes": 0}, {"max_total_edges": 0},
+                   {"max_seam_anchors": 0}, {"max_wall_seconds": np.inf},
+                   {"interval_q_tolerance": 0.}, {"acceleration_tolerance": np.nan},
+                   {"yaw_moment_tolerance": 0.}, {"refinement_time_relative_tolerance": -1.},
+                   {"refinement_speed_tolerance": True}):
+            with self.subTest(kw=kw), self.assertRaises(ValueError):
+                CoupledProfileSettings(**kw)
+
+if __name__ == "__main__":
+    unittest.main()

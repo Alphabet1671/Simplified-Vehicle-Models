@@ -17,6 +17,17 @@ class TrialStateError(ValueError):
     """Reject an integrator trial outside the plant state domain."""
 
 
+class ForwardIntegrationError(RuntimeError):
+    """An IVP solver stopped without producing an accepted forward result."""
+    def __init__(self, message, diagnostics, last_state, last_time):
+        super().__init__(message)
+        snapshot=np.array(last_state,dtype=float,copy=True)
+        snapshot.setflags(write=False)
+        self.last_state=snapshot
+        self.last_time=float(last_time)
+        self.diagnostics=dict(diagnostics)
+
+
 class _CommandMapperTrialStateError(Exception):
     """Keep mapper TrialStateError separate from plant domain rejections."""
 
@@ -503,6 +514,9 @@ class ForwardResult:
     #: is informational evidence about the interpolant, not a bound on it.
     dense_samples: int = 0
     dense_defect_scaled_max: float = float("nan")
+    #: Empirical midpoint times and interpolated plant states; not interval bounds.
+    dense_sample_time: np.ndarray | None = None
+    dense_sample_state: np.ndarray | None = None
 
 
 @dataclass(frozen=True)
@@ -552,7 +566,7 @@ def solve_forward(plant: ForwardPlant, driver: PreviewDriver, initial_state,
                   rtol=1.e-6, atol=1.e-8, method="Radau",
                    initial_pedal: float | None = None,
                    maximum_wall_seconds: float = 300.,
-                   step_sink=None, *, command_mapper=None) -> ForwardResult:
+                   step_sink=None, *, command_mapper=None, diagnostics_sink=None) -> ForwardResult:
     """Integrate all states with a stiff method and stop at the path end.
 
     ``wall_seconds`` is this call's wall budget and ``maximum_wall_seconds`` is
@@ -607,6 +621,7 @@ def solve_forward(plant: ForwardPlant, driver: PreviewDriver, initial_state,
     start = perf_counter()
     evaluations = 0
     rejected_domain_trials = 0
+    last_domain_rejection = [None]
 
     #: The command of the latest ``state_rates`` call, read only by ``step_sink``.
     applied = [None]
@@ -645,8 +660,9 @@ def solve_forward(plant: ForwardPlant, driver: PreviewDriver, initial_state,
             rates = raw_state_rates(time, state)
         except _CommandMapperTrialStateError as error:
             raise error.original from None
-        except TrialStateError:
+        except TrialStateError as error:
             rejected_domain_trials += 1
+            last_domain_rejection[0]={"time":float(time),"message":str(error)}
             # Radau rejects this Newton trial and reduces its integration step.
             return np.full(initial.shape, np.nan)
         if rates.shape != initial.shape:
@@ -691,11 +707,26 @@ def solve_forward(plant: ForwardPlant, driver: PreviewDriver, initial_state,
     result = solve_ivp(rhs, (0., duration), initial, method=method, jac=jacobian,
                        rtol=rtol, atol=atol, max_step=maximum_step, events=finish, dense_output=True)
     if not result.success:
-        raise RuntimeError(result.message)
+        accepted_time=float(result.t[-1]) if len(result.t) else 0.
+        accepted_state=np.asarray(result.y[:,-1],dtype=float) if result.y.ndim == 2 and result.y.shape[1] else initial
+        state_kind="solver_accepted_unvalidated" if len(result.t) else "initial"
+        diagnostics={"failure_kind":"solver_unsuccessful","solver_message":str(result.message),
+                     "last_state_kind":state_kind,"last_accepted_time":accepted_time,
+                     "accepted_step_count":max(0,len(result.t)-1),
+                     "rhs_evaluations":evaluations,"rejected_domain_trials":rejected_domain_trials,
+                     "last_domain_rejection":last_domain_rejection[0],"duration":float(duration),"wall_seconds":float(wall_seconds),"method":method,
+                     "elapsed_wall_seconds":perf_counter()-start}
+        raise ForwardIntegrationError(str(result.message),diagnostics,accepted_state,accepted_time)
+    integration_done = perf_counter()
     # Bound every component of the dense polynomial over each accepted interval
     # before the replay loops, so a later timeout cannot hide this result.
     dense_bounds = None
     dense_polynomials = None
+    timings = {"integration_seconds": integration_done - start, "accepted_state_validation_seconds": 0.0,
+               "dense_state_domain_validation_seconds": 0.0, "defect_checking_seconds": 0.0,
+               "record_writing_seconds": 0.0, "summary_construction_seconds": 0.0}
+    counts = {"accepted_states_validated": 0, "dense_probes_validated": 0,
+              "defect_checks": 0, "records_written": 0}
     if method == "BDF":
         from simplified_vehicle_models.solvers.dense_domain import (
             UnsupportedDenseOutputError, dense_component_bounds, dense_polynomial_coefficients)
@@ -709,35 +740,80 @@ def solve_forward(plant: ForwardPlant, driver: PreviewDriver, initial_state,
     # Checking a sparse subset cannot certify contact across the lap.
     for step_number, (time_value, state) in enumerate(zip(result.t, result.y.T)):
         if perf_counter() - start >= wall_seconds:
-            raise TimeoutError("accepted-state validation exceeded its wall budget")
+            diagnostics = {"failure_kind": "validation_timeout", "last_state_kind": "solver_accepted_unvalidated",
+                "last_accepted_time": float(result.t[-1]), "accepted_step_count": max(0, len(result.t)-1),
+                "rhs_evaluations": evaluations, "rejected_domain_trials": rejected_domain_trials,
+                "last_domain_rejection": last_domain_rejection[0], "duration": float(duration),
+                "wall_seconds": float(wall_seconds), "method": method, "elapsed_wall_seconds": perf_counter()-start,
+                "validation_timings": dict(timings), "validation_counts": dict(counts)}
+            raise ForwardIntegrationError("accepted-state validation exceeded its wall budget", diagnostics,
+                                          result.y[:, -1], result.t[-1])
+        validation_started = perf_counter()
         accepted_rates = state_rates(time_value, state)
+        timings["accepted_state_validation_seconds"] += perf_counter() - validation_started
+        counts["accepted_states_validated"] += 1
         if step_sink is not None:
+            record_started = perf_counter()
             step_sink(StepSample(
                 step_number, float(time_value), np.array(state[:plant_size], dtype=float),
                 np.array(accepted_rates[:plant_size], dtype=float), applied[0],
                 float(np.clip(state[plant_size], -1., 1.)) if pedal_dynamics else None))
+            timings["record_writing_seconds"] += perf_counter() - record_started
+            counts["records_written"] += 1
     # Endpoints are not enough: reconstruct each interval's interior state
     # from the integrator's dense solution, including its pedal coordinate.
     defect_max = 0.
     samples = 0
+    dense_sample_times = []
+    dense_sample_states = []
     for left, right in zip(result.t[:-1], result.t[1:]):
         if perf_counter() - start >= wall_seconds:
-            raise TimeoutError("between-step validation exceeded its wall budget")
+            diagnostics = {"failure_kind": "validation_timeout", "last_state_kind": "solver_accepted_unvalidated",
+                "last_accepted_time": float(result.t[-1]), "accepted_step_count": max(0, len(result.t)-1),
+                "rhs_evaluations": evaluations, "rejected_domain_trials": rejected_domain_trials,
+                "last_domain_rejection": last_domain_rejection[0], "duration": float(duration),
+                "wall_seconds": float(wall_seconds), "method": method, "elapsed_wall_seconds": perf_counter()-start,
+                "validation_timings": dict(timings), "validation_counts": dict(counts)}
+            raise ForwardIntegrationError("between-step validation exceeded its wall budget", diagnostics,
+                                          result.y[:, -1], result.t[-1])
         midpoint = (left + right) / 2.
         dense_state = result.sol(midpoint)
+        dense_sample_times.append(float(midpoint))
+        dense_sample_states.append(np.array(dense_state[:plant_size], dtype=float, copy=True))
+        domain_started = perf_counter()
         rates = state_rates(midpoint, dense_state)
+        timings["dense_state_domain_validation_seconds"] += perf_counter() - domain_started
+        counts["dense_probes_validated"] += 1
         # The BDF interpolant is a polynomial, so a small central difference
         # recovers its slope to rounding. Compare it with the model slope.
+        defect_started = perf_counter()
         width = right - left
         probe = 1.e-3 * width
         slope = (result.sol(midpoint + probe) - result.sol(midpoint - probe)) / (2. * probe)
         scaled = np.abs(slope - rates) * abs(width) / (atol + rtol * np.abs(dense_state))
         defect_max = max(defect_max, float(np.max(scaled)))
         samples += 1
+        counts["defect_checks"] += 1
+        timings["defect_checking_seconds"] += perf_counter() - defect_started
     elapsed = perf_counter() - start
     if elapsed >= wall_seconds:
-        raise TimeoutError("forward integration exceeded its wall budget")
+        diagnostics = {"failure_kind": "validation_timeout", "last_state_kind": "solver_accepted_unvalidated",
+            "last_accepted_time": float(result.t[-1]), "accepted_step_count": max(0, len(result.t)-1),
+            "rhs_evaluations": evaluations, "rejected_domain_trials": rejected_domain_trials,
+            "last_domain_rejection": last_domain_rejection[0], "duration": float(duration),
+            "wall_seconds": float(wall_seconds), "method": method, "elapsed_wall_seconds": elapsed,
+            "validation_timings": dict(timings), "validation_counts": dict(counts)}
+        raise ForwardIntegrationError("post-integration validation exceeded its wall budget", diagnostics,
+                                      result.y[:, -1], result.t[-1])
     pedal = np.clip(result.y[plant_size], -1., 1.) if pedal_dynamics else None
-    return ForwardResult(result.t, result.y[:plant_size], bool(result.t_events[0].size),
+    summary_started = perf_counter()
+    forward_result = ForwardResult(result.t, result.y[:plant_size], bool(result.t_events[0].size),
                          elapsed, evaluations, result.message, rejected_domain_trials, pedal, True,
-                         dense_bounds, dense_polynomials, samples, defect_max)
+                         dense_bounds, dense_polynomials, samples, defect_max,
+                          np.asarray(dense_sample_times), np.asarray(dense_sample_states))
+    timings["summary_construction_seconds"] = perf_counter() - summary_started
+    if diagnostics_sink is not None:
+        diagnostics_sink({"timings": dict(timings), "counts": dict(counts),
+                          "evaluations": evaluations, "accepted_steps": max(0, len(result.t)-1),
+                          "total_wall_seconds": perf_counter()-start})
+    return forward_result

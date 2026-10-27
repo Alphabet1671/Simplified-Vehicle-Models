@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "matrix_id": "yaw-tracking-robustness-v1",
+  "status": "planned; synthetic interfaces only, physical cases inconclusive",
+  "gates": {"lateral_rms_m": 0.10, "lateral_max_m": 0.25, "speed_rms_mps": 0.5, "completed": true, "sampled_center_violation": false},
+  "controller_sweep": {"preview_seconds": [0.05, 0.10, 0.20], "yaw_damping": [0.08, 0.12, 0.16], "heading_gain": 1.8, "lateral_gain": 2.0, "minimum_preview_m": 1.0},
+  "state_perturbations": [
+    {"id":"lateral_plus", "initial_state_override":{"lateral_error":0.10}}, {"id":"lateral_minus", "initial_state_override":{"lateral_error":-0.10}},
+    {"id":"heading_plus", "initial_state_override":{"heading_error":0.02}}, {"id":"heading_minus", "initial_state_override":{"heading_error":-0.02}},
+    {"id":"speed_plus", "initial_state_override":{"speed":0.5}}, {"id":"speed_minus", "initial_state_override":{"speed":-0.5}},
+    {"id":"yaw_plus", "initial_state_override":{"yaw_rate":0.10}}, {"id":"yaw_minus", "initial_state_override":{"yaw_rate":-0.10}},
+    {"id":"combined_ppmp", "initial_state_override":{"lateral_error":0.10,"heading_error":0.02,"speed":-0.5,"yaw_rate":0.10}},
+    {"id":"combined_mmpp", "initial_state_override":{"lateral_error":-0.10,"heading_error":-0.02,"speed":0.5,"yaw_rate":-0.10}}
+  ],
+  "actuator_sensitivity": {"interpretation":"declared sensitivity bounds, not measured hardware uncertainty", "steering_lag_multipliers":[0.8,1.2], "pedal_lag_multipliers":[0.8,1.2], "independent_factors":true, "physical_limits":"unchanged"},
+  "synthetic_fixtures": ["analytic_s_bend_curvature_reversal", "cyclic_seam_rotation_to_maximum_abs_curvature_rate", "width_pinch", "short_held_out_preview_damping_sweep"],
+  "physical_validation": {"tracks":["MIS","FSC"], "plans":["fixed","optimized"], "status":"inconclusive_not_run", "reason":"Task7 has no convergence-supported selected grid; Task8 physical basis matrix was not authorized; Task9 historical plan source provenance is identity-inconclusive."}
+}

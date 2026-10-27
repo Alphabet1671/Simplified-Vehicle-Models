@@ -45,6 +45,8 @@ docs/validation/**/attempt_*/*_channels.csv
 # tools/anim/export_animation.py (see docs/dev/animation-export.md). Keep them in videos/.
 /videos/
 /runs/
+# Local archive of retired implementation sources; never stage these copies.
+/local-backups/
 # Default output folder of tools/track_gui.
 /tracks_out/
 # Default output folder of tools/vehicle_gui.

@@ -57,6 +57,9 @@ class PlanarForwardPlant:
         "omega_fl", "omega_fr", "omega_rl", "omega_rr", "soc", "steering",
     )
     periodic_indices = (1, 2, 3, 4, 5, 6, 7, 8, 9, 11)
+    #: XY is reconstructed from path station/lateral state; yaw uses the explicit
+    #: heading-error state, not the path tangent alone.
+    footprint_state_indices = {"station": 0, "lateral": 1, "heading_error": 2}
     #: One tolerance per ``periodic_indices`` entry, in the same order. These are
     #: the values the forward runner recorded before the plant published its
     #: metadata: 1 mm for ``n``, 1 mrad for ``heading_error`` and ``steering``,
@@ -181,7 +184,7 @@ class PlanarForwardPlant:
                 self.plan.is_closed and state[3] == self.minimum_speed) or np.any(state[6:10] < 0.):
             raise TrialStateError("prototype requires forward body and wheel motion")
         if abs(state[11]) > self.vehicle.steering_maximum_angle + 1.e-7:
-            raise ValueError("steering angle exceeds the physical bound")
+            raise TrialStateError("steering angle exceeds the physical bound")
         point = self.powertrain(state, command)
         dynamics = evaluate_planar_dynamics(self.vehicle, self.mechanical_state(state),
                                             point.wheel_torques, state[11])

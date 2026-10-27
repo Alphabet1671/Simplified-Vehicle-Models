@@ -1,6 +1,7 @@
 import json
 import os
 import tempfile
+import hashlib
 import unittest
 from unittest import mock
 from pathlib import Path
@@ -10,47 +11,74 @@ from tools.sim_gui import REPOSITORY_ROOT, child_environment
 from tools.sim_gui.catalogue import candidates, scan_catalogue, tracks
 from tools.sim_gui.vehicle import VehicleConfiguration
 from tools.sim_gui.variant import VariantFiles, write_variant
-from tools.sim_gui.settings import RunSettings, runner_argv, validate
+from tools.sim_gui.settings import RunSettings, solution_model_for, yaw_runner_argv, validate
 from tools.sim_gui.study import (
-    StudyDefinition, StudyIndex, TooManyCases, Dimension, expand, dimension_from_sweep,
+    StudyDefinition, StudyIndex, TooManyCases, Dimension, CaseSpec, expand, dimension_from_sweep,
 )
 from tools.sim_gui.execute import child_command, finish_case, parse_progress
 from simplified_vehicle_models.compiler.compile import compile_formulation
 
 
 class SettingsTests(unittest.TestCase):
-    def test_reference_preset_arguments(self):
-        settings = RunSettings(timeout_seconds=900.0)
-        argv = runner_argv(settings, "14dof-simple", REPOSITORY_ROOT / "models/tracks/2024_michigan_endurance_closed.xml")
-        from tools.run.run_iem24_forward_driver import parse_args
-        parsed = parse_args(argv)
-        self.assertEqual(parsed.model, "14dof-simple")
-        self.assertEqual(parsed.planner, "live")
-        self.assertEqual(parsed.maximum_speed, 60.0)
-        self.assertEqual(parsed.timeout_seconds, 900.0)
-        self.assertEqual(parsed.duration, 300.0)
-        self.assertEqual(parsed.pedal_travel_time, 0.175)
-        self.assertEqual(parsed.maximum_step, 0.008)
-        self.assertEqual(parsed.rtol, 1e-5)
-        self.assertEqual(parsed.method, "BDF")
-        self.assertEqual(parsed.spacing, 0.5)
-        self.assertTrue(parsed.record)
+    def test_yaw_cli_contract_and_strict_legacy_field_rejection(self):
+        settings = RunSettings(yaw_map="maps/completed.npz", mode="fixed")
+        argv = yaw_runner_argv(settings, Path("track.xml"))
+        self.assertEqual(argv[argv.index("--yaw-map") + 1], "maps/completed.npz")
+        self.assertEqual(argv[argv.index("--mode") + 1], "fixed")
+        self.assertNotIn("--planner", argv)
+        for legacy in ("planner", "lateral_acceleration", "maximum_speed", "quasi_static_attitude"):
+            with self.subTest(legacy=legacy), self.assertRaisesRegex(ValueError, "unknown run setting"):
+                RunSettings.from_json({legacy: 1})
+        point = RunSettings(solver_kind="point-mass")
+        validate(point, "14dof-simple", Path("track.xml"))
+        self.assertEqual(solution_model_for(point, "14dof-simple"), "point-mass")
+        with self.assertRaisesRegex(ValueError, "unsupported"):
+            validate(RunSettings(solver_kind="yaw-aware"), "point-mass", Path("track.xml"))
 
-    def test_model_defaults_and_unknown_json(self):
-        self.assertEqual(RunSettings.for_model("planar-7dof").timeout_seconds, 300.0)
-        self.assertEqual(RunSettings.for_model("14dof-simple").timeout_seconds, 3600.0)
+    def test_settings_json_rejects_malformed_types_and_enums(self):
+        invalid = (
+            {"solver_kind": "legacy-forward"}, {"solver_kind": 4}, {"mode": "standing-start"},
+            {"mode": None}, {"controller": "other"}, {"point_mass_method": "made-up"},
+            {"point_mass_record_precision": "float16"}, {"spacing": True},
+            {"profile_rounds": 2.5}, {"line_evaluations": False}, {"yaw_map": None},
+            {"plan": 4}, {"point_mass_lateral_acceleration": "5"}, {"maximum_step": float("nan")},
+        )
+        for payload in invalid:
+            with self.subTest(payload=payload), self.assertRaises(ValueError):
+                RunSettings.from_json(payload)
+        with self.assertRaisesRegex(ValueError, "JSON object"):
+            RunSettings.from_json(["yaw-aware"])
+
+    def test_model_and_solver_resolution_mapping(self):
+        for source in ("point-mass", "planar-7dof", "14dof-simple"):
+            with self.subTest(source=source):
+                self.assertEqual(solution_model_for(RunSettings(solver_kind="point-mass"), source), "point-mass")
+        self.assertEqual(solution_model_for(RunSettings(), "planar-7dof"), "planar-7dof")
+        self.assertEqual(solution_model_for(RunSettings(), "14dof-simple"), "planar-7dof")
+        with self.assertRaisesRegex(ValueError, "unsupported"):
+            solution_model_for(RunSettings(), "point-mass")
+        with self.assertRaisesRegex(ValueError, "unsupported"):
+            solution_model_for(RunSettings(), "unknown")
+
+    def test_settings_serialization_and_validation(self):
+        self.assertEqual(RunSettings.from_json(RunSettings().to_json()), RunSettings())
         with self.assertRaisesRegex(ValueError, "unknown run setting"):
             RunSettings.from_json({"unknown": 1})
-
-    def test_validation(self):
-        track = REPOSITORY_ROOT / "models/tracks/2024_michigan_endurance_closed.xml"
-        with self.assertRaisesRegex(ValueError, "wall limit"):
-            validate(RunSettings(timeout_seconds=301), "planar-7dof", track)
-        with self.assertRaisesRegex(ValueError, "quasi-static attitude applies to planar-7dof only"):
-            validate(RunSettings(quasi_static_attitude=True), "14dof-simple", track)
-
-    def test_json_round_trip(self):
-        self.assertEqual(RunSettings.from_json(RunSettings().to_json()), RunSettings())
+        with self.assertRaisesRegex(ValueError, "completed yaw-map artifact is required"):
+            validate(RunSettings(), "planar-7dof", Path("track.xml"))
+        with self.assertRaisesRegex(ValueError, "requires a saved plan"):
+            validate(RunSettings(yaw_map="missing", mode="replay"), "planar-7dof", Path("track.xml"))
+        with tempfile.TemporaryDirectory() as folder:
+            plan = Path(folder) / "plan.npz"
+            plan.touch()
+            with mock.patch("tools.sim_gui.settings._validate_map") as map_check:
+                validate(RunSettings(yaw_map="artifact.npz", mode="replay", plan=str(plan)), "14dof-simple", Path("track.xml"))
+                map_check.assert_called_once()
+        for field in ("profile_seconds", "line_seconds", "spacing", "line_evaluations", "maximum_step"):
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                validate(RunSettings(yaw_map="missing", **{field: 0}), "planar-7dof", Path("track.xml"))
+        with self.assertRaisesRegex(ValueError, "yaw map, mode, and plan"):
+            validate(RunSettings(solver_kind="point-mass", mode="line"), "planar-7dof", Path("track.xml"))
 
 
 class StudyTests(unittest.TestCase):
@@ -60,6 +88,19 @@ class StudyTests(unittest.TestCase):
             (Dimension("tire", ("a", "b")),
              Dimension("model", ("planar-7dof", "14dof-simple"))),
         )
+
+    def test_study_json_rejects_malformed_container_types(self):
+        definition = self.definition("one-at-a-time")
+        valid = definition.to_json()
+        malformed = (
+            [], {**valid, "name": 2}, {**valid, "choices": []}, {**valid, "dimensions": {}},
+            {**valid, "dimensions": [None]},
+            {**valid, "dimensions": [{"key": "x", "values": "bad"}]},
+            {**valid, "mode": "unknown"}, {**valid, "settings": []},
+        )
+        for payload in malformed:
+            with self.subTest(payload=payload), self.assertRaises(ValueError):
+                StudyDefinition.from_json(payload)
 
     def test_expansion_modes_and_labels(self):
         one = expand(self.definition("one-at-a-time"))
@@ -90,15 +131,21 @@ class StudyTests(unittest.TestCase):
 
     def test_five_cases_when_no_dimension_matches_baseline(self):
         definition = StudyDefinition(
-            "x", "", "t", "point-mass", {"tire": "x"}, RunSettings(), "one-at-a-time",
+            "x", "", "t", "planar-7dof", {"tire": "x"}, RunSettings(), "one-at-a-time",
             (Dimension("tire", ("a", "b")),
              Dimension("model", ("planar-7dof", "14dof-simple"))),
         )
-        self.assertEqual(len(expand(definition)), 5)
+        self.assertEqual(len(expand(definition)), 4)
+
+    def test_study_accepts_supported_source_models(self):
+        for model in ("point-mass", "planar-7dof", "14dof-simple"):
+            StudyDefinition("x", "", "t", model, {}, RunSettings(solver_kind="point-mass"), "one-at-a-time", ())
+        with self.assertRaisesRegex(ValueError, "unsupported GUI model"):
+            StudyDefinition("x", "", "t", "unknown", {}, RunSettings(), "one-at-a-time", ())
 
     def test_case_cap(self):
         definition = StudyDefinition(
-            "x", "", "t", "m", {}, RunSettings(), "full-factorial",
+            "x", "", "t", "point-mass", {}, RunSettings(solver_kind="point-mass"), "full-factorial",
             (Dimension("x", tuple(str(i) for i in range(501))),),
         )
         with self.assertRaises(TooManyCases):
@@ -107,7 +154,7 @@ class StudyTests(unittest.TestCase):
     def test_case_cap_is_checked_before_factorial_product(self):
         dimensions = tuple(Dimension(str(i), tuple(str(j) for j in range(1000)))
                            for i in range(3))
-        definition = StudyDefinition("x", "", "t", "m", {}, RunSettings(),
+        definition = StudyDefinition("x", "", "t", "point-mass", {}, RunSettings(solver_kind="point-mass"),
                                      "full-factorial", dimensions)
         with self.assertRaises(TooManyCases):
             expand(definition)
@@ -122,7 +169,7 @@ class StudyTests(unittest.TestCase):
 
     def test_duplicate_key(self):
         with self.assertRaisesRegex(ValueError, "slot tire is already swept"):
-            StudyDefinition("x", "", "t", "m", {}, RunSettings(), "one-at-a-time", (Dimension("tire", ("a",)), Dimension("tire", ("b",))))
+            StudyDefinition("x", "", "t", "point-mass", {}, RunSettings(solver_kind="point-mass"), "one-at-a-time", (Dimension("tire", ("a",)), Dimension("tire", ("b",))))
 
     def test_index_update_is_atomic(self):
         with tempfile.TemporaryDirectory() as d:
@@ -217,7 +264,7 @@ class StudyTests(unittest.TestCase):
             self.assertEqual(dimension.points[1], {"sweep": str(folder.resolve()), "index": 1,
                                                    "target": "parameter:mu_0_x", "operation": "scale", "x": 1.1, "unit": "1"})
             choices = {key: path.relative_to(REPOSITORY_ROOT).as_posix() for key, path in baseline.choices.items()}
-            definition = StudyDefinition("sweep", source.as_posix(), "track", "14dof-simple", choices,
+            definition = StudyDefinition("sweep", source.as_posix(), "track", "planar-7dof", choices,
                                          RunSettings(), "one-at-a-time", (dimension,))
             cases = expand(definition)
             self.assertEqual(len(cases), 3)
@@ -240,7 +287,7 @@ class StudyTests(unittest.TestCase):
             self.assertEqual(len(dimension.values), 3)
             self.assertEqual(dimension.labels, ("rc_height_front -0.01 m", "rc_height_front +0 m", "rc_height_front +0.01 m"))
             choices = {key: path.relative_to(REPOSITORY_ROOT).as_posix() for key, path in configuration.choices.items()}
-            definition = StudyDefinition("sweep", source.as_posix(), "track", "14dof-simple", choices,
+            definition = StudyDefinition("sweep", source.as_posix(), "track", "planar-7dof", choices,
                                          RunSettings(), "one-at-a-time", (dimension,))
             cases = expand(definition)
             self.assertEqual(len(cases), 4)
@@ -339,10 +386,10 @@ class VehicleTests(unittest.TestCase):
         self.assertEqual(configuration.choices["powertrain/power-plant"], expected)
         self.assertEqual(configuration.changed_from(VehicleConfiguration.open(self.FORMULATION_14))[0], "powertrain")
 
-    def test_point_mass_formulation_opens_but_names_no_runner(self):
+    def test_point_mass_formulation_is_supported_source(self):
         configuration = VehicleConfiguration.open(REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_point_mass.xml")
         self.assertEqual(configuration.model, "point-mass")
-        self.assertFalse(configuration.runnable)
+        self.assertTrue(configuration.runnable)
 
 
 class VariantTests(unittest.TestCase):
@@ -440,47 +487,85 @@ class ExecutionTests(unittest.TestCase):
         self.assertEqual(parse_progress('{"rhs_time": 400}', 300.0), 1.0)
         self.assertIsNone(parse_progress('not json', 300.0))
 
-    def test_child_command_records_attempt(self):
-        from tools.sim_gui.execute import PreparedCase
-        prepared = PreparedCase(Path('/tmp/case'), Path('/tmp/formulation.xml'), Path('/tmp/vehicle.xml'),
-                                ['--model', 'planar-7dof', '--record'])
-        command = child_command(prepared, Path('/tmp/case/attempt_A'))
-        self.assertEqual(command[-2:], ['--child-attempt', '/tmp/case/attempt_A'])
-        self.assertEqual(command.count('--record'), 1)
-        for bad in (['--model', 'planar-7dof'],
-                    ['--model', 'planar-7dof', '--record', '--record'],
-                    ['--model', 'planar-7dof', '--record', '--child-attempt', 'x'],
-                    ['--model', 'planar-7dof', '--record', '--output-root', 'x']):
-            with self.subTest(bad=bad), self.assertRaises(ValueError):
-                child_command(PreparedCase(prepared.directory, prepared.formulation, prepared.vehicle, bad),
-                              Path('/tmp/case/attempt_A'))
+    def test_prepare_case_no_longer_preflight_blocks_point_mass(self):
+        from tools.sim_gui.execute import prepare_case
+        definition = StudyDefinition("point", "missing.xml", "track.xml", "14dof-simple", {},
+                                     RunSettings(solver_kind="point-mass"), "one-at-a-time", ())
+        case = CaseSpec("case_000", "baseline", "14dof-simple", "models/tracks/2024_michigan_endurance_closed.xml", {}, {})
+        source = REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_14dof_simple.xml"
+        configuration = VehicleConfiguration.open(source)
+        definition = StudyDefinition("point", source.as_posix(), "models/tracks/2024_michigan_endurance_closed.xml",
+                                     "14dof-simple", {k: p.relative_to(REPOSITORY_ROOT).as_posix() for k,p in configuration.choices.items()},
+                                     RunSettings(solver_kind="point-mass"), "one-at-a-time", ())
+        with tempfile.TemporaryDirectory() as folder:
+            prepared = prepare_case(Path(folder), definition, case)
+            contract = json.loads((prepared.directory / "case.json").read_text())
+            self.assertEqual(contract["resolution_mapping"]["source_model"], "14dof-simple")
+            self.assertEqual(contract["resolution_mapping"]["solver_kind"], "point-mass")
+            self.assertEqual(contract["resolution_mapping"]["solution_model"], "point-mass")
+            self.assertEqual(prepared.solver_kind, "point-mass")
 
-    def test_finish_case_uses_prepared_timeout_and_model(self):
+    def test_child_command_uses_adapter_and_exact_case_binding(self):
+        from tools.sim_gui.execute import PreparedCase
+        argv = yaw_runner_argv(RunSettings(yaw_map="/tmp/completed.npz"), Path("track.xml"))
+        prepared = PreparedCase(Path('/tmp/case'), Path('/tmp/formulation.xml'), Path('/tmp/vehicle.xml'), argv)
+        command = child_command(prepared, Path('/tmp/case/attempt_A'))
+        self.assertTrue(command[2].endswith("tools/sim_gui/run_yaw_case.py"))
+        self.assertEqual(command[-4:], ["--case-dir", "/tmp/case", "--child-attempt", "/tmp/case/attempt_A"])
+        self.assertNotIn("run_iem24_forward_driver", " ".join(command))
+        bare = child_command(PreparedCase(prepared.directory, prepared.formulation, prepared.vehicle, []), Path('/tmp/a'))
+        self.assertTrue(bare[2].endswith("tools/sim_gui/run_yaw_case.py"))
+
+    def test_point_mass_child_uses_same_case_adapter(self):
+        from tools.sim_gui.execute import PreparedCase
+        prepared = PreparedCase(Path('/tmp/case'), Path('/tmp/formulation.xml'), Path('/tmp/vehicle.xml'), [],
+                                model="point-mass", solver_kind="point-mass")
+        command = child_command(prepared, Path('/tmp/case/attempt_A'))
+        self.assertTrue(command[2].endswith("tools/sim_gui/run_yaw_case.py"))
+
+    def test_finish_case_records_timeout_without_legacy_solver(self):
         from tools.sim_gui.execute import PreparedCase
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
-            prepared = PreparedCase(root, root / 'f.xml', root / 'v.xml', ['--record'],
-                                    model='14dof-simple', timeout_seconds=120.0)
-            attempt = root / 'attempt_A'
-            attempt.mkdir()
-            finish_case(prepared, attempt, return_code=2, timed_out=False, cancelled=False,
-                        wall_seconds=1.25, command=['cmd'])
+            prepared = PreparedCase(root, root / 'f.xml', root / 'v.xml', [], timeout_seconds=120.0)
+            attempt = root / 'attempt_A'; attempt.mkdir()
+            finish_case(prepared, attempt, return_code=2, timed_out=False, cancelled=False, wall_seconds=1.25, command=['cmd'])
             parent = json.loads((attempt / 'parent.json').read_text())
             self.assertEqual(parent['timeout_seconds'], 120.0)
-            from tools.run.run_iem24_forward_driver import solver_wall_budget
-            self.assertEqual(parent['solver_wall_budget_seconds'], solver_wall_budget(120.0, '14dof-simple'))
+            self.assertEqual(parent['solver_wall_budget_seconds'], 120.0)
 
     def test_finish_case_status_mapping(self):
         from tools.sim_gui.execute import PreparedCase
         with tempfile.TemporaryDirectory() as d:
             prepared = PreparedCase(Path(d), Path(d) / 'f.xml', Path(d) / 'v.xml', ['--model', 'planar-7dof'])
-            for code, timed, cancelled, expected in ((0, False, False, 'completed'), (2, False, False, 'rejected'),
+            for code, timed, cancelled, expected in ((0, False, False, 'planned'), (2, False, False, 'rejected'),
                                                        (1, False, False, 'failed'), (0, True, False, 'timed_out'),
                                                        (0, False, True, 'cancelled')):
                 attempt = Path(d) / ('attempt_' + expected)
                 attempt.mkdir()
                 if code == 0 and not timed and not cancelled:
-                    (attempt / 'summary.json').write_text('{}')
+                    from tools.sim_gui.settings import RunSettings
+                    track = REPOSITORY_ROOT / 'models/tracks/2024_michigan_endurance_closed.xml'
+                    form = REPOSITORY_ROOT / 'models/formulations/iem24_murphy_real_planar_7dof.xml'
+                    yaw_map = REPOSITORY_ROOT / 'runs/yaw_map_build/iem24-vehicle-limit-final.npz'
+                    identity = {'solver_kind':'yaw-aware','source_model':'planar-7dof','solution_model':'planar-7dof',
+                        'track':str(track),'track_sha256':hashlib.sha256(track.read_bytes()).hexdigest(),
+                        'formulation':str(form),'formulation_sha256':hashlib.sha256(form.read_bytes()).hexdigest(),
+                        'yaw_map':str(yaw_map),'yaw_map_sha256':hashlib.sha256(yaw_map.read_bytes()).hexdigest()}
+                    (prepared.directory / 'case.json').write_text(json.dumps({'input_identity':identity}))
+                    import numpy as np
+                    arrays={'distance':np.arange(3.),'curvature':np.zeros(3),'curvature_rate':np.zeros(3),'speed':np.ones(3),
+                        'reference_distance':np.arange(3.),'north':np.zeros(3),'east':np.zeros(3),'heading':np.zeros(3)}
+                    from simplified_vehicle_models.planning.yaw_lap_artifact import _digest, SCHEMA
+                    from simplified_vehicle_models.solvers.yaw_profile_contracts import CoupledProfileSettings
+                    from dataclasses import asdict
+                    metadata={'schema':SCHEMA,'track_identity':'tid','map_identity':'mid','array_digest':_digest(arrays),
+                        'is_closed':False,'profile_settings':asdict(CoupledProfileSettings())}
+                    np.savez(attempt/'plan.npz',**arrays,metadata=np.array(json.dumps(metadata)))
+                    digest=hashlib.sha256((attempt/'plan.npz').read_bytes()).hexdigest()
+                    (attempt/'inputs.json').write_text(json.dumps({**identity,'track_identity':'tid','map_identity':'mid',
+                        'map_sha256':identity['yaw_map_sha256'],'plan_sha256':digest}))
+                    (attempt/'summary.json').write_text(json.dumps({'status':'planned','lap_completed':False,'plan_artifact_sha256':digest}))
                 result = finish_case(prepared, attempt, return_code=code, timed_out=timed,
                                      cancelled=cancelled, wall_seconds=1.25, command=['cmd'])
                 self.assertEqual(result['status'], expected)

@@ -1,0 +1,48 @@
+{
+  "gap_percent": -9.601422708427808,
+  "gap_s": -6.882781099187582,
+  "interactions": "unresolved",
+  "status": "inconclusive; no controlled causal comparisons run",
+  "treatments": [
+    {
+      "driven_time_s": null,
+      "held_fixed": "unknown / not identity-bound",
+      "limitations": "Historical provenance and paired comparisons are identity-inconclusive.",
+      "six_channel_metrics": null,
+      "status": "not run \u2014 no identity-matched legacy replay on identical saved fixed plan and initial plant state",
+      "treatment": "Controller legacy vs final model-aware"
+    },
+    {
+      "driven_time_s": null,
+      "held_fixed": "unknown / not identity-bound",
+      "limitations": "Task9 paired comparisons are identity-inconclusive.",
+      "six_channel_metrics": null,
+      "status": "not run \u2014 no identity-matched controlled pair",
+      "treatment": "Fixed vs optimized line under final controller"
+    },
+    {
+      "driven_time_s": null,
+      "held_fixed": "saved plan/plant identity unavailable for paired treatment",
+      "limitations": "Loaded terminal voltage is not OCV; causal battery attribution unresolved.",
+      "six_channel_metrics": null,
+      "status": "not run \u2014 current and state evidence needed for OCV/resistance inference is absent",
+      "treatment": "Battery initialization response on one saved plan"
+    },
+    {
+      "driven_time_s": null,
+      "held_fixed": "not established",
+      "limitations": "Requires rebuild, independent map audit, and replanning; replay-only would test robustness only.",
+      "six_channel_metrics": null,
+      "status": "not run \u2014 no identity-bound maps/plans for perturbed tire model",
+      "treatment": "Grip scale 0.95 / 1.05 matched capability"
+    },
+    {
+      "driven_time_s": null,
+      "held_fixed": "physical lap times retained",
+      "limitations": "No best-shift correction applied; preserve original discrepancy.",
+      "six_channel_metrics": null,
+      "status": "not run \u2014 historical source provenance/geometry identity inconclusive",
+      "treatment": "Alignment \u00b11 bin and leave-one-lap-out translation"
+    }
+  ]
+}\n

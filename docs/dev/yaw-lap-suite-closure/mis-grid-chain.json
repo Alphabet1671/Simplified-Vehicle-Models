@@ -1,0 +1,24 @@
+{
+  "status": "inconclusive",
+  "comparisons": [],
+  "validation_evidence": [],
+  "failed_runs": [
+    {
+      "runs": [
+        "runs/yaw_lap_suite/closure-v1/mis-fixed-2m-r16",
+        "runs/yaw_lap_suite/closure-v1/mis-fixed-1m-r16"
+      ],
+      "status": "inconclusive",
+      "cause": "warm_start_policy must remain fixed for geometry comparison"
+    },
+    {
+      "runs": [
+        "runs/yaw_lap_suite/closure-v1/mis-fixed-2m-r16",
+        "runs/yaw_lap_suite/closure-v1/mis-fixed-0.5m-warm-r16"
+      ],
+      "status": "inconclusive",
+      "cause": "warm_start_policy must remain fixed for geometry comparison"
+    }
+  ],
+  "scope": "saved discrete plans; fresh strict profile validation against exact map and track; no continuous feasibility certification"
+}

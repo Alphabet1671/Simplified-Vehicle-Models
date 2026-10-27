@@ -1,0 +1,90 @@
+# Vehicle-limit yaw-map execution ledger
+
+## Scope and rulings
+
+- Worktree: yaw-aware-virtual-driver; baseline `26d42f4` (existing unrelated working-tree files preserved).
+- Ruling: “vehicle limit” means the existing quasi-static LP model, not measured or transient vehicle limits. The finite sampling resolution is always disclosed.
+- Ruling: preserve the declared longitudinal acceleration domain [-6, 3] m/s² for this lateral task, but record it explicitly; do not call this unrestricted combined-acceleration coverage.
+- Ruling: use the actual UniTire peak table to enclose lateral acceleration (`4*max(Fy_peak)/mass`), not a replacement arbitrary g cap. The table itself clamps outside its load domain; that calibration/modeling limitation must remain visible.
+- Ruling: artifacts with incomplete discovery or failed holdout acceptance must be rejected by normal consumers. Budget exhaustion is not physical infeasibility.
+
+## Progress
+
+- Discovery module and 8 synthetic tests added: signed support, disconnected sampled islands, empty slices, unresolved LPs, budgets, and finite tyre-derived bound.
+- Direct LP status adapter added; 4 tests show only HiGHS status 2 is physical infeasibility, other solver failures/nonfinite objective are unresolved. Physical map builder now raises on numerical failure instead of silently masking it.
+- Versioned NPZ artifact module added: exact axes, report/provenance, input/build identity, array integrity, fail-closed incomplete loading. 2 tests pass including tamper/stale/incomplete cases.
+- CLI scaffold created with explicit ay spacing, discovery resolution, boundary/loss tolerances, node/probe/time budgets and declared ax extent. `--help` passes.
+- Focused verification: 20 discovery/status/existing capability tests pass; 2 artifact tests pass.
+- Workflow implementation delegated; parent review caught invalid loss metric (ay cell width cannot measure speed/ax-induced interpolation loss) and oversize-allocation budget violation. Both must be fixed before physical verification/default switch.
+
+## Physical evidence and follow-up
+
+- Direct signed physical discovery: 1,984 probes in 1.8 s, complete on 4 speeds × 3 ax slices, bracket width 0.03125 m/s². Steady |ay| limits 15.53125–15.5625 at 5 m/s, 16.75–16.78125 at15, 18.6875–18.71875 at25,20.5625–20.59375 at33. Under ax=-6 at33,22.5625–22.59375. Evidence in ignored runs/yaw_map_build/domain-smoke.json.
+- Model-derived enclosing bound77.4102706856 m/s²; tyre peak load table0–3500N. This bound is a search enclosure, not actual achieved capability.
+- Consumer default dispatch now vehicle-limit; explicit limited-grid only for comparisons. Tests updated to explicitly select legacy fixture mode, rather than silent fallback.
+- Initial physical audit correctly fails; coarse v/ax cells lose real feasible support even after ay extent widens. Parent review caught acceptance gap using only cell-third samples; workflow now being repaired to audit independent refined direct boundary brackets.
+- Added shared physical-cell cache (moments and status) across discovery/map/audit; no repeated LP solve for identical node.
+- 35 domain/artifact/cache/status/consumer compatibility tests pass.
+
+## Physical build — internal acceptance WITHDRAWN
+
+- v7 completed after55 adaptive rounds:34×28×246=234,192 nodes, ay extent±25.1875m/s², worst strict boundary loss0.25m/s²; no outer truncations or unresolved points. 139,131 discovery LP-coordinate probes +126,124 independent cell-third discovery probes;2172 boundary acceptance comparisons;430.56s wall.
+- Maximum tyre load among sampled feasible discovery ends2284N, within3500N tyre table. The table's clamping behavior remains a model limitation but was not reached at these sampled boundary points.
+- Review fixes: numerical map-node failure now saves unresolved artifact evidence; singleton declared axes cannot qualify; transitive source hashes (21 files) retained, compiled runtime/code hash authoritative for cache invalidation.
+- Fresh quarter-cell holdout verification delegated; final current-code artifact build running with consumer-compatible defaults.
+- Broader yaw suite125 tests passed in663.7s before final review-only fixes; current focused31+ tests pass.
+
+## Fresh holdout failure — binding correction
+
+- Quarter-cell fresh direct audit (126,116LP coordinates/73.79s) found5 completely unsupported v/ax faces and finite loss1.21875m/s². No outer truncation. Therefore v7 internal complete is withdrawn; artifact is NOT accepted.
+- Ruling: separate cell-third refinement/training from untouched quarter-cell validation. Adaptive insertions use enclosing CELL MIDPOINTS rather than audit coordinates, so fitted audit knot coincidences cannot manufacture success. Completion must require held-out audit too. Cost if wrong: larger tensor/time, but never relax strict support or claim false vehicle-edge coverage.
+- Cancelled old final artifact rebuild; leave existing v7 as failed external-validation evidence only.
+
+## Disjoint validation build v8
+
+- Midpoint-only adaptive refinement plus disjoint quarter-position validation gates now implemented and tested (51 focused tests pass).
+- Physical v8:58×56×149 (~484k nodes), no completely masked training/validation slices. Node budget500k stopped at47 rounds; training loss0.65625, held-out loss0.59375m/s². Result correctly incomplete; no acceptance claim.
+- Larger explicit build v9 now running:2M nodes,256refinements,2400s. Tolerance remains0.25m/s². If it fails the workflow must remain fail-closed, not silently relax acceptance.
+- Full repository suite bash-1471 still running. Final yaw-specific suite130 tests passed in704.6s; meaningful budget assertion subsequently passes14 workflow tests. No OCP edits.
+
+## Refinement efficiency ruling
+
+- Reviewer proposes ay-only splits for finite loss and cross-axis splits only for wholly unsupported faces. Do NOT adopt as a guarantee: a finite masked boundary can still be limited by an infeasible v/ax corner even when lower ay has support. Ay bisection alone may converge to a persistently masked boundary. Any selective optimization needs measured progress or direct prospective plane evidence plus fallback, not a new monotonicity assumption.
+- Current v9 larger-budget physical run remains authoritative for the present all-axis midpoint algorithm. No duplicate build launched.
+
+## Larger-budget v9 outcome
+
+- v9 exceeded2400s after81rounds; retained92×90×183 map (~1.5M nodes), unresolved deadline evidence, incomplete. No completed default artifact exists yet.
+- Ruling: optimize refinement before increasing budgets further. Try ay-only finite-loss split, explicitly detect no measured loss reduction, then alternate one speed/ax midpoint fallback; wholly unsupported slices need cross-axis refinement. Acceptance remains disjoint and unchanged. The previous caution against ay-only guarantees still applies; fallback is required.
+- Physical budget-failure end-to-end smoke verified CLI exits4, saves NPZ, loader rejects incomplete artifact. Artifact workflow remains honest despite performance limits.
+
+## Selective v10 outcome and solver-cost optimization
+
+- v10 selective refinement still exhausted900s at57×55×142; incomplete with deadline evidence. No accepted physical default artifact yet. Do not present scaffold as complete user request.
+- Investigating exact rear-drive no-TV LP reduction: fixed aggregate drive/brake bias uniquely fixes per-wheel Fx; remaining two axle Fy intervals can be solved by intersecting the same16-sided tyre inequalities and totalFy equality. This may remove millions of HiGHS calls without changing model semantics. Must compare to direct LP extensively and retain fallback for other driveline/TV modes and independent HiGHS holdout validation.
+
+## Reduced LP + gap-refinement evidence
+
+- Exact rear-only/noTV interval reduction matches1900 canonical LP status/moment probes plus active motor-boundary perturbations; ambiguous/numerical cases fallback to canonical LP. Independent held-out validation explicitly uses separate canonical HiGHS evaluator.4 reduced tests pass; reviewer approved.
+- v11 reduced build failed2M node cap at268rounds, residualtraining0.5/validation0.5625. Parent diagnosed wrong-side negative boundary gap split, fixed toward actual strict support; sign regression16workflow tests passes.
+- v12 corrected gap training reached0.25 in331s, shape66×63×291; heldout0.375 => incomplete. This is useful progress, NOT accepted.
+- Ruling: fixed training guard band half acceptance tolerance (0.125 vs0.25), never loosen heldout acceptance. v13 now running3Mnodes768rounds1200s. This stricter internal criterion should reduce generalization loss; independent heldout still gate.
+
+## Held-out qualified v13
+
+- v13 COMPLETE:78×75×438 (2,562,300nodes),±25.1875m/s²,466rounds710.95s. Training2,172 checks max0.125; independent canonical HiGHS validation126,116LP-coordinate probes2,158checks max0.25. No unresolved/outer truncation/budget stop.
+- Final current-code rebuild bash-1545 in progress; consumer-compatible production defaults now3Mnodes768round1200s matching proven recipe.67focused regression tests pass.
+- Final report drafted under docs/dev/vehicle-limit-yaw-map-results.md. Need current artifact identity load, MIS/FSC preflight, final suite collection and review.
+
+## Final artifact and consumer verification
+
+- Final reviewed build COMPLETE:79×76×428=2,569,712nodes,±25.1875m/s²,458rounds685.70s. Training0.125, untouched HiGHS validation0.25, no outer truncation/unresolved. Artifact runs/yaw_map_build/iem24-vehicle-limit-final.npz.
+- Shared preflight successfully identity-loads final map for MIS/FSC at0.05m; both no holes, no warnings, lateral-axis saturation0% (old79%/88%). No lap/controller claims.
+- Independent final reviewer approved config/docs/reduced model. Current67focused tests passed; final yaw suite bash1551 running. Full2894-test repo suite bash1471 cancelled after ~3hours no completion; do not claim full suite pass.
+
+## Completion and runtime policy
+
+- Requested map-workflow objective completed: signed model-bound discovery, unresolved/truncation states, held-out canonical LP validation, persisted integrity/provenance artifacts, and shared consumer integration verified.
+- Final current-code focused suite:67 tests passed in3.399s under a120s process-group SIGKILL watchdog. Earlier yaw-wide snapshot:130 tests passed; the subsequent final broad yaw attempt was cancelled, not counted as a pass.
+- User hard rule: every run, including tests, must be killed at1800s unless explicitly approved beforehand. Recorded in AGENTS.md. All future nontrivial runs require process-level watchdogs; cooperative solver limits and tool wait timeouts alone are insufficient. Earlier multi-hour full suite was cancelled and is NOT a pass.
+- Separate follow-up: the larger accepted map can exceed the coupled profile solver's initial candidate budget; cached coarse probe reported typed budget_exceeded. Map coverage does not imply end-to-end planner readiness. No new lap/controller claim.

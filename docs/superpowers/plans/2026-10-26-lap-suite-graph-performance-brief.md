@@ -1,0 +1,7 @@
+# Optional Stage1b: graph DP performance
+
+Physical accepted-map2m profile spends~28/40s in graph solve, repeated seam anchors. Before a24evaluation line optimization, optimize existing layered DP without changing graph optimality/tie semantics.
+
+Own layered_q_graph.py + focused tests only, after Stage1 seed review. Replace per-node/per-edge Python loops with per-layer NumPy reductions over existing CSR edges; precompute edge sources once per solve. Reachability can set target states for reachable source edges; backward similarly. Distances update next layer using np.minimum.at; ties choose smallest source node ID exactly as existing loop. Traceback unchanged. Closed solver may batch anchor distance matrices if bounded memory, but preserve per-anchor reach/co-reach diagnostics and min(time,node_ids) final tie. Prefer vectorized per-layer single-anchor first to keep correctness straightforward.
+
+Tests reference old scalar DP on randomized small graphs including empty layers, disconnected cuts, exact equal-cost ties, unused nodes, anchor pairs and budgets. Existing tests plus brute force enumeration must match node_ids/time/reach/co-reach exactly, not approximate. Avoid standalone 'benchmark' asserts brittle timing; physical timing report outside unit tests. No OCP/map physical edits. Hard watchdog<=1800sec all commands. Report docs/superpowers/plans/2026-10-26-lap-suite-graph-performance-report.md. No subagents.

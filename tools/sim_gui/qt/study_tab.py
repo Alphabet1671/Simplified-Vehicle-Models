@@ -143,7 +143,7 @@ class StudyTab(QWidget):
 
     def _dimension_for_key(self, key: str) -> Dimension:
         if key == "model":
-            values = ("planar-7dof", "14dof-simple")
+            values = ("planar-7dof", "14dof-simple", "point-mass")
             return Dimension(key, values)
         if key == "track":
             entries = tracks(self._catalogue)

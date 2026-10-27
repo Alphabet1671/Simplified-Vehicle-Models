@@ -1,0 +1,69 @@
+{
+  "dimension": "geometry",
+  "status": "inconclusive",
+  "finest_pair_status": "inconclusive",
+  "comparisons": [
+    {
+      "dimension": "geometry",
+      "coarse": "fsc-fixed-1m-r16",
+      "fine": "fsc-fixed-0.5m-warm-r16",
+      "optimizer_status": [
+        "not_applicable",
+        "not_applicable"
+      ],
+      "thresholds": {
+        "geometric_time_relative": 0.005,
+        "geometric_speed_max_mps": 0.1,
+        "geometric_offset_max_m": 0.05,
+        "profile_candidate_time_relative": 0.001,
+        "profile_candidate_speed_max_mps": 0.02
+      },
+      "interpolation_rule": "piecewise-linear interpolation on the union of both station grids over the common reference domain",
+      "status": "inconclusive",
+      "reasons": [
+        "fsc-fixed-0.5m-warm-r16:profile_resolution_unproven"
+      ],
+      "time_relative_difference": 0.023857493665369826,
+      "speed_max_difference_mps": 9.427667207468396,
+      "offset_max_difference_m": 0.0,
+      "profile_candidate_meets_thresholds": false,
+      "common_reference_samples": 2303
+    }
+  ],
+  "thresholds": {
+    "geometric_time_relative": 0.005,
+    "geometric_speed_max_mps": 0.1,
+    "geometric_offset_max_m": 0.05,
+    "profile_candidate_time_relative": 0.001,
+    "profile_candidate_speed_max_mps": 0.02
+  },
+  "interpolation_rule": "piecewise-linear interpolation on the union of both station grids over the common reference domain",
+  "convergence_claim": null,
+  "profile_resolution_converged": false,
+  "optimizer_converged": false,
+  "continuous_feasibility_certified": false,
+  "global_optimality_certified": false,
+  "comparison_identity": "54aae4ebb8541bfd8b1dc7d95e53583cc67ca9727e1b70ced15ae4ebf025a81e",
+  "validation_evidence": [
+    {
+      "run": "fsc-fixed-1m-r16",
+      "plan_array_digest": "5581136cef9d66d558b80c26967091214f21f7ccb9a7347c0e819911461b153f",
+      "plan_file_digest": "1db17d034a4bc0334865d2448e90f89ad43cf372019155df32c9bfcad589597a",
+      "map_identity": "f8658cafbd35dc60cd195153ca4761db21d9a9d8b4819f1112a4f46ad7322419",
+      "track_identity": "9d23af92a8e943aad7a90da5581f73f2733ab3cbed3fbb454f8843bb5fc797eb",
+      "study_contract_sha256": "c0da45cef0bd0f71c504dfbbc2817cefc9d197d9108a90dbe3084cf6b5c57db1",
+      "strict_profile_validation": "valid"
+    },
+    {
+      "run": "fsc-fixed-0.5m-warm-r16",
+      "plan_array_digest": "16094e4f6627ceeddb9b732c97aadac638e2d7ba4b3525264d3c639a39a7bacd",
+      "plan_file_digest": "a599b2696454a8053e83a0b70160a391f64b1212714726b05866bb893230886a",
+      "map_identity": "f8658cafbd35dc60cd195153ca4761db21d9a9d8b4819f1112a4f46ad7322419",
+      "track_identity": "9d23af92a8e943aad7a90da5581f73f2733ab3cbed3fbb454f8843bb5fc797eb",
+      "study_contract_sha256": "84ba0ff3419ac9023e6e04499d053030ddafe18db971455d439b2f817c3ad624",
+      "strict_profile_validation": "valid"
+    }
+  ],
+  "failed_runs": [],
+  "scope": "saved discrete plans; fresh strict profile validation against exact map and track; no continuous feasibility certification"
+}

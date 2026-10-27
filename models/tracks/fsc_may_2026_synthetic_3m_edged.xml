@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<model schema-version="1.0" id="fsc-may-2026-synthetic-3m-edged" type="track-model" subtype="closed-xy-profile">
+    <!-- Synthetic assumed corridor only: 3.0 m total, 1.5 m per side. These are not surveyed edges. -->
+    <metadata>
+        <title>FSTC 2026 (synthetic assumed 3 m corridor)</title>
+        <source sha256="76c2c301dc963dadbb17223812652bf3c342daecdd224455c8aa0df9aa2f18a2">20260524-FSC-Endurance_1.mat</source>
+    </metadata>
+    <data ref="fsc_may_2026_centerline.csv" />
+    <data role="width" ref="fsc_may_2026_synthetic_3m_width.csv" />
+    <parameters>
+        <parameter name="is_closed" value="true" />
+        <parameter name="terminal_segment_is_duplicate" value="true" />
+        <parameter name="node_spacing" value="2.25" unit="m" />
+        <parameter name="smoothing_length" value="0" unit="m" />
+        <parameter name="maximum_radius" value="300" unit="m" />
+        <parameter name="width_provenance" value="assumed" />
+        <parameter name="half_width_note" value="synthetic assumed 1.5 m each side; 3.0 m total; not surveyed" />
+    </parameters>
+</model>

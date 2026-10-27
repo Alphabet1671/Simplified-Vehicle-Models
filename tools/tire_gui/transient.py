@@ -197,5 +197,5 @@ def fit_transient(snapshot: ModelSnapshot, events: tuple[TransientEvent,...], lo
     metrics['event_count']=float(len(events))
     provenance=dict(candidate.provenance); provenance['transient_fit_status']='fitted' if converged else 'provisional'
     statusmap=dict(candidate.parameter_status); statusmap.update(statuses)
-    candidate=type(candidate)(candidate.revision,candidate.steady,candidate.transient,candidate.values,provenance,statusmap,candidate.steady_fingerprint,candidate.load_domain)
+    candidate=type(candidate)(candidate.revision,candidate.steady,candidate.transient,candidate.values,provenance,statusmap,candidate.steady_fingerprint,candidate.load_domain,candidate.session_metadata)
     return FitResult(snapshot.revision,candidate,metrics,converged,tuple(warnings),statuses)

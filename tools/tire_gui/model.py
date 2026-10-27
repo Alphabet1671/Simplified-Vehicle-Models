@@ -24,7 +24,7 @@ def _fingerprint(values):
     payload = '\n'.join(f'{k}={values[k].hex()}' for k in sorted(CANONICAL_STEADY_NAMES))
     return sha256(payload.encode()).hexdigest()
 
-def _make_snapshot(steady, transient, revision, provenance, statuses=None, load_domain=(0.0,1500.0)):
+def _make_snapshot(steady, transient, revision, provenance, statuses=None, load_domain=(0.0,1500.0), session_metadata=None):
     values = flatten_steady(steady)
     values.update({n: float(getattr(transient, n)) for n in TRANSIENT_NAMES})
     for name, coefficients in (('k_x', steady.k_x), ('k_y', steady.k_y)):
@@ -46,7 +46,7 @@ def _make_snapshot(steady, transient, revision, provenance, statuses=None, load_
                         ('lateral_length_scale', transient.lateral_length_scale)):
         if not np.isfinite(value) or value <= 0:
             raise ValueError(f'{name} must be finite and positive')
-    return ModelSnapshot(revision, steady, transient, values, provenance, statuses or {}, _fingerprint(values), load_domain)
+    return ModelSnapshot(revision, steady, transient, values, provenance, statuses or {}, _fingerprint(values), load_domain, session_metadata or {})
 
 def load_snapshot(steady_xml: Path, transient_xml: Path | None = None, load_domain: tuple[float, float] = (0.0, 1500.0)) -> ModelSnapshot:
     if len(load_domain) != 2 or not np.all(np.isfinite(load_domain)) or load_domain[0] < 0 or load_domain[1] <= load_domain[0]:
@@ -81,7 +81,7 @@ def with_parameters(snapshot: ModelSnapshot, changes: Mapping[str, float]) -> Mo
         statuses.update({n: 'edited' for n in changes})
         statuses.update({n: 'stale' for n in TRANSIENT_NAMES})
     else: statuses.update({n:'edited' for n in changes})
-    return _make_snapshot(steady, transient, snapshot.revision+1, provenance, statuses, snapshot.load_domain)
+    return _make_snapshot(steady, transient, snapshot.revision+1, provenance, statuses, snapshot.load_domain, snapshot.session_metadata)
 
 def with_parameter(snapshot: ModelSnapshot, name: str, value: float) -> ModelSnapshot:
     return with_parameters(snapshot, {name:value})
@@ -110,4 +110,4 @@ def import_mat_seed(path: Path, template: ModelSnapshot) -> ModelSnapshot:
     steady = unflatten_steady({n:values[n] for n in CANONICAL_STEADY_NAMES}, template.steady)
     provenance = dict(template.provenance); provenance.update(seed_kind='requested MATLAB fit', steady_source=str(Path(path)), transient_fit_status='provisional')
     statuses = dict(template.parameter_status); statuses.update({n:'requested MATLAB fit' for n in CANONICAL_STEADY_NAMES})
-    return _make_snapshot(steady, template.transient, template.revision+1, provenance, statuses, template.load_domain)
+    return _make_snapshot(steady, template.transient, template.revision+1, provenance, statuses, template.load_domain, template.session_metadata)

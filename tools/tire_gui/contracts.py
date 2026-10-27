@@ -41,11 +41,13 @@ class ModelSnapshot:
     parameter_status: Mapping[str, str] = field(default_factory=dict)
     steady_fingerprint: str = ''
     load_domain: tuple[float, float] = (0.0, 1500.0)
+    session_metadata: Mapping = field(default_factory=dict)
 
     def __post_init__(self):
         object.__setattr__(self, 'values', MappingProxyType(dict(self.values)))
         object.__setattr__(self, 'provenance', MappingProxyType(dict(self.provenance)))
         object.__setattr__(self, 'parameter_status', MappingProxyType(dict(self.parameter_status)))
+        object.__setattr__(self, 'session_metadata', MappingProxyType(dict(self.session_metadata)))
 
 
 @dataclass(frozen=True)

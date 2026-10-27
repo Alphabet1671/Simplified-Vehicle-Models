@@ -48,6 +48,8 @@ def parse_args(argv=None):
     p.add_argument('--heading-gain',type=float,default=None)
     p.add_argument('--lateral-gain',type=float,default=None)
     p.add_argument('--yaw-damping',type=float,default=None)
+    p.add_argument('--initial-state-overrides',type=Path,help='JSON dictionary of explicit state deltas for one replay')
+    p.add_argument('--plant-variation',type=Path,help='JSON dictionary of declared actuator lag multipliers')
     add_yaw_map_options(p)
     args=p.parse_args(argv)
     if args.yaw_map is None:p.error('--yaw-map completed artifact is required; suite never rebuilds maps')
@@ -55,6 +57,23 @@ def parse_args(argv=None):
     if args.line_outer_passes <= 0:p.error('--line-outer-passes must be positive')
     if args.line_optimizer_iterations <= 0:p.error('--line-optimizer-iterations must be positive')
     return args
+
+
+def apply_initial_state_overrides(initial_state, overrides, *, closed=True, minimum_speed=0.25):
+    """Apply named state deltas without clipping inadmissible values."""
+    state=np.asarray(initial_state,dtype=float).copy()
+    indices={'lateral_error':1,'heading_error':2,'speed':3,'yaw_rate':5}
+    if state.ndim!=1 or state.size<6 or not np.all(np.isfinite(state)):
+        raise ValueError('initial plant state must be a finite vector with published state layout')
+    if not isinstance(overrides,dict) or set(overrides)-set(indices):
+        raise ValueError('initial-state override has unsupported fields')
+    for key,delta in overrides.items():
+        if isinstance(delta,bool) or not np.isfinite(delta):
+            raise ValueError(f'initial-state override {key} must be finite')
+        state[indices[key]]+=float(delta)
+    if state[3]<minimum_speed or (closed and state[3]<=1.0):
+        raise ValueError('perturbed initial speed is inadmissible')
+    return state
 
 
 def _failure_summary(error):
@@ -253,6 +272,21 @@ def replay(args,output,vehicle,track,path,speed_plan,arrays,metadata):
     replay_diagnostics={}
     try:
         initial_state=plant.initial_state(float(speed_plan.speed[0]))
+        if args.initial_state_overrides is not None:
+            overrides=json.loads(args.initial_state_overrides.read_text())
+            initial_state=apply_initial_state_overrides(initial_state,overrides,closed=path.is_closed,
+                minimum_speed=plant.minimum_speed)
+        if args.plant_variation is not None:
+            variation=json.loads(args.plant_variation.read_text())
+            if not isinstance(variation,dict) or set(variation)-{'steering','pedal'}:
+                raise ValueError('plant variation may only declare steering and pedal lag multipliers')
+            if any(isinstance(v,bool) or not isinstance(v,(int,float)) or not np.isfinite(v) or v<=0 for v in variation.values()):
+                raise ValueError('actuator lag multipliers must be finite and positive')
+            # Sensitivity requires changing explicit physical lag parameters. The
+            # current plant has fixed steering/pedal response, so refuse rather
+            # than silently ignore requested variations.
+            if variation:
+                raise ValueError('actuator lag variation is not wired to plant dynamics; sensitivity case not run')
         update_replay_initial_state(output/'inputs.json',initial_state,plant.state_names)
         result=solve_forward(plant,driver,initial_state,duration=args.duration,
             wall_seconds=args.replay_seconds,maximum_wall_seconds=min(1500.,args.replay_seconds),

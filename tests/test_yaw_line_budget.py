@@ -93,6 +93,8 @@ class YawLineBudgetSettingsTests(unittest.TestCase):
         self.assertEqual(result.status,"budget_exceeded")
         self.assertEqual(result.diagnostics["evaluated_profile_count"],2)
         self.assertEqual(result.diagnostics["search_stop_reason"],"profile_evaluations")
+        self.assertEqual(result.diagnostics["optimizer_stop_kind"],"budget_exceeded")
+        self.assertFalse(result.diagnostics["converged"])
 
     def test_exact_seed_coefficients_are_cached(self):
         track=circle_track(); calls=[]

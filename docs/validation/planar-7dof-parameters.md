@@ -54,9 +54,10 @@ These are emitted unchanged and are marked as estimates in the XML:
 | `wheel_inertia` | 0.247741 kg·m² | A 16 inch by 8 inch solid cylinder of 12 kg |
 | `steering_maximum_angle` | 30 deg | A stated placeholder |
 | `steering_maximum_rate` | 180 deg/s | A stated placeholder |
-| `brake_bias` | 0.65 | A stated placeholder |
-| `maximum_brake_torque_front` | 262.967 N·m per wheel | A stated peak deceleration of 1.5 g |
-| `maximum_brake_torque_rear` | 141.598 N·m per wheel | The same peak deceleration and the bias |
+| `brake_bias` | 0.0 (neutral) | Signed balance bar; user-specified 2026-10-26 |
+| `pad_mu_front` / `pad_mu_rear` | 0.40 / 0.35 | User-specified 2026-10-26 |
+| pedal ratio (`murphy_pedal_ratio.csv`) | 1.55 constant | User-specified 2026-10-26 |
+| `hydraulic_ratio_front` / `hydraulic_ratio_rear` | 7.665 / 5.543134 | **Fabricated** to give a 0.62 / 0.38 front/rear hydraulic torque split |
 | `air_density` | 1.162 kg/m³ | The sheet's stated reference condition |
 
 ### Yaw inertia
@@ -94,22 +95,35 @@ planar assembly now uses the requested 10 kg value. Archived results retain thei
 original parameters. The spatial OCP uses quasi-steady wheel torque balance and
 does not apply wheel inertia; the transient forward evaluator does.
 
-### Brake torque
+### Brake torque (hydraulic pedal chain)
 
-The sheet gives caliper models, rotor sizes, master cylinder bores and line
-pressures, but no caliper piston area and no pad friction coefficient, so the
-torque at the pad cannot be computed from the sheet. The model instead derives
-a per-wheel torque from a stated peak deceleration:
+`src/simplified_vehicle_models/controls/brakes.py` owns the chain. Its input is
+the driver's **pedal force in newtons**; a 0-100 % brake position exists only
+inside the open-loop driver robot, which multiplies its request by
+`maximum_pedal_force`.
 
 ```text
-axle_force   = total_mass * 1.5 g
-front_torque = axle_force * brake_bias     * effective_radius / 2
-rear_torque  = axle_force * (1 - bias)     * effective_radius / 2
+pushrod      = F_pedal * pedal_ratio(F_pedal)            # 1.55 constant
+front_share  = (1 + brake_bias) / 2                      # 0 neutral, +1 all front, -1 all rear
+F_mc_front   = pushrod * front_share ;  F_mc_rear = pushrod - F_mc_front
+clamp_axle   = F_mc_axle * hydraulic_ratio_axle          # per caliper
+p_axle       = clamp_axle / caliper_area                 # max(p_f, p_r) <= maximum_brake_pressure
+T_wheel_axle = 2 * pad_mu_axle * clamp_axle * effective_radius_axle
 ```
 
-This is a capability estimate, not a measurement. It assumes the brakes, not
-the tires, set the peak deceleration. It must be replaced before any braking
-result is trusted.
+The front/rear torque share follows from the chain alone
+(`front_brake_torque_share`) and is independent of pedal force:
+
+```text
+share = s*HR_f*mu_f*r_f / (s*HR_f*mu_f*r_f + (1-s)*HR_r*mu_r*r_r) = 0.620
+```
+
+The point-mass and 14DoF formulations consume that derived share
+(`front_brake_share`), so all Murphy models use the same split. The two
+hydraulic ratios are fabricated: `HR_f = 7.665` keeps the total torque at the
+sheet's 450 N one-g point close to the earlier calibration (about 0.95 g on a
+0.2 m tire), and `HR_r` is set for the 0.62 split. Replace them with
+master-cylinder and caliper bore data before any braking result is trusted.
 
 ## Load transfer convention
 
@@ -162,9 +176,12 @@ Two properties are worth stating because they are easy to get wrong:
 | `steering_maximum_rate` | rad/s | Estimate |
 | `caster_angle` | rad | Obfuscated |
 | `kingpin_inclination_angle` | rad | Obfuscated |
-| `brake_bias` | 1 | Estimate |
-| `maximum_brake_torque_front` | N·m | Estimate |
-| `maximum_brake_torque_rear` | N·m | Estimate |
+| `brake_bias` | 1 | User-specified, signed balance bar |
+| `maximum_pedal_force` | N | Estimate (driver force limit) |
+| `hydraulic_ratio_front`, `hydraulic_ratio_rear` | 1 | Fabricated for a 0.62/0.38 split |
+| `maximum_brake_pressure`, `caliper_area` | Pa, m² | Estimate |
+| `pad_mu_front`, `pad_mu_rear` | 1 | User-specified |
+| `brake_effective_radius_front`, `brake_effective_radius_rear` | m | Estimate |
 
 Wheel order is always FL, FR, RL, RR. The wheel positions are
 `(4, 2)` arrays of `(x, y)` in body axes: the front axle sits at a positive

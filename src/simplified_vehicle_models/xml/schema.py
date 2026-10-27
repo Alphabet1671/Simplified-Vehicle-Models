@@ -121,6 +121,17 @@ def require_open_unit_interval(
             raise ValueError(f"{model.path}: {name} must be between zero and one")
 
 
+def require_signed_brake_bias(model: Model, values: dict[str, float]) -> None:
+    """Raise ValueError when the signed balance-bar setting leaves [-1, +1].
+
+    ``brake_bias`` is 0 for neutral, +1 for all force on the front master
+    cylinder and -1 for all force on the rear master cylinder.
+    """
+
+    if not -1.0 <= values["brake_bias"] <= 1.0:
+        raise ValueError(f"{model.path}: brake_bias must be from -1 through +1")
+
+
 def require_closed_unit_interval(
     model: Model,
     values: dict[str, float],

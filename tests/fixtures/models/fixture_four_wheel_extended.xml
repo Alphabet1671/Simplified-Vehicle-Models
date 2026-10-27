@@ -9,7 +9,13 @@
         <parameter name="cg_height" value="0.3" unit="m"/>
         <parameter name="front_mass_fraction" value="0.47" unit="1"/>
         <parameter name="lateral_load_transfer_distribution" value="0.44" unit="1"/>
-        <parameter name="brake_bias" value="0.65" unit="1"/>
+        <parameter name="brake_bias" value="0.0" unit="1"/>
+        <parameter name="hydraulic_ratio_front" value="7.665" unit="1"/>
+        <parameter name="hydraulic_ratio_rear" value="5.543134" unit="1"/>
+        <parameter name="pad_mu_front" value="0.40" unit="1"/>
+        <parameter name="pad_mu_rear" value="0.35" unit="1"/>
+        <parameter name="brake_effective_radius_front" value="0.077622" unit="m"/>
+        <parameter name="brake_effective_radius_rear" value="0.075184" unit="m"/>
         <parameter name="suspension_roll_axis_height" value="0.06" unit="m"/>
     </parameters>
     <components>

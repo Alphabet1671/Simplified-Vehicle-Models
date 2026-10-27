@@ -14,6 +14,7 @@ from simplified_vehicle_models.compiler.capabilities import (
     TIRE_FORCE_ENVELOPE,
 )
 from simplified_vehicle_models.aero import fixed_aero
+from simplified_vehicle_models.controls.brakes import front_brake_torque_share
 from simplified_vehicle_models.core.conventions import GRAVITY
 from simplified_vehicle_models.drivetrain.fixed_split import (
     DRIVE_FRONT_FRACTION,
@@ -48,6 +49,7 @@ from simplified_vehicle_models.xml.schema import (
     require_nonnegative,
     require_open_unit_interval,
     require_positive,
+    require_signed_brake_bias,
     required_parameters,
 )
 
@@ -116,7 +118,23 @@ POINT_MASS_VEHICLE_PARAMETER_UNITS: dict[str, str] = {
     "front_mass_fraction": "1",
     "lateral_load_transfer_distribution": "1",
     "brake_bias": "1",
+    "hydraulic_ratio_front": "1",
+    "hydraulic_ratio_rear": "1",
+    "pad_mu_front": "1",
+    "pad_mu_rear": "1",
+    "brake_effective_radius_front": "m",
+    "brake_effective_radius_rear": "m",
 }
+
+#: Hydraulic-chain parameters that only set the point-mass front brake share.
+_POINT_MASS_BRAKE_CHAIN = (
+    "hydraulic_ratio_front",
+    "hydraulic_ratio_rear",
+    "pad_mu_front",
+    "pad_mu_rear",
+    "brake_effective_radius_front",
+    "brake_effective_radius_rear",
+)
 
 
 def compile_point_mass_vehicle(
@@ -131,8 +149,20 @@ def compile_point_mass_vehicle(
 
     values, _ = required_parameters(assembly, POINT_MASS_VEHICLE_PARAMETER_UNITS)
     require_positive(assembly, values, "total_mass", "wheelbase", "track_width")
+    require_positive(assembly, values, *_POINT_MASS_BRAKE_CHAIN)
     require_nonnegative(assembly, values, "cg_height")
-    require_open_unit_interval(assembly, values, "front_mass_fraction", "brake_bias")
+    require_open_unit_interval(assembly, values, "front_mass_fraction")
+    require_signed_brake_bias(assembly, values)
+    # The hydraulic chain fixes the front share of brake torque; the
+    # point-mass equilibrium only needs that share.
+    front_brake_share = front_brake_torque_share(
+        values["brake_bias"],
+        *(values[name] for name in _POINT_MASS_BRAKE_CHAIN),
+    )
+    if not 0.0 < front_brake_share < 1.0:
+        raise ValueError(
+            f"{assembly.path}: the hydraulic chain must brake both axles"
+        )
     require_closed_unit_interval(
         assembly,
         values,
@@ -147,7 +177,7 @@ def compile_point_mass_vehicle(
         lateral_load_transfer_distribution=values[
             "lateral_load_transfer_distribution"
         ],
-        brake_bias=values["brake_bias"],
+        front_brake_share=front_brake_share,
         tire=_capability_value(
             assembly,
             resolutions,
@@ -259,7 +289,7 @@ def point_mass_view_of_planar(vehicle) -> PointMassVehicleParameters:
         cg_height=vehicle.cg_height,
         front_mass_fraction=vehicle.front_mass_fraction,
         lateral_load_transfer_distribution=vehicle.lateral_load_transfer_distribution,
-        brake_bias=vehicle.brake_bias,
+        front_brake_share=vehicle.front_brake_share,
         tire=build_unitire_peak_envelope(vehicle.tire),
         aero=vehicle.aero,
         drivetrain=vehicle.drivetrain,
@@ -501,7 +531,7 @@ def evaluate_equilibrium(
             longitudinal_forces,
             remaining,
             brake_demand,
-            vehicle.brake_bias,
+            vehicle.front_brake_share,
         )
         longitudinal_feasible = brake_demand <= brake_limit + 1.0e-8
         active_constraint = brake_constraint
@@ -932,7 +962,7 @@ def _available_brake_force(
     vehicle: PointMassVehicleParameters,
     tire_limits: FloatArray,
 ) -> tuple[float, str]:
-    bias = vehicle.brake_bias
+    bias = vehicle.front_brake_share
     limits = {
         "front_left_tire": 2.0 * float(tire_limits[0]) / bias,
         "front_right_tire": 2.0 * float(tire_limits[1]) / bias,

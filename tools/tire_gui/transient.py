@@ -71,7 +71,7 @@ def simulate_event(snapshot: ModelSnapshot, event: TransientEvent, maximum_step:
     if not np.all(np.isfinite(output)): raise ValueError('nonfinite transient replay')
     return output
 
-def fit_transient(snapshot: ModelSnapshot, events: tuple[TransientEvent,...], locked: frozenset[str], cancel: Callable[[],bool]=lambda:False, progress: Callable[[dict],None]=lambda _:None) -> FitResult:
+def fit_transient(snapshot: ModelSnapshot, events: tuple[TransientEvent,...], locked: frozenset[str], cancel: Callable[[],bool]=lambda:False, progress: Callable[[dict],None]=lambda _:None, bounds_override: dict[str, tuple[float, float]] | None = None) -> FitResult:
     _cancel(cancel)
     if not events: raise ValueError('at least one approved transient event is required')
     for event in events: validate_event(event)
@@ -100,7 +100,9 @@ def fit_transient(snapshot: ModelSnapshot, events: tuple[TransientEvent,...], lo
             scale=load if col<2 else np.maximum(load*radius,1.)
             targets.append((e,col,target,scale))
         if not targets: return
-        bounds=np.array([_BOUNDS[n] for n in active],float)
+        bounds=np.array([tuple(bounds_override[n]) if bounds_override and n in bounds_override else _BOUNDS[n] for n in active],float)
+        if bounds.shape != (len(active), 2) or not np.all(np.isfinite(bounds)) or np.any(bounds[:, 0] >= bounds[:, 1]):
+            raise ValueError('transient fit bounds must be finite and strictly increasing')
         x0=np.array([base.values[n] for n in active]); x0=np.clip(x0,bounds[:,0]+1e-9,bounds[:,1]-1e-9)
         def residual(x):
             _cancel(cancel)

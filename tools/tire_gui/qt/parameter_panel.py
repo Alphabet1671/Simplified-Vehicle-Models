@@ -11,6 +11,9 @@ class ParameterPanel(QWidget):
         self.layout=QVBoxLayout(self); self.rows=QVBoxLayout(); self.layout.addLayout(self.rows); self.layout.addStretch()
     def set_snapshot(self,snapshot):
         self.snapshot=snapshot
+        metadata = dict(getattr(snapshot, 'session_metadata', {}) or {})
+        saved_bounds = metadata.get('bounds', {})
+        saved_locks = metadata.get('locks', {})
         while self.rows.count():
             item=self.rows.takeAt(0); widget=item.widget()
             if widget: widget.deleteLater()
@@ -18,8 +21,10 @@ class ParameterPanel(QWidget):
         for name,value in snapshot.values.items():
             spec=self.specs[name]; row=QHBoxLayout(); label=QLabel(f'{name} ({spec.unit})')
             spin=QDoubleSpinBox(); spin.setDecimals(12); spin.setRange(-1e12,1e12); spin.setKeyboardTracking(False); spin.setValue(value); spin.setAccessibleName(name+' value')
-            lo,hi=self._bounds(name,value); slider=QSlider(Qt.Orientation.Horizontal); slider.setRange(0,10000); slider.setValue(round((value-lo)/(hi-lo)*10000) if hi>lo else 0)
-            lock=QCheckBox('Lock'); lock.setChecked(spec.default_locked); lock.setAccessibleName(name+' lock')
+            lo,hi=saved_bounds.get(name,self._bounds(name,value)); lo=float(lo); hi=float(hi)
+            if not lo < hi: lo,hi=self._bounds(name,value)
+            slider=QSlider(Qt.Orientation.Horizontal); slider.setRange(0,10000); slider.setValue(round((value-lo)/(hi-lo)*10000) if hi>lo else 0)
+            lock=QCheckBox('Lock'); lock.setChecked(saved_locks.get(name,spec.default_locked)); lock.setAccessibleName(name+' lock')
             lower=QDoubleSpinBox(); upper=QDoubleSpinBox()
             for box,v in ((lower,lo),(upper,hi)): box.setDecimals(12); box.setRange(-1e12,1e12); box.setValue(v)
             self.controls[name]=(spin,slider,lock,lower,upper)

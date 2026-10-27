@@ -52,5 +52,6 @@ def specs():
     for name in (*CANONICAL_STEADY_NAMES, *TRANSIENT_NAMES):
         group = name.split('_')[0]
         locked = name in {'k_cx','k_cy','f_z_rated','r_1','r_2','r_3','force_eps','stiff_eps','slip_eps','omega_cr','omega_eps','vroll_min','k_11','k_12','k_13','k_21','k_22','k_23','longitudinal_length_scale'}
-        result.append(ParameterSpec(name, UNITS[name], float('-inf'), float('inf'), group, locked))
+        unit = UNITS[name] if name in UNITS else UNITS[VECTOR_FIELDS[name][0]]
+        result.append(ParameterSpec(name, unit, float('-inf'), float('inf'), group, locked))
     return tuple(result)

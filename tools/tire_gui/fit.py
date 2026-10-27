@@ -55,7 +55,7 @@ def _safe_cost(snapshot, data, cancel):
     return cost
 
 
-def fit_steady(snapshot: ModelSnapshot, data: SteadySelection, locked: frozenset[str], cancel: Callable[[], bool] = lambda: False, progress: Callable[[dict], None] = lambda _: None) -> FitResult:
+def fit_steady(snapshot: ModelSnapshot, data: SteadySelection, locked: frozenset[str], cancel: Callable[[], bool] = lambda: False, progress: Callable[[dict], None] = lambda _: None, bounds_override: dict[str, tuple[float, float]] | None = None) -> FitResult:
     if any(np.any(s.fz <= 0) for s in (data.lateral,data.longitudinal,data.combined_fx,data.combined_fy,data.mz)):
         raise ValueError('selected samples require positive loads')
     active_force = tuple(n for n in FORCE_NAMES if n not in locked)
@@ -68,7 +68,8 @@ def fit_steady(snapshot: ModelSnapshot, data: SteadySelection, locked: frozenset
     def optimize(names, bounds, objective_name):
         nonlocal current, converged
         if not names: return
-        limits = [bounds[n] for n in names]
+        limits = [tuple(bounds_override[n]) if bounds_override and n in bounds_override else bounds[n] for n in names]
+        if any(len(pair)!=2 or not np.all(np.isfinite(pair)) or pair[0]>=pair[1] for pair in limits): raise ValueError('fit bounds must be finite and strictly increasing')
         starts = []
         for n,(lo,hi) in zip(names,limits):
             raw = current.values[n]

@@ -1,6 +1,7 @@
 """Native PyQt interface for TTC tire correlation."""
 from dataclasses import replace
 from pathlib import Path
+import numpy as np
 
 from PyQt6.QtCore import QSettings, QTimer, QThread, Qt
 from PyQt6.QtWidgets import (
@@ -40,6 +41,7 @@ class MainWindow(QMainWindow):
         self.source_files = []
         self.selection = None
         self.holdout_ids = set()
+        self.dirty = False
 
         root = QWidget(self)
         layout = QVBoxLayout(root)
@@ -47,8 +49,9 @@ class MainWindow(QMainWindow):
         self.open_button = QPushButton('Open XML')
         self.seed_button = QPushButton('Import MATLAB seed')
         self.data_button = QPushButton('Data folder')
+        self.session_button = QPushButton('Restore session…')
         self.save_button = QPushButton('Save fit as…')
-        for button in (self.open_button, self.seed_button, self.data_button, self.save_button):
+        for button in (self.open_button, self.seed_button, self.data_button, self.session_button, self.save_button):
             bar.addWidget(button)
         layout.addLayout(bar)
 
@@ -91,11 +94,16 @@ class MainWindow(QMainWindow):
         self.cancel_button = QPushButton('Cancel')
         self.apply_button = QPushButton('Apply candidate')
         self.discard_button = QPushButton('Discard candidate')
+        self.undo_button = QPushButton('Undo')
+        self.redo_button = QPushButton('Redo')
+        self.reset_button = QPushButton('Reset group')
+        self.restore_seed_button = QPushButton('Restore seed')
         self.progress = QProgressBar()
         self.status = QLabel('No model loaded')
         actions = QHBoxLayout()
         for button in (self.fit_button, self.fit_transient_button, self.fit_longitudinal_button,
-                       self.cancel_button, self.apply_button, self.discard_button):
+                       self.cancel_button, self.apply_button, self.discard_button, self.undo_button,
+                       self.redo_button, self.reset_button, self.restore_seed_button):
             actions.addWidget(button)
         layout.addLayout(actions)
         layout.addWidget(self.progress)
@@ -117,12 +125,17 @@ class MainWindow(QMainWindow):
         self.open_button.clicked.connect(self._choose_xml)
         self.seed_button.clicked.connect(self._choose_seed)
         self.data_button.clicked.connect(self._choose_data)
+        self.session_button.clicked.connect(self._choose_session)
         self.save_button.clicked.connect(self._save_dialog)
         self.fit_button.clicked.connect(self.start_steady_fit)
         self.fit_transient_button.clicked.connect(self.start_transient_fit)
         self.cancel_button.clicked.connect(self.cancel_fit)
         self.apply_button.clicked.connect(self._apply_current_candidate)
         self.discard_button.clicked.connect(self.discard_candidate)
+        self.undo_button.clicked.connect(self.undo)
+        self.redo_button.clicked.connect(self.redo)
+        self.reset_button.clicked.connect(self.reset_group)
+        self.restore_seed_button.clicked.connect(self.restore_seed)
         self.approve_button.clicked.connect(self.approve_event)
         self.run_combo.currentIndexChanged.connect(self._refresh_run)
         self.event_list.currentRowChanged.connect(self._select_event)
@@ -194,6 +207,7 @@ class MainWindow(QMainWindow):
                 return
             self._push_history()
             self.snapshot = with_parameter(self.snapshot, name, value)
+            self.dirty = True
             self.history.append(self.snapshot)
             self.history_index = len(self.history) - 1
             self.generation += 1
@@ -228,6 +242,30 @@ class MainWindow(QMainWindow):
         self.history_index += 1
         self.snapshot = self.history[self.history_index]
         self.generation += 1
+        self._invalidate_candidate()
+        self.parameter_panel.set_snapshot(self.snapshot)
+        self.plot_timer.start()
+        return True
+
+    def reset_group(self):
+        if self.snapshot is None:
+            return False
+        names = [name for name in self.snapshot.values if name.split('_')[0] in {'k', 'mu', 'h', 'v', 'e', 'd', 'longitudinal', 'lateral', 'trail'}]
+        return self._restore_values({name: self.seed.values[name] for name in names})
+
+    def restore_seed(self):
+        if self.seed is None:
+            return False
+        return self._restore_values(dict(self.seed.values))
+
+    def _restore_values(self, values):
+        self._push_history()
+        for name, value in values.items():
+            self.snapshot = with_parameter(self.snapshot, name, value)
+        self.history.append(self.snapshot)
+        self.history_index = len(self.history) - 1
+        self.generation += 1
+        self.dirty = True
         self._invalidate_candidate()
         self.parameter_panel.set_snapshot(self.snapshot)
         self.plot_timer.start()
@@ -430,6 +468,7 @@ class MainWindow(QMainWindow):
         self._invalidate_candidate()
         self.fit_button.setEnabled(False)
         self.fit_transient_button.setEnabled(False)
+        self.fit_longitudinal_button.setEnabled(False)
         self.cancel_button.setEnabled(True)
         self._fit_generation = self.generation
         self.thread = QThread(self)
@@ -473,6 +512,7 @@ class MainWindow(QMainWindow):
         self.worker = self.thread = None
         self.fit_button.setEnabled(True)
         self.fit_transient_button.setEnabled(any(event.approved for event in self.events))
+        self.fit_longitudinal_button.setEnabled(any(event.approved and event.axis == 'longitudinal' for event in self.events))
         self.cancel_button.setEnabled(False)
 
     def cancel_fit(self):
@@ -515,7 +555,7 @@ class MainWindow(QMainWindow):
             groups = [
                 ('Fy vs alpha', data.lateral, 'lateral_force', data.lateral.alpha, 'alpha (rad)', 'Fy (N)'),
                 ('Fx vs kappa', data.longitudinal, 'longitudinal_force', data.longitudinal.kappa, 'kappa', 'Fx (N)'),
-                ('Combined slip', data.combined_fx, 'longitudinal_force', data.combined_fx.alpha, 'alpha / combined command', 'Fx/Fz'),
+                ('Combined slip Fx/Fz vs Fy/Fz', data.combined_fx, 'longitudinal_force', None, 'Fy/Fz', 'Fx/Fz'),
                 ('Mz vs alpha', data.mz, 'aligning_moment', data.mz.alpha, 'alpha (rad)', 'Mz (N·m)'),
             ]
             for axis, (title, samples, component, x, xlabel, ylabel) in zip(self.steady_plot.axes, groups):
@@ -524,13 +564,32 @@ class MainWindow(QMainWindow):
                 measured = samples.target / denominator
                 prediction = predict_steady(self.snapshot, samples, data.belt_speed)
                 current = getattr(prediction, component) / denominator
-                order = x.argsort()
-                axis.scatter(x, measured, s=5, c='#555555', label='Measured', alpha=.65)
-                axis.plot(x[order], current[order], label='Current fit', color='#1665a8')
-                if self.seed:
-                    seed = getattr(predict_steady(self.seed, samples, data.belt_speed), component) / denominator
-                    axis.plot(x[order], seed[order], label='Seed', color='#bd5a20', linestyle='--')
-                axis.plot(x[order], (measured - current)[order], label='Residual', color='#8a3b3b', alpha=.7)
+                if title.startswith('Combined slip'):
+                    fy = data.combined_fy
+                    fy_measured = {int(ix): float(val / fz) for ix, val, fz in zip(fy.raw_indices, fy.target, fy.fz)}
+                    fx_measured = {int(ix): float(val / fz) for ix, val, fz in zip(samples.raw_indices, samples.target, samples.fz)}
+                    common = sorted(set(fy_measured) & set(fx_measured))
+                    x = np.asarray([fy_measured[i] for i in common])
+                    measured = np.asarray([fx_measured[i] for i in common])
+                    fx_prediction = predict_steady(self.snapshot, samples, data.belt_speed)
+                    current_by_raw = {int(ix): float(val / fz) for ix, val, fz in zip(samples.raw_indices, fx_prediction.longitudinal_force, samples.fz)}
+                    current = np.asarray([current_by_raw[i] for i in common])
+                    order = np.argsort(x)
+                    axis.scatter(x, measured, s=5, c='#555555', label='Measured', alpha=.65)
+                    axis.plot(x[order], current[order], label='Current fit', color='#1665a8')
+                    if self.seed:
+                        seed_pred = predict_steady(self.seed, samples, data.belt_speed)
+                        seed_by_raw = {int(ix): float(val / fz) for ix, val, fz in zip(samples.raw_indices, seed_pred.longitudinal_force, samples.fz)}
+                        axis.plot(x[order], [seed_by_raw[i] for i in np.asarray(common)[order]], label='Seed', color='#bd5a20', linestyle='--')
+                    axis.plot(x[order], (measured-current)[order], label='Residual', color='#8a3b3b', alpha=.7)
+                else:
+                    order = x.argsort()
+                    axis.scatter(x, measured, s=5, c='#555555', label='Measured', alpha=.65)
+                    axis.plot(x[order], current[order], label='Current fit', color='#1665a8')
+                    if self.seed:
+                        seed = getattr(predict_steady(self.seed, samples, data.belt_speed), component) / denominator
+                        axis.plot(x[order], seed[order], label='Seed', color='#bd5a20', linestyle='--')
+                    axis.plot(x[order], (measured-current)[order], label='Residual', color='#8a3b3b', alpha=.7)
                 axis.set_title(title)
                 axis.set_xlabel(xlabel)
                 axis.set_ylabel(ylabel)
@@ -565,24 +624,39 @@ class MainWindow(QMainWindow):
             'locks': {name: name in self.parameter_panel.locked() for name in self.snapshot.values},
             'bounds': {name: list(pair) for name, pair in self.parameter_panel.bounds().items()},
             'source_files': self.source_files,
+            'selections': {'run_id': self.run_combo.currentData(), 'holdout_ids': [list(x) for x in sorted(self.holdout_ids)]},
+            'events': [{'id': f'{e.run.run_id}:{i}', 'start': int(e.start), 'stop': int(e.stop), 'run_id': int(e.run.run_id), 'axis': str(e.axis), 'approved': bool(e.approved), 'reason': '; '.join(e.exclusions), 'source_file': self.source_files[-1] if self.source_files else '', 'segment_id': str(i)} for i, e in enumerate(self.events)],
             'diagnostics': {'generation': self.generation},
         }
         return save_session(self.snapshot, Path(output_dir), stem, include_transient=True, overwrite=overwrite, metadata=metadata)
 
+    def _choose_session(self):
+        path = QFileDialog.getExistingDirectory(self, 'Restore private tire fit bundle', str(DEFAULT_OUTPUT))
+        if not path:
+            return
+        try:
+            self.load_session_path(path)
+        except Exception as exc:
+            QMessageBox.warning(self, 'Session restore refused', str(exc))
+
     def _save_dialog(self):
         if self.snapshot is None:
+            return
+        output_dir = QFileDialog.getExistingDirectory(self, 'Choose private output directory', str(DEFAULT_OUTPUT))
+        if not output_dir:
             return
         stem, accepted = QInputDialog.getText(self, 'Save fit bundle', 'Private bundle name:')
         if not accepted:
             return
-        destination = DEFAULT_OUTPUT / stem.strip()
+        destination = Path(output_dir) / stem.strip()
         overwrite = False
         if destination.exists():
             if QMessageBox.question(self, 'Overwrite private bundle?', f'Overwrite recognized bundle {destination}?') != QMessageBox.StandardButton.Yes:
                 return
             overwrite = True
         try:
-            files = self.save_session(DEFAULT_OUTPUT, stem.strip(), overwrite)
+            files = self.save_session(output_dir, stem.strip(), overwrite)
+            self.dirty = False
             self.status.setText('Saved private validated bundle: ' + ', '.join(path.name for path in files))
         except Exception as exc:
             self.status.setText(f'Save refused: {exc}')
@@ -590,15 +664,45 @@ class MainWindow(QMainWindow):
     def load_session_path(self, path):
         snapshot = load_session(Path(path))
         metadata = snapshot.session_metadata
+        self.runs = {}
+        self.run_combo.clear()
         self.snapshot = snapshot
+        self.seed = snapshot
         self.generation += 1
         self.source_files = list(metadata.get('source_files', []))
         self._history_reset()
         self.parameter_panel.set_snapshot(snapshot)
-        self.status.setText('Session restored; source references retained, samples not embedded.')
+        selections = metadata.get('selections', {})
+        run_id = selections.get('run_id')
+        run_index = self.run_combo.findData(run_id)
+        if run_index >= 0:
+            self.run_combo.setCurrentIndex(run_index)
+        self.holdout_ids = {tuple(item) for item in selections.get('holdout_ids', [])}
+        source_paths = [Path(p) for p in self.source_files if Path(p).is_file()]
+        for source in source_paths:
+            try:
+                run = self.load_data_path(source)
+            except Exception:
+                continue
+        saved_events = {(int(row.get('run_id', -1)), int(row['start']), int(row['stop'])): row for row in metadata.get('events', [])}
+        for i, event in enumerate(self.events):
+            row = saved_events.get((int(event.run.run_id), int(event.start), int(event.stop)))
+            if row:
+                self.events[i] = replace(event, approved=bool(row.get('approved', False)))
+        for index in range(self.segment_list.count()):
+            item = self.segment_list.item(index)
+            if item.data(Qt.ItemDataRole.UserRole) in self.holdout_ids:
+                item.setCheckState(Qt.CheckState.Checked)
+        self.dirty = False
+        self.status.setText('Session restored; available source references and GUI options restored, samples not embedded.')
         return snapshot
 
     def closeEvent(self, event):
+        if self.dirty and self.isVisible():
+            answer = QMessageBox.question(self, 'Unsaved changes', 'Discard unsaved tire model edits and close?', QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
+            if answer != QMessageBox.StandardButton.Yes:
+                event.ignore()
+                return
         self.settings.setValue('geometry', self.saveGeometry())
         if self.worker:
             self.worker.cancel()

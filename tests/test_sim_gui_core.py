@@ -12,7 +12,7 @@ from tools.sim_gui.vehicle import VehicleConfiguration
 from tools.sim_gui.variant import VariantFiles, write_variant
 from tools.sim_gui.settings import RunSettings, solution_model_for, yaw_runner_argv, validate
 from tools.sim_gui.study import (
-    StudyDefinition, StudyIndex, TooManyCases, Dimension, expand, dimension_from_sweep,
+    StudyDefinition, StudyIndex, TooManyCases, Dimension, CaseSpec, expand, dimension_from_sweep,
 )
 from tools.sim_gui.execute import child_command, finish_case, parse_progress
 from simplified_vehicle_models.compiler.compile import compile_formulation
@@ -33,6 +33,20 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(solution_model_for(point, "14dof-simple"), "point-mass")
         with self.assertRaisesRegex(ValueError, "unsupported"):
             validate(RunSettings(solver_kind="yaw-aware"), "point-mass", Path("track.xml"))
+
+    def test_settings_json_rejects_malformed_types_and_enums(self):
+        invalid = (
+            {"solver_kind": "legacy-forward"}, {"solver_kind": 4}, {"mode": "standing-start"},
+            {"mode": None}, {"controller": "other"}, {"point_mass_method": "made-up"},
+            {"point_mass_record_precision": "float16"}, {"spacing": True},
+            {"profile_rounds": 2.5}, {"line_evaluations": False}, {"yaw_map": None},
+            {"plan": 4}, {"point_mass_lateral_acceleration": "5"}, {"maximum_step": float("nan")},
+        )
+        for payload in invalid:
+            with self.subTest(payload=payload), self.assertRaises(ValueError):
+                RunSettings.from_json(payload)
+        with self.assertRaisesRegex(ValueError, "JSON object"):
+            RunSettings.from_json(["yaw-aware"])
 
     def test_model_and_solver_resolution_mapping(self):
         for source in ("point-mass", "planar-7dof", "14dof-simple"):
@@ -73,6 +87,19 @@ class StudyTests(unittest.TestCase):
             (Dimension("tire", ("a", "b")),
              Dimension("model", ("planar-7dof", "14dof-simple"))),
         )
+
+    def test_study_json_rejects_malformed_container_types(self):
+        definition = self.definition("one-at-a-time")
+        valid = definition.to_json()
+        malformed = (
+            [], {**valid, "name": 2}, {**valid, "choices": []}, {**valid, "dimensions": {}},
+            {**valid, "dimensions": [None]},
+            {**valid, "dimensions": [{"key": "x", "values": "bad"}]},
+            {**valid, "mode": "unknown"}, {**valid, "settings": []},
+        )
+        for payload in malformed:
+            with self.subTest(payload=payload), self.assertRaises(ValueError):
+                StudyDefinition.from_json(payload)
 
     def test_expansion_modes_and_labels(self):
         one = expand(self.definition("one-at-a-time"))
@@ -459,6 +486,16 @@ class ExecutionTests(unittest.TestCase):
         self.assertEqual(parse_progress('{"rhs_time": 400}', 300.0), 1.0)
         self.assertIsNone(parse_progress('not json', 300.0))
 
+    def test_prepare_case_preflight_rejects_point_mass_before_materializing(self):
+        from tools.sim_gui.execute import prepare_case
+        definition = StudyDefinition("point", "missing.xml", "track.xml", "14dof-simple", {},
+                                     RunSettings(solver_kind="point-mass"), "one-at-a-time", ())
+        case = CaseSpec("case_000", "baseline", "14dof-simple", "track.xml", {}, {})
+        with tempfile.TemporaryDirectory() as folder:
+            with self.assertRaisesRegex(ValueError, "point-mass adaptation unavailable"):
+                prepare_case(Path(folder), definition, case)
+            self.assertFalse((Path(folder) / "cases").exists())
+
     def test_child_command_uses_yaw_suite_and_exact_map(self):
         from tools.sim_gui.execute import PreparedCase
         argv = yaw_runner_argv(RunSettings(yaw_map="/tmp/completed.npz"), Path("track.xml"))
@@ -471,16 +508,13 @@ class ExecutionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             child_command(PreparedCase(prepared.directory, prepared.formulation, prepared.vehicle, []), Path('/tmp/a'))
 
-    def test_point_mass_child_keeps_current_runner_contract(self):
+    def test_point_mass_child_is_rejected_before_execution(self):
         from tools.sim_gui.execute import PreparedCase
         argv = ["--model", "14dof-simple", "--track", "track.xml", "--planner", "live", "--record"]
-        prepared = PreparedCase(Path('/tmp/case'), Path('/tmp/formulation.xml'), Path('/tmp/vehicle.xml'), argv)
-        command = child_command(prepared, Path('/tmp/case/attempt_A'))
-        self.assertTrue(command[2].endswith("tools/sim_gui/run_case.py"))
-        self.assertIn("--model", command)
-        self.assertIn("14dof-simple", command)
-        self.assertIn("--planner", command)
-        self.assertEqual(command[command.index("--planner") + 1], "live")
+        prepared = PreparedCase(Path('/tmp/case'), Path('/tmp/formulation.xml'), Path('/tmp/vehicle.xml'), argv,
+                                model="point-mass", solver_kind="point-mass")
+        with self.assertRaisesRegex(ValueError, "point-mass adaptation unavailable"):
+            child_command(prepared, Path('/tmp/case/attempt_A'))
 
     def test_finish_case_records_timeout_without_legacy_solver(self):
         from tools.sim_gui.execute import PreparedCase

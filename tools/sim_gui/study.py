@@ -35,6 +35,16 @@ class Dimension:
     points: tuple[dict, ...] = ()
 
     def __post_init__(self) -> None:
+        if not isinstance(self.key, str) or not self.key:
+            raise ValueError("dimension key must be a nonempty string")
+        if not isinstance(self.values, (list, tuple)) or any(not isinstance(value, str) for value in self.values):
+            raise ValueError("dimension values must be a list of strings")
+        if not isinstance(self.labels, (list, tuple)) or any(not isinstance(label, str) for label in self.labels):
+            raise ValueError("dimension labels must be a list of strings")
+        if self.sweep is not None and not isinstance(self.sweep, str):
+            raise ValueError("dimension sweep must be a string or null")
+        if not isinstance(self.points, (list, tuple)) or any(not isinstance(point, dict) for point in self.points):
+            raise ValueError("dimension points must be a list of objects")
         values = tuple(self.values)
         labels = tuple(self.labels) or tuple(Path(value).stem for value in values)
         if len(labels) != len(values):
@@ -70,6 +80,18 @@ class StudyDefinition:
     dimensions: tuple[Dimension, ...]
 
     def __post_init__(self) -> None:
+        for name in ("name", "source", "track", "model"):
+            if not isinstance(getattr(self, name), str):
+                raise ValueError(f"study {name} must be a string")
+        if not isinstance(self.choices, dict) or any(not isinstance(key, str) or not isinstance(value, str) for key, value in self.choices.items()):
+            raise ValueError("study choices must be an object of strings")
+        if not isinstance(self.settings, RunSettings):
+            raise ValueError("study settings must be RunSettings")
+        if not isinstance(self.mode, str) or self.mode not in {"one-at-a-time", "full-factorial"}:
+            raise ValueError(f"unsupported study mode: {self.mode}")
+        if not isinstance(self.dimensions, (list, tuple)) or any(not isinstance(item, Dimension) for item in self.dimensions):
+            raise ValueError("study dimensions must be a list of dimensions")
+        object.__setattr__(self, "dimensions", tuple(self.dimensions))
         if self.model not in {"planar-7dof", "14dof-simple", "point-mass"}:
             raise ValueError(f"unsupported GUI model: {self.model}")
         seen: set[str] = set()
@@ -92,6 +114,8 @@ class StudyDefinition:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> "StudyDefinition":
+        if not isinstance(data, dict):
+            raise ValueError("study definition must be a JSON object")
         allowed = {"name", "source", "track", "model", "choices", "settings", "mode", "dimensions"}
         unknown = set(data) - allowed
         if unknown:
@@ -99,10 +123,33 @@ class StudyDefinition:
         missing = allowed - set(data)
         if missing:
             raise ValueError(f"missing study field(s): {', '.join(sorted(missing))}")
+        for name in ("name", "source", "track", "model", "mode"):
+            if not isinstance(data[name], str):
+                raise ValueError(f"study {name} must be a string")
+        if data["mode"] not in {"one-at-a-time", "full-factorial"}:
+            raise ValueError(f"unsupported study mode: {data['mode']}")
+        if not isinstance(data["choices"], dict) or any(not isinstance(key, str) or not isinstance(value, str) for key, value in data["choices"].items()):
+            raise ValueError("study choices must be an object of strings")
+        if not isinstance(data["dimensions"], list):
+            raise ValueError("study dimensions must be a list")
+        dimensions = []
+        allowed_dimension = {"key", "values", "labels", "sweep", "points"}
+        for item in data["dimensions"]:
+            if not isinstance(item, dict):
+                raise ValueError("each study dimension must be an object")
+            unknown_dimension = set(item) - allowed_dimension
+            if unknown_dimension:
+                raise ValueError(f"unknown dimension field(s): {', '.join(sorted(unknown_dimension))}")
+            if not {"key", "values"}.issubset(item):
+                raise ValueError("dimension requires key and values")
+            try:
+                dimensions.append(Dimension(**item))
+            except TypeError as error:
+                raise ValueError(f"invalid study dimension: {error}") from error
         return cls(
             data["name"], data["source"], data["track"], data["model"],
-            dict(data.get("choices", {})), RunSettings.from_json(data["settings"]),
-            data["mode"], tuple(Dimension(**item) for item in data["dimensions"]),
+            dict(data["choices"]), RunSettings.from_json(data["settings"]),
+            data["mode"], tuple(dimensions),
         )
 
 

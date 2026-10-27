@@ -57,10 +57,45 @@ class RunSettings:
         unknown = set(data) - set(cls.__dataclass_fields__)
         if unknown:
             raise ValueError(f"unknown run setting(s): {', '.join(sorted(unknown))}")
+        integer_fields = {"profile_rounds", "line_evaluations", "line_outer_passes", "line_optimizer_iterations"}
+        float_fields = {
+            "spacing", "control_spacing", "profile_seconds", "line_seconds", "duration",
+            "replay_seconds", "maximum_step", "point_mass_duration", "point_mass_spacing",
+            "point_mass_maximum_speed", "point_mass_pedal_travel_time", "point_mass_preview_seconds",
+            "point_mass_heading_gain", "point_mass_lateral_gain", "point_mass_rtol",
+            "point_mass_lateral_acceleration",
+        }
+        string_fields = {"solver_kind", "yaw_map", "mode", "controller", "point_mass_method", "point_mass_record_precision"}
+        nullable_strings = {"plan"}
+        for name, value in data.items():
+            if name in integer_fields and (isinstance(value, bool) or not isinstance(value, int)):
+                raise ValueError(f"{name} must be an integer")
+            if name in float_fields and value is not None and (isinstance(value, bool) or not isinstance(value, (int, float))):
+                raise ValueError(f"{name} must be numeric" + (" or null" if name == "point_mass_lateral_acceleration" else ""))
+            if name in string_fields and not isinstance(value, str):
+                raise ValueError(f"{name} must be a string")
+            if name in nullable_strings and value is not None and not isinstance(value, str):
+                raise ValueError(f"{name} must be a string or null")
+        enums = {
+            "solver_kind": {"point-mass", "yaw-aware"},
+            "mode": {"fixed", "line", "replay"},
+            "controller": {"preview", "model-aware"},
+            "point_mass_method": {"BDF", "LSODA", "RK45", "DOP853", "Radau"},
+            "point_mass_record_precision": {"float32", "float64"},
+        }
+        for name, choices in enums.items():
+            if name in data and data[name] not in choices:
+                raise ValueError(f"unsupported {name}: {data[name]}")
         try:
-            return cls(**data)
+            settings = cls(**data)
         except TypeError as error:
             raise ValueError(str(error)) from error
+        numeric = float_fields
+        for name in numeric & data.keys():
+            value = getattr(settings, name)
+            if value is not None and not math.isfinite(value):
+                raise ValueError(f"{name} must be finite")
+        return settings
 
 
 def solution_model_for(settings: RunSettings, selected_model: str) -> str:
@@ -150,7 +185,7 @@ def validate(settings: RunSettings, model: str, track: Path) -> None:
 
 
 def yaw_runner_argv(settings: RunSettings, track: Path) -> list[str]:
-    """Map yaw-aware settings to the suite CLI; point-mass remains on old runner."""
+    """Map yaw-aware settings to the suite CLI; point-mass is not dispatched."""
     if settings.solver_kind != "yaw-aware":
         raise ValueError("yaw_runner_argv only accepts solver_kind='yaw-aware'")
     values = (

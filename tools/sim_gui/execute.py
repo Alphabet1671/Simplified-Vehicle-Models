@@ -26,6 +26,7 @@ class PreparedCase:
     model: str = "planar-7dof"
     timeout_seconds: float = 300.0
     duration: float = 300.0
+    solver_kind: str = "yaw-aware"
 
 
 def _resolve(value: str | Path) -> Path:
@@ -40,12 +41,13 @@ def _atomic_json(path: Path, data: dict[str, Any]) -> None:
 
 
 def prepare_case(study_dir: Path, definition: StudyDefinition, case: CaseSpec) -> PreparedCase:
-    """Prepare a case's selected source and persist solver/resolution intent.
+    """Prepare yaw-aware cases; selected point-mass is preflight-blocked.
 
-    Point-mass still maps through the existing forward runner until Task 3; full
-    model adaptation is declared in ``case.json`` for that runner integration.
-    This function intentionally does not compile either adapted solution.
+    Solution mapping is a serialization contract only; this does not physically
+    adapt or compile a point-mass model.
     """
+    if definition.settings.solver_kind == "point-mass":
+        raise ValueError("point-mass adaptation unavailable until yaw GUI runner migration")
     directory = Path(study_dir) / "cases" / case.id
     model_dir = directory / "model"
     settings = definition.settings
@@ -65,25 +67,10 @@ def prepare_case(study_dir: Path, definition: StudyDefinition, case: CaseSpec) -
     track = _resolve(case.track)
     validate(settings, case.model, track)
 
-    if settings.solver_kind == "yaw-aware":
-        argv = yaw_runner_argv(settings, track)
-    else:
-        # Keep the current forward runner mapping while Task 3 integrates the
-        # point-mass view adapter. Its parser accepts the selected full-model ID.
-        argv = ["--model", case.model, "--track", str(track), "--duration", repr(settings.point_mass_duration),
-                "--spacing", repr(settings.point_mass_spacing), "--maximum-speed", repr(settings.point_mass_maximum_speed),
-                "--pedal-travel-time", repr(settings.point_mass_pedal_travel_time),
-                "--preview-seconds", repr(settings.point_mass_preview_seconds),
-                "--heading-gain", repr(settings.point_mass_heading_gain),
-                "--lateral-gain", repr(settings.point_mass_lateral_gain), "--rtol", repr(settings.point_mass_rtol),
-                "--method", settings.point_mass_method, "--record-precision", settings.point_mass_record_precision,
-                "--planner", "live", "--record"]
-        if settings.point_mass_lateral_acceleration is not None:
-            argv.extend(("--lateral-acceleration", repr(settings.point_mass_lateral_acceleration)))
+    argv = yaw_runner_argv(settings, track)
 
     payload = {
         "id": case.id, "label": case.label, "model": case.model, "track": case.track,
-        "choices": dict(case.choices), "sweep_points": dict(case.sweep_points),
         "settings": settings.to_json(), "solver_kind": settings.solver_kind,
         "solution_model": solution_model,
         "resolution_mapping": {"source_model": case.model, "solver_kind": settings.solver_kind,
@@ -92,13 +79,10 @@ def prepare_case(study_dir: Path, definition: StudyDefinition, case: CaseSpec) -
         "vehicle": files.vehicle.relative_to(directory).as_posix(), "argv": argv,
     }
     _atomic_json(directory / "case.json", payload)
-    if settings.solver_kind == "point-mass":
-        timeout = settings.point_mass_duration
-    else:
-        timeout = settings.replay_seconds if settings.mode == "replay" else settings.profile_seconds
+    timeout = settings.replay_seconds if settings.mode == "replay" else settings.profile_seconds
     timeout = min(1800.0, timeout)
-    return PreparedCase(directory, files.formulation, files.vehicle, argv, model=case.model,
-                        timeout_seconds=timeout, duration=(settings.point_mass_duration if settings.solver_kind == "point-mass" else settings.duration))
+    return PreparedCase(directory, files.formulation, files.vehicle, argv, model=solution_model,
+                        timeout_seconds=timeout, duration=settings.duration, solver_kind=settings.solver_kind)
 
 
 def validate_case(prepared: PreparedCase) -> str | None:
@@ -116,15 +100,14 @@ def new_attempt(prepared: PreparedCase) -> Path:
 
 
 def child_command(prepared: PreparedCase, attempt: Path) -> list[str]:
+    """Build a child command; reject point-mass until physical adaptation lands."""
+    if prepared.solver_kind == "point-mass" or prepared.model == "point-mass":
+        raise ValueError("point-mass adaptation unavailable until yaw GUI runner migration")
     forbidden = {"--child-attempt", "--output-root"}
     if "--model" not in prepared.argv and "--yaw-map" not in prepared.argv:
         raise ValueError("prepared argv must specify an explicit solver contract")
     if "--model" in prepared.argv:
-        if forbidden.intersection(prepared.argv):
-            raise ValueError("prepared argv must not contain child-only/output-root options")
-        # Point-mass remains on today's forward child runner through Task 3.
-        return [sys.executable, "-u", str(Path(__file__).with_name("run_case.py").resolve()),
-                "--case-dir", str(prepared.directory), *prepared.argv, "--child-attempt", str(attempt)]
+        raise ValueError("unsupported legacy point-mass command; use yaw-aware runner")
     if "--mode" not in prepared.argv:
         raise ValueError("prepared yaw-aware argv must contain mode")
     if forbidden.intersection(prepared.argv):

@@ -248,6 +248,8 @@ class MainWindow(QMainWindow):
         try:
             from tools.sim_gui.settings import validate
             validate(definition.settings, definition.model, Path(definition.track))
+            if definition.settings.solver_kind == "point-mass":
+                raise ValueError("point-mass adaptation unavailable until yaw GUI runner migration")
         except ValueError as error:
             _warn(self, "Study", str(error))
             return
@@ -432,6 +434,8 @@ class MainWindow(QMainWindow):
         try:
             from tools.sim_gui.settings import validate
             validate(settings, self.configuration.model, track)
+            if settings.solver_kind == "point-mass":
+                raise ValueError("point-mass adaptation unavailable until yaw GUI runner migration")
         except ValueError as error:
             _warn(self, "Single run", str(error))
             return

@@ -532,6 +532,10 @@ class MainWindowTests(unittest.TestCase):
         window.open_model(REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_point_mass.xml")
         window.settings_tab.solver_kind.setCurrentIndex(window.settings_tab.solver_kind.findData("point-mass"))
         self.assertTrue(window.go_action.isEnabled())
+        with mock.patch("tools.sim_gui.qt.main_window._warn") as warn:
+            window.build_cases()
+            warn.assert_called_once()
+            self.assertIn("point-mass adaptation unavailable", warn.call_args.args[2])
         window.settings_tab.solver_kind.setCurrentIndex(window.settings_tab.solver_kind.findData("yaw-aware"))
         self.assertFalse(window.go_action.isEnabled())
 

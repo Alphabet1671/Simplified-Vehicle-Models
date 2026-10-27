@@ -800,10 +800,10 @@ def solve_forward(plant: ForwardPlant, driver: PreviewDriver, initial_state,
                                       result.y[:, -1], result.t[-1])
     pedal = np.clip(result.y[plant_size], -1., 1.) if pedal_dynamics else None
     summary_started = perf_counter()
-    timings["summary_construction_seconds"] = perf_counter() - summary_started
     forward_result = ForwardResult(result.t, result.y[:plant_size], bool(result.t_events[0].size),
                          elapsed, evaluations, result.message, rejected_domain_trials, pedal, True,
                          dense_bounds, dense_polynomials, samples, defect_max)
+    timings["summary_construction_seconds"] = perf_counter() - summary_started
     if diagnostics_sink is not None:
         diagnostics_sink({"timings": dict(timings), "counts": dict(counts),
                           "evaluations": evaluations, "accepted_steps": max(0, len(result.t)-1),

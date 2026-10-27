@@ -43,6 +43,31 @@ def parse_args(argv=None):
     return args
 
 
+def _failure_summary(error):
+    summary_started=__import__('time').perf_counter()
+    summary={'status':'failed','exception':type(error).__name__,'message':str(error),
+        'cause':getattr(error,'status',None),'diagnostics':getattr(error,'diagnostics',None)}
+    if hasattr(error,'last_state'):
+        diagnostics=getattr(error,'diagnostics',{}) or {}
+        summary['last_state_snapshot']='integration_failure.json'
+        summary['snapshot_validated']=False
+        summary['replay_validation_diagnostics']={
+            'failure_kind':diagnostics.get('failure_kind'),
+            'last_state_kind':diagnostics.get('last_state_kind'),
+            'last_accepted_time':diagnostics.get('last_accepted_time'),
+            'accepted_step_count':diagnostics.get('accepted_step_count'),
+            'rhs_evaluations':diagnostics.get('rhs_evaluations'),
+            'rejected_domain_trials':diagnostics.get('rejected_domain_trials'),
+            'elapsed_wall_seconds':diagnostics.get('elapsed_wall_seconds'),
+            'wall_seconds':diagnostics.get('wall_seconds'),
+            'validation_timings':diagnostics.get('validation_timings'),
+            'validation_counts':diagnostics.get('validation_counts')}
+    elapsed=__import__('time').perf_counter()-summary_started
+    if 'replay_validation_diagnostics' in summary:
+        summary['replay_validation_diagnostics']['summary_construction_seconds']=elapsed
+    return summary
+
+
 def run(args):
     from tools.run import run_yaw_aware_forward_driver as runner
     from tools.run.yaw_map_options import resolve_yaw_map
@@ -180,8 +205,7 @@ def run(args):
             'lap_completed':False,'sampled_center_contained':None}
         runner.write_json(output/'summary.json',summary);return 0
     except (YawProfileSolveError,ValueError,RuntimeError,TimeoutError) as error:
-        summary={'status':'failed','exception':type(error).__name__,'message':str(error),
-            'cause':getattr(error,'status',None),'diagnostics':getattr(error,'diagnostics',None)}
+        summary=_failure_summary(error)
         runner.write_json(output/'summary.json',summary);return 4
 
 
@@ -247,6 +271,7 @@ def replay(args,output,vehicle,track,path,speed_plan,arrays,metadata):
     lateral=np.array([o.lateral_error for o in observations]);speed=np.array([o.speed for o in observations])
     target=np.array([speed_plan.sample(o.distance)[0] for o in observations])
     rms=lambda values:float(np.sqrt(np.sum(dt*(values[:-1]**2+values[1:]**2)*.5)/duration))
+    summary_started=__import__('time').perf_counter()
     summary={'status':'completed' if result.lap_completed else 'incomplete','lap_completed':bool(result.lap_completed),
         'controller':args.controller,'driven_time_s':float(result.time[-1]),'lateral_error_rms_m':rms(lateral),
         'lateral_error_max_m':float(np.max(np.abs(lateral))),'speed_error_rms_mps':rms(speed-target),
@@ -262,10 +287,9 @@ def replay(args,output,vehicle,track,path,speed_plan,arrays,metadata):
         brake_saturation_time_fraction_requested=weighted_fraction(brake>=vehicle.maximum_pedal_force*(1.-1e-6)),
         steering_rate_saturation_time_fraction_requested=weighted_fraction(abs(steering_rate)>=vehicle.steering_maximum_rate*(1.-1e-6)),
         control_metrics_kind='requested_commands; saved run record contains realized pedal-limited controls')
-    summary_started=__import__('time').perf_counter()
     # Build the diagnostics-bearing summary before writing it once.
-    replay_diagnostics.setdefault('timings',{})['summary_construction_seconds'] = __import__('time').perf_counter()-summary_started
     summary['replay_validation_diagnostics']=replay_diagnostics
+    replay_diagnostics.setdefault('timings',{})['summary_construction_seconds'] = __import__('time').perf_counter()-summary_started
     runner.write_json(output/'summary.json',summary)
     return 0 if result.lap_completed else 3
 

@@ -46,6 +46,7 @@ class ReplayValidationCostTests(unittest.TestCase):
         for key in ("integration_seconds", "accepted_state_validation_seconds", "dense_state_domain_validation_seconds",
                     "defect_checking_seconds", "record_writing_seconds", "summary_construction_seconds"):
             self.assertGreaterEqual(counts["timings"][key], 0.)
+        self.assertGreater(counts["timings"]["summary_construction_seconds"], 0.)
 
     def test_invalid_accepted_state_fails_revalidation(self):
         result = self.fake_result()

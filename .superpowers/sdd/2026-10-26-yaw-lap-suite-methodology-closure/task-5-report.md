@@ -8,13 +8,13 @@ The forward solver exposes six stage timings: integration, accepted-state valida
 
 ## Red/green unit evidence
 
-Added `tests/test_yaw_replay_validation_cost.py` with coverage regressions that assert exact counts (`accepted_states_validated == len(t)`, `dense_probes_validated == len(t)-1`), and verify invalid accepted-state and dense-midpoint injections still fail. A fake monotonic clock expires after integration and verifies the unvalidated read-only last-state snapshot. Existing watchdog and forward driver/failure tests were run alongside it.
+Added `tests/test_yaw_replay_validation_cost.py` with coverage regressions that assert exact counts (`accepted_states_validated == len(t)`, `dense_probes_validated == len(t)-1`), and verify invalid accepted-state and dense-midpoint injections still fail. A fake monotonic clock expires after integration and verifies the unvalidated read-only last-state snapshot. Existing watchdog and forward driver/failure tests were run alongside it. Review-correction regressions now also cover runner failure-summary propagation and nonzero forward-result construction timing.
 
 Command (process-level watchdog 180 s):
 
 ```text
 PYTHONPATH=src:. python3 tools/run/run_with_deadline.py --seconds 180 -- python3 -m unittest tests.test_yaw_replay_validation_cost tests.test_yaw_watchdog_group tests.test_forward_driver tests.test_forward_failure_diagnostics -q
-Ran 24 tests in 0.820s — OK
+Ran 27 tests in 0.868s — OK (includes review-correction failure-summary and construction-timing regressions).
 ```
 
 ## MIS physical replay and baseline caveat

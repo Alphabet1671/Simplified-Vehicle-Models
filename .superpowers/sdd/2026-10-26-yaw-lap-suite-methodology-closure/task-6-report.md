@@ -29,3 +29,18 @@ No physical replay was run; replay tests use a stub.
 ## Commit/staging note
 
 The worktree is shared with Task 4. The suite runner and artifact files include unrelated pre-existing Task 4 modifications. Exclude those from the Task 6 commit; stage only Task 6 hunks in those files plus Task 6-only paths/tests/report.
+
+## Review correction evidence (2026-10-26)
+
+- Dense validation completion now requires diagnostics for every accepted state (`accepted_states_validated == accepted_steps + 1`) and every accepted interval midpoint (`dense_probes_validated == accepted_steps`), with positive accepted-step count. Absent or mismatched counts yield `solver_validation_complete: false`; unavailable dense support is not represented as complete.
+- Closed replay reconstruction now interpolates selected-path geometry in physical distance with periodic wrap, using unit-vector heading interpolation. The local projector searches an unwrapped periodic station neighborhood, evaluates modulo the reference period, and returns continuously increasing unwrapped stations across the seam. Open paths retain bounded endpoints; search remains local and station-branch constrained.
+- Regressions include missing/partial/mismatched dense diagnostics, periodic physical station interpolation, a 30° selected-vs-reference normal case that reconstructs driven XY and calls the projection helper, seam-crossing projection, and bounded hairpin-local branch selection.
+- Required scoped suite, run with the process-level deadline watchdog:
+
+```text
+PYTHONPATH=src:. python3 tools/run/run_with_deadline.py --seconds 175 -- python3 -m unittest tests.test_yaw_replay_binding tests.test_yaw_replay_metrics tests.test_yaw_lap_suite tests.test_yaw_lap_artifact tests.test_yaw_aware_record_path -q
+Ran 20 tests in 15.535s
+OK (exit 0)
+```
+
+- No physical replay was run; integration cases use stubs. Requested and realized saturation channels remain distinctly sourced.

@@ -14,6 +14,15 @@ import sys
 import numpy as np
 
 
+def _validation_complete(diagnostics):
+    counts=diagnostics.get('counts') if isinstance(diagnostics,dict) else None
+    accepted=counts.get('accepted_states_validated') if isinstance(counts,dict) else None
+    dense=counts.get('dense_probes_validated') if isinstance(counts,dict) else None
+    steps=diagnostics.get('accepted_steps') if isinstance(diagnostics,dict) else None
+    return (isinstance(accepted,int) and isinstance(dense,int) and isinstance(steps,int)
+            and steps>0 and accepted==steps+1 and dense==steps)
+
+
 def parse_args(argv=None):
     from tools.run.yaw_map_options import add_yaw_map_options
     p=argparse.ArgumentParser(description=__doc__)
@@ -28,6 +37,9 @@ def parse_args(argv=None):
     p.add_argument('--profile-rounds',type=int,default=8)
     p.add_argument('--line-evaluations',type=int,default=24)
     p.add_argument('--line-seconds',type=float,default=900.)
+    p.add_argument('--line-outer-passes',type=int,default=3)
+    p.add_argument('--line-optimizer-iterations',type=int,default=8)
+    p.add_argument('--line-directional-poll',action='store_true')
     p.add_argument('--duration',type=float,default=150.)
     p.add_argument('--replay-seconds',type=float,default=300.)
     p.add_argument('--maximum-step',type=float,default=.05)
@@ -260,10 +272,13 @@ def replay(args,output,vehicle,track,path,speed_plan,arrays,metadata):
     # reference curve. This remains correct when selected/reference normals differ.
     reference=ReferenceCurve(track)
     physical=np.array([o.distance for o in observations])
-    local_source=np.interp(np.clip(physical,path.distance[0],path.distance[-1]),path.distance,arrays['reference_distance'])
-    path_x=np.interp(np.clip(physical,path.distance[0],path.distance[-1]),path.distance,arrays['north'])
-    path_y=np.interp(np.clip(physical,path.distance[0],path.distance[-1]),path.distance,arrays['east'])
-    path_heading=np.interp(np.clip(physical,path.distance[0],path.distance[-1]),path.distance,arrays['heading'])
+    local_source=periodic_interpolate(physical,path.distance,arrays['reference_distance'],closed=path.is_closed)
+    path_x=periodic_interpolate(physical,path.distance,arrays['north'],closed=path.is_closed)
+    path_y=periodic_interpolate(physical,path.distance,arrays['east'],closed=path.is_closed)
+    # Interpolate heading through unit vectors to avoid angle discontinuities.
+    heading_vectors=np.column_stack((np.cos(arrays['heading']),np.sin(arrays['heading'])))
+    hv=periodic_interpolate(physical,path.distance,heading_vectors,closed=path.is_closed)
+    path_heading=np.arctan2(hv[:,1],hv[:,0])
     lateral_track=np.array([o.lateral_error for o in observations])
     driven_x=path_x-lateral_track*np.sin(path_heading)
     driven_y=path_y+lateral_track*np.cos(path_heading)
@@ -296,6 +311,7 @@ def replay(args,output,vehicle,track,path,speed_plan,arrays,metadata):
     realized_brake=np.asarray(channels['brake-force'],float).reshape(-1)
     realized_steering=np.asarray(channels['steering-rate'],float).reshape(-1)
     record_time=np.asarray(record.time,float)
+    validation_complete=_validation_complete(replay_diagnostics)
     summary.update(throttle_max_requested=float(max(throttle_requested)),
         throttle_saturation_time_fraction_requested=time_weighted_fraction(result.time,throttle_requested>=1.-1e-6),
         brake_saturation_time_fraction_requested=time_weighted_fraction(result.time,brake_requested>=vehicle.maximum_pedal_force*(1.-1e-6)),

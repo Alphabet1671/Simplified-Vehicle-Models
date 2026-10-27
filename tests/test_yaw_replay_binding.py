@@ -45,5 +45,11 @@ class ReplayBindingTests(unittest.TestCase):
         np.testing.assert_array_equal(captured['geometry'].heading,arrays['heading'])
         np.testing.assert_array_equal(captured['geometry'].reference_distance,reference)
         np.testing.assert_array_equal(captured['geometry'].curvature,k)
+        # Geometry lookup for physical distances beyond the saved seam must wrap,
+        # not clamp to the final coordinate sample.
+        from simplified_vehicle_models.planning.yaw_replay_metrics import periodic_interpolate
+        np.testing.assert_allclose(periodic_interpolate([9.,10.,11.],distance,arrays['north'],closed=True),[2.,2.2,2.4])
+        self.assertTrue(suite._validation_complete({'counts':{'accepted_states_validated':5,'dense_probes_validated':4},'accepted_steps':4}))
+        self.assertFalse(suite._validation_complete({'counts':{'accepted_states_validated':5,'dense_probes_validated':0},'accepted_steps':4}))
 
 if __name__=='__main__': unittest.main()

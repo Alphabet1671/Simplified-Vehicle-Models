@@ -1,6 +1,6 @@
 import unittest
 import numpy as np
-from simplified_vehicle_models.planning.yaw_replay_metrics import time_weighted_rms, time_weighted_fraction, project_xy_to_reference
+from simplified_vehicle_models.planning.yaw_replay_metrics import time_weighted_rms, time_weighted_fraction, project_xy_to_reference, periodic_interpolate
 from simplified_vehicle_models.tracks.line_trajectory import ReferenceCurve, StationMap
 from simplified_vehicle_models.solvers.yaw_aware_profile import YawPath
 
@@ -26,16 +26,31 @@ class MetricTests(unittest.TestCase):
         self.assertLess(mapping.to_reference(15.1),11.)
 
     def test_left_right_signed_normal_and_thirty_degree_heading_difference(self):
-        # Selected path heading is 30 degrees; reference projection has north heading.
+        # Reconstruct from selected-path frame, then invoke actual local projection.
         theta=np.pi/6
-        selected=(10.,10.)
         lateral=2.
-        driven=(selected[0]-lateral*np.sin(theta),selected[1]+lateral*np.cos(theta))
-        dx,dy=driven[0]-10.,driven[1]-10.
-        signed=dx*(-np.sin(0.))+dy*np.cos(0.)
-        self.assertGreater(signed,0.)
-        self.assertAlmostEqual(signed,lateral*np.cos(theta),places=7)
-        self.assertLess(-signed,0.)
+        class Ref:
+            start=0.; end=100.; is_closed=False
+            def evaluate(self,s):
+                s=np.asarray(s,float)
+                return type('G',(),dict(north=s,east=np.zeros_like(s),heading=np.zeros_like(s)))
+        source,lane=project_xy_to_reference(Ref(),[10.-lateral*np.sin(theta)],
+            [lateral*np.cos(theta)],[10.],window=5.)
+        self.assertAlmostEqual(source[0],10.,delta=.1)
+        self.assertGreater(lane[0],0.)
+        self.assertAlmostEqual(lane[0],lateral*np.cos(theta),places=5)
+
+    def test_periodic_interpolation_wraps_and_projection_crosses_seam(self):
+        np.testing.assert_allclose(periodic_interpolate([11.,12.,-1.],[0.,10.],[0.,10.],closed=True),[1.,2.,9.])
+        class Ring:
+            start=0.; end=100.; is_closed=True
+            def evaluate(self,s):
+                s=np.asarray(s,float); wrapped=np.mod(s,100.)
+                angle=wrapped*(2*np.pi/100.)
+                return type('G',(),dict(north=np.cos(angle),east=np.sin(angle),heading=angle+np.pi/2))
+        stations,_=project_xy_to_reference(Ring(),[1.,np.cos(.02)],[0.,np.sin(.02)],[99.,101.],window=5.)
+        self.assertGreater(stations[1],stations[0])
+        self.assertGreater(stations[1],100.)
 
     def test_projection_respects_station_branch(self):
         class Ref:

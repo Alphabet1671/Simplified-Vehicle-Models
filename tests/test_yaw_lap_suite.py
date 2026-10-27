@@ -1,6 +1,6 @@
 import unittest
 from pathlib import Path
-from tools.run.run_yaw_lap_suite import parse_args, _failure_summary
+from tools.run.run_yaw_lap_suite import parse_args, _failure_summary, _validation_complete
 from simplified_vehicle_models.solvers.forward_driver import ForwardIntegrationError
 from simplified_vehicle_models.planning.yaw_replay_metrics import time_weighted_rms, time_weighted_fraction
 
@@ -12,6 +12,14 @@ class SuiteParserTests(unittest.TestCase):
         expected=np.sqrt((1.*(0.+4.)/2.+2.*(4.+0.)/2.)/3.)
         self.assertAlmostEqual(time_weighted_rms(time,error),expected)
         self.assertAlmostEqual(time_weighted_fraction(time,np.array([False,True,False])),.5)
+    def test_solver_validation_requires_complete_dense_evidence(self):
+        self.assertTrue(_validation_complete({'counts':{'accepted_states_validated':5,'dense_probes_validated':4},'accepted_steps':4}))
+        for diagnostics in ({}, {'counts':{'accepted_states_validated':5},'accepted_steps':4},
+                            {'counts':{'accepted_states_validated':5,'dense_probes_validated':3},'accepted_steps':4},
+                            {'counts':{'accepted_states_validated':5,'dense_probes_validated':4},'accepted_steps':5},
+                            {'counts':{'accepted_states_validated':0,'dense_probes_validated':0},'accepted_steps':0}):
+            self.assertFalse(_validation_complete(diagnostics),diagnostics)
+
     def test_saved_replay_requires_plan_and_map(self):
         args=parse_args(['--track','track.xml','--output-dir','run','--yaw-map','map.npz',
                          '--mode','replay','--plan','plan.npz'])

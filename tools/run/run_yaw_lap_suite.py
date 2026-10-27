@@ -193,6 +193,7 @@ def replay(args,output,vehicle,track,path,speed_plan,arrays,metadata):
     from simplified_vehicle_models.results.plant_channels import RunRecordSink
     from simplified_vehicle_models.tracks.corridor import corridor_from_track,SIGNED_POLICY
     from simplified_vehicle_models.tracks.line_trajectory import ReferenceCurve
+    from tools.run.yaw_study_contract import update_replay_initial_state
     if args.controller!='preview':
         from simplified_vehicle_models.solvers.yaw_tracking_driver import ModelAwareYawDriver
         from simplified_vehicle_models.formulations.point_mass import point_mass_view_of_planar
@@ -206,12 +207,14 @@ def replay(args,output,vehicle,track,path,speed_plan,arrays,metadata):
         is_closed=path.is_closed,reference_distance=arrays['reference_distance'])
     plant=PlanarForwardPlant(vehicle,speed_plan)
     sink=RunRecordSink(plant,geometry,output/'run_record.npz',precision='float64')
+    replay_diagnostics={}
     try:
         initial_state=plant.initial_state(float(speed_plan.speed[0]))
         update_replay_initial_state(output/'inputs.json',initial_state,plant.state_names)
         result=solve_forward(plant,driver,initial_state,duration=args.duration,
             wall_seconds=args.replay_seconds,maximum_wall_seconds=min(1500.,args.replay_seconds),
-            maximum_step=args.maximum_step,rtol=1e-6,atol=1e-8,method='BDF',step_sink=sink)
+            maximum_step=args.maximum_step,rtol=1e-6,atol=1e-8,method='BDF',step_sink=sink,
+            diagnostics_sink=lambda data: replay_diagnostics.update(data))
     except (RuntimeError,TimeoutError,ValueError) as error:
         if hasattr(error,'last_state'):
             runner.write_json(output/'integration_failure.json',{'diagnostics':getattr(error,'diagnostics',{}),
@@ -248,7 +251,8 @@ def replay(args,output,vehicle,track,path,speed_plan,arrays,metadata):
         'controller':args.controller,'driven_time_s':float(result.time[-1]),'lateral_error_rms_m':rms(lateral),
         'lateral_error_max_m':float(np.max(np.abs(lateral))),'speed_error_rms_mps':rms(speed-target),
         'sampled_center_corridor_violation_m':float(max(violation)),'sampled_center_contained':bool(max(violation)<=1e-8),
-        'footprint_containment_certified':False,'between_step_containment_certified':False}
+        'footprint_containment_certified':False,'between_step_containment_certified':False,
+        'replay_validation_diagnostics':replay_diagnostics}
     controls=np.array([driver.command(observation) for observation in observations],dtype=object)
     throttle=np.array([command.throttle for command in controls]);brake=np.array([command.brake_force for command in controls])
     steering_rate=np.array([command.steering_rate for command in controls])
@@ -258,6 +262,10 @@ def replay(args,output,vehicle,track,path,speed_plan,arrays,metadata):
         brake_saturation_time_fraction_requested=weighted_fraction(brake>=vehicle.maximum_pedal_force*(1.-1e-6)),
         steering_rate_saturation_time_fraction_requested=weighted_fraction(abs(steering_rate)>=vehicle.steering_maximum_rate*(1.-1e-6)),
         control_metrics_kind='requested_commands; saved run record contains realized pedal-limited controls')
+    summary_started=__import__('time').perf_counter()
+    # Build the diagnostics-bearing summary before writing it once.
+    replay_diagnostics.setdefault('timings',{})['summary_construction_seconds'] = __import__('time').perf_counter()-summary_started
+    summary['replay_validation_diagnostics']=replay_diagnostics
     runner.write_json(output/'summary.json',summary)
     return 0 if result.lap_completed else 3
 

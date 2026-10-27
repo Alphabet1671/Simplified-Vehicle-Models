@@ -16,7 +16,7 @@ from tools.tire_gui.model import with_parameter
 from tools.tire_gui.contracts import FitResult
 from tools.tire_gui.qt.fit_worker import FitWorker
 from PyQt6.QtTest import QSignalSpy
-from PyQt6.QtCore import QThread, QTimer, QEventLoop
+from PyQt6.QtCore import QThread, QTimer, QEventLoop, Qt
 from tools.tire_gui.contracts import FitCancelled, RunData
 from tools.tire_gui.events import TransientEvent
 import numpy as np
@@ -78,6 +78,52 @@ class QtTests(unittest.TestCase):
         self.assertIn('mu_0_y', w.parameter_panel.locked())
         lower.setValue(lower.value() + .01)
         self.assertAlmostEqual(w.parameter_panel.bounds()['mu_0_y'][0], lower.value())
+        w.dirty = False
+        w.close()
+
+    def test_real_compatibility_segment_holdout_and_load_filter(self):
+        from tools.tire_gui.segments import compatibility_selection
+        w = self.window()
+        def fake_run(run_id, tire, count):
+            z = np.zeros(count)
+            channels = {'alpha': z, 'kappa': z, 'fz': z + 600, 'fy': z, 'fx': z, 'mz': z,
+                        'time': np.arange(count, dtype=float) * .01}
+            return RunData(run_id, tire, channels, {}, np.arange(count))
+        selection = compatibility_selection(fake_run(8, '43075 R20', 21168), fake_run(72, '43100 R20', 25992))
+        w.full_selection = selection
+        w._populate_load_filter()
+        w._populate_compatibility_segments()
+        identities = [w.segment_list.item(i).data(Qt.ItemDataRole.UserRole) for i in range(w.segment_list.count())]
+        self.assertIn(('run72_combined', 0), identities)
+        self.assertIn(('run72_sa0_fx', 0), identities)
+        self.assertIn(('run8', 0), identities)
+        item = next(w.segment_list.item(i) for i in range(w.segment_list.count()) if w.segment_list.item(i).data(Qt.ItemDataRole.UserRole) == ('run72_combined', 0))
+        item.setCheckState(Qt.CheckState.Checked)
+        self.assertEqual(len(w.selection.combined_fx.target), len(selection.combined_fx.target) - 180)
+        self.assertEqual(len(w.selection.combined_fy.target), len(selection.combined_fy.target) - 180)
+        self.assertEqual(len(w.holdout_selection.combined_fx.target), 180)
+        self.assertEqual(len(w.holdout_selection.combined_fy.target), 180)
+        self.assertEqual(len(w.selection.longitudinal.target), len(selection.longitudinal.target))
+        w._refresh_diagnostics(FitResult(w.snapshot.revision, w.snapshot, {}, True, (), {}))
+        diagnostic_text = w.diagnostics.toPlainText()
+        self.assertIn('combined Fx:', diagnostic_text)
+        self.assertIn('combined Fy:', diagnostic_text)
+        self.assertIn('n=180', diagnostic_text)
+        load_ix = w.load_filter.findData(660.0)
+        self.assertGreaterEqual(load_ix, 0)
+        w.load_filter.setCurrentIndex(load_ix)
+        self.assertTrue(np.all(w.selection.lateral.fz == 660.0))
+        self.assertTrue(np.all(w.active_selection.combined_fx.fz == 660.0))
+        w.dirty = False
+        w.close()
+
+    def test_alternate_output_cancel_discloses_privacy_without_writing(self):
+        from unittest.mock import patch
+        w = self.window()
+        with patch('tools.tire_gui.qt.main_window.QFileDialog.getExistingDirectory', return_value='/tmp'), patch('tools.tire_gui.qt.main_window.QInputDialog.getText', return_value=('private-test', True)), patch('tools.tire_gui.qt.main_window.QMessageBox.question', return_value=QMessageBox.StandardButton.No) as question, patch.object(w, 'save_session') as save:
+            w._save_dialog()
+        self.assertIn('privacy', question.call_args.args[2].lower())
+        save.assert_not_called()
         w.dirty = False
         w.close()
 

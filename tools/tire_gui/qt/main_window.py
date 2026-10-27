@@ -45,6 +45,8 @@ class MainWindow(QMainWindow):
         self.source_files = []
         self.selection = None
         self.holdout_ids = set()
+        self.active_selection = None
+        self.full_selection = None
         self.dirty = False
 
         root = QWidget(self)
@@ -74,7 +76,11 @@ class MainWindow(QMainWindow):
         self.parameter_panel = ParameterPanel()
         side_layout.addWidget(self.parameter_panel)
         self.run_combo = QComboBox()
+        self.run_combo.setToolTip('Select the run whose transient events are displayed; steady fitting always uses the fixed 43075/43100 compatibility selection.')
         self.segment_list = QListWidget()
+        self.load_filter = QComboBox()
+        self.load_filter.addItem('All compatibility loads', None)
+        self.load_filter.currentIndexChanged.connect(self._condition_filter_changed)
         self.event_list = QListWidget()
         self.event_from = QSpinBox()
         self.event_to = QSpinBox()
@@ -85,7 +91,9 @@ class MainWindow(QMainWindow):
         self.approve_button = QPushButton('Approve selected event')
         self.condition_label = QLabel('Run conditions: load / pressure / IA / speed not loaded')
         for label, widget in (
-            ('Run / tire', self.run_combo), ('Segments — check to hold out whole segment', self.segment_list),
+            ('Transient event run (steady fit uses fixed compatibility runs 8 + 72)', self.run_combo),
+            ('Nominal load condition (applies to steady fit and diagnostics)', self.load_filter),
+            ('Compatibility segments — check to hold out whole group-qualified segment', self.segment_list),
             ('Transient candidates (Run 7)', self.event_list), ('', self.condition_label), ('', self.event_from),
             ('', self.baseline_to), ('', self.event_to), ('', self.approve_button),
         ):
@@ -281,6 +289,8 @@ class MainWindow(QMainWindow):
         path = Path(path)
         run = load_run(path, require_monotonic_time=False)
         self.runs[run.run_id] = run
+        self.full_selection = None
+        self.active_selection = None
         self.source_files.append(str(path))
         self._run_label(run)
         self.generation += 1
@@ -470,6 +480,14 @@ class MainWindow(QMainWindow):
             self.status.setText(f'Approval refused: {exc}')
             return False
 
+    def _condition_filter_changed(self, *_):
+        if self.full_selection is None:
+            return
+        self.generation += 1
+        self._invalidate_candidate()
+        self._apply_selection_filters()
+        self._refresh_plots()
+
     def _segment_toggled(self, item):
         segment_id = item.data(Qt.ItemDataRole.UserRole)
         if segment_id is None:
@@ -482,14 +500,15 @@ class MainWindow(QMainWindow):
         self._invalidate_candidate()
         label = item.text().split(' — ')[0]
         item.setText(label + (' — Holdout' if segment_id in self.holdout_ids else ' — Train'))
+        if self.full_selection is not None:
+            self._apply_selection_filters()
+            self._refresh_plots()
 
     def _refresh_run(self, *_):
         run_id = self.run_combo.currentData()
         run = self.runs.get(run_id)
         self.event_list.clear()
-        self.segment_list.clear()
         self.events = []
-        self.holdout_ids = set()
         if not run:
             self._refresh_plots()
             return
@@ -522,15 +541,12 @@ class MainWindow(QMainWindow):
             self.transient_plot.message('Run 7 — elapsed time only (0.15–798.652 s); acquisition date unavailable. Review candidates; no calendar timestamp inferred.')
             if self.events:
                 self.event_list.setCurrentRow(0)
-        else:
-            # IDs match the compatibility selector's lateral / longitudinal groups.
-            count = 16 if run_id == 8 else 36 if run_id == 72 else 12
-            for index in range(count):
-                item = QListWidgetItem(f'Run {run_id} source-compatible segment {index + 1} — Train')
-                item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-                item.setCheckState(Qt.CheckState.Unchecked)
-                item.setData(Qt.ItemDataRole.UserRole, (run_id, index))
-                self.segment_list.addItem(item)
+        if self.full_selection is None and 8 in self.runs and 72 in self.runs:
+            self.full_selection = compatibility_selection(self.runs[8], self.runs[72])
+            self._populate_load_filter()
+        if self.full_selection is not None:
+            self._populate_compatibility_segments()
+            self._apply_selection_filters()
         self.fit_transient_button.setEnabled(any(event.approved for event in self.events))
         self.fit_longitudinal_button.setEnabled(any(event.approved and event.axis == 'longitudinal' for event in self.events))
         self._refresh_plots()
@@ -549,34 +565,108 @@ class MainWindow(QMainWindow):
         return SampleSet(samples.alpha[mask], samples.kappa[mask], samples.fz[mask], samples.target[mask],
                          samples.segment_ids[mask], samples.run_id, samples.tire_id, samples.raw_indices[mask])
 
+    def _populate_compatibility_segments(self):
+        if self.full_selection is None:
+            return
+        self.segment_list.blockSignals(True)
+        self.segment_list.clear()
+        groups = (('run8', 'Run 8 Fy / Mz', self.full_selection.lateral),
+                  ('run72_sa0_fx', 'SA0 Fx', self.full_selection.longitudinal),
+                  ('run72_combined', 'Combined Fx / Fy', self.full_selection.combined_fx))
+        shown = set()
+        for prefix, label, samples in groups:
+            for segment in sorted(set(map(int, samples.segment_ids))):
+                identity = (prefix, segment)
+                if identity in shown:
+                    continue
+                shown.add(identity)
+                mask = samples.segment_ids == segment
+                loads = np.unique(samples.fz[mask])
+                load_label = f'{float(loads[0]):g} N' if len(loads) == 1 else 'mixed load'
+                run_id = 8 if prefix == 'run8' else 72
+                run = self.runs.get(run_id)
+                conditions = []
+                if run is not None:
+                    raw = samples.raw_indices[mask].astype(int)
+                    for channel, label_text, factor, unit in (('ia', 'IA', 180/np.pi, 'deg'), ('pressure', 'P', .001, 'kPa'), ('speed', 'V', 1.0, 'm/s')):
+                        if channel in run.channels and len(raw) and raw.max() < len(run.channels[channel]):
+                            vals = np.asarray(run.channels[channel])[raw] * factor
+                            conditions.append(f'{label_text} {np.mean(vals):.2f}±{np.std(vals):.2f} {unit}')
+                condition_text = '; '.join(conditions) if conditions else 'conditions unavailable'
+                item = QListWidgetItem(f'{label} segment {segment + 1} • {load_label} • {condition_text} — Train')
+                item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                item.setCheckState(Qt.CheckState.Checked if identity in self.holdout_ids else Qt.CheckState.Unchecked)
+                item.setData(Qt.ItemDataRole.UserRole, identity)
+                self.segment_list.addItem(item)
+        self.segment_list.blockSignals(False)
+
+    @staticmethod
+    def _filter_group(samples, prefix, excluded, load):
+        mask = np.ones(len(samples.target), dtype=bool)
+        if load is not None:
+            mask &= np.isclose(samples.fz, float(load), rtol=0, atol=1e-9)
+        holdout = np.asarray([(prefix, int(segment)) in excluded for segment in samples.segment_ids], dtype=bool)
+        return (MainWindow._sample_mask(samples, mask & ~holdout),
+                MainWindow._sample_mask(samples, mask & holdout))
+
+    @staticmethod
+    def _sample_mask(samples, mask):
+        from ..contracts import SampleSet
+        return SampleSet(samples.alpha[mask], samples.kappa[mask], samples.fz[mask], samples.target[mask],
+                         samples.segment_ids[mask], samples.run_id, samples.tire_id, samples.raw_indices[mask])
+
+    def _apply_selection_filters(self):
+        if self.full_selection is None:
+            return
+        load = self.load_filter.currentData()
+        pairs = {}
+        for name, prefix, samples in (
+            ('lateral', 'run8', self.full_selection.lateral),
+            ('mz', 'run8', self.full_selection.mz),
+            ('longitudinal', 'run72_sa0_fx', self.full_selection.longitudinal),
+            ('combined_fx', 'run72_combined', self.full_selection.combined_fx),
+            ('combined_fy', 'run72_combined', self.full_selection.combined_fy)):
+            pairs[name] = self._filter_group(samples, prefix, self.holdout_ids, load)
+        train = {name: pair[0] for name, pair in pairs.items()}
+        held = {name: pair[1] for name, pair in pairs.items()}
+        self.selection = replace(self.full_selection, **train)
+        self.holdout_selection = replace(self.full_selection, **held)
+        active = {name: self._sample_mask(samples, np.ones(len(samples.target), dtype=bool) if load is None else np.isclose(samples.fz, float(load), rtol=0, atol=1e-9))
+                  for name, samples in (('lateral',self.full_selection.lateral),('mz',self.full_selection.mz),('longitudinal',self.full_selection.longitudinal),('combined_fx',self.full_selection.combined_fx),('combined_fy',self.full_selection.combined_fy))}
+        self.active_selection = replace(self.full_selection, **active)
+        # Held-out segments remain available for evaluation even if their samples
+        # are removed from training; the condition selector scopes both.
+        self.condition_label.setText('Steady conditions: ' + (f'{load:g} N nominal load' if load is not None else 'all nominal loads') + '; fixed run 8/72 source-compatible groups')
+
     def _selection_for_fit(self):
-        lat = next(run for run in self.runs.values() if run.run_id == 8)
-        lon = next(run for run in self.runs.values() if run.run_id == 72)
-        data = compatibility_selection(lat, lon)
-        excluded = set(self.holdout_ids)
-        return replace(data,
-                       lateral=self._without_segments(data.lateral, excluded),
-                       longitudinal=self._without_segments(data.longitudinal, excluded),
-                       combined_fx=self._without_segments(data.combined_fx, excluded),
-                       combined_fy=self._without_segments(data.combined_fy, excluded),
-                       mz=self._without_segments(data.mz, excluded))
+        if self.full_selection is None:
+            full = compatibility_selection(self.runs[8], self.runs[72])
+            self.full_selection = full
+        self._populate_load_filter()
+        self._populate_compatibility_segments()
+        self._apply_selection_filters()
+        return self.selection
+
+    def _populate_load_filter(self):
+        if self.full_selection is None:
+            return
+        loads = sorted(set(float(x) for samples in (self.full_selection.lateral, self.full_selection.longitudinal, self.full_selection.combined_fx) for x in np.unique(samples.fz)))
+        selected = self.load_filter.currentData()
+        self.load_filter.blockSignals(True)
+        self.load_filter.clear()
+        self.load_filter.addItem('All compatibility loads', None)
+        for load in loads:
+            self.load_filter.addItem(f'{load:g} N', load)
+        index = self.load_filter.findData(selected)
+        if index < 0 and getattr(self, '_restored_load_n', None) is not None:
+            index = self.load_filter.findData(self._restored_load_n)
+        self.load_filter.setCurrentIndex(max(0, index))
+        self.load_filter.blockSignals(False)
+        self._restored_load_n = None
 
     def start_steady_fit(self):
         try:
-            full = compatibility_selection(self.runs[8], self.runs[72])
-            excluded = set(self.holdout_ids)
-            self.holdout_selection = replace(full,
-                lateral=self._only_segments(full.lateral, excluded),
-                longitudinal=self._only_segments(full.longitudinal, excluded),
-                combined_fx=self._only_segments(full.combined_fx, excluded),
-                combined_fy=self._only_segments(full.combined_fy, excluded),
-                mz=self._only_segments(full.mz, excluded))
-            self.selection = replace(full,
-                lateral=self._without_segments(full.lateral, excluded),
-                longitudinal=self._without_segments(full.longitudinal, excluded),
-                combined_fx=self._without_segments(full.combined_fx, excluded),
-                combined_fy=self._without_segments(full.combined_fy, excluded),
-                mz=self._without_segments(full.mz, excluded))
+            self.selection = self._selection_for_fit()
             self._start_worker('steady', self.selection, ())
         except Exception as exc:
             self.status.setText(f'Steady fit requires compatible runs 8 and 72: {exc}')
@@ -686,7 +776,12 @@ class MainWindow(QMainWindow):
             return
         try:
             from ..model import predict_steady
-            data = compatibility_selection(self.runs[8], self.runs[72])
+            if self.full_selection is None:
+                self.full_selection = compatibility_selection(self.runs[8], self.runs[72])
+                self._populate_load_filter()
+                self._populate_compatibility_segments()
+                self._apply_selection_filters()
+            data = self.active_selection or compatibility_selection(self.runs[8], self.runs[72])
             groups = [
                 ('Fy vs alpha', data.lateral, 'lateral_force', data.lateral.alpha, 'alpha (rad)', 'Fy (N)'),
                 ('Fx vs kappa', data.longitudinal, 'longitudinal_force', data.longitudinal.kappa, 'kappa', 'Fx (N)'),
@@ -752,9 +847,10 @@ class MainWindow(QMainWindow):
         lines.extend(f'{name} bounds: {bounds[0]:g} … {bounds[1]:g}' for name, bounds in self.parameter_panel.bounds().items())
         if result:
             lines.extend((f'converged: {result.converged}', f'metrics: {dict(result.metrics)}', *result.warnings))
-            if getattr(self, 'holdout_selection', None) is not None and any(len(getattr(self.holdout_selection, name).target) for name in ('lateral','longitudinal','combined_fx','combined_fy','mz')):
+            holdout = getattr(self, 'holdout_selection', None)
+            if holdout is not None and any(len(getattr(holdout, name).target) for name in ('lateral','longitudinal','combined_fx','combined_fy','mz')):
                 from ..model import predict_steady
-                hold = self.holdout_selection
+                hold = replace(self.holdout_selection, **{name: self._sample_mask(getattr(self.holdout_selection, name), np.ones(len(getattr(self.holdout_selection, name).target), dtype=bool) if self.load_filter.currentData() is None else np.isclose(getattr(self.holdout_selection, name).fz, float(self.load_filter.currentData()), rtol=0, atol=1e-9)) for name in ('lateral','longitudinal','combined_fx','combined_fy','mz')})
                 lines.append('Whole-segment holdout dimensional RMSE (not used in training):')
                 for key, samples, component in [('Fy',hold.lateral,'lateral_force'),('Fx',hold.longitudinal,'longitudinal_force'),('combined Fx',hold.combined_fx,'longitudinal_force'),('combined Fy',hold.combined_fy,'lateral_force'),('Mz',hold.mz,'aligning_moment')]:
                     if len(samples.target):
@@ -770,7 +866,7 @@ class MainWindow(QMainWindow):
             'locks': {name: name in self.parameter_panel.locked() for name in self.snapshot.values},
             'bounds': {name: list(pair) for name, pair in self.parameter_panel.bounds().items()},
             'source_files': self.source_files,
-            'selections': {'run_id': self.run_combo.currentData(), 'holdout_ids': [list(x) for x in sorted(self.holdout_ids)]},
+            'selections': {'run_id': self.run_combo.currentData(), 'load_n': self.load_filter.currentData(), 'holdout_ids': [f'{group}:{segment}' for group, segment in sorted(self.holdout_ids)]},
             'events': [{'id': f'{e.run.run_id}:{i}', 'start': int(e.start), 'stop': int(e.stop), 'run_id': int(e.run.run_id), 'axis': str(e.axis), 'approved': bool(e.approved), 'reason': '; '.join(e.exclusions), 'source_file': self._source_for_run(e.run), 'segment_id': str(i), 'baseline_stop': int(e.baseline_stop)} for i, e in enumerate(self.events)],
             'diagnostics': {'generation': self.generation},
         }
@@ -794,7 +890,21 @@ class MainWindow(QMainWindow):
         stem, accepted = QInputDialog.getText(self, 'Save fit bundle', 'Private bundle name:')
         if not accepted:
             return
-        destination = Path(output_dir) / stem.strip()
+        output_path = Path(output_dir).expanduser().resolve()
+        private_root = DEFAULT_OUTPUT.expanduser().resolve()
+        try:
+            is_private = output_path == private_root or output_path.is_relative_to(private_root)
+        except (OSError, ValueError):
+            is_private = False
+        if not is_private:
+            disclosure = ('Privacy warning: the fit bundle will be written outside the ignored private output root. '
+                          'It contains source-file references, parameter values, event/selection metadata, and derived XML. '
+                          'Confirm this destination is private and not shared before continuing.\n\nDestination: ' + str(output_path))
+            if QMessageBox.question(self, 'Confirm private alternate destination', disclosure,
+                                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                                    QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
+                return
+        destination = output_path / stem.strip()
         overwrite = False
         if destination.exists():
             if QMessageBox.question(self, 'Overwrite private bundle?', f'Overwrite recognized bundle {destination}?') != QMessageBox.StandardButton.Yes:
@@ -823,7 +933,25 @@ class MainWindow(QMainWindow):
         run_index = self.run_combo.findData(run_id)
         if run_index >= 0:
             self.run_combo.setCurrentIndex(run_index)
-        self.holdout_ids = {tuple(item) for item in selections.get('holdout_ids', [])}
+        self._restored_load_n = selections.get('load_n')
+        saved_holdouts = selections.get('holdout_ids', [])
+        self.holdout_ids = set()
+        for item in saved_holdouts:
+            if isinstance(item, str) and ':' in item:
+                group, segment = item.rsplit(':', 1)
+                if group in {'run8', 'run72_sa0_fx', 'run72_combined', 'run72_combined_fx', 'run72_combined_fy'}:
+                    self.holdout_ids.add((group, int(segment)))
+            elif isinstance(item, (list, tuple)) and len(item) == 2:
+                # Legacy v1 bundles used (run_id, segment_id); map only where
+                # one compatibility group is unambiguous.
+                if isinstance(item[0], str) and item[0] in {'run8', 'run72_sa0_fx', 'run72_combined', 'run72_combined_fx', 'run72_combined_fy'}:
+                    self.holdout_ids.add((item[0], int(item[1])))
+                elif item[0] == 8:
+                    self.holdout_ids.add(('run8', int(item[1])))
+                elif item[0] == 72:
+                    self.holdout_ids.add(('run72_sa0_fx', int(item[1])))
+        restored_load = selections.get('load_n')
+        self._restored_load_n = float(restored_load) if isinstance(restored_load, (int, float)) else None
         self._restored_events = list(metadata.get('events', []))
         self.runs = {}
         self.run_combo.clear()

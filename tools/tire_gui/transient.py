@@ -38,7 +38,9 @@ def _inputs(run, ix):
 
 def simulate_event(snapshot: ModelSnapshot, event: TransientEvent, maximum_step: float, *, _cancel_check: Callable[[], bool] = lambda: False) -> np.ndarray:
     if not np.isfinite(maximum_step) or maximum_step <= 0: raise ValueError('maximum_step must be finite and positive')
-    validate_event(event,require_approval=False)
+    # Physical stability is a fitting eligibility gate, not a replay restriction:
+    # simulate_event must still support measured variable-load/speed traces.
+    validate_event(event,require_approval=False,check_conditions=False)
     run=event.run; c=run.channels; start,stop=event.start,event.stop
     t=np.asarray(c['time'][start:stop],float)
     if np.any(c['speed'][start:stop] <= 0): raise ValueError('measured event speed must be positive')

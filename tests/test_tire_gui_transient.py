@@ -57,6 +57,32 @@ class EventTests(unittest.TestCase):
         event=candidate_events(changed)[0]
         self.assertTrue(any('load' in reason for reason in event.exclusions))
 
+    def test_fit_rejects_late_event_condition_excursions_but_replay_allows_them(self):
+        snap=load_snapshot(STEADY)
+        for channel,value,reason in (
+                ('fz',800.,'load'),('ia',np.deg2rad(.4),'inclination'),
+                ('pressure',87000.,'pressure'),('speed',13.,'speed')):
+            with self.subTest(channel=channel):
+                run=make_step_run()
+                channels=dict(run.channels)
+                channels[channel]=channels[channel].copy()
+                channels[channel][120:]=value
+                changed=RunData(run.run_id,run.tire_id,channels,run.metadata,run.raw_indices)
+                event=approved(changed)
+                replay=simulate_event(snap,event,.005)
+                self.assertTrue(np.all(np.isfinite(replay)))
+                with self.assertRaisesRegex(ValueError,reason):
+                    fit_transient(snap,(event,),frozenset(),lambda:False,lambda p:None)
+
+    def test_candidate_flags_late_condition_excursion(self):
+        run=make_step_run()
+        channels=dict(run.channels)
+        channels['pressure']=channels['pressure'].copy()
+        channels['pressure'][80:]+=4000.
+        changed=RunData(run.run_id,run.tire_id,channels,run.metadata,run.raw_indices)
+        event=candidate_events(changed)[0]
+        self.assertTrue(any('pressure' in reason for reason in event.exclusions))
+
     def test_gap_cannot_be_replayed_across_even_if_manually_approved(self):
         run = make_step_run(gap=True)
         event = TransientEvent(run, 0, len(run.raw_indices), 20, True, 'lateral', ())

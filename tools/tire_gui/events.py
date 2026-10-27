@@ -19,7 +19,7 @@ class TransientEvent:
 _REQUIRED = ('time','alpha','kappa','fz','speed','omega','ia','pressure','fx','fy')
 
 
-def validate_event(event: TransientEvent, *, require_approval=True):
+def validate_event(event: TransientEvent, *, require_approval=True, check_conditions=True):
     run = event.run
     if require_approval and not event.approved:
         raise ValueError('transient event requires approved status from explicit user approval')
@@ -55,6 +55,14 @@ def validate_event(event: TransientEvent, *, require_approval=True):
     ia = channels['ia'][baseline]
     pressure = channels['pressure'][baseline]
     speed = channels['speed'][baseline]
+    if not check_conditions:
+        return True
+    def check_relative(values, reference, label):
+        reference=np.asarray(reference,dtype=float)
+        values=np.asarray(values,dtype=float)
+        mean=float(np.mean(reference))
+        if mean <= 0 or (np.max(values)-np.min(values))/mean > .10:
+            raise ValueError(f'{label} is not stable within 10% across event')
     if np.mean(fz) <= 0 or (np.max(fz)-np.min(fz))/np.mean(fz) > .10:
         raise ValueError('baseline load is not stable within 10%')
     if np.max(np.abs(ia)) > np.deg2rad(.25):
@@ -63,6 +71,13 @@ def validate_event(event: TransientEvent, *, require_approval=True):
         raise ValueError('baseline pressure is not stable within 3 kPa')
     if np.mean(speed) <= .5 or (np.max(speed)-np.min(speed))/np.mean(speed) > .10:
         raise ValueError('baseline speed is not stable within 10% or below runtime floor')
+    event_slice=slice(event.start,event.stop)
+    check_relative(channels['fz'][event_slice],fz,'event load')
+    check_relative(channels['speed'][event_slice],speed,'event speed')
+    if np.max(np.abs(channels['ia'][event_slice])) > np.deg2rad(.25):
+        raise ValueError('event inclination is outside +/-0.25 degrees')
+    if np.max(channels['pressure'][event_slice])-np.min(channels['pressure'][event_slice]) > 3000:
+        raise ValueError('event pressure is not stable within 3 kPa')
     return True
 
 
@@ -114,6 +129,16 @@ def candidate_events(run: RunData) -> tuple[TransientEvent, ...]:
                     reasons.append(f'baseline {name} not stable within {tolerance*100:g}%')
             if np.max(np.abs(c['ia'][baseline_start:edge]))>np.deg2rad(.25): reasons.append('baseline inclination outside +/-0.25 degrees')
             if np.max(c['pressure'][baseline_start:edge])-np.min(c['pressure'][baseline_start:edge])>3000: reasons.append('baseline pressure not stable within 3 kPa')
-            found.append(TransientEvent(run,base,end,onset,False,'lateral',tuple(reasons or event.exclusions)))
+            # Screen the complete proposed event window, including post-baseline
+            # condition excursions; retain each reason for the approval UI.
+            event_slice=slice(base,end)
+            event_fz=c['fz'][event_slice]; event_speed=c['speed'][event_slice]
+            if np.mean(fz:=c['fz'][base:onset]) <= 0 or (np.max(event_fz)-np.min(event_fz))/np.mean(fz) > .10:
+                reasons.append('event load is not stable within 10% across event')
+            if np.mean(speed:=c['speed'][base:onset]) <= 0 or (np.max(event_speed)-np.min(event_speed))/np.mean(speed) > .10:
+                reasons.append('event speed is not stable within 10% across event')
+            if np.max(np.abs(c['ia'][event_slice])) > np.deg2rad(.25): reasons.append('event inclination outside +/-0.25 degrees')
+            if np.max(c['pressure'][event_slice])-np.min(c['pressure'][event_slice]) > 3000: reasons.append('event pressure not stable within 3 kPa')
+            found.append(TransientEvent(run,base,end,onset,False,'lateral',tuple(dict.fromkeys(reasons or event.exclusions))))
             break
     return tuple(found)

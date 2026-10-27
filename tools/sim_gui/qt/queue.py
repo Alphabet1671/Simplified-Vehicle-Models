@@ -49,6 +49,8 @@ class CaseQueue(QObject):
         update_callback=None,
         command_factory=child_command,
         finish_factory=_finish_case,
+        attempt_factory=new_attempt,
+        progress_factory=parse_progress,
         parent=None,
     ) -> None:
         """Create a queue with optional persistent index updates."""
@@ -57,6 +59,8 @@ class CaseQueue(QObject):
         self.update_callback = update_callback
         self.command_factory = command_factory
         self.finish_factory = finish_factory
+        self.attempt_factory = attempt_factory
+        self.progress_factory = progress_factory
         self._pending: list[PreparedCase] = []
         self._running: dict[str, _Running] = {}
         self._parallel = 1
@@ -94,7 +98,7 @@ class CaseQueue(QObject):
             self._launch(self._pending.pop(0))
 
     def _launch(self, prepared: PreparedCase) -> None:
-        attempt = new_attempt(prepared)
+        attempt = self.attempt_factory(prepared)
         command = self.command_factory(prepared, attempt)
         process = QProcess(self)
         process.setWorkingDirectory(str(REPOSITORY_ROOT))
@@ -134,7 +138,7 @@ class CaseQueue(QObject):
         running.buffer += data
         while b"\n" in running.buffer:
             line, running.buffer = running.buffer.split(b"\n", 1)
-            progress = parse_progress(
+            progress = self.progress_factory(
                 line.decode(errors="replace"), running.prepared.duration
             )
             if progress is not None:
@@ -189,8 +193,8 @@ class CaseQueue(QObject):
             self._maybe_finished()
 
     def _finish_without_process(self, prepared: PreparedCase, cancelled: bool) -> None:
-        attempt = new_attempt(prepared)
-        fields = finish_case(
+        attempt = self.attempt_factory(prepared)
+        fields = self.finish_factory(
             prepared, attempt, return_code=None, timed_out=False, cancelled=cancelled,
             wall_seconds=0.0, command=[],
         )

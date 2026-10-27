@@ -311,7 +311,8 @@ class PlanarCompileRejectionTests(unittest.TestCase):
             ("rack_travel_per_revolution", 0.0),
             ("steer_arm_length", -1.0),
             ("maximum_pedal_force", 0.0),
-            ("hydraulic_ratio", 0.0),
+            ("hydraulic_ratio_front", 0.0),
+            ("hydraulic_ratio_rear", -1.0),
             ("maximum_brake_pressure", 0.0),
             ("caliper_area", 0.0),
             ("pad_mu_front", 0.0),
@@ -328,7 +329,7 @@ class PlanarCompileRejectionTests(unittest.TestCase):
             ("front_mass_fraction", 0.0),
             ("front_mass_fraction", 1.0),
             ("brake_bias", 1.2),
-            ("brake_bias", 0.0),
+            ("brake_bias", -1.5),
             ("lateral_load_transfer_distribution", 1.5),
         ):
             with self.subTest(name=name), self.assertRaisesRegex(ValueError, name):

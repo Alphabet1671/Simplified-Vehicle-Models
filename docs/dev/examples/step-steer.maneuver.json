@@ -1,0 +1,16 @@
+{
+  "schema": "maneuver-v1",
+  "name": "documented-step-steer",
+  "preset": "step_steer",
+  "backend": "simulation",
+  "vehicle": {"model": "models/formulations/iem24_murphy_real_planar_7dof.xml"},
+  "initial": {"speed_mps": 10.0, "x_m": 0.0, "y_m": 0.0, "heading_rad": 0.0},
+  "clock": {"controller_tick_s": 0.01},
+  "steering": {"mode": "peak_swa", "amplitude_rad": 0.1, "direction": 1},
+  "longitudinal": {"mode": "constant_accelerator", "accelerator": 0.1},
+  "profile": {"duration_s": 3.0},
+  "limits": {},
+  "termination": {"duration_s": 3.0},
+  "calibration": null,
+  "csv": null
+}

@@ -62,7 +62,7 @@ def anti_forces(vehicle, bfx):
     """
     from simplified_vehicle_models.formulations.vertical_14dof import axle_drive_shares
     p = vehicle.planar
-    bias = float(p.brake_bias)
+    bias = float(p.front_brake_share)
     drive_front, drive_rear = axle_drive_shares(vehicle)
     result = np.zeros(4)
     for axle, ix, sign, brake_share, drive_share in (
@@ -1498,7 +1498,7 @@ class LongitudinalLoadTransferTests(unittest.TestCase):
         # Scale: k = anti*(h_cg/L)/share, so a front wheel is
         # anti_brake*(h_cg/L)*bfx_front/bias (rear: 1-bias).
         p = v.planar
-        bias = float(p.brake_bias)
+        bias = float(p.front_brake_share)
         wheelbase = float(p.wheelbase)
         h_over_L = float(p.cg_height) / wheelbase
         for i in (0, 1):

@@ -9,6 +9,7 @@ Python models for point-mass laps and driven planar 7-DoF transients. **Simulati
 - [Forward driver solver (7DoF and 14DoF)](docs/dev/forward-driver.md)
 - [Computational cost by model](docs/dev/computational-cost.md)
 - [Simulation GUI](docs/dev/simulation-gui.md)
+- [Open-loop maneuver GUI and commissioning limits](docs/dev/maneuver-gui.md)
 - [MIS report standard](docs/standards/mis-2024-report-standard.md)
 
 ## Install and run
@@ -34,6 +35,26 @@ PYTHONPATH=src:. python tools/sim_gui/app.py models/vehicles/iem24_murphy_real_p
 ```
 
 The GUI runs forward-driver studies; it supports `planar-7dof` and `14dof-simple` models (not point-mass). See [Simulation GUI](docs/dev/simulation-gui.md) for model selection, studies, outputs, and limitations. The virtual environment is local to this checkout and is ignored by Git.
+
+### Simulation-only open-loop maneuvers
+
+Run a checked-in open-loop maneuver definition headlessly with the simulation-only runner. This example writes an immutable attempt/result under `runs/open-loop-step/`:
+
+```bash
+PYTHONPATH=src:. python -m tools.maneuver_gui.runner \
+  --definition tools/maneuver_gui/examples/iem24_14dof/step.json \
+  --output-root runs/open-loop-step
+```
+
+Export a completed 14DoF maneuver artifact to an animator-compatible MP4 and its adjacent RunRecord. The output path must not already exist:
+
+```bash
+PYTHONPATH=src:. python -m tools.maneuver_gui.export_animation \
+  --artifact runs/open-loop-step/<attempt>/result \
+  --output runs/open-loop-step.mp4
+```
+
+The runner accepts simulation definitions only; it has no vehicle transport, CAN, analog I/O, or hardware arming path. See the [open-loop maneuver guide](docs/dev/maneuver-gui.md) for definitions, CSV inputs, native study/case/attempt outputs, queue workflow, animator interoperability, and limitations.
 
 Run the point-mass example with `PYTHONPATH=src python examples/run_mis_point_mass.py`. Run the bounded 7-DoF forward driver with `PYTHONPATH=src:. python -m tools.run.run_iem24_forward_driver --help`. Every generated report defaults to a path under `docs/validation/`; `tools/` contains programs, not documentation.
 

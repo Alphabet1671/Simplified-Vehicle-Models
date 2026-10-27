@@ -23,7 +23,7 @@ def fake_vehicle(regen=False):
         maximum_pedal_force=1000.,
         tire=object(), total_mass=500., wheelbase=2.5, track_width=1.5,
         cg_height=.3, front_mass_fraction=.5,
-        lateral_load_transfer_distribution=.5, brake_bias=.6,
+        lateral_load_transfer_distribution=.5, front_brake_share=.6,
         aero=object(), drivetrain=object(),
     )
 

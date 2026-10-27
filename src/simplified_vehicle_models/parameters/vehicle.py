@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 
 from simplified_vehicle_models.controls.brakes import (
     PedalRatioCurve,
+    front_brake_torque_share,
     maximum_brake_torques,
 )
 from simplified_vehicle_models.controls.steering import AckermannTable
@@ -38,7 +39,10 @@ class PointMassVehicleParameters:
     cg_height: float
     front_mass_fraction: float
     lateral_load_transfer_distribution: float
-    brake_bias: float
+    #: Front axle share of the hydraulic brake torque, derived from the
+    #: hydraulic brake chain (signed balance bar, front/rear hydraulic ratios,
+    #: pad mu and effective radii). Not the signed balance-bar setting.
+    front_brake_share: float
     tire: TireEnvelopeParameters | UniTirePeakEnvelope
     aero: AeroParameters
     drivetrain: DrivetrainParameters
@@ -87,9 +91,12 @@ class PlanarVehicleParameters:
     caster_angle: float
     kingpin_inclination_angle: float
     ackermann: AckermannTable
+    #: Signed balance-bar setting: 0 neutral, +1 all force on the front
+    #: master cylinder, -1 all force on the rear master cylinder.
     brake_bias: float
     maximum_pedal_force: float
-    hydraulic_ratio: float
+    hydraulic_ratio_front: float
+    hydraulic_ratio_rear: float
     maximum_brake_pressure: float
     caliper_area: float
     pad_mu_front: float
@@ -139,6 +146,20 @@ class PlanarVehicleParameters:
 
         return 0.5 * self.track_width
 
+    @property
+    def front_brake_share(self) -> float:
+        """Return the front axle share of the hydraulic brake torque."""
+
+        return front_brake_torque_share(
+            self.brake_bias,
+            self.hydraulic_ratio_front,
+            self.hydraulic_ratio_rear,
+            self.pad_mu_front,
+            self.pad_mu_rear,
+            self.brake_effective_radius_front,
+            self.brake_effective_radius_rear,
+        )
+
     def maximum_brake_torques(self) -> FloatArray:
         """Return the brake torque magnitude at full pedal.
 
@@ -149,7 +170,8 @@ class PlanarVehicleParameters:
         return maximum_brake_torques(
             maximum_pedal_force=self.maximum_pedal_force,
             pedal_curve=self.pedal_curve,
-            hydraulic_ratio=self.hydraulic_ratio,
+            hydraulic_ratio_front=self.hydraulic_ratio_front,
+            hydraulic_ratio_rear=self.hydraulic_ratio_rear,
             maximum_brake_pressure=self.maximum_brake_pressure,
             caliper_area=self.caliper_area,
             brake_bias=self.brake_bias,

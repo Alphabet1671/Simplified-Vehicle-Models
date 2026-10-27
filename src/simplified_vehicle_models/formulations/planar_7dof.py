@@ -59,6 +59,7 @@ from simplified_vehicle_models.xml.schema import (
     require_nonnegative,
     require_open_unit_interval,
     require_positive,
+    require_signed_brake_bias,
     required_parameters,
 )
 
@@ -89,7 +90,8 @@ PLANAR_7DOF_VEHICLE_PARAMETER_UNITS: dict[str, str] = {
     "kingpin_inclination_angle": "rad",
     "brake_bias": "1",
     "maximum_pedal_force": "N",
-    "hydraulic_ratio": "1",
+    "hydraulic_ratio_front": "1",
+    "hydraulic_ratio_rear": "1",
     "maximum_brake_pressure": "Pa",
     "caliper_area": "m^2",
     "pad_mu_front": "1",
@@ -130,7 +132,8 @@ def compile_planar_7dof_vehicle(
         "rack_travel_per_revolution",
         "steer_arm_length",
         "maximum_pedal_force",
-        "hydraulic_ratio",
+        "hydraulic_ratio_front",
+        "hydraulic_ratio_rear",
         "maximum_brake_pressure",
         "caliper_area",
         "pad_mu_front",
@@ -150,8 +153,8 @@ def compile_planar_7dof_vehicle(
         assembly,
         values,
         "front_mass_fraction",
-        "brake_bias",
     )
+    require_signed_brake_bias(assembly, values)
     require_closed_unit_interval(
         assembly,
         values,
@@ -206,7 +209,8 @@ def compile_planar_7dof_vehicle(
         ackermann=_read_ackermann_table(assembly),
         brake_bias=values["brake_bias"],
         maximum_pedal_force=values["maximum_pedal_force"],
-        hydraulic_ratio=values["hydraulic_ratio"],
+        hydraulic_ratio_front=values["hydraulic_ratio_front"],
+        hydraulic_ratio_rear=values["hydraulic_ratio_rear"],
         maximum_brake_pressure=values["maximum_brake_pressure"],
         caliper_area=values["caliper_area"],
         pad_mu_front=values["pad_mu_front"],

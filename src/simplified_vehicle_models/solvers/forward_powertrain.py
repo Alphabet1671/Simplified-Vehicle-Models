@@ -135,8 +135,10 @@ def evaluate_forward_powertrain(vehicle, driven, gearing, gear_efficiency,
     if voltage < minimum_voltage - 1.e-7 or voltage > maximum_voltage + 1.e-7:
         raise RuntimeError("battery voltage constraint violated")
     hydraulic_force = max(command.brake_force - controller.hydraulic_deadband_n, 0.)
-    brake = brake_torques(hydraulic_force / vehicle.maximum_pedal_force,
-        vehicle.maximum_pedal_force, vehicle.pedal_curve, vehicle.hydraulic_ratio,
+    # The hydraulic chain takes the physical pedal force in newtons.
+    brake = brake_torques(hydraulic_force,
+        vehicle.maximum_pedal_force, vehicle.pedal_curve,
+        vehicle.hydraulic_ratio_front, vehicle.hydraulic_ratio_rear,
         vehicle.maximum_brake_pressure, vehicle.caliper_area, vehicle.brake_bias,
         vehicle.pad_mu_front, vehicle.pad_mu_rear,
         vehicle.brake_effective_radius_front, vehicle.brake_effective_radius_rear)

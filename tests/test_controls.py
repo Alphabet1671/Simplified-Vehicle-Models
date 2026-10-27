@@ -8,6 +8,8 @@ from simplified_vehicle_models.compiler.compile import compile_formulation
 from simplified_vehicle_models.controls.brakes import (
     PedalRatioCurve,
     brake_torques,
+    front_brake_torque_share,
+    front_master_cylinder_share,
     maximum_brake_torques,
 )
 from simplified_vehicle_models.controls.steering import (
@@ -245,27 +247,54 @@ class PedalRatioCurveTests(unittest.TestCase):
 
 
 class BrakeTorqueTests(unittest.TestCase):
-    """Check the pedal chain against a hand calculation."""
+    """Check the force-based hydraulic pedal chain against a hand calculation.
+
+    The chain input is the driver's pedal force in newtons; the 0-100 % brake
+    position belongs to the driver robot, not to the vehicle.
+    """
 
     @classmethod
     def setUpClass(cls) -> None:
         cls.vehicle = compile_formulation(FORMULATION_PATH).model
 
-    def _brake(self, control):
+    def _common(self, **overrides):
         vehicle = self.vehicle
-        return brake_torques(
-            control,
-            vehicle.maximum_pedal_force,
-            vehicle.pedal_curve,
-            vehicle.hydraulic_ratio,
-            vehicle.maximum_brake_pressure,
-            vehicle.caliper_area,
-            vehicle.brake_bias,
-            vehicle.pad_mu_front,
-            vehicle.pad_mu_rear,
-            vehicle.brake_effective_radius_front,
-            vehicle.brake_effective_radius_rear,
+        values = dict(
+            maximum_pedal_force=vehicle.maximum_pedal_force,
+            pedal_curve=vehicle.pedal_curve,
+            hydraulic_ratio_front=vehicle.hydraulic_ratio_front,
+            hydraulic_ratio_rear=vehicle.hydraulic_ratio_rear,
+            maximum_brake_pressure=vehicle.maximum_brake_pressure,
+            caliper_area=vehicle.caliper_area,
+            brake_bias=vehicle.brake_bias,
+            pad_mu_front=vehicle.pad_mu_front,
+            pad_mu_rear=vehicle.pad_mu_rear,
+            effective_radius_front=vehicle.brake_effective_radius_front,
+            effective_radius_rear=vehicle.brake_effective_radius_rear,
         )
+        values.update(overrides)
+        return values
+
+    def _brake(self, pedal_force, **overrides):
+        return brake_torques(pedal_force, **self._common(**overrides))
+
+    def test_murphy_hydraulic_parameters(self) -> None:
+        vehicle = self.vehicle
+        self.assertEqual(vehicle.pad_mu_front, 0.40)
+        self.assertEqual(vehicle.pad_mu_rear, 0.35)
+        self.assertEqual(vehicle.brake_bias, 0.0)
+        self.assertTrue(vehicle.pedal_curve.is_constant)
+        self.assertEqual(vehicle.pedal_curve.ratio(0.0), 1.55)
+        self.assertEqual(vehicle.pedal_curve.ratio(1000.0), 1.55)
+
+    def test_murphy_front_rear_torque_split_is_62_38(self) -> None:
+        self.assertAlmostEqual(self.vehicle.front_brake_share, 0.62, places=6)
+        for force in (50.0, 450.0, self.vehicle.maximum_pedal_force):
+            torque = self._brake(force).wheel_torque_magnitudes
+            with self.subTest(force=force):
+                self.assertAlmostEqual(
+                    float(torque[0] / (torque[0] + torque[2])), 0.62, places=6
+                )
 
     def test_zero_pedal_gives_no_torque(self) -> None:
         result = self._brake(0.0)
@@ -275,177 +304,121 @@ class BrakeTorqueTests(unittest.TestCase):
 
     def test_the_chain_matches_a_hand_calculation(self) -> None:
         vehicle = self.vehicle
-        control = 0.5
-        result = self._brake(control)
+        pedal = 400.0
+        result = self._brake(pedal)
 
-        pedal = control * vehicle.maximum_pedal_force
-        pushrod = pedal * vehicle.pedal_curve.ratio(pedal)
-        front_pushrod = pushrod * vehicle.brake_bias
-        front_clamp = front_pushrod * vehicle.hydraulic_ratio
-        expected = (
-            2.0
-            * vehicle.pad_mu_front
-            * front_clamp
-            * vehicle.brake_effective_radius_front
-        )
-        self.assertAlmostEqual(result.pedal_force, pedal, places=9)
-        self.assertAlmostEqual(
-            float(result.wheel_torque_magnitudes[0]), expected, places=9
-        )
+        pushrod = pedal * 1.55
+        front_master = pushrod * 0.5 * (1.0 + vehicle.brake_bias)
+        rear_master = pushrod - front_master
+        front_clamp = front_master * vehicle.hydraulic_ratio_front
+        rear_clamp = rear_master * vehicle.hydraulic_ratio_rear
+        front = 2.0 * 0.40 * front_clamp * vehicle.brake_effective_radius_front
+        rear = 2.0 * 0.35 * rear_clamp * vehicle.brake_effective_radius_rear
+        self.assertAlmostEqual(result.pedal_force, pedal, places=12)
+        self.assertAlmostEqual(result.pushrod_force, pushrod, places=9)
+        self.assertAlmostEqual(result.front_master_cylinder_force, front_master, places=9)
+        self.assertAlmostEqual(result.front_line_pressure,
+                               front_clamp / vehicle.caliper_area, places=3)
+        self.assertAlmostEqual(result.rear_line_pressure,
+                               rear_clamp / vehicle.caliper_area, places=3)
+        np.testing.assert_allclose(result.wheel_torque_magnitudes,
+                                   [front, front, rear, rear], rtol=1.0e-12)
 
-    def test_the_torque_follows_the_pedal(self) -> None:
-        light = self._brake(0.25)
-        heavy = self._brake(0.75)
+    def test_the_torque_is_linear_in_pedal_force_for_a_constant_ratio(self) -> None:
+        light = self._brake(200.0).wheel_torque_magnitudes
+        heavy = self._brake(600.0).wheel_torque_magnitudes
+        np.testing.assert_allclose(heavy, 3.0 * light, rtol=1.0e-12)
 
-        self.assertGreater(
-            float(heavy.wheel_torque_magnitudes[0]),
-            float(light.wheel_torque_magnitudes[0]),
-        )
+    def test_the_signed_bias_moves_force_between_master_cylinders(self) -> None:
+        for bias, front_share in ((0.0, 0.5), (0.5, 0.75), (-0.5, 0.25),
+                                  (1.0, 1.0), (-1.0, 0.0)):
+            result = self._brake(400.0, brake_bias=bias)
+            with self.subTest(bias=bias):
+                self.assertAlmostEqual(
+                    result.front_master_cylinder_force / result.pushrod_force,
+                    front_share, places=12,
+                )
+        self.assertEqual(float(self._brake(400.0, brake_bias=1.0)
+                               .wheel_torque_magnitudes[2]), 0.0)
+        self.assertEqual(float(self._brake(400.0, brake_bias=-1.0)
+                               .wheel_torque_magnitudes[0]), 0.0)
 
-    def test_the_bias_splits_front_and_rear(self) -> None:
-        vehicle = self.vehicle
-        result = self._brake(0.5)
-
-        front = float(result.wheel_torque_magnitudes[0])
-        rear = float(result.wheel_torque_magnitudes[2])
-        # Ignore the different pad mu and radius to isolate the bias.
-        front_clamp = front / (
-            2.0 * vehicle.pad_mu_front * vehicle.brake_effective_radius_front
-        )
-        rear_clamp = rear / (
-            2.0 * vehicle.pad_mu_rear * vehicle.brake_effective_radius_rear
-        )
-        self.assertAlmostEqual(
-            front_clamp / (front_clamp + rear_clamp),
-            vehicle.brake_bias,
-            places=9,
-        )
+    def test_the_share_helper_matches_the_chain(self) -> None:
+        for bias in (-0.6, 0.0, 0.3):
+            torque = self._brake(300.0, brake_bias=bias).wheel_torque_magnitudes
+            common = self._common(brake_bias=bias)
+            share = front_brake_torque_share(
+                bias, common["hydraulic_ratio_front"], common["hydraulic_ratio_rear"],
+                common["pad_mu_front"], common["pad_mu_rear"],
+                common["effective_radius_front"], common["effective_radius_rear"],
+            )
+            with self.subTest(bias=bias):
+                self.assertAlmostEqual(float(torque[0] / (torque[0] + torque[2])),
+                                       share, places=12)
+        self.assertEqual(front_master_cylinder_share(0.0), 0.5)
 
     def test_the_two_wheels_of_an_axle_match(self) -> None:
-        result = self._brake(0.5)
+        result = self._brake(500.0)
 
-        self.assertAlmostEqual(
-            float(result.wheel_torque_magnitudes[0]),
-            float(result.wheel_torque_magnitudes[1]),
-            places=12,
-        )
-        self.assertAlmostEqual(
-            float(result.wheel_torque_magnitudes[2]),
-            float(result.wheel_torque_magnitudes[3]),
-            places=12,
-        )
+        self.assertEqual(float(result.wheel_torque_magnitudes[0]),
+                         float(result.wheel_torque_magnitudes[1]))
+        self.assertEqual(float(result.wheel_torque_magnitudes[2]),
+                         float(result.wheel_torque_magnitudes[3]))
 
-    def test_the_full_pedal_force_is_reached_at_full_control(self) -> None:
+    def test_the_full_pedal_force_is_driver_limited(self) -> None:
         vehicle = self.vehicle
-        result = self._brake(1.0)
+        result = self._brake(vehicle.maximum_pedal_force)
 
-        self.assertAlmostEqual(
-            result.pedal_force, vehicle.maximum_pedal_force, places=9
-        )
+        self.assertAlmostEqual(result.pedal_force, vehicle.maximum_pedal_force, places=9)
         self.assertFalse(result.is_pressure_limited)
         self.assertTrue(result.is_driver_limited)
 
-    def test_the_sheet_line_pressure_is_reproduced(self) -> None:
-        # The sheet states 28 bar on the front circuit at 0.45 kN of pedal,
-        # which is its one g operating point. The calibration uses that point.
+    def test_450_newtons_is_about_one_g(self) -> None:
         vehicle = self.vehicle
-        control = 450.0 / vehicle.maximum_pedal_force
-
-        result = self._brake(control)
-
-        self.assertAlmostEqual(result.line_pressure / 1.0e5, 28.0, delta=2.0)
-
-    def test_the_sheet_one_g_point_gives_one_g(self) -> None:
-        vehicle = self.vehicle
-        control = 450.0 / vehicle.maximum_pedal_force
-        result = self._brake(control)
+        result = self._brake(450.0)
 
         tire_radius = 0.19
-        force = (
-            2.0 * float(result.wheel_torque_magnitudes[0])
-            + 2.0 * float(result.wheel_torque_magnitudes[2])
-        ) / tire_radius
+        force = 2.0 * float(np.sum(result.wheel_torque_magnitudes[[0, 2]])) / tire_radius
         deceleration = force / (vehicle.total_mass * 9.81)
-
-        # The effective radius is a placeholder fraction of the rotor radius,
-        # so allow a few percent.
         self.assertAlmostEqual(deceleration, 1.0, delta=0.12)
 
     def test_full_pedal_brakes_harder_than_the_tire_can_hold(self) -> None:
         vehicle = self.vehicle
-        result = self._brake(1.0)
+        result = self._brake(vehicle.maximum_pedal_force)
 
         tire_radius = 0.19
-        force = (
-            2.0 * float(result.wheel_torque_magnitudes[0])
-            + 2.0 * float(result.wheel_torque_magnitudes[2])
-        ) / tire_radius
-        deceleration = force / (vehicle.total_mass * 9.81)
+        force = 2.0 * float(np.sum(result.wheel_torque_magnitudes[[0, 2]])) / tire_radius
+        self.assertGreater(force / (vehicle.total_mass * 9.81), 1.5)
 
-        self.assertGreater(deceleration, 1.5)
-
-    def test_a_low_pressure_limit_binds(self) -> None:
+    def test_a_low_pressure_limit_binds_and_keeps_the_split(self) -> None:
         vehicle = self.vehicle
-        result = brake_torques(
-            1.0,
-            vehicle.maximum_pedal_force,
-            vehicle.pedal_curve,
-            vehicle.hydraulic_ratio,
-            2.0e6,
-            vehicle.caliper_area,
-            vehicle.brake_bias,
-            vehicle.pad_mu_front,
-            vehicle.pad_mu_rear,
-            vehicle.brake_effective_radius_front,
-            vehicle.brake_effective_radius_rear,
-        )
+        result = self._brake(vehicle.maximum_pedal_force, maximum_brake_pressure=2.0e6)
 
         self.assertTrue(result.is_pressure_limited)
         self.assertLessEqual(result.line_pressure, 2.0e6 + 1.0e-6)
         self.assertFalse(result.is_driver_limited)
-        self.assertLess(
-            float(result.wheel_torque_magnitudes[0]),
-            float(maximum_brake_torques(
-                vehicle.maximum_pedal_force,
-                vehicle.pedal_curve,
-                vehicle.hydraulic_ratio,
-                vehicle.maximum_brake_pressure,
-                vehicle.caliper_area,
-                vehicle.brake_bias,
-                vehicle.pad_mu_front,
-                vehicle.pad_mu_rear,
-                vehicle.brake_effective_radius_front,
-                vehicle.brake_effective_radius_rear,
-            )[0]),
-        )
+        torque = result.wheel_torque_magnitudes
+        self.assertAlmostEqual(float(torque[0] / (torque[0] + torque[2])),
+                               vehicle.front_brake_share, places=12)
+        self.assertLess(float(torque[0]), float(maximum_brake_torques(**self._common())[0]))
 
     def test_rejects_bad_inputs(self) -> None:
         vehicle = self.vehicle
-        common = dict(
-            maximum_pedal_force=vehicle.maximum_pedal_force,
-            pedal_curve=vehicle.pedal_curve,
-            hydraulic_ratio=vehicle.hydraulic_ratio,
-            maximum_brake_pressure=vehicle.maximum_brake_pressure,
-            caliper_area=vehicle.caliper_area,
-            brake_bias=vehicle.brake_bias,
-            pad_mu_front=vehicle.pad_mu_front,
-            pad_mu_rear=vehicle.pad_mu_rear,
-            effective_radius_front=vehicle.brake_effective_radius_front,
-            effective_radius_rear=vehicle.brake_effective_radius_rear,
-        )
-        for control in (-0.1, 1.1, float("nan")):
-            with self.subTest(control=control), self.assertRaises(ValueError):
-                brake_torques(control, **common)
-        with self.assertRaises(ValueError):
-            brake_torques(0.5, **{**common, "brake_bias": 1.0})
-        with self.assertRaises(ValueError):
-            brake_torques(0.5, **{**common, "caliper_area": 0.0})
-        with self.assertRaises(ValueError):
-            brake_torques(0.5, **{**common, "hydraulic_ratio": -1.0})
-        with self.assertRaises(ValueError):
-            brake_torques(0.5, **{**common, "maximum_pedal_force": 0.0})
-        with self.assertRaises(ValueError):
-            brake_torques(0.5, **{**common, "pad_mu_rear": 0.0})
+        common = self._common()
+        for force in (-0.1, vehicle.maximum_pedal_force + 1.0, float("nan")):
+            with self.subTest(force=force), self.assertRaises(ValueError):
+                brake_torques(force, **common)
+        for name, value in (
+            ("brake_bias", 1.01),
+            ("brake_bias", -1.01),
+            ("caliper_area", 0.0),
+            ("hydraulic_ratio_front", -1.0),
+            ("hydraulic_ratio_rear", 0.0),
+            ("maximum_pedal_force", 0.0),
+            ("pad_mu_rear", 0.0),
+        ):
+            with self.subTest(name=name, value=value), self.assertRaises(ValueError):
+                brake_torques(100.0, **{**common, name: value})
 
 
 if __name__ == "__main__":

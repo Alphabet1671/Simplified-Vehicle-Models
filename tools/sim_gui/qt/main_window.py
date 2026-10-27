@@ -22,8 +22,15 @@ from PyQt6.QtGui import QDesktopServices
 
 from tools.gui_common.files import protected_directory_problem
 from tools.sim_gui import REPOSITORY_ROOT
-from tools.sim_gui.execute import prepare_case, validate_case
+from tools.sim_gui.execute import prepare_case, validate_case, child_command, finish_case, new_attempt, parse_progress
+from tools.sim_gui.maneuver_execute import (
+    ManeuverStudyDefinition, create_maneuver_study, expand_maneuvers,
+    finish_maneuver_case, maneuver_child_command, maneuver_progress,
+    new_maneuver_attempt, prepare_maneuver_case,
+)
 from tools.sim_gui.qt.model_panel import ModelPanel
+from tools.maneuver_gui.qt import ManeuverTab
+from tools.maneuver_gui.qt.controller import ManeuverController
 from tools.sim_gui.qt.queue import CaseQueue, QueueTable
 from tools.sim_gui.qt.settings_tab import SettingsTab
 from tools.sim_gui.qt.single_run_tab import SingleRunTab
@@ -48,6 +55,7 @@ class MainWindow(QMainWindow):
         self.settings_store = settings_store or QSettings("Simplified-Vehicle-Models", "sim-gui")
         self.configuration = None
         self.study_index = None
+        self._maneuver_study: ManeuverStudyDefinition | None = None
         self._prepared = []
         self._running = False
         self._run_requested = False
@@ -66,6 +74,8 @@ class MainWindow(QMainWindow):
 
         self.model_panel = ModelPanel(parent=self)
         self.single_tab = SingleRunTab(self)
+        self.maneuver_tab = ManeuverTab(parent=self)
+        self.maneuver_controller = ManeuverController(self.maneuver_tab, output_root=self.output_root, parent=self)
         self.track_tab = TrackTab(self)
         self.settings_tab = SettingsTab(self)
         self.study_tab = None
@@ -74,6 +84,7 @@ class MainWindow(QMainWindow):
         self.log_view.setReadOnly(True)
         self.tabs = QTabWidget(self)
         self.tabs.addTab(self.single_tab, "Single Run")
+        self.tabs.addTab(self.maneuver_tab, "Maneuvers")
         self.tabs.addTab(self.track_tab, "Track")
         self.tabs.addTab(self.settings_tab, "Run Settings")
         self.tabs.addTab(self.queue_table, "Queue")
@@ -90,6 +101,13 @@ class MainWindow(QMainWindow):
         self.single_tab.stopRequested.connect(self.stop_cases)
         self.single_tab.modelSelected.connect(self._single_model_selected)
         self.single_tab.trackSelected.connect(self._single_track_selected)
+        self.maneuver_tab.runRequested.connect(self._run_maneuver)
+        self.maneuver_tab.stopRequested.connect(self.stop_cases)
+        self.maneuver_controller.busyChanged.connect(self._maneuver_busy_changed)
+        self.maneuver_controller.progress.connect(self._maneuver_progress)
+        self.maneuver_controller.finished.connect(self._maneuver_finished)
+        self.maneuver_controller.animationFinished.connect(self._maneuver_animation_finished)
+        self.maneuver_tab.log_view.textChanged.connect(self._mirror_maneuver_log)
         self.track_tab.trackChanged.connect(self._track_changed)
         stored = self.settings_store.value("single_run_output")
         self.single_tab.set_export_folder(Path(stored) if stored else self.output_root)
@@ -158,11 +176,131 @@ class MainWindow(QMainWindow):
 
     def _configuration_changed(self, configuration) -> None:
         self.configuration = configuration
+        self.maneuver_tab.set_vehicle_configuration(self._maneuver_definition_seed(configuration))
+        self.maneuver_tab.clear_run()
         if self.study_tab is not None:
             self.study_tab.configuration = configuration
             self.study_tab.settings = self.settings_tab._settings
         self.settings_tab.set_model(configuration.model)
         self._refresh_actions()
+
+    def _maneuver_definition_seed(self, configuration) -> dict:
+        """Create the initial simulation-only maneuver draft for a selected model."""
+        try:
+            model = configuration.source.resolve().relative_to(REPOSITORY_ROOT).as_posix()
+        except ValueError:
+            model = str(configuration.source)
+        return {
+            "schema": "maneuver-v1", "name": "maneuver", "preset": "step_steer",
+            "backend": "simulation", "vehicle": {"model": model},
+            "initial": {"speed_mps": 10.0, "x_m": 0.0, "y_m": 0.0, "heading_rad": 0.0},
+            "clock": {"controller_tick_s": 0.01},
+            "steering": {"mode": "peak_swa", "amplitude_rad": 0.1, "direction": 1},
+            "longitudinal": {"mode": "constant_accelerator", "accelerator": 0.1},
+            "profile": {"duration_s": 3.0}, "limits": {},
+            "termination": {"duration_s": 3.0}, "calibration": None, "csv": None,
+        }
+
+    def _run_maneuver(self, definition) -> None:
+        """Build a native one-case study and run it through the shared queue."""
+        if self.configuration is None or self._run_mode is not None:
+            return
+        data = definition.to_dict() if hasattr(definition, "to_dict") else dict(definition)
+        source = data.get("vehicle", {}).get("formulation") or data.get("vehicle", {}).get("model")
+        if not source:
+            _warn(self, "Maneuver", "Select a vehicle model before running a maneuver.")
+            return
+        study = ManeuverStudyDefinition(str(data.get("name") or "maneuver"), str(source), (data,))
+        try:
+            cases = expand_maneuvers(study)
+            self._maneuver_study = study
+            directory = _study_directory(self.maneuver_tab.export_folder(), study)
+            self.study_index = create_maneuver_study(directory, study, cases)
+            self._prepared = [prepare_maneuver_case(directory, study, case) for case in cases]
+        except (OSError, ValueError) as error:
+            _warn(self, "Maneuver", str(error))
+            return
+        self._queue.study_index = self.study_index
+        self._queue.command_factory = maneuver_child_command
+        self._queue.finish_factory = finish_maneuver_case
+        self._queue.attempt_factory = new_maneuver_attempt
+        self._queue.progress_factory = maneuver_progress
+        self.queue_table.set_cases(self.study_index.cases)
+        self.maneuver_tab.clear_run()
+        self.maneuver_tab.set_busy(True)
+        self._run_mode = "maneuver"
+        self._running = True
+        self._log_timer.start()
+        self.tabs.setCurrentWidget(self.queue_table)
+        self._refresh_actions()
+        self._queue.start(self._prepared, 1)
+
+    def _run_maneuver_study(self, study: ManeuverStudyDefinition) -> None:
+        """Run an opened multi-definition maneuver study through CaseQueue."""
+        try:
+            cases = expand_maneuvers(study)
+            directory = _study_directory(self.maneuver_tab.export_folder(), study)
+            self.study_index = create_maneuver_study(directory, study, cases)
+            self._prepared = [prepare_maneuver_case(directory, study, case) for case in cases]
+        except (OSError, ValueError) as error:
+            _warn(self, "Maneuver Study", str(error))
+            return
+        self._maneuver_study = study
+        self._queue.study_index = self.study_index
+        self._queue.command_factory = maneuver_child_command
+        self._queue.finish_factory = finish_maneuver_case
+        self._queue.attempt_factory = new_maneuver_attempt
+        self._queue.progress_factory = maneuver_progress
+        self.queue_table.set_cases(self.study_index.cases)
+        self.maneuver_tab.clear_run()
+        self.maneuver_tab.set_busy(True)
+        self._run_mode = "maneuver"
+        self._running = True
+        self._log_timer.start()
+        self.tabs.setCurrentWidget(self.queue_table)
+        self._refresh_actions()
+        self._queue.start(self._prepared, 1)
+
+    def _maneuver_busy_changed(self, busy: bool) -> None:
+        if busy:
+            self._run_mode = "maneuver"
+            self.status.showMessage("Maneuver running…")
+        elif self._run_mode == "maneuver":
+            self._run_mode = None
+        self._refresh_actions()
+
+    def _mirror_maneuver_log(self) -> None:
+        """Mirror newly appended tab log lines into the application log."""
+        text = self.maneuver_tab.log_view.toPlainText()
+        count = getattr(self, "_maneuver_log_lines", 0)
+        lines = text.splitlines()
+        if count > len(lines):
+            count = 0
+        for line in lines[count:]:
+            self.log_view.appendPlainText(f"maneuver: {line}")
+        self._maneuver_log_lines = len(lines)
+
+    def _maneuver_progress(self, event: dict) -> None:
+        """Forward simulation progress into the shared status bar."""
+        if not isinstance(event, dict):
+            return
+        fraction = event.get("fraction")
+        phase = event.get("phase", "running")
+        time_s = event.get("time_s")
+        detail = f"Maneuver: {phase}"
+        if time_s is not None:
+            detail += f" at {float(time_s):.3f} s"
+        if isinstance(fraction, (int, float)):
+            detail += f" ({float(fraction) * 100:.0f}%)"
+        self.status.showMessage(detail)
+
+    def _maneuver_finished(self, summary: dict) -> None:
+        status = summary.get("status", "Finished") if isinstance(summary, dict) else "Finished"
+        self.status.showMessage(f"Maneuver {status.lower()}")
+
+    def _maneuver_animation_finished(self, summary: dict) -> None:
+        status = summary.get("status", "Animation finished") if isinstance(summary, dict) else "Animation finished"
+        self.status.showMessage(f"Maneuver {status.lower()}")
 
     def _settings_changed(self, settings) -> None:
         if self.study_tab is not None:
@@ -181,6 +319,8 @@ class MainWindow(QMainWindow):
         """Open a vehicle configuration and refresh dependent tabs."""
         self.configuration = VehicleConfiguration.open(path)
         self.model_panel.set_configuration(self.configuration)
+        self.maneuver_tab.set_vehicle_configuration(self._maneuver_definition_seed(self.configuration))
+        self.maneuver_tab.clear_run()
         self.settings_tab.set_model(self.configuration.model)
         try:
             current_settings = self.settings_tab.settings()
@@ -386,6 +526,9 @@ class MainWindow(QMainWindow):
         """Build a baseline if needed and start the study process queue."""
         if self._run_mode is not None or self._validation_thread is not None:
             return
+        if self.tabs.currentWidget() is self.maneuver_tab and self._maneuver_study is not None:
+            self._run_maneuver_study(self._maneuver_study)
+            return
         if not self._prepared:
             self._run_requested = True
             self.build_cases()
@@ -404,6 +547,9 @@ class MainWindow(QMainWindow):
 
     def stop_cases(self) -> None:
         """Stop the active run, cancelling validation when it has not started."""
+        if self._run_mode == "maneuver":
+            self._queue.stop()
+            return
         if self._run_mode == "single" and self._validation_thread is not None:
             self._cancel_validation()
             return
@@ -547,18 +693,44 @@ class MainWindow(QMainWindow):
             self.single_tab.set_log(log.read_text(errors="replace"))
 
     def save_study(self) -> None:
-        """Save the current definition atomically to a study JSON file."""
+        """Save a lap study or the current maneuver definition collection."""
         path, _ = QFileDialog.getSaveFileName(self, "Save Study", filter="Study (*.study.json)")
-        if path:
+        if not path:
+            return
+        if self.tabs.currentWidget() is self.maneuver_tab:
+            data = self.maneuver_tab.definition().to_dict()
+            source = data.get("vehicle", {}).get("formulation") or data.get("vehicle", {}).get("model", "")
+            _atomic(Path(path), ManeuverStudyDefinition(data.get("name", "maneuver"), str(source), (data,)).to_json())
+        else:
             _atomic(Path(path), self._definition().to_json())
-            self._remember(Path(path))
+        self._remember(Path(path))
 
     def open_study(self) -> None:
         """Open a definition.study.json and restore its model."""
         path, _ = QFileDialog.getOpenFileName(self, "Open Study", filter="JSON (*.json)")
         if not path:
             return
-        definition = StudyDefinition.from_json(json.loads(Path(path).read_text()))
+        raw = json.loads(Path(path).read_text())
+        if raw.get("schema") == "maneuver-study-v1":
+            maneuver = ManeuverStudyDefinition.from_json(raw)
+            try:
+                cases = expand_maneuvers(maneuver)
+            except ValueError as error:
+                _warn(self, "Maneuver Study", str(error))
+                return
+            baseline = VehicleConfiguration.open(Path(maneuver.source))
+            self.configuration = baseline
+            self.model_panel.set_configuration(baseline)
+            self._maneuver_study = maneuver
+            # Edit the first member while retaining the full study collection for
+            # explicit Run Study, rather than discarding batch definitions.
+            self.maneuver_tab.set_vehicle_configuration(cases[0].definition)
+            self.maneuver_tab.clear_run()
+            self.tabs.setCurrentWidget(self.maneuver_tab)
+            self._refresh_actions()
+            self._remember(Path(path))
+            return
+        definition = StudyDefinition.from_json(raw)
         baseline = VehicleConfiguration.open(Path(definition.source))
         configuration = baseline.with_model(definition.model)
         for key, value in definition.choices.items():
@@ -578,6 +750,21 @@ class MainWindow(QMainWindow):
         self._remember(Path(path))
 
     def _case_finished(self, key, fields) -> None:
+        if self._run_mode == "maneuver":
+            if self.study_index is not None:
+                case = next((item for item in self.study_index.cases if item.get("id") == key), {})
+                attempt = case.get("attempt")
+                if attempt:
+                    self.maneuver_tab.result_label.setText(
+                        f"Status: {case.get('status', 'failed')}\nAttempt: {self.study_index.directory / attempt}\n"
+                        f"RunRecord: {case.get('run_record') or 'not generated'}")
+                if case.get("status") == "completed" and case.get("run_record"):
+                    self.maneuver_tab.animation_button.setEnabled(True)
+                    self.maneuver_tab._completed_artifact = self.study_index.directory / attempt
+                    self.maneuver_tab._has_completed_artifact = True
+            self.queue_table.set_cases(self.study_index.cases)
+            self._refresh_status()
+            return
         if self._run_mode == "single":
             self.single_tab.set_status(str(fields.get("status", "")))
             self._refresh_single_log()
@@ -594,6 +781,19 @@ class MainWindow(QMainWindow):
     def _all_finished(self) -> None:
         """Finish the active mode without changing the other mode's widgets."""
         mode = self._run_mode
+        # The queue is configured per run kind; restore its lap defaults once
+        # a maneuver queue has drained so subsequent lap studies are unchanged.
+        if mode == "maneuver":
+            self._queue.command_factory = child_command
+            self._queue.finish_factory = finish_case
+            self._queue.attempt_factory = new_attempt
+            self._queue.progress_factory = parse_progress
+            self.maneuver_tab.set_busy(False)
+            self._running = False
+            self._log_timer.stop()
+            self._run_mode = None
+            self._refresh_actions()
+            return
         self._running = False
         self._log_timer.stop()
         self._single_log_timer.stop()
@@ -650,6 +850,15 @@ class MainWindow(QMainWindow):
         if self._validation_thread is not None:
             self._validation_thread.quit()
             self._validation_thread.wait(10000)
+        if self.maneuver_controller.is_running():
+            self.maneuver_controller.cancel()
+            maneuver_loop = QEventLoop()
+            self.maneuver_controller.finished.connect(maneuver_loop.quit)
+            QTimer.singleShot(10000, maneuver_loop.quit)
+            maneuver_loop.exec()
+            if self.maneuver_controller.is_running():
+                event.ignore()
+                return
         if self._running:
             answer = _confirm(self, "Stop the running cases and quit?", "Stop the running cases and quit?")
             if answer != QMessageBox.StandardButton.Yes:

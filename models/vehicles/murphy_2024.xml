@@ -7,7 +7,14 @@
         <parameter name="cg_height" value="0.3" unit="m"/>
         <parameter name="front_mass_fraction" value="0.47" unit="1"/>
         <parameter name="lateral_load_transfer_distribution" value="0.44" unit="1"/>
-        <parameter name="brake_bias" value="0.65" unit="1"/>
+        <!-- Hydraulic brake (2026-10-26): signed balance bar brake_bias 0 = neutral (+1 all front MC, -1 all rear MC); pad mu 0.40 front / 0.35 rear; constant 1.55 pedal ratio (models/data/murphy_pedal_ratio.csv). The front/rear hydraulic ratios are FABRICATED so the hydraulic torque split is 0.62 front / 0.38 rear; they are not measured. -->
+        <parameter name="brake_bias" value="0.0" unit="1"/>
+        <parameter name="hydraulic_ratio_front" value="7.665" unit="1"/>
+        <parameter name="hydraulic_ratio_rear" value="5.543134" unit="1"/>
+        <parameter name="pad_mu_front" value="0.40" unit="1"/>
+        <parameter name="pad_mu_rear" value="0.35" unit="1"/>
+        <parameter name="brake_effective_radius_front" value="0.077622" unit="m"/>
+        <parameter name="brake_effective_radius_rear" value="0.075184" unit="m"/>
     </parameters>
     <components>
         <component role="tire" ref="../tires/correlated_comp_2024.xml"/>

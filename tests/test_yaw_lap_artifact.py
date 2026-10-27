@@ -39,6 +39,21 @@ class LapArtifactTests(unittest.TestCase):
             self.assertTrue(validation.valid)
             self.assertEqual(validation.dense_sample_valid, None)
 
+    def test_nonzero_offset_periodic_geometry_is_saved_exactly(self):
+        cap,_,_=self.fixture()
+        d=np.array([0.,1.,2.]); ref=np.array([10.,11.5,14.])
+        path=YawPath(d,np.array([.02,.03,.02]),np.array([.001,.002,.001]),True)
+        geom=dict(reference_distance=ref,north=np.array([5.,6.,5.]),east=np.array([2.,3.,2.]),heading=np.array([0.,1.,2*np.pi]))
+        with tempfile.TemporaryDirectory() as folder:
+            target=Path(folder)/'offset.npz'
+            save_lap_plan(target,yaw_path=path,speed=np.full(3,5.),geometry=geom,
+                map_identity=cap.source_identity,track_identity='track',maximum_speed=10.,
+                profile_settings=CoupledProfileSettings())
+            with np.load(target,allow_pickle=False) as stored:
+                np.testing.assert_array_equal(stored['reference_distance'],ref)
+                np.testing.assert_array_equal(stored['north'],geom['north'])
+                np.testing.assert_array_equal(stored['east'],geom['east'])
+
     def test_tampered_arrays_rejected_before_replay(self):
         cap,p,g=self.fixture()
         with tempfile.TemporaryDirectory() as d:

@@ -216,6 +216,7 @@ def replay(args,output,vehicle,track,path,speed_plan,arrays,metadata):
     from simplified_vehicle_models.tracks.types import PathCoordinates
     from simplified_vehicle_models.results.plant_channels import RunRecordSink
     from simplified_vehicle_models.tracks.corridor import corridor_from_track,SIGNED_POLICY
+    from simplified_vehicle_models.planning.yaw_replay_metrics import time_weighted_rms,time_weighted_fraction,project_xy_to_reference
     from simplified_vehicle_models.tracks.line_trajectory import ReferenceCurve
     from tools.run.yaw_study_contract import update_replay_initial_state
     if args.controller!='preview':
@@ -255,38 +256,57 @@ def replay(args,output,vehicle,track,path,speed_plan,arrays,metadata):
     np.savetxt(output/'trace.csv',np.column_stack((result.time,result.state.T)),delimiter=',',comments='',
         header=','.join(('time',*plant.state_names)))
     observations=[plant.observe(row) for row in result.state.T]
-    # Convert physical selected-path station back to source station, then add
-    # actual vehicle lateral tracking error to the selected line offset.
+    # Reconstruct driven XY from the path frame, then project locally onto the
+    # reference curve. This remains correct when selected/reference normals differ.
     reference=ReferenceCurve(track)
-    source=np.interp(np.array([o.distance for o in observations])%path.distance[-1],
-        path.distance,arrays['reference_distance'])
-    # Project selected path displacement onto reference right normal.
-    refs=reference.evaluate(arrays['reference_distance'])
-    line_offset=(arrays['north']-refs.north)*(-np.sin(refs.heading))+(arrays['east']-refs.east)*np.cos(refs.heading)
-    center=np.interp(source,arrays['reference_distance'],line_offset)+np.array([o.lateral_error for o in observations])
+    physical=np.array([o.distance for o in observations])
+    local_source=np.interp(np.clip(physical,path.distance[0],path.distance[-1]),path.distance,arrays['reference_distance'])
+    path_x=np.interp(np.clip(physical,path.distance[0],path.distance[-1]),path.distance,arrays['north'])
+    path_y=np.interp(np.clip(physical,path.distance[0],path.distance[-1]),path.distance,arrays['east'])
+    path_heading=np.interp(np.clip(physical,path.distance[0],path.distance[-1]),path.distance,arrays['heading'])
+    lateral_track=np.array([o.lateral_error for o in observations])
+    driven_x=path_x-lateral_track*np.sin(path_heading)
+    driven_y=path_y+lateral_track*np.cos(path_heading)
+    source,center=project_xy_to_reference(reference,driven_x,driven_y,local_source,
+        window=max(15.,float(np.median(np.diff(arrays['reference_distance'])))*8.))
     corridor=corridor_from_track(track,margin=0.,policy=SIGNED_POLICY,reference=reference)
     lo=np.interp(source,corridor.distance,corridor.minimum);hi=np.interp(source,corridor.distance,corridor.maximum)
     violation=np.maximum(np.maximum(lo-center,center-hi),0.)
-    dt=np.diff(result.time);duration=max(float(np.sum(dt)),1e-12)
     lateral=np.array([o.lateral_error for o in observations]);speed=np.array([o.speed for o in observations])
     target=np.array([speed_plan.sample(o.distance)[0] for o in observations])
-    rms=lambda values:float(np.sqrt(np.sum(dt*(values[:-1]**2+values[1:]**2)*.5)/duration))
     summary_started=__import__('time').perf_counter()
     summary={'status':'completed' if result.lap_completed else 'incomplete','lap_completed':bool(result.lap_completed),
-        'controller':args.controller,'driven_time_s':float(result.time[-1]),'lateral_error_rms_m':rms(lateral),
-        'lateral_error_max_m':float(np.max(np.abs(lateral))),'speed_error_rms_mps':rms(speed-target),
+        'controller':args.controller,'driven_time_s':float(result.time[-1]),'lateral_error_rms_m':time_weighted_rms(result.time,lateral),
+        'lateral_error_max_m':float(np.max(np.abs(lateral))),'speed_error_rms_mps':time_weighted_rms(result.time,speed-target),
+        'speed_error_max_abs_mps':float(np.max(np.abs(speed-target))),
         'sampled_center_corridor_violation_m':float(max(violation)),'sampled_center_contained':bool(max(violation)<=1e-8),
         'footprint_containment_certified':False,'between_step_containment_certified':False,
         'replay_validation_diagnostics':replay_diagnostics}
-    controls=np.array([driver.command(observation) for observation in observations],dtype=object)
-    throttle=np.array([command.throttle for command in controls]);brake=np.array([command.brake_force for command in controls])
-    steering_rate=np.array([command.steering_rate for command in controls])
-    weighted_fraction=lambda flags:float(np.sum(dt*(flags[:-1].astype(float)+flags[1:].astype(float))*.5)/duration)
-    summary.update(throttle_max_requested=float(max(throttle)),
-        throttle_saturation_time_fraction_requested=weighted_fraction(throttle>=1.-1e-6),
-        brake_saturation_time_fraction_requested=weighted_fraction(brake>=vehicle.maximum_pedal_force*(1.-1e-6)),
-        steering_rate_saturation_time_fraction_requested=weighted_fraction(abs(steering_rate)>=vehicle.steering_maximum_rate*(1.-1e-6)),
-        control_metrics_kind='requested_commands; saved run record contains realized pedal-limited controls')
+    from simplified_vehicle_models.results.run_record import load_run_record
+    record=load_run_record(output/'run_record.npz')
+    channels={name:record.channel_values(name) for name in record.manifest.channel_names}
+    required=('throttle','brake-force','steering-rate')
+    missing=[name for name in required if name not in channels]
+    if missing: raise ValueError(f'realized replay channels missing: {missing}')
+    requested=np.array([driver.command(observation) for observation in observations],dtype=object)
+    throttle_requested=np.array([command.throttle for command in requested])
+    brake_requested=np.array([command.brake_force for command in requested])
+    steering_requested=np.array([command.steering_rate for command in requested])
+    realized_throttle=np.asarray(channels['throttle'],float).reshape(-1)
+    realized_brake=np.asarray(channels['brake-force'],float).reshape(-1)
+    realized_steering=np.asarray(channels['steering-rate'],float).reshape(-1)
+    record_time=np.asarray(record.time,float)
+    summary.update(throttle_max_requested=float(max(throttle_requested)),
+        throttle_saturation_time_fraction_requested=time_weighted_fraction(result.time,throttle_requested>=1.-1e-6),
+        brake_saturation_time_fraction_requested=time_weighted_fraction(result.time,brake_requested>=vehicle.maximum_pedal_force*(1.-1e-6)),
+        steering_rate_saturation_time_fraction_requested=time_weighted_fraction(result.time,abs(steering_requested)>=vehicle.steering_maximum_rate*(1.-1e-6)),
+        throttle_saturation_time_fraction_realized=time_weighted_fraction(record_time,realized_throttle>=1.-1e-6),
+        brake_saturation_time_fraction_realized=time_weighted_fraction(record_time,realized_brake>=vehicle.maximum_pedal_force*(1.-1e-6)),
+        steering_rate_saturation_time_fraction_realized=time_weighted_fraction(record_time,abs(realized_steering)>=vehicle.steering_maximum_rate*(1.-1e-6)),
+        path_digest=metadata.get('array_digest'),map_digest=metadata.get('map_identity'),
+        controller_digest=hashlib.sha256(json.dumps({'controller':args.controller,'overrides':{k:getattr(args,k) for k in ('preview_seconds','heading_gain','lateral_gain','yaw_damping')}},sort_keys=True).encode()).hexdigest(),
+        solver_validation_complete=bool(replay_diagnostics.get('counts',{}).get('accepted_states_validated',0)>0 and replay_diagnostics.get('counts',{}).get('dense_probes_validated',0)>=0),
+        control_metrics_kind='requested_commands_and_saved_realized_channels')
     # Build the diagnostics-bearing summary before writing it once.
     summary['replay_validation_diagnostics']=replay_diagnostics
     replay_diagnostics.setdefault('timings',{})['summary_construction_seconds'] = __import__('time').perf_counter()-summary_started

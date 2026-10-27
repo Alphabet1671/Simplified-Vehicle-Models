@@ -73,6 +73,13 @@ class YawAwareRecordPathTests(unittest.TestCase):
                                     path.y_east[-1] - path.y_east[0]), 1.)
         self.assertNotAlmostEqual(path.heading[-1] - path.heading[0], 2*np.pi, places=3)
 
+    def test_optimized_line_curvature_and_rate_are_its_own_periodic_seam_values(self):
+        path=self._circle_plan().speed_plan
+        self.assertAlmostEqual(path.curvature[0],path.curvature[-1],places=10)
+        from simplified_vehicle_models.solvers.yaw_aware_profile import curvature_rate_from_samples
+        rate=curvature_rate_from_samples(path.distance,path.curvature,is_closed=True)
+        self.assertAlmostEqual(rate[0],rate[-1],places=8)
+
     def test_output_arrays_are_immutable(self):
         path = path_coordinates_from_yaw_line(self._circle_plan())
         for values in (path.distance, path.x_north, path.y_east, path.heading,

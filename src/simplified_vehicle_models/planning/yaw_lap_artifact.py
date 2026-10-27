@@ -31,6 +31,12 @@ def save_lap_plan(path, *, yaw_path, speed, geometry, map_identity, track_identi
         raise ValueError('lap plan geometry and speed must share the physical station grid')
     if any(not np.all(np.isfinite(value)) for value in arrays.values()):raise ValueError('lap plan arrays must be finite')
     if np.any(np.diff(arrays['reference_distance'])<=0):raise ValueError('reference stations must increase')
+    if np.any(np.diff(arrays['distance'])<=0):raise ValueError('physical stations must increase')
+    if yaw_path.is_closed:
+        if not np.isclose(arrays['curvature'][0], arrays['curvature'][-1], rtol=0., atol=1e-8):
+            raise ValueError('closed optimized-line curvature must agree at seam')
+        if not np.isclose(arrays['curvature_rate'][0], arrays['curvature_rate'][-1], rtol=0., atol=1e-7):
+            raise ValueError('closed optimized-line curvature rate must agree at seam')
     metadata=dict(schema=SCHEMA,map_identity=map_identity,track_identity=track_identity,
         maximum_speed=float(maximum_speed),is_closed=yaw_path.is_closed,
         profile_settings={key:getattr(profile_settings,key) for key in profile_settings.__dataclass_fields__},
@@ -52,7 +58,7 @@ def load_lap_plan(path, capability, *, expected_track_identity):
     settings=CoupledProfileSettings(**metadata['profile_settings'])
     validation=validate_profile(path,capability,arrays['speed'],maximum_speed=metadata['maximum_speed'],
         boundary='flying' if path.is_closed else 'standing',settings=settings)
-    if not validation.valid:raise ValueError('saved lap plan fails independent strict profile validation')
+    if not validation.valid:raise ProfileInvalidError('profile_invalid: saved lap plan fails independent strict validation')
     plan=SpeedPlan(path.distance,arrays['speed'],path.curvature,is_closed=path.is_closed)
     for array in arrays.values():array.setflags(write=False)
     return path,plan,arrays,metadata,validation

@@ -2,9 +2,16 @@ import unittest
 from pathlib import Path
 from tools.run.run_yaw_lap_suite import parse_args, _failure_summary
 from simplified_vehicle_models.solvers.forward_driver import ForwardIntegrationError
+from simplified_vehicle_models.planning.yaw_replay_metrics import time_weighted_rms, time_weighted_fraction
 
 
 class SuiteParserTests(unittest.TestCase):
+    def test_irregular_time_weighted_metrics_use_trapezoidal_integrals(self):
+        import numpy as np
+        time=np.array([0.,1.,3.]);error=np.array([0.,2.,0.])
+        expected=np.sqrt((1.*(0.+4.)/2.+2.*(4.+0.)/2.)/3.)
+        self.assertAlmostEqual(time_weighted_rms(time,error),expected)
+        self.assertAlmostEqual(time_weighted_fraction(time,np.array([False,True,False])),.5)
     def test_saved_replay_requires_plan_and_map(self):
         args=parse_args(['--track','track.xml','--output-dir','run','--yaw-map','map.npz',
                          '--mode','replay','--plan','plan.npz'])

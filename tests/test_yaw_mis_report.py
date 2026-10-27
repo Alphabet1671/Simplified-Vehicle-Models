@@ -16,6 +16,19 @@ class YawMisReportTests(unittest.TestCase):
         self.assertEqual(result['rmse'],1.)
         self.assertEqual(result['mae'],1.)
 
+    def test_fresh_closure_has_structured_comparison_and_separate_traces(self):
+        summary=json.loads((ROOT/'docs/validation/iem24-murphy-yaw-closure/metrics.json').read_text())
+        report=(ROOT/'docs/validation/iem24-murphy-yaw-closure/report.md').read_text()
+        self.assertIn('sector_comparison',summary)
+        self.assertIn('operational_traces',summary)
+        self.assertIn('not run',report)
+        self.assertIn('operational_traces.csv',report)
+        self.assertIn('Largest positive:',report)
+        self.assertIn('300–350 m',report)
+        self.assertNotIn(r'\n\n',report)
+        for field in ('requested_motor_torque_per_motor_nm','delivered_rear_wheel_torque_nm','electrical_bus_power_w','throttle_saturation','brake_saturation','steering_rate_saturation'):
+            self.assertIn(field,summary['operational_traces'])
+        self.assertTrue((ROOT/'docs/validation/iem24-murphy-yaw-closure/operational_traces.csv').is_file())
     def test_report_uses_exact_final_replay_and_all_flying_laps(self):
         report=(OUTPUT/'report.md').read_text()
         summary=json.loads((OUTPUT/'metrics.json').read_text())

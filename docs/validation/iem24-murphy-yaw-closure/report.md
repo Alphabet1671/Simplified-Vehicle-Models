@@ -34,7 +34,45 @@ Measured positions are fitted by a constant translation and projected/folded ont
 
 ## Trace comparison
 
-Cumulative per-lap time is retained against reference station with physical lap-boundary elapsed time preserved. The signed time-gap decomposition is defined on 50 m reference sectors plus the final remainder, using the saved monotone physical-to-reference station mapping and its Jacobian. `1/V` is not treated as `dt/ds_reference`; causal brake/yaw residual interpretations require matched identity-bound measurements.
+Cumulative per-lap times and sector comparison use monotone unwrapped physical traversals mapped through the saved physical-to-reference Jacobian. Measured lap-boundary elapsed time is preserved; fixed 50 m sectors include the final remainder. `1/V` is not treated as `dt/ds_reference`.
+
+0–50 m: replay 3.890 s, measured 3.499 s, signed gap +0.391 s
+50–100 m: replay 3.601 s, measured 3.925 s, signed gap -0.324 s
+100–150 m: replay 2.691 s, measured 3.125 s, signed gap -0.433 s
+150–200 m: replay 2.112 s, measured 2.675 s, signed gap -0.563 s
+200–250 m: replay 3.047 s, measured 3.175 s, signed gap -0.127 s
+250–300 m: replay 2.816 s, measured 4.096 s, signed gap -1.280 s
+300–350 m: replay 2.832 s, measured 4.799 s, signed gap -1.967 s
+350–400 m: replay 2.993 s, measured 4.449 s, signed gap -1.456 s
+400–450 m: replay 2.435 s, measured 3.079 s, signed gap -0.644 s
+450–500 m: replay 3.486 s, measured 3.949 s, signed gap -0.463 s
+500–550 m: replay 3.850 s, measured 4.718 s, signed gap -0.868 s
+550–600 m: replay 3.798 s, measured 4.055 s, signed gap -0.257 s
+600–650 m: replay 2.996 s, measured 3.324 s, signed gap -0.329 s
+650–700 m: replay 2.856 s, measured 3.275 s, signed gap -0.418 s
+700–750 m: replay 2.228 s, measured 2.791 s, signed gap -0.563 s
+750–800 m: replay 3.198 s, measured 4.099 s, signed gap -0.901 s
+800–850 m: replay 3.031 s, measured 3.633 s, signed gap -0.602 s
+850–900 m: replay 3.547 s, measured 3.599 s, signed gap -0.052 s
+900–950 m: replay 3.714 s, measured 4.324 s, signed gap -0.610 s
+950–1000 m: replay 4.081 s, measured 4.388 s, signed gap -0.307 s
+1000–1017 m: replay 1.598 s, measured 2.322 s, signed gap -0.724 s
+Largest positive: 0–50 m (+0.391 s), 850–900 m (-0.052 s), 200–250 m (-0.127 s), 550–600 m (-0.257 s), 950–1000 m (-0.307 s); largest negative: 300–350 m (-1.967 s), 350–400 m (-1.456 s), 250–300 m (-1.280 s), 750–800 m (-0.901 s), 500–550 m (-0.868 s)
+
+Operational trace availability (full samples: `operational_traces.csv`; unavailable values are left blank):
+
+- requested_motor_torque_per_motor_nm: available (N·m)
+- delivered_rear_wheel_torque_nm: available (N·m)
+- electrical_bus_power_w: available (W)
+- electrical_power_limit_w: unavailable (W) — no configured electrical-limit channel in saved record
+- pack_terminal_voltage_v: available (V)
+- battery_soc: available (1)
+- throttle_saturation: available (1)
+- brake_force_n: available (N)
+- brake_fraction: available (1)
+- brake_saturation: unavailable (1) — actuator saturation state not recorded
+- steering_rate_rad_s: available (rad/s)
+- steering_rate_saturation: unavailable (1) — actuator saturation state not recorded
 
 The reference is the pointwise median of ten folded flying laps on 500 centreline-distance bins. Bias is `sim − meas`; all units are SI. Body axes are SAE: x forward, y right, z down; positive yaw rate is a right turn.
 
@@ -55,11 +93,11 @@ The reference is the pointwise median of ten folded flying laps on 500 centrelin
 
 ## Reading the comparison
 
-- The replay is **6.883 s faster** (9.60 %): 64.802 s against the 71.685 s measured flying-lap median, and 5.188 s faster than the 69.990 s fastest measured flying lap. It is faster than every measured lap; the 6.883 s gap exceeds the 2.770 s flying-lap IQR but not the full 7.320 s range. Its mean centreline speed is therefore higher (this follows from the time over the same centreline, not a causal diagnosis). This is one strict feasible forward replay, not an optimum; causal attribution is limited and this comparison does not establish why it is faster.
+- The replay is **6.883 s faster** (-9.60 % relative to the measured median): 64.802 s against 71.685 s. Its mean centreline speed follows from time over the modelled centreline; this descriptive relationship is not a causal diagnosis. This is one strict feasible forward replay, not an optimum; the comparison does not establish why it differs.
 - Speed RMSE is 2.154 m/s (bias +1.482 m/s; correlation 0.899). Longitudinal/lateral acceleration RMSE is 1.598/2.417 m/s²; yaw-rate RMSE is 0.168 rad/s.
 - Reconstructed per-motor torque request RMSE is 2.998 N·m. It is exactly `realized throttle × 10.5 N·m` for the reporting controller limit: reconstructed request before electrical/speed limits, distinct from delivered motor torque and actual signed `wheel-drive-torque` (gear ratio/efficiency convention). Changing this reporting limit changes only reconstructed request; delivered torque stays as recorded. Electrical power limits, SOC/voltage and saturation are not collapsed into that request. The manifest's `wheel-drive-torque` is actual wheel torque and is deliberately not relabelled as request; this distinction and any power-limit effect limit interpretation.
 - Pack terminal-voltage RMSE is 23.612 V with bias +22.625 V. The replay starts from stint-start SOC/voltage while flying laps span discharge, so this contains an initial-condition offset as well as trace differences.
-- The 6.883 s gap (9.60 %) is historical context, not causal attribution: retained provenance does not identity-match historical plans/records or Task9 pairs, so all five controlled treatments are not run/inconclusive. The displayed median is the median of ten flying-lap durations (71.685 s), not the integral of a pointwise-median speed curve; lap 0 remains standing-start and excluded. Interactions remain unresolved.
+- The -6.883 s gap (-9.60 %) is historical context, not causal attribution: retained provenance does not identity-match historical plans/records or Task9 pairs, so all five controlled treatments are not run/inconclusive. The displayed median is the median of 10 flying-lap durations (71.685 s), not the integral of a pointwise-median speed curve; lap 0 remains standing-start and excluded. Interactions remain unresolved.
 
 ### Controlled ablation status
 
@@ -91,7 +129,7 @@ PYTHONPATH=src:. MPLCONFIGDIR=/tmp/matplotlib-config \
   --record runs/yaw_lap_suite/mis-modelaware-matchedpreview-validated/run_record.npz \
   --plan runs/yaw_lap_suite/mis-fixed-1m/plan.npz \
   --measured-dir docs/validation/iem24-murphy \
-  --output-dir docs/validation/iem24-murphy-yaw-replay
+  --output-dir docs/validation/iem24-murphy-yaw-closure
 ```
 
 Generated by `tools/reports/compare_yaw_mis_replay.py` following the [MIS 2024 report standard](../../standards/mis-2024-report-standard.md). The command consumes one saved record and cached measured telemetry; it does not rerun physics or OCP.

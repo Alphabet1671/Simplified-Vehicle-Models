@@ -1,6 +1,6 @@
 {
-  "gap_percent": 9.601422708427808,
-  "gap_s": 6.882781099187582,
+  "gap_percent": -9.601422708427808,
+  "gap_s": -6.882781099187582,
   "interactions": "unresolved",
   "status": "inconclusive; no controlled causal comparisons run",
   "treatments": [

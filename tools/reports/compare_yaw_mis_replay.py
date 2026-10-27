@@ -17,7 +17,7 @@ from simplified_vehicle_models.results.run_record import load_run_record
 from simplified_vehicle_models.planning.yaw_lap_artifact import ARRAYS, _digest
 from simplified_vehicle_models.tracks.profile import load_track
 from tools.data.iem24_telemetry import zero_phase_lowpass
-from tools.reports.compare_iem24_murphy_stint import (load_table, flying_lap_indices, fit_position_offset, project_onto_track, fold_laps)
+from tools.reports.compare_iem24_murphy_stint import (load_table, flying_lap_indices, fit_position_offset, project_onto_track, fold_laps, unwrap_track_distance)
 
 CHANNELS=(
  ("speed_mps","Speed","m/s"),
@@ -43,8 +43,8 @@ def cumulative_time_on_reference(t, reference_s, physical_s, reference_grid):
   if np.any(np.diff(reference_s)<0) or np.any(np.diff(physical_s)<0): raise ValueError('physical/reference station mappings must be monotonic')
   # reference_s is already obtained by applying the saved physical->reference map
   # at each sample. Interpolation preserves actual elapsed time at station.
-  if np.any(np.diff(reference_s)<=0):
-   keep=np.r_[True,np.diff(reference_s)>0]; reference_s=reference_s[keep]; t=t[keep]
+  if np.any(np.diff(reference_s)==0):
+   unique=np.unique(reference_s); t=np.array([t[np.flatnonzero(reference_s==s)[-1]] for s in unique]); reference_s=unique
   return np.interp(reference_grid,reference_s,t)
 
 def sector_time_gaps(t, reference_s, physical_s, sector=50.):
@@ -53,8 +53,8 @@ def sector_time_gaps(t, reference_s, physical_s, sector=50.):
   t=np.asarray(t,float); rs=np.asarray(reference_s,float); ps=np.asarray(physical_s,float)
   if len(t)!=len(rs) or len(rs)!=len(ps): return []
   if np.any(np.diff(rs)<0) or np.any(np.diff(ps)<0): raise ValueError('sector station mapping must be monotonic')
-  if np.any(np.diff(rs)<=0):
-   keep=np.r_[True,np.diff(rs)>0]; rs=rs[keep]; ps=ps[keep]; t=t[keep]
+  if np.any(np.diff(rs)==0):
+   unique=np.unique(rs); indexes=np.array([np.flatnonzero(rs==s)[-1] for s in unique]); rs=rs[indexes]; ps=ps[indexes]; t=t[indexes]
   L=float(rs[-1]); edges=list(np.arange(0,L,sector))+[L]; rows=[]
   for a,b in zip(edges[:-1],edges[1:]):
    ia=np.searchsorted(rs,a,side='left'); ib=np.searchsorted(rs,b,side='right')-1
@@ -62,6 +62,15 @@ def sector_time_gaps(t, reference_s, physical_s, sector=50.):
    rows.append({'start_m':float(a),'end_m':float(b),'duration_s':float(t[ib]-t[ia]),'physical_distance_m':float(ps[ib]-ps[ia])})
   return rows
 
+def paired_sector_gap_table(sim_time,sim_reference,meas_time,meas_reference,L,sector=50.):
+  """Align cumulative elapsed time on common reference station; signed sim-minus-meas sectors."""
+  sim_reference=np.asarray(sim_reference,float); meas_reference=np.asarray(meas_reference,float)
+  edges=list(np.arange(0.,L,sector))+[float(L)]
+  sim_cumulative=cumulative_time_on_reference(sim_time,sim_reference,sim_reference,edges)
+  meas_cumulative=cumulative_time_on_reference(meas_time,meas_reference,meas_reference,edges)
+  return [{'start_m':float(a),'end_m':float(b),'simulated_s':float(sim_cumulative[i+1]-sim_cumulative[i]),'measured_s':float(meas_cumulative[i+1]-meas_cumulative[i]),'signed_gap_sim_minus_meas_s':float((sim_cumulative[i+1]-sim_cumulative[i])-(meas_cumulative[i+1]-meas_cumulative[i]))} for i,(a,b) in enumerate(zip(edges[:-1],edges[1:]))]
+
+def _not_available(reason): return {'status':'unavailable','reason':reason}
 def interp_periodic(s,v,g,L):
  o=np.argsort(s); s=s[o];v=v[o]
  return np.interp(g,np.r_[s-L,s,s+L],np.tile(v,3))
@@ -117,10 +126,10 @@ def record_profile(path, plan_path, grid, L, *, torque_limit=LIMIT):
  # Saved plan maps plant physical station to the immutable signed-centreline station.
  # This is a source mapping, not a fitted rescaling of the replay.
  reference_d=np.interp(d,physical,reference)
- raw={"speed_mps":chan('speed'),"longitudinal_acceleration_mps2":chan('acceleration-longitudinal'),"lateral_acceleration_mps2":chan('acceleration-lateral'),"yaw_rate_rad_s":np.interp(tu,t,r.state_column('yaw_rate')),"motor_torque_request_nm":chan('throttle')*torque_limit,"pack_voltage_v":chan('bus-voltage'),"soc":chan('soc'),"throttle":chan('throttle')}
+ raw={"speed_mps":chan('speed'),"longitudinal_acceleration_mps2":chan('acceleration-longitudinal'),"lateral_acceleration_mps2":chan('acceleration-lateral'),"yaw_rate_rad_s":np.interp(tu,t,r.state_column('yaw_rate')),"motor_torque_request_nm":chan('throttle')*torque_limit,"delivered_wheel_torque_nm":np.mean(np.asarray(r.channel_values('wheel-drive-torque'),float)[:,2:4],axis=1) if False else np.mean(np.column_stack([np.interp(tu,t,np.asarray(r.channel_values('wheel-drive-torque'),float)[:,i]) for i in (2,3)]),axis=1),"bus_power_w":chan('bus-power') if r.has_channel('bus-power') else None,"brake_force_n":chan('brake-force') if r.has_channel('brake-force') else None,"brake_fraction":chan('brake-fraction') if r.has_channel('brake-fraction') else None,"steering_rate_rad_s":chan('steering-rate') if r.has_channel('steering-rate') else None,"pack_voltage_v":chan('bus-voltage'),"soc":chan('soc'),"throttle":chan('throttle')}
  accepted={"speed_mps":np.asarray(r.channel_values('speed'),float),"pack_voltage_v":np.asarray(r.channel_values('bus-voltage'),float),"soc":np.asarray(r.channel_values('soc'),float)}
- filtered={k:zero_phase_lowpass(v,DT,CUTOFF,order=1) for k,v in raw.items()}
- profile={k:interp_periodic(np.mod(reference_d,L),v,grid,L) for k,v in filtered.items() if k not in ('soc','throttle')}
+ filtered={k:zero_phase_lowpass(v,DT,CUTOFF,order=1) if v is not None else None for k,v in raw.items()}
+ profile={k:interp_periodic(np.mod(reference_d,L),v,grid,L) for k,v in filtered.items() if v is not None and k not in ('soc','throttle')}
  return r,tu,d,reference_d,raw,accepted,filtered,profile,float(physical[-1]),float(reference[-1]),physical,reference
 def fig(out,g,L,folded,med,sim,tu,d,filtered,raw,accepted,accepted_time):
  os.environ.setdefault('MPLCONFIGDIR','/tmp/matplotlib-config'); import matplotlib;matplotlib.use('Agg');import matplotlib.pyplot as p
@@ -139,6 +148,8 @@ def report(out,summary,extract,L,torque_limit=LIMIT):
  laps=extract['laps']; rows='\n'.join(f"| {q['index']}{' (standing start; excluded)' if q['standing_start'] else ' (flying)'} | {q['start_s']:.2f} | {q['lap_time_s']:.2f} | {q['distance_m']:.1f} | {q['mean_speed_mps']:.2f} | {q['closure_radius_m']:.2f} |" for q in laps)
  mr='\n'.join(f"| {n} ({u}) | {summary['metrics'][k]['rmse']:.3f} | {summary['metrics'][k]['mae']:.3f} | {summary['metrics'][k]['bias']:+.3f} | {summary['metrics'][k]['correlation']:.3f} | {summary['metrics'][k]['normalised_rmse']:.3f} |" for k,n,u in CHANNELS)
  m=summary['metrics']; sim=summary['simulation']; fit=summary['position_fit']; dist=summary['measured']['median_distance_m']; gap=sim['lap_time_s']-summary['measured']['median_lap_time_s']
+ sector=summary.get('sector_comparison',{}); sector_report=(f"Sector comparison unavailable: {sector.get('reason','not computed')}" if sector.get('status')!='available' else '\n'.join(f"{x['start_m']:.0f}–{x['end_m']:.0f} m: replay {x['simulated_s']:.3f} s, measured {x['measured_s']:.3f} s, signed gap {x['signed_gap_sim_minus_meas_s']:+.3f} s" for x in sector['rows'])+'\nLargest positive: '+', '.join(f"{x['start_m']:.0f}–{x['end_m']:.0f} m ({x['signed_gap_sim_minus_meas_s']:+.3f} s)" for x in sector['largest_positive'])+'; largest negative: '+', '.join(f"{x['start_m']:.0f}–{x['end_m']:.0f} m ({x['signed_gap_sim_minus_meas_s']:+.3f} s)" for x in sector['largest_negative']))
+ operational_summary='\n'.join(f"- {name}: {entry['status']} ({entry.get('unit','')})"+(f" — {entry['reason']}" if entry['status']=='unavailable' else '') for name,entry in summary.get('operational_traces',{}).items())
  text=f'''# IEM24 Murphy yaw-aware replay: simulated MIS 2024 lap vs measured endurance stint
 
 ## Configuration
@@ -165,7 +176,13 @@ Measured positions are fitted by a constant translation and projected/folded ont
 
 ## Trace comparison
 
-Cumulative per-lap time is retained against reference station with physical lap-boundary elapsed time preserved. The signed time-gap decomposition is defined on 50 m reference sectors plus the final remainder, using the saved monotone physical-to-reference station mapping and its Jacobian. `1/V` is not treated as `dt/ds_reference`; causal brake/yaw residual interpretations require matched identity-bound measurements.
+Cumulative per-lap times and sector comparison use monotone unwrapped physical traversals mapped through the saved physical-to-reference Jacobian. Measured lap-boundary elapsed time is preserved; fixed 50 m sectors include the final remainder. `1/V` is not treated as `dt/ds_reference`.
+
+{sector_report}
+
+Operational trace availability (full samples: `operational_traces.csv`; unavailable values are left blank):
+
+{operational_summary}
 
 The reference is the pointwise median of ten folded flying laps on 500 centreline-distance bins. Bias is `sim − meas`; all units are SI. Body axes are SAE: x forward, y right, z down; positive yaw rate is a right turn.
 
@@ -181,11 +198,11 @@ The reference is the pointwise median of ten folded flying laps on 500 centrelin
 
 ## Reading the comparison
 
-- The replay is **{abs(gap):.3f} s faster** (9.60 %): {sim['lap_time_s']:.3f} s against the 71.685 s measured flying-lap median, and 5.188 s faster than the 69.990 s fastest measured flying lap. It is faster than every measured lap; the 6.883 s gap exceeds the 2.770 s flying-lap IQR but not the full 7.320 s range. Its mean centreline speed is therefore higher (this follows from the time over the same centreline, not a causal diagnosis). This is one strict feasible forward replay, not an optimum; causal attribution is limited and this comparison does not establish why it is faster.
+- The replay is **{abs(gap):.3f} s {'faster' if gap < 0 else 'slower'}** ({100*(sim['lap_time_s']/summary['measured']['median_lap_time_s']-1):+.2f} % relative to the measured median): {sim['lap_time_s']:.3f} s against {summary['measured']['median_lap_time_s']:.3f} s. Its mean centreline speed follows from time over the modelled centreline; this descriptive relationship is not a causal diagnosis. This is one strict feasible forward replay, not an optimum; the comparison does not establish why it differs.
 - Speed RMSE is {m['speed_mps']['rmse']:.3f} m/s (bias {m['speed_mps']['bias']:+.3f} m/s; correlation {m['speed_mps']['correlation']:.3f}). Longitudinal/lateral acceleration RMSE is {m['longitudinal_acceleration_mps2']['rmse']:.3f}/{m['lateral_acceleration_mps2']['rmse']:.3f} m/s²; yaw-rate RMSE is {m['yaw_rate_rad_s']['rmse']:.3f} rad/s.
 - Reconstructed per-motor torque request RMSE is {m['motor_torque_request_nm']['rmse']:.3f} N·m. It is exactly `realized throttle × {torque_limit:g} N·m` for the reporting controller limit: reconstructed request before electrical/speed limits, distinct from delivered motor torque and actual signed `wheel-drive-torque` (gear ratio/efficiency convention). Changing this reporting limit changes only reconstructed request; delivered torque stays as recorded. Electrical power limits, SOC/voltage and saturation are not collapsed into that request. The manifest's `wheel-drive-torque` is actual wheel torque and is deliberately not relabelled as request; this distinction and any power-limit effect limit interpretation.
 - Pack terminal-voltage RMSE is {m['pack_voltage_v']['rmse']:.3f} V with bias {m['pack_voltage_v']['bias']:+.3f} V. The replay starts from stint-start SOC/voltage while flying laps span discharge, so this contains an initial-condition offset as well as trace differences.
-- The 6.883 s gap (9.60 %) is historical context, not causal attribution: retained provenance does not identity-match historical plans/records or Task9 pairs, so all five controlled treatments are not run/inconclusive. The displayed median is the median of ten flying-lap durations (71.685 s), not the integral of a pointwise-median speed curve; lap 0 remains standing-start and excluded. Interactions remain unresolved.
+- The {gap:+.3f} s gap ({100*gap/summary['measured']['median_lap_time_s']:+.2f} %) is historical context, not causal attribution: retained provenance does not identity-match historical plans/records or Task9 pairs, so all five controlled treatments are not run/inconclusive. The displayed median is the median of {summary['measured']['flying_laps_used']} flying-lap durations ({summary['measured']['median_lap_time_s']:.3f} s), not the integral of a pointwise-median speed curve; lap 0 remains standing-start and excluded. Interactions remain unresolved.
 
 ### Controlled ablation status
 
@@ -227,15 +244,29 @@ def main():
  p=argparse.ArgumentParser();p.add_argument('--record',type=Path,required=True);p.add_argument('--measured-dir',type=Path,required=True);p.add_argument('--output-dir',type=Path,required=True);p.add_argument('--plan',type=Path,default=Path('runs/yaw_lap_suite/mis-fixed-1m/plan.npz'));p.add_argument('--torque-limit',type=float,default=LIMIT);p.add_argument('--track',type=Path,default=Path('models/tracks/2024_michigan_endurance_closed_edged.xml'));a=p.parse_args();out=a.output_dir;out.mkdir(parents=True,exist_ok=True)
  measured=load_table(a.measured_dir/'measured_stint.csv');ex=json.loads((a.measured_dir/'telemetry_extraction.json').read_text());track=load_track(ROOT/a.track);path=track.path_coordinates;L=path.lap_length;laps=flying_lap_indices(measured);off,fit0=fit_position_offset(measured,path);td,res=project_onto_track(measured,path,off);grid,folded=fold_laps(measured,laps,tuple(x[0] for x in CHANNELS),track_distance=td,lap_length=L,bins=BINS);med={k:np.median(v,0) for k,v in folded.items()};r,tu,d,reference_d,raw,accepted,filtered,sim,physical_length,reference_length,plan_physical,plan_reference=record_profile(a.record,a.plan,grid,L,torque_limit=a.torque_limit)
  lap=float(r.time[-1]-r.time[0]);# Lap duration is evidence from this record, not an admissibility constant.
+ sim_cum=cumulative_time_on_reference(tu,reference_d,d,grid).tolist()
+ measured_mask=measured['lap_index']==laps[0]; measured_time=np.asarray(measured['time_s'][measured_mask],float)
+ measured_physical=unwrap_track_distance(np.asarray(td[measured_mask],float),L,measured['lap_index'][measured_mask])
+ measured_ref=np.interp(measured_physical,plan_physical,plan_reference)
+ # The complete measured lap has its own physical boundary duration, retained in the comparison metadata.
+ try:
+  sector_rows=paired_sector_gap_table(tu,reference_d,measured_time,measured_ref,L)
+  sector_data={'status':'available','reference_lap_index':int(laps[0]),'rows':sector_rows,'largest_positive':sorted(sector_rows,key=lambda x:x['signed_gap_sim_minus_meas_s'],reverse=True)[:5],'largest_negative':sorted(sector_rows,key=lambda x:x['signed_gap_sim_minus_meas_s'])[:5]}
+ except (ValueError,IndexError) as exc: sector_data={'status':'unavailable','reason':f'measured lap/reference mapping lacks full-lap cumulative timing: {exc}'}
+ trace_specs=[('requested_motor_torque_per_motor_nm',raw['motor_torque_request_nm'],'N·m',''),('delivered_rear_wheel_torque_nm',raw.get('delivered_wheel_torque_nm'),'N·m','wheel-drive-torque channel absent'),('electrical_bus_power_w',raw.get('bus_power_w'),'W','bus-power channel absent'),('electrical_power_limit_w',None,'W','no configured electrical-limit channel in saved record'),('pack_terminal_voltage_v',raw['pack_voltage_v'],'V',''),('battery_soc',raw['soc'],'1',''),('throttle_saturation',np.isclose(raw['throttle'],1.,atol=1e-6),'1',''),('brake_force_n',raw.get('brake_force_n'),'N','brake-force channel absent'),('brake_fraction',raw.get('brake_fraction'),'1','brake-fraction channel absent'),('brake_saturation',None,'1','actuator saturation state not recorded'),('steering_rate_rad_s',raw.get('steering_rate_rad_s'),'rad/s','steering-rate channel absent'),('steering_rate_saturation',None,'1','actuator saturation state not recorded')]
+ operational={name:({'status':'available','unit':unit,'sample_count':int(np.asarray(vals).size),'values':np.asarray(vals).tolist()} if vals is not None else {'status':'unavailable','unit':unit,'reason':reason}) for name,vals,unit,reason in trace_specs}
  metrics={k:metric(sim[k],med[k]) for k,_,_ in CHANNELS}; rawmat=Path.home()/'Desktop/0615CompEndurance.mat';summary={'metrics':metrics,'ablations':[
    {'treatment':'Controller legacy vs final model-aware','status':'not run — no identity-matched legacy replay on identical saved fixed plan and initial plant state','held_fixed':'unknown / not identity-bound','driven_time_s':None,'six_channel_metrics':None,'limitations':'Historical provenance and paired comparisons are identity-inconclusive.'},
    {'treatment':'Fixed vs optimized line under final controller','status':'not run — no identity-matched controlled pair','held_fixed':'unknown / not identity-bound','driven_time_s':None,'six_channel_metrics':None,'limitations':'Task9 paired comparisons are identity-inconclusive.'},
    {'treatment':'Battery initialization response on one saved plan','status':'not run — current and state evidence needed for OCV/resistance inference is absent','held_fixed':'saved plan/plant identity unavailable for paired treatment','driven_time_s':None,'six_channel_metrics':None,'limitations':'Loaded terminal voltage is not OCV; causal battery attribution unresolved.'},
    {'treatment':'Grip scale 0.95 / 1.05 matched capability','status':'not run — no identity-bound maps/plans for perturbed tire model','held_fixed':'not established','driven_time_s':None,'six_channel_metrics':None,'limitations':'Requires rebuild, independent map audit, and replanning; replay-only would test robustness only.'},
-   {'treatment':'Alignment ±1 bin and leave-one-lap-out translation','status':'not run — historical source provenance/geometry identity inconclusive','held_fixed':'physical lap times retained','driven_time_s':None,'six_channel_metrics':None,'limitations':'No best-shift correction applied; preserve original discrepancy.'}], 'measured':{'median_lap_time_s':float(np.median([x['lap_time_s'] for x in ex['laps'] if not x['standing_start']])), 'median_distance_m':float(np.median([x['distance_m'] for x in ex['laps'] if not x['standing_start']])), 'flying_laps_used':len(laps), 'extraction_sha256':sha(a.measured_dir/'telemetry_extraction.json'),'cache_sha256':sha(a.measured_dir/'measured_stint.csv'),'raw_sha256':sha(rawmat) if rawmat.is_file() else None,'raw_bytes':rawmat.stat().st_size if rawmat.is_file() else None},'simulation':{'lap_time_s':lap,'record_sha256':sha(a.record),'record_bytes':a.record.stat().st_size,'initial_soc':float(raw['soc'][0]),'initial_voltage_v':float(raw['pack_voltage_v'][0]),'final_soc':float(raw['soc'][-1]),'record_rows':r.rows,'physical_length_m':physical_length,'reference_length_m':reference_length,'plan_sha256':sha(a.plan),'lap_completed':r.manifest.segment.get('lap_completed'),'controller_identity':r.manifest.model.get('controller'),'yaw_profile_identity':r.manifest.model.get('yaw_profile',{}).get('array_digest'),'sector_time':sector_time_gaps(tu,reference_d, reference_d, 50.),'cumulative_time':cumulative_time_on_reference(tu,reference_d,reference_d,grid).tolist(),'initial_states':{name:float(r.state[0,i]) for i,name in enumerate(r.manifest.state_names)}},'position_fit':{'north':float(off[0]),'east':float(off[1]),'rmse':fit0,'median':float(np.median(res[np.isin(measured['lap_index'],laps)])),'p95':float(np.percentile(res[np.isin(measured['lap_index'],laps)],95))},'filter':{'simulation_resample_hz':100,'cutoff_hz':1,'order':1,'measured_double_filtered':False},'channels':{'simulation':{'speed':'speed','longitudinal_acceleration':'acceleration-longitudinal','lateral_acceleration':'acceleration-lateral','yaw_rate':'state:yaw_rate','motor_torque_request':f'throttle * {a.torque_limit} N*m reconstructed request; not wheel-drive-torque','pack_voltage':'bus-voltage'},'manifest_wheel_torque':'wheel-drive-torque = actual powertrain wheel torque, signed'}}
- (out/'metrics.json').write_text(json.dumps(summary,indent=2,sort_keys=True)+'\n');
- with (out/'metrics.csv').open('w',newline='') as f:
-  w=csv.writer(f);w.writerow(['signal','rmse','mae','bias_sim_minus_meas','correlation','normalised_rmse']);[w.writerow([k,metrics[k]['rmse'],metrics[k]['mae'],metrics[k]['bias'],metrics[k]['correlation'],metrics[k]['normalised_rmse']]) for k,_,_ in CHANNELS]
+   {'treatment':'Alignment ±1 bin and leave-one-lap-out translation','status':'not run — historical source provenance/geometry identity inconclusive','held_fixed':'physical lap times retained','driven_time_s':None,'six_channel_metrics':None,'limitations':'No best-shift correction applied; preserve original discrepancy.'}], 'measured':{'median_lap_time_s':float(np.median([x['lap_time_s'] for x in ex['laps'] if not x['standing_start']])), 'median_distance_m':float(np.median([x['distance_m'] for x in ex['laps'] if not x['standing_start']])), 'flying_laps_used':len(laps), 'extraction_sha256':sha(a.measured_dir/'telemetry_extraction.json'),'cache_sha256':sha(a.measured_dir/'measured_stint.csv'),'raw_sha256':sha(rawmat) if rawmat.is_file() else None,'raw_bytes':rawmat.stat().st_size if rawmat.is_file() else None},'simulation':{'lap_time_s':lap,'record_sha256':sha(a.record),'record_bytes':a.record.stat().st_size,'initial_soc':float(raw['soc'][0]),'initial_voltage_v':float(raw['pack_voltage_v'][0]),'final_soc':float(raw['soc'][-1]),'record_rows':r.rows,'physical_length_m':physical_length,'reference_length_m':reference_length,'plan_sha256':sha(a.plan),'lap_completed':r.manifest.segment.get('lap_completed'),'controller_identity':r.manifest.model.get('controller'),'yaw_profile_identity':r.manifest.model.get('yaw_profile',{}).get('array_digest'),'sector_time':sector_time_gaps(tu,reference_d,d,50.),'cumulative_time_reference_m':grid.tolist(),'cumulative_time_s':sim_cum,'initial_states':{name:float(r.state[0,i]) for i,name in enumerate(r.manifest.state_names)}},'sector_comparison':sector_data,'operational_traces':operational,'diagnostics':{'brake_onset_exit_speed':_not_available('measured cache contains no brake channel; no identity-matched brake onset reference'),'yaw_acceleration_residuals':_not_available('historical measurement/replay alignment and geometry provenance do not support residual attribution')},'position_fit':{'north':float(off[0]),'east':float(off[1]),'rmse':fit0,'median':float(np.median(res[np.isin(measured['lap_index'],laps)])),'p95':float(np.percentile(res[np.isin(measured['lap_index'],laps)],95))},'filter':{'simulation_resample_hz':100,'cutoff_hz':1,'order':1,'measured_double_filtered':False},'channels':{'simulation':{'speed':'speed','longitudinal_acceleration':'acceleration-longitudinal','lateral_acceleration':'acceleration-lateral','yaw_rate':'state:yaw_rate','motor_torque_request':f'throttle * {a.torque_limit} N*m reconstructed request; not wheel-drive-torque','pack_voltage':'bus-voltage'},'manifest_wheel_torque':'wheel-drive-torque = actual powertrain wheel torque, signed'}}
+ (out/'metrics.json').write_text(json.dumps(summary,indent=2,sort_keys=True)+'\n')
+ with (out/'operational_traces.csv').open('w',newline='\n') as f:
+  w=csv.writer(f,lineterminator='\n'); w.writerow(['time_s',*operational]); [w.writerow([float(tu[i]),*[float(np.asarray(v['values'])[i]) if v['status']=='available' else '' for v in operational.values()]]) for i in range(len(tu))]
+
+ with (out/'metrics.csv').open('w',newline='\n') as f:
+  w=csv.writer(f,lineterminator='\n');w.writerow(['signal','rmse','mae','bias_sim_minus_meas','correlation','normalised_rmse']);[w.writerow([k,metrics[k]['rmse'],metrics[k]['mae'],metrics[k]['bias'],metrics[k]['correlation'],metrics[k]['normalised_rmse']]) for k,_,_ in CHANNELS]
  with (out/'ablation_status.json').open('w',encoding='utf8') as f: json.dump({'status':'inconclusive; no controlled causal comparisons run','gap_s':lap-summary['measured']['median_lap_time_s'],'gap_percent':100*(lap/summary['measured']['median_lap_time_s']-1),'treatments':summary['ablations'],'interactions':'unresolved'},f,indent=2,sort_keys=True);f.write('\\n')
  np.savetxt(out/'comparison.csv',np.column_stack([grid,*[z for k,_,_ in CHANNELS for z in (med[k],sim[k])]]),delimiter=',',header='track_distance_m,'+','.join(q for k,_,_ in CHANNELS for q in ('measured_'+k,'simulated_'+k)),comments='')
  fig(out,grid,L,folded,med,sim,tu,d,filtered,raw,accepted,r.time);report(out,summary,ex,L,torque_limit=a.torque_limit);print(json.dumps(metrics,indent=2))

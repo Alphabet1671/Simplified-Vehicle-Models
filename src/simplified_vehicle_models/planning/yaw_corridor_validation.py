@@ -87,15 +87,28 @@ def check_footprint_samples(time, x, y, heading, station_hint, corridor, referen
         clearance[i]=edge_min; worst_station[i]=edge_station
         if edge_min < 0: worst_edge=edge_name
     k=int(np.argmin(clearance)); status='fail' if clearance[k]<-1e-9 else 'pass'
-    body=_result(status,clearance[k],float(t[k]),float(worst_station[k]),model_identity,worst_edge,
-                 'oriented rectangular body polygon with sampled edges',edge_uncertainty,sampled=True,
-                 vertex_and_edge_sampling=True)
-    return dict(status=status,wheel_contact=wheel_result,body_envelope=body,
+    # Finite edge samples can discover a violation but cannot prove that the
+    # continuous polygon edge avoids an inward notch. Preserve detected fails;
+    # otherwise report unknown rather than promoting samples to containment.
+    body_status = 'fail' if status == 'fail' else 'unknown'
+    body=_result(body_status,clearance[k],float(t[k]),float(worst_station[k]),model_identity,worst_edge,
+                 'oriented rectangular body polygon with sampled edges (empirical only)',edge_uncertainty,sampled=True,
+                 vertex_and_edge_sampling=True, continuous_edge_containment_certified=False,
+                 reason=None if status == 'fail' else 'continuous body-edge boundary bound unavailable')
+    return dict(status=body_status,wheel_contact=wheel_result,body_envelope=body,
                 minimum_clearance_m=body['minimum_clearance_m'],worst_time_s=body['worst_time_s'],
                 worst_station_m=body['worst_station_m'],model_identity=model_identity,
                 edge_identity=worst_edge,geometric_representation=body['geometric_representation'],
                 edge_uncertainty=edge_uncertainty,between_step_containment_certified=False,
                 empirical_samples=len(t))
+
+
+def _motion_clearance_lower_bound(endpoint_clearance, translation_bound, angular_change_bound, body_radius):
+    """Conservative clearance arithmetic for fixed straight boundaries."""
+    vals = np.asarray([endpoint_clearance, translation_bound, angular_change_bound, body_radius], float)
+    if not np.all(np.isfinite(vals)) or translation_bound < 0 or angular_change_bound < 0 or body_radius < 0:
+        return None
+    return float(endpoint_clearance - translation_bound - body_radius * angular_change_bound)
 
 
 def check_swept_footprint(*args, interval_bounds=None, subdivision_budget=10000, **kwargs):
@@ -111,20 +124,20 @@ def check_swept_footprint(*args, interval_bounds=None, subdivision_budget=10000,
                       between_step_containment_certified=False,
                       certification_limitation='sound conservative interval bounds unavailable')
         return result
+    # Bare numbers are not a proof: callers cannot establish provenance or
+    # soundness by passing an array of purported lower bounds. This interface
+    # currently has no interval geometry provider, so never certify from it.
     values=np.asarray(bounds,float)
     if values.ndim!=1 or not np.all(np.isfinite(values)) or np.any(np.diff(values)<0):
         result.update(status='unknown',rigorous_interval_bounds={'available':False,'certified':False},
                       between_step_containment_certified=False,certification_limitation='invalid interval bounds')
         return result
-    certified=bool(len(values)<=subdivision_budget and np.all(values>0)
-                   and result.get('body_envelope',{}).get('status') == 'pass')
-    exhausted=len(values)>subdivision_budget
-    result['rigorous_interval_bounds']={'available':True,'clearance_lower_bounds_m':values.tolist(),
-        'certified':certified,'subdivision_count':int(len(values)),'budget_exhausted':exhausted}
+    # Supplied scalar bounds have no binding to an interval's geometry/motion,
+    # so retain them as unverified metadata, not certification evidence.
+    result['rigorous_interval_bounds']={'available':False,'supplied_unverified_lower_bounds_m':values.tolist(),
+        'certified':False,'subdivision_count':0,'budget_exhausted':False}
     result['empirical_dense_sampling']={'samples':result.get('empirical_samples',0),'certified':False}
-    result['between_step_containment_certified']=certified
-    if exhausted or not certified:
-        result['status']='unknown' if not np.any(values<=0) else 'fail'
-        result['certification_limitation']='subdivision budget exhausted' if exhausted else 'nonpositive interval lower bound'
-    elif result.get('status')=='pass': result['status']='pass'
+    result['between_step_containment_certified']=False
+    result['status']='unknown'
+    result['certification_limitation']='sound interval geometry and vehicle-motion bounds unavailable'
     return result

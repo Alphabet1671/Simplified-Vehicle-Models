@@ -73,10 +73,22 @@ def _attested(value):
     return isinstance(value, (str, int, float)) and not isinstance(value, bool) and value not in ("", "unknown") and (not isinstance(value, float) or math.isfinite(value))
 
 
+def _source_path_key(value):
+    """Accept normalized filesystem path keys like source_provenance() emits."""
+    if not isinstance(value, str) or not value or value != value.strip() or "\\" in value:
+        return False
+    path = Path(value)
+    if not path.is_absolute() and ("/" not in value or any(part in {"", ".", ".."} for part in value.split("/"))):
+        return False
+    if path.is_absolute() and (str(path) != value or any(part in {".", ".."} for part in value.split("/"))):
+        return False
+    return bool(path.name) and value not in {".", ".."}
+
+
 def _hash_mapping(value):
-    """A transitive-source/hash attestation is path→canonical SHA-256 hex."""
+    """A transitive-source/hash attestation is normalized path→canonical SHA-256 hex."""
     return (isinstance(value, dict) and bool(value) and
-            all(isinstance(key, str) and bool(key) and key == key.strip() and
+            all(_source_path_key(key) and
                 isinstance(digest, str) and len(digest) == 64 and
                 all(char in "0123456789abcdef" for char in digest)
                 for key, digest in value.items()))

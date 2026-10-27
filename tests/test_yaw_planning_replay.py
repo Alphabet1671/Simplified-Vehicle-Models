@@ -6,7 +6,7 @@ import numpy as np
 from simplified_vehicle_models.planning.yaw_replay_metrics import yaw_approximation_diagnostics, tangential_acceleration_from_body, periodic_centered_derivative, _periodic_nonuniform_derivative
 from tools.reports.compare_yaw_planning_replay import replay_info, plan_info, _hash_mapping
 
-VALID_DIRTY_HASHES = {'file': 'a' * 64}
+VALID_DIRTY_HASHES = {'src/file.py': 'a' * 64}
 
 class YawApproximationTests(unittest.TestCase):
     def test_constant_radius_zero_sideslip(self):
@@ -105,7 +105,10 @@ class YawApproximationTests(unittest.TestCase):
             {'src/file.py': 'hash'}, {'src/file.py': 'a' * 63},
             {'src/file.py': 'g' * 64}, {'src/file.py': 'A' * 64},
             {' src/file.py': 'a' * 64}, {'src/file.py ': 'a' * 64},
-            {'src/file.py': None}, {1: 'a' * 64},
+            {'src/file.py': None}, {1: 'a' * 64}, {'file': 'a' * 64},
+            {'src/../file.py': 'a' * 64}, {'src/./file.py': 'a' * 64},
+            {'src//file.py': 'a' * 64}, {'./src/file.py': 'a' * 64},
+            {'src\\\\file.py': 'a' * 64}, {'src/file.py/': 'a' * 64},
         ]
         for dirty in malformed:
             with self.subTest(dirty=dirty):
@@ -115,8 +118,10 @@ class YawApproximationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             root=Path(td)
             (root/'summary.json').write_text(json.dumps({'lap_completed':True,'solver_validation_complete':True}))
-            for bad in ('hash', ' ' * 64, 'a' * 63, 'g' * 64, 'A' * 64):
-                dirty={'file':bad}
+            for dirty in ({'src/file.py': 'hash'}, {'src/file.py': ' ' * 64},
+                          {'src/file.py': 'a' * 63}, {'src/file.py': 'g' * 64},
+                          {'src/file.py': 'A' * 64}, {'file': 'a' * 64},
+                          {'src/../file.py': 'a' * 64}, {'src//file.py': 'a' * 64}):
                 prov={'plan_array_digest':'digest','plan_file_digest':'placeholder','source_revision':'same-r',
                       'source_provenance_status':'attested','source_dirty_hashes':dirty}
                 (root/'inputs.json').write_text(json.dumps({'args':{'track':'track','plan':'plan.npz'},'map_identity':'map',

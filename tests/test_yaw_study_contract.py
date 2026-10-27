@@ -3,14 +3,14 @@ import tempfile
 import hashlib
 from pathlib import Path
 
-from tools.run.yaw_study_contract import comparison_identity, finalized_plan_inputs, study_contract, validate_comparison_pair
+from tools.run.yaw_study_contract import comparison_identity, finalized_plan_inputs, study_contract, validate_comparison_pair, _hash_mapping
 
 
 def complete_contract(**overrides):
     values = {"geometry_spacing_m": 1.0, "control_spacing_m": 40.0,
         "yaw_moment_tolerance": 1e-7, "interval_q_tolerance":1e-8, "acceleration_tolerance":1e-7, "map_identity": "map-a", "map_file_sha256": "maphash",
-        "map_source_identity": "map-source", "track_identity": "track-a", "track_data_hashes": {"track": "a" * 64},
-        "vehicle_configuration_hashes": {"vehicle": "b" * 64}, "boundary_type": "flying",
+        "map_source_identity": "map-source", "track_identity": "track-a", "track_data_hashes": {"models/tracks/track.xml": "a" * 64},
+        "vehicle_configuration_hashes": {"models/vehicles/vehicle.xml": "b" * 64}, "boundary_type": "flying",
         "maximum_speed_mps": 70.0, "warm_start_policy": "cold", "warm_start_digest": "none",
         "solver": {"method": "BDF"}, "duration": 150.0, "maximum_step": .05,
         "rtol": 1e-6, "atol": 1e-8, "method": "BDF", "initial_state": "unknown",
@@ -38,6 +38,15 @@ class StudyContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "warm_start_(policy|digest)"):
             validate_comparison_pair(cold, warm, "geometry")
 
+    def test_hash_mapping_requires_normalized_source_paths(self):
+        digest = "a" * 64
+        self.assertTrue(_hash_mapping({"src/module.py": digest}))
+        self.assertTrue(_hash_mapping({"/workspace/src/module.py": digest}))
+        for key in ("file", "", " src/file.py", "src/file.py ", "src/../file.py",
+                    "src/./file.py", "src//file.py", "./src/file.py", "src\\\\file.py"):
+            with self.subTest(key=key):
+                self.assertFalse(_hash_mapping({key: digest}))
+
     def test_contract_marks_incomplete_source_historical_unknown(self):
         contract = study_contract({}, {}, {})
         self.assertEqual(contract["contract_version"], "yaw-study-contract-v1")
@@ -52,6 +61,9 @@ class StudyContractTests(unittest.TestCase):
         malformed = study_contract({}, {}, {"source_revision":"abc", "source_dirty_hashes":"garbage",
                                            "source_provenance_status":"attested"})
         self.assertEqual(malformed["provenance"]["source_provenance_status"], "historical_unknown")
+        fabricated = study_contract({}, {}, {"source_revision":"abc", "source_dirty_hashes":{"file": "a" * 64},
+                                            "source_provenance_status":"attested"})
+        self.assertEqual(fabricated["provenance"]["source_provenance_status"], "historical_unknown")
         self.assertEqual(len(contract["canonical_json_sha256"]), 64)
 
     def test_geometry_refinement_rejects_control_spacing_change(self):

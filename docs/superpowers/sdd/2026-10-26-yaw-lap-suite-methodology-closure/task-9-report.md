@@ -1,0 +1,15 @@
+# Task 9 — Review round 5: normalized source-path digest attestation
+
+Both validators now accept source-dirty mappings only when they are nonempty dictionaries with normalized filesystem path keys and canonical lowercase SHA-256 hex values: exactly 64 characters from `0-9a-f`. `source_provenance()` emits resolved absolute paths (`str(Path(...).resolve())`), while production provenance callers may also supply normalized relative paths; both forms are accepted. Keys must include a path separator, have a filename component, be unpadded/nonempty, contain no backslashes or `.`/`..`/empty segments, and absolute forms must round-trip through `Path` unchanged. This rejects arbitrary labels such as `file` and ambiguous/non-normalized forms. The comparator imports this single shared predicate from `yaw_study_contract.py`, so contract creation and comparison apply the identical rule. Canonical digest rules from round 4 remain unchanged.
+
+Malformed mappings/values (empty, non-mapping, sentinel/arbitrary strings, whitespace, wrong length, nonhex, uppercase, label-only keys such as `file`, padded keys, traversal, redundant separators, dot segments, backslash forms, and non-string digests) fail attestation. The replay comparator requires both sides to have explicit `attested` status, known equal source revisions, valid nonempty dirty-hash maps and exact mapping equality. Therefore malformed identity yields an inconclusive comparison while `exploratory_completion` remains an independent fact. Test fixtures that formerly used `hash` as a digest now use a valid 64-character hexadecimal digest; regression tests check malformed values and inconclusive comparison behavior.
+
+The report was regenerated from the existing immutable plan and replay artifacts only; no replay or physics run was performed. Historical plan/replay provenance remains unavailable or historical-unknown, so the comparison remains inconclusive and exploratory completion remains separate. No historical revisions or hashes were inferred.
+
+Focused watchdog validation (hard deadline 180 seconds):
+
+```text
+PYTHONPATH=src:. python3 tools/run/run_with_deadline.py --seconds 180 -- python3 -m unittest tests.test_yaw_planning_replay tests.test_yaw_study_contract -q
+```
+
+Round 5 changes are limited to `compare_yaw_planning_replay.py`, its tests, the shared source-path/hash validator and its tests in `yaw_study_contract.py`, the regenerated historical comparison JSON, and this report. The focused watchdog suite ran 24 tests in 0.027 seconds and passed. `source_provenance()` key conventions were inspected directly before setting the rule. The ignored local JSON `runs/yaw_lap_suite/closure-v1/comparison-report.json` was regenerated using the existing historical optimized/fixed MIS and FSC plans and replay directories only; no physics/replay run was performed. This run artifact remains ignored by repository policy and is not a committed Task 9 path. Both cases remain inconclusive, and exploration completion is unchanged and independent of attestation.

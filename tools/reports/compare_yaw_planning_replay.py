@@ -5,6 +5,7 @@ import hashlib
 import json
 from pathlib import Path
 import numpy as np
+from tools.run.yaw_study_contract import _source_path_key
 
 
 def read_json(path):
@@ -33,7 +34,7 @@ def _hash_mapping(value):
     one canonical representation, consistent with the study contract.
     """
     return (isinstance(value, dict) and bool(value) and
-            all(isinstance(k, str) and bool(k) and k == k.strip() and
+            all(_source_path_key(k) and
                 isinstance(v, str) and len(v) == 64 and
                 all(c in '0123456789abcdef' for c in v)
                 for k, v in value.items()))

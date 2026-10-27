@@ -107,8 +107,6 @@ def _failure_summary(error):
 def run(args):
     from tools.run import run_yaw_aware_forward_driver as runner
     # Share the exact variant and solution form with downstream compilation.
-    runner.PLANAR_FORMULATION = Path(args.formulation).expanduser().resolve()
-    runner.PLANAR_SOLUTION_MODEL = args.solution_model
     from tools.run.yaw_map_options import resolve_yaw_map
     from simplified_vehicle_models.compiler.compile import compile_formulation
     from simplified_vehicle_models.formulations.point_mass import point_mass_view_of_planar
@@ -252,6 +250,7 @@ def run(args):
         # Load once through the strict replay gate before declaring a usable plan.
         _,_,_,saved_metadata,_=load_lap_plan(plan_path,capability,expected_track_identity=track_identity)
         summary={'plan_array_digest':saved_metadata['array_digest'],'status':'planned','lap_time_s':profile.lap_time,'speed_min_mps':float(min(profile.speed)),
+            'plan_artifact_sha256':hashlib.sha256(plan_path.read_bytes()).hexdigest(),
             'speed_max_mps':float(max(profile.speed)),'profile_resolution_converged':profile.diagnostics.get('resolution_converged'),
             'profile_validation':profile.diagnostics.get('validation'),'diagnostics':plan_diagnostics,
             'lap_completed':False,'sampled_center_contained':None}
@@ -409,6 +408,8 @@ def replay(args,output,vehicle,track,path,speed_plan,arrays,metadata):
         control_metrics_kind='requested_commands_and_saved_realized_channels')
     # Build the diagnostics-bearing summary before writing it once.
     summary['replay_validation_diagnostics']=replay_diagnostics
+    summary['artifact_sha256']=hashlib.sha256((output/'run_record.npz').read_bytes()).hexdigest()
+    summary['plan_artifact_sha256']=hashlib.sha256((output/'plan.npz').read_bytes()).hexdigest()
     replay_diagnostics.setdefault('timings',{})['summary_construction_seconds'] = __import__('time').perf_counter()-summary_started
     runner.write_json(output/'summary.json',summary)
     return 0 if result.lap_completed else 3

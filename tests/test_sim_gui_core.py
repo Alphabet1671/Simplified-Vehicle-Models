@@ -1,6 +1,7 @@
 import json
 import os
 import tempfile
+import hashlib
 import unittest
 from unittest import mock
 from pathlib import Path
@@ -490,7 +491,7 @@ class ExecutionTests(unittest.TestCase):
         from tools.sim_gui.execute import prepare_case
         definition = StudyDefinition("point", "missing.xml", "track.xml", "14dof-simple", {},
                                      RunSettings(solver_kind="point-mass"), "one-at-a-time", ())
-        case = CaseSpec("case_000", "baseline", "14dof-simple", "track.xml", {}, {})
+        case = CaseSpec("case_000", "baseline", "14dof-simple", "models/tracks/2024_michigan_endurance_closed.xml", {}, {})
         source = REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_14dof_simple.xml"
         configuration = VehicleConfiguration.open(source)
         definition = StudyDefinition("point", source.as_posix(), "models/tracks/2024_michigan_endurance_closed.xml",
@@ -543,9 +544,28 @@ class ExecutionTests(unittest.TestCase):
                 attempt = Path(d) / ('attempt_' + expected)
                 attempt.mkdir()
                 if code == 0 and not timed and not cancelled:
-                    (attempt / 'summary.json').write_text('{"status":"planned","lap_completed":false}')
-                    (attempt / 'inputs.json').write_text('{}')
-                    (attempt / 'plan.npz').touch()
+                    from tools.sim_gui.settings import RunSettings
+                    track = REPOSITORY_ROOT / 'models/tracks/2024_michigan_endurance_closed.xml'
+                    form = REPOSITORY_ROOT / 'models/formulations/iem24_murphy_real_planar_7dof.xml'
+                    yaw_map = REPOSITORY_ROOT / 'runs/yaw_map_build/iem24-vehicle-limit-final.npz'
+                    identity = {'solver_kind':'yaw-aware','source_model':'planar-7dof','solution_model':'planar-7dof',
+                        'track':str(track),'track_sha256':hashlib.sha256(track.read_bytes()).hexdigest(),
+                        'formulation':str(form),'formulation_sha256':hashlib.sha256(form.read_bytes()).hexdigest(),
+                        'yaw_map':str(yaw_map),'yaw_map_sha256':hashlib.sha256(yaw_map.read_bytes()).hexdigest()}
+                    (prepared.directory / 'case.json').write_text(json.dumps({'input_identity':identity}))
+                    import numpy as np
+                    arrays={'distance':np.arange(3.),'curvature':np.zeros(3),'curvature_rate':np.zeros(3),'speed':np.ones(3),
+                        'reference_distance':np.arange(3.),'north':np.zeros(3),'east':np.zeros(3),'heading':np.zeros(3)}
+                    from simplified_vehicle_models.planning.yaw_lap_artifact import _digest, SCHEMA
+                    from simplified_vehicle_models.solvers.yaw_profile_contracts import CoupledProfileSettings
+                    from dataclasses import asdict
+                    metadata={'schema':SCHEMA,'track_identity':'tid','map_identity':'mid','array_digest':_digest(arrays),
+                        'is_closed':False,'profile_settings':asdict(CoupledProfileSettings())}
+                    np.savez(attempt/'plan.npz',**arrays,metadata=np.array(json.dumps(metadata)))
+                    digest=hashlib.sha256((attempt/'plan.npz').read_bytes()).hexdigest()
+                    (attempt/'inputs.json').write_text(json.dumps({**identity,'track_identity':'tid','map_identity':'mid',
+                        'map_sha256':identity['yaw_map_sha256'],'plan_sha256':digest}))
+                    (attempt/'summary.json').write_text(json.dumps({'status':'planned','lap_completed':False,'plan_artifact_sha256':digest}))
                 result = finish_case(prepared, attempt, return_code=code, timed_out=timed,
                                      cancelled=cancelled, wall_seconds=1.25, command=['cmd'])
                 self.assertEqual(result['status'], expected)

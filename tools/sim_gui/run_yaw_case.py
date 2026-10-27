@@ -7,8 +7,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import hashlib
 from pathlib import Path
-import sys
 
 from tools.sim_gui import REPOSITORY_ROOT
 from tools.sim_gui.settings import RunSettings, validate
@@ -52,6 +52,10 @@ def _yaw(case: dict, attempt: Path, settings: RunSettings, case_dir: Path) -> in
     formulation = _inside(_resolve(case["formulation"], base=case_dir), (model_root,), "formulation")
     if not formulation.is_file():
         raise ValueError(f"case formulation does not exist: {formulation}")
+    if settings.mode == "replay" and not plan:
+        raise ValueError("replay requires a saved plan")
+    if settings.mode != "replay" and plan is not None:
+        raise ValueError("saved plan is only accepted in replay mode")
     argv = list(case["argv"])
     for flag, value in (("--track", str(track)), ("--yaw-map", str(map_path))):
         if flag not in argv:
@@ -86,16 +90,47 @@ def _yaw(case: dict, attempt: Path, settings: RunSettings, case_dir: Path) -> in
     argv.extend(("--formulation", str(formulation), "--output-dir", str(attempt)))
     args = suite.parse_args(argv)
     result = int(suite.run(args))
+    summary_path = attempt / "summary.json"
+    try:
+        summary = json.loads(summary_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        summary = None
+    plan_path = attempt / "plan.npz"
+    plan_digest = hashlib.sha256(plan_path.read_bytes()).hexdigest() if plan_path.is_file() else None
+    run_record = attempt / "run_record.npz"
+    if isinstance(summary, dict):
+        summary["plan_artifact_sha256"] = plan_digest
+        summary["artifact_sha256"] = hashlib.sha256(run_record.read_bytes()).hexdigest() if run_record.is_file() else plan_digest
+        _write_json(summary_path, summary)
+    try:
+        inputs = json.loads((attempt / "inputs.json").read_text())
+    except (OSError, json.JSONDecodeError):
+        inputs = {}
+    if not isinstance(inputs, dict):
+        inputs = {}
     manifest = getattr(compile_result, "manifest", None)
-    source_manifest = _manifest_source_ids(manifest)
-    _write_json(attempt / "inputs.json", {
+    inputs.update({
         "solver_kind": "yaw-aware", "source_model": source_model,
-        "solution_model": "planar-7dof", "source_formulation": str(formulation),
-        "source_manifest": source_manifest, "track": str(track),
+        "solution_model": "planar-7dof", "track": str(track), "source_formulation": str(formulation),
+        "source_manifest": _manifest_source_ids(manifest),
         "yaw_map": str(map_path), "mode": settings.mode, "plan": str(plan) if plan else None,
         "compiled_source_subtype": "14dof-simple" if source_model == "14dof-simple" else "planar-7dof",
         "reduction": "14dof.planar->planar-7dof" if source_model == "14dof-simple" else "identity",
+        "track_sha256": hashlib.sha256(track.read_bytes()).hexdigest(),
+        "map_sha256": hashlib.sha256(map_path.read_bytes()).hexdigest(),
+        "formulation_sha256": hashlib.sha256(formulation.read_bytes()).hexdigest(),
+        "plan_sha256": plan_digest,
+        "run_record_sha256": hashlib.sha256(run_record.read_bytes()).hexdigest() if run_record.is_file() else None,
     })
+    if plan_path.is_file():
+        try:
+            import numpy as np
+            with np.load(plan_path, allow_pickle=False) as archive:
+                metadata = json.loads(str(archive["metadata"].item()))
+            inputs.update(map_identity=metadata.get("map_identity"), track_identity=metadata.get("track_identity"))
+        except Exception:
+            pass
+    _write_json(attempt / "inputs.json", inputs)
     return result
 
 
@@ -165,14 +200,19 @@ def _point_mass(case: dict, attempt: Path, settings: RunSettings, case_dir: Path
                         elapsed_time=lap.elapsed_time,
                         longitudinal_acceleration=lap.longitudinal_acceleration,
                         lateral_acceleration=lap.lateral_acceleration)
+    track_digest = hashlib.sha256(track_path.read_bytes()).hexdigest()
+    formulation_digest = hashlib.sha256(formulation.read_bytes()).hexdigest()
+    plan_digest = hashlib.sha256((attempt / "point_mass_plan.npz").read_bytes()).hexdigest()
     _write_json(attempt / "inputs.json", {
         "solver_kind": "point-mass", "source_model": source_model,
+        "solution_model": "point-mass", "track": str(track_path), "track_sha256": track_digest,
+        "formulation": str(formulation), "formulation_sha256": formulation_digest,
         "resolution_mapping": case["resolution_mapping"],
-        "solution_model": "point-mass", "reduction": reduction,
-        "source_formulation": str(formulation),
-        "source_manifest": _manifest_source_ids(getattr(compiled, "manifest", None)), "track": str(track_path),
+        "reduction": reduction, "source_formulation": str(formulation),
+        "source_manifest": _manifest_source_ids(getattr(compiled, "manifest", None)),
         "track_closed": True, "yaw_map_used": False,
         "semantics": "closed flying-lap power investigation; no energy/stint semantics",
+        "artifact": "point_mass_plan.npz", "artifact_sha256": plan_digest,
     })
     _write_json(attempt / "summary.json", {
         "status": "completed", "lap_time_s": float(lap.lap_time),
@@ -180,7 +220,7 @@ def _point_mass(case: dict, attempt: Path, settings: RunSettings, case_dir: Path
         "converged": bool(lap.converged), "iterations": int(lap.iterations),
         "lap_completed": True, "source_model": source_model,
         "solution_model": "point-mass", "reduction": reduction,
-        "artifact": "point_mass_plan.npz",
+        "artifact": "point_mass_plan.npz", "artifact_sha256": plan_digest,
     })
     return 0
 
@@ -220,9 +260,9 @@ def main(argv=None) -> int:
     parser.add_argument("--case-dir", type=Path, required=True)
     parser.add_argument("--child-attempt", type=Path, required=True)
     args = parser.parse_args(argv)
-    from tools.run.run_with_deadline import run_with_deadline
-    return run_with_deadline([sys.executable, __file__, "--case-dir", str(args.case_dir),
-                              "--child-attempt", str(args.child_attempt)], seconds=1800)
+    # The GUI parent owns the sole process-group watchdog and kills this entire
+    # session on timeout. Never spawn a nested watchdog/session here.
+    return run_case(args.case_dir, args.child_attempt)
 
 
 if __name__ == "__main__":

@@ -19,6 +19,7 @@ import sys
 import numpy as np
 
 PLANAR_FORMULATION = Path("models/formulations/iem24_murphy_real_planar_7dof.xml")
+PLANAR_SOLUTION_MODEL = "planar-7dof"
 DIAGNOSTIC_NONCLAIMS = {
     "minimum_time": False,
     "TV_FMU_validation": False,
@@ -311,8 +312,10 @@ def run(args):
 
     output = prepare_output(args.output_dir)
     started = time.perf_counter()
-    compiled_source = compile_formulation(str(Path(getattr(args, "formulation", PLANAR_FORMULATION)).expanduser().resolve())).model
-    if getattr(args, "solution_model", getattr(sys.modules[__name__], "PLANAR_SOLUTION_MODEL", "planar-7dof")) == "14dof-simple":
+    formulation = Path(getattr(args, "formulation", PLANAR_FORMULATION)).expanduser().resolve()
+    solution_model = getattr(args, "solution_model", PLANAR_SOLUTION_MODEL)
+    compiled_source = compile_formulation(str(formulation)).model
+    if solution_model == "14dof-simple":
         from simplified_vehicle_models.formulations.vertical_14dof import VerticalVehicleParameters
         if not isinstance(compiled_source, VerticalVehicleParameters):
             raise ValueError("selected 14dof-simple formulation did not compile as 14dof-simple")

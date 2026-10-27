@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import hashlib
 from pathlib import Path
 import sys
 import time
@@ -76,8 +77,9 @@ def prepare_case(study_dir: Path, definition: StudyDefinition, case: CaseSpec) -
     else:
         argv = []  # Point-mass options are loaded from immutable case.json.
 
+    track_path = track.resolve()
     payload = {
-        "id": case.id, "label": case.label, "model": case.model, "track": case.track,
+        "id": case.id, "label": case.label, "model": case.model, "track": str(track_path),
         "settings": settings.to_json(), "solver_kind": settings.solver_kind,
         "solution_model": solution_model,
         "resolution_mapping": {"source_model": case.model, "solver_kind": settings.solver_kind,
@@ -86,6 +88,13 @@ def prepare_case(study_dir: Path, definition: StudyDefinition, case: CaseSpec) -
         "formulation": files.formulation.relative_to(directory).as_posix(),
         "source_formulation": files.formulation.relative_to(directory).as_posix(),
         "vehicle": files.vehicle.relative_to(directory).as_posix(), "argv": argv,
+        "input_identity": {"solver_kind": settings.solver_kind, "source_model": case.model,
+                           "solution_model": solution_model, "track": str(track_path),
+                           "track_sha256": hashlib.sha256(track_path.read_bytes()).hexdigest(),
+                           "formulation": str(files.formulation.resolve()),
+                           "formulation_sha256": hashlib.sha256(files.formulation.read_bytes()).hexdigest(),
+                           "yaw_map": settings.yaw_map or None,
+                           "yaw_map_sha256": hashlib.sha256(Path(settings.yaw_map).read_bytes()).hexdigest() if settings.solver_kind == "yaw-aware" else None},
     }
     _atomic_json(directory / "case.json", payload)
     timeout = (settings.point_mass_duration if settings.solver_kind == "point-mass"
@@ -141,6 +150,80 @@ def finish_case(prepared: PreparedCase, attempt: Path, *, return_code: int | Non
     except (OSError, json.JSONDecodeError):
         summary = None
     valid_summary = isinstance(summary, dict) and isinstance(summary.get("status"), str)
+    identity = {}
+    inputs_valid = False
+    inputs = {}
+    try:
+        inputs = json.loads((Path(attempt) / "inputs.json").read_text())
+        payload = json.loads((prepared.directory / "case.json").read_text())
+        identity = payload.get("input_identity", {})
+        inputs_valid = isinstance(inputs, dict) and all(inputs.get(key) == identity.get(key) for key in
+            ("solver_kind", "source_model", "solution_model", "track", "track_sha256", "formulation", "formulation_sha256"))
+        inputs_valid = inputs_valid and isinstance(identity, dict) and identity.get("solver_kind") == prepared.solver_kind
+        inputs_valid = inputs_valid and Path(identity.get("track", "")).is_file() and hashlib.sha256(Path(identity["track"]).read_bytes()).hexdigest() == identity.get("track_sha256")
+        inputs_valid = inputs_valid and Path(identity.get("formulation", "")).is_file() and hashlib.sha256(Path(identity["formulation"]).read_bytes()).hexdigest() == identity.get("formulation_sha256")
+        if prepared.solver_kind == "yaw-aware":
+            map_path = Path(identity.get("yaw_map", ""))
+            inputs_valid = inputs_valid and inputs.get("yaw_map") == identity.get("yaw_map") and inputs.get("map_sha256") == identity.get("yaw_map_sha256")
+            if "mode" in inputs:
+                inputs_valid = inputs_valid and inputs.get("mode") in {"fixed", "line", "replay"}
+                inputs_valid = inputs_valid and (inputs.get("mode") != "replay" or isinstance(inputs.get("plan"), str))
+                inputs_valid = inputs_valid and (inputs.get("mode") == "replay" or inputs.get("plan") is None)
+            inputs_valid = inputs_valid and map_path.is_file() and hashlib.sha256(map_path.read_bytes()).hexdigest() == identity.get("yaw_map_sha256")
+        else:
+            inputs_valid = inputs_valid and identity.get("yaw_map") is None
+    except (OSError, ValueError, TypeError):
+        inputs_valid = False
+
+    def valid_npz(name, members):
+        path = Path(attempt) / name
+        if not path.is_file() or path.stat().st_size == 0:
+            return False
+        try:
+            import numpy as np
+            with np.load(path, allow_pickle=False) as archive:
+                return set(members).issubset(archive.files) and all(np.asarray(archive[key]).size > 0 for key in members)
+        except Exception:
+            return False
+
+    def matches_digest(name, digest):
+        path = Path(attempt) / name
+        return isinstance(digest, str) and path.is_file() and hashlib.sha256(path.read_bytes()).hexdigest() == digest
+
+    def valid_yaw_plan(path):
+        try:
+            import numpy as np
+            from simplified_vehicle_models.planning.yaw_lap_artifact import ARRAYS, SCHEMA, _digest
+            with np.load(path, allow_pickle=False) as archive:
+                metadata = json.loads(str(archive["metadata"].item()))
+                if metadata.get("schema") != SCHEMA:
+                    return False
+                arrays = {key: np.asarray(archive[key], dtype=float) for key in ARRAYS}
+            return (len({array.size for array in arrays.values()}) == 1
+                    and all(array.ndim == 1 and np.all(np.isfinite(array)) for array in arrays.values())
+                    and _digest(arrays) == metadata.get("array_digest")
+                    and metadata.get("track_identity") == inputs.get("track_identity")
+                    and metadata.get("map_identity") == inputs.get("map_identity"))
+        except Exception:
+            return False
+
+    def _valid_run_record(path):
+        try:
+            from simplified_vehicle_models.results.run_record import load_run_record
+            load_run_record(path, verify_sources=False)
+            return True
+        except Exception:
+            return False
+
+    def valid_point_mass(path):
+        try:
+            import numpy as np
+            with np.load(path, allow_pickle=False) as archive:
+                arrays = [np.asarray(archive[k], dtype=float) for k in ("distance", "speed", "elapsed_time", "longitudinal_acceleration", "lateral_acceleration")]
+            n = arrays[0].size
+            return n >= 3 and all(a.ndim == 1 and a.size == n and np.all(np.isfinite(a)) for a in arrays) and np.all(np.diff(arrays[0]) > 0)
+        except Exception:
+            return False
     if cancelled:
         status, parent_status, parent_code = "cancelled", "Cancelled", None
     elif timed_out:
@@ -149,17 +232,32 @@ def finish_case(prepared: PreparedCase, attempt: Path, *, return_code: int | Non
         status, parent_status, parent_code = "rejected", "Child_Rejected", return_code
     elif return_code != 0:
         status, parent_status, parent_code = "failed", "Child_Rejected", return_code
-    elif not valid_summary or not (Path(attempt) / "inputs.json").is_file():
+    elif not valid_summary or not inputs_valid:
         status, parent_status, parent_code = "failed", "Child_Invalid_Artifacts", return_code
     elif (prepared.solver_kind == "yaw-aware" and summary["status"] == "planned"
-          and summary.get("lap_completed") is False and (Path(attempt) / "plan.npz").is_file()):
+          and summary.get("lap_completed") is False
+          and valid_npz("plan.npz", ("metadata", "distance", "speed", "north", "east", "heading"))
+          and matches_digest("plan.npz", summary.get("plan_artifact_sha256"))
+          and matches_digest("plan.npz", inputs.get("plan_sha256"))
+          and valid_yaw_plan(Path(attempt) / "plan.npz")):
         status, parent_status, parent_code = "planned", "Child_Planned", return_code
     elif (prepared.solver_kind == "point-mass" and summary["status"] == "completed"
-          and summary.get("converged") is True and (Path(attempt) / "point_mass_plan.npz").is_file()):
+          and summary.get("converged") is True and summary.get("lap_completed") is True
+          and valid_npz("point_mass_plan.npz", ("distance", "speed", "elapsed_time", "longitudinal_acceleration", "lateral_acceleration"))
+          and matches_digest("point_mass_plan.npz", summary.get("artifact_sha256"))
+          and matches_digest("point_mass_plan.npz", inputs.get("artifact_sha256"))
+          and valid_point_mass(Path(attempt) / "point_mass_plan.npz")):
         status, parent_status, parent_code = "completed", "Child_Completed", return_code
-    elif (summary["status"] == "completed" and summary.get("lap_completed") is True
+    elif (prepared.solver_kind == "yaw-aware" and summary["status"] == "completed" and summary.get("lap_completed") is True
           and summary.get("solver_validation_complete") is True
-          and (Path(attempt) / "run_record.npz").is_file()):
+          and valid_npz("run_record.npz", ("manifest.json", "time"))
+          and _valid_run_record(Path(attempt) / "run_record.npz")
+          and matches_digest("run_record.npz", summary.get("artifact_sha256"))
+          and matches_digest("plan.npz", summary.get("plan_artifact_sha256"))
+          and matches_digest("plan.npz", inputs.get("plan_sha256"))
+          and matches_digest("run_record.npz", inputs.get("run_record_sha256"))
+          and valid_npz("plan.npz", ("metadata", "distance", "speed", "north", "east", "heading"))
+          and valid_yaw_plan(Path(attempt) / "plan.npz", inputs)):
         status, parent_status, parent_code = "completed", "Child_Completed", return_code
     elif summary["status"] == "failed":
         status, parent_status, parent_code = "failed", "Child_Failed", return_code

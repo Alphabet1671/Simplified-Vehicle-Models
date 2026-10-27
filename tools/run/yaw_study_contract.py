@@ -200,6 +200,11 @@ def _comparison_values(contract, dimension):
     for key in _REQUIRED[dimension]:
         if not _required_attested(key, values[key]):
             raise ValueError(f"incomplete {dimension} comparison contract; required field {key} lacks attestation")
+    # The exact warm-plan artifact must be recorded for each run, but successive
+    # refinements necessarily use different preceding plans.  Policy matching,
+    # rather than artifact equality, is the cross-run compatibility requirement.
+    if dimension in {"geometry", "control"}:
+        values.pop("warm_start_digest", None)
     return values
 
 

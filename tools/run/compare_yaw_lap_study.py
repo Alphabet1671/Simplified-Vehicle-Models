@@ -9,6 +9,71 @@ from simplified_vehicle_models.planning.yaw_convergence import ConvergenceSample
 from tools.run.yaw_study_contract import comparison_identity, validate_comparison_pair, study_contract
 
 
+class ProfileValidationError(ValueError):
+    """A saved plan failed fresh strict physical validation."""
+
+
+def _validate_plan_geometry(arrays, metadata, reference, track):
+    """Check saved geometry/stations against the exact track reference."""
+    station=np.asarray(arrays['reference_distance'],float)
+    distance=np.asarray(arrays['distance'],float)
+    if any(np.asarray(v).shape!=station.shape for v in arrays.values()):
+        raise ValueError('wrong_reference_geometry')
+    if station.ndim!=1 or station.size<2 or not np.all(np.isfinite(station)) or np.any(np.diff(station)<=0):
+        raise ValueError('duplicate_or_invalid_reference_spacing')
+    if not np.all(np.isfinite(distance)) or np.any(np.diff(distance)<=0):
+        raise ValueError('wrong_reference_geometry')
+    if bool(metadata.get('is_closed'))!=bool(reference.is_closed):
+        raise ValueError('reference_seam_mismatch')
+    tol=max(1e-8,abs(reference.end-reference.start)*1e-9)
+    if abs(station[0]-reference.start)>tol or abs(station[-1]-reference.end)>tol:
+        raise ValueError('wrong_reference_domain')
+    ref=reference.evaluate(station)
+    n=np.asarray(arrays['north'],float); e=np.asarray(arrays['east'],float); h=np.asarray(arrays['heading'],float)
+    if any(not np.all(np.isfinite(v)) for v in (n,e,h)):
+        raise ValueError('wrong_reference_geometry')
+    if reference.is_closed:
+        if not np.allclose([n[-1],e[-1]],[n[0],e[0]],rtol=0,atol=1e-7):
+            raise ValueError('reference_seam_mismatch')
+        if not math.isclose(abs(float(h[-1]-h[0])),2*math.pi,rel_tol=0,abs_tol=1e-5):
+            raise ValueError('reference_seam_mismatch')
+    offset=(n-ref.north)*(-np.sin(ref.heading))+(e-ref.east)*np.cos(ref.heading)
+    left=getattr(track,'half_width_left',None); right=getattr(track,'half_width_right',None)
+    if left is not None and right is not None:
+        left=np.interp(station,track.distance,left); right=np.interp(station,track.distance,right)
+        if np.any(offset>left+1e-6) or np.any(offset < -right-1e-6):
+            raise ValueError('wrong_reference_geometry')
+    if not np.all(np.isfinite(offset)):
+        raise ValueError('wrong_reference_geometry')
+    return offset
+
+
+def _preflight_runs(paths, dimension):
+    """Load contracts and reject incompatible comparison sets before physics."""
+    manifests=[]; failures=[]; pair_errors=[]; identities=set()
+    for directory in paths:
+        try:
+            inputs=json.loads((directory/'inputs.json').read_text())
+            contract=inputs.get('study_contract')
+            if not isinstance(contract,dict): raise ValueError('missing_study_contract')
+            identities.add((inputs.get('map_identity'),inputs.get('track_identity')))
+            comparison_identity(contract,dimension)  # validates completeness, not merely calculates identity
+            manifests.append((directory,inputs,contract))
+        except Exception as error:
+            failures.append({'run':str(directory),'status':'inconclusive','cause':str(error)})
+    for i,(p,_,a) in enumerate(manifests):
+        for q,_,b in manifests[i+1:]:
+            try: validate_comparison_pair(a,b,dimension)
+            except ValueError as error:
+                pair_errors.append(str(error)); failures.append({'runs':[str(p),str(q)],'status':'inconclusive','cause':str(error)})
+    if len(identities)>1:
+        pair_errors.append('mismatched_map_or_track_identity')
+        failures.append({'status':'inconclusive','cause':'mismatched_map_or_track_identity'})
+    if len(manifests)!=len(paths) and not any(x.get('cause')=='missing_study_contract' for x in failures):
+        pass
+    return manifests,failures,pair_errors
+
+
 def _load_sample(directory, dimension):
     from simplified_vehicle_models.planning.yaw_lap_artifact import load_lap_plan
     from tools.run import run_yaw_aware_forward_driver as runner
@@ -72,7 +137,7 @@ def _load_sample(directory, dimension):
     try:
         _,_,arrays,metadata,validation=load_lap_plan(plan_path,capability,expected_track_identity=track_identity)
     except ValueError as error:
-        if 'strict profile validation' in str(error): raise ValueError('profile_invalid') from error
+        if str(error)=='saved lap plan fails independent strict profile validation': raise ProfileValidationError('profile_invalid') from error
         raise
     if metadata['array_digest']!=provenance['plan_array_digest']: raise ValueError('plan_digest_binding_mismatch')
     if metadata['map_identity']!=provenance.get('map_identity') or metadata['track_identity']!=provenance.get('track_identity'):
@@ -82,8 +147,8 @@ def _load_sample(directory, dimension):
     reported=float(summary['lap_time_s']); recomputed=float(np.trapezoid(1./arrays['speed'],arrays['distance']))
     if not math.isfinite(reported) or not math.isclose(reported,recomputed,rel_tol=2e-5,abs_tol=2e-5):
         raise ValueError('reported_lap_time_mismatch')
-    reference=ReferenceCurve(track); ref=reference.evaluate(arrays['reference_distance'])
-    offset=(arrays['north']-ref.north)*(-np.sin(ref.heading))+(arrays['east']-ref.east)*np.cos(ref.heading)
+    reference=ReferenceCurve(track)
+    offset=_validate_plan_geometry(arrays,metadata,reference,track)
     sample=ConvergenceSample(d.name,float(args['spacing']),float(args['control_spacing']),reported,
         arrays['reference_distance'],arrays['speed'],offset,bool(validation.valid),
         bool(summary.get('profile_resolution_converged',False)),optimizer,
@@ -95,34 +160,24 @@ def _load_sample(directory, dimension):
 
 
 def compare_runs(directories,*,dimension):
-    paths=list(map(Path,directories)); rows=[];failures=[];contracts=[];identities=set();evidence=[]
-    for directory in paths:
+    paths=list(map(Path,directories)); rows=[]; evidence=[]
+    manifests,failures,pair_errors=_preflight_runs(paths,dimension)
+    # No plan physics, interpolation, or comparison rows are constructed unless every input is bound and compatible.
+    if failures or len(manifests)!=len(paths):
+        return {'status':'inconclusive','comparisons':[],'validation_evidence':[],'failed_runs':failures,
+                'scope':'saved discrete plans; fresh strict profile validation against exact map and track; no continuous feasibility certification'}
+    contracts=[(p,c) for p,_,c in manifests]
+    for directory,_,_ in manifests:
         try:
-            inputs=json.loads((directory/'inputs.json').read_text()); identities.add((inputs.get('map_identity'),inputs.get('track_identity')))
-            contract=inputs.get('study_contract')
-            if isinstance(contract,dict): contracts.append((directory,contract))
-            sample,record=_load_sample(directory,dimension);rows.append(sample);evidence.append(record)
+            sample,record=_load_sample(directory,dimension); rows.append(sample);evidence.append(record)
         except Exception as error:
             failures.append({'run':str(directory),'status':'inconclusive','cause':str(error)})
-    pair_errors=[]
-    if len(identities)>1:
-        pair_errors.append('study runs must have identical track and map identities')
-        failures.append({'status':'inconclusive','cause':'mismatched_map_or_track_identity'})
-    if len(contracts)!=len(paths):
-        bound={p for p,_ in contracts}
-        failures.extend({'run':str(p),'status':'inconclusive','cause':'missing_study_contract'} for p in paths if p not in bound)
-    for i,(p,a) in enumerate(contracts):
-        for q,b in contracts[i+1:]:
-            try: validate_comparison_pair(a,b,dimension)
-            except ValueError as error:
-                pair_errors.append(str(error)); failures.append({'runs':[str(p),str(q)],'status':'inconclusive','cause':str(error)})
+    if failures:
+        return {'status':'inconclusive','comparisons':[],'validation_evidence':evidence,'failed_runs':failures,
+                'scope':'saved discrete plans; fresh strict profile validation against exact map and track; no continuous feasibility certification'}
     result=convergence_study(rows,dimension=dimension)
-    if contracts and len(contracts)==len(paths):
-        try: result['comparison_identity']=comparison_identity(contracts[0][1],dimension)
-        except ValueError as error: failures.append({'status':'inconclusive','cause':str(error)})
-    result['validation_evidence']=evidence
-    result['failed_runs']=failures
-    if failures or pair_errors: result['status']='inconclusive'
+    result['comparison_identity']=comparison_identity(contracts[0][1],dimension)
+    result['validation_evidence']=evidence;result['failed_runs']=failures
     result['scope']='saved discrete plans; fresh strict profile validation against exact map and track; no continuous feasibility certification'
     return result
 

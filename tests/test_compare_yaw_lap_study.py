@@ -3,7 +3,7 @@ from pathlib import Path
 import tempfile
 import unittest
 import numpy as np
-from tools.run.compare_yaw_lap_study import compare_runs
+from tools.run.compare_yaw_lap_study import compare_runs, _preflight_runs, _validate_plan_geometry
 from unittest.mock import patch
 from simplified_vehicle_models.planning.yaw_convergence import ConvergenceSample
 from simplified_vehicle_models.planning.yaw_lap_artifact import ARRAYS,_digest,SCHEMA
@@ -47,6 +47,49 @@ def loaded_sample(path, *, valid=True, time=.2, spacing=None, control=None, opti
 
 
 class SavedStudyTests(unittest.TestCase):
+    def test_preflight_contract_mismatch_skips_loader(self):
+        with tempfile.TemporaryDirectory() as td:
+            one=saved_run(Path(td),'one',spacing=2.,control=10.); two=saved_run(Path(td),'two',spacing=1.,control=10.)
+            manifest=json.loads((two/'inputs.json').read_text()); c=manifest['study_contract']; c['provenance']['vehicle_configuration_hashes']={'vehicle':'other'}
+            c2=study_contract(c['arguments'],c['resolved_settings'],c['provenance']); manifest['study_contract']=c2; (two/'inputs.json').write_text(json.dumps(manifest))
+            # Rebind plan metadata to the modified contract so only compatibility is under test.
+            with np.load(two/'plan.npz',allow_pickle=False) as z:
+                vals={k:z[k] for k in z.files if k!='metadata'}; m=json.loads(str(z['metadata'].item()))
+            m['provenance']['study_contract_sha256']=c2['canonical_json_sha256']; np.savez(two/'plan.npz',**vals,metadata=np.array(json.dumps(m)))
+            provenance=c2['provenance']; provenance['plan_file_digest']=__import__('hashlib').sha256((two/'plan.npz').read_bytes()).hexdigest()
+            c2=study_contract(c2['arguments'],c2['resolved_settings'],provenance); manifest['study_contract']=c2; (two/'inputs.json').write_text(json.dumps(manifest))
+            with patch('tools.run.compare_yaw_lap_study._load_sample') as loader:
+                result=compare_runs([one,two],dimension='geometry')
+            loader.assert_not_called(); self.assertEqual(result['comparisons'],[]); self.assertEqual(result['status'],'inconclusive')
+
+    def test_preflight_directly_rejects_vehicle_settings_and_missing_contracts(self):
+        with tempfile.TemporaryDirectory() as td:
+            one=saved_run(Path(td),'one',spacing=2.,control=10.); two=saved_run(Path(td),'two',spacing=1.,control=10.)
+            _,fails,_=_preflight_runs([one,two],'geometry'); self.assertTrue(any('must remain fixed' in f['cause'] for f in fails))
+            old=saved_run(Path(td),'old',spacing=3.,control=10.,contract=False)
+            _,fails,_=_preflight_runs([old],'geometry'); self.assertIn('missing_study_contract',{f['cause'] for f in fails})
+
+    def test_geometry_helper_checks_domain_seam_spacing_and_nonfinite(self):
+        class Ref:
+            start=0.; end=2.; is_closed=True
+            def evaluate(self,s):
+                from types import SimpleNamespace
+                return SimpleNamespace(north=np.asarray(s),east=np.zeros_like(s),heading=np.zeros_like(s))
+        track=type('Track',(),{})()
+        arr={k:np.ones(3) for k in ARRAYS}; arr.update(reference_distance=np.array([0.,1.,2.]),distance=np.array([0.,1.,2.]),north=np.array([0.,1.,0.]),east=np.zeros(3),heading=np.array([0.,0.,2*np.pi]))
+        meta={'is_closed':True}; _validate_plan_geometry(arr,meta,Ref(),track)
+        for field,value,cause in [('reference_distance',np.array([0.,1.,3.]),'wrong_reference_domain'),('reference_distance',np.array([0.,0.,2.]),'duplicate_or_invalid_reference_spacing'),('north',np.array([0.,1.,4.]),'reference_seam_mismatch'),('east',np.array([0.,np.nan,0.]),'wrong_reference_geometry')]:
+            broken=dict(arr); broken[field]=value
+            with self.assertRaisesRegex(ValueError,cause): _validate_plan_geometry(broken,meta,Ref(),track)
+
+    def test_compare_preflight_precedes_any_loader_for_invalid_contract(self):
+        with tempfile.TemporaryDirectory() as td:
+            run=saved_run(Path(td),'legacy',spacing=1.,control=10.,contract=False)
+            with patch('tools.run.compare_yaw_lap_study._load_sample') as loader:
+                result=compare_runs([run],dimension='geometry')
+            loader.assert_not_called(); self.assertEqual(result['comparisons'],[])
+
+
     def test_digest_consistent_physically_invalid_plan_reported_inconclusive(self):
         with tempfile.TemporaryDirectory() as td:
             run=saved_run(Path(td),'bad',spacing=1.,control=10.)

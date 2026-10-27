@@ -88,8 +88,13 @@ class QInterval:
     support_id: tuple[int, ...]
 
 
-def _real_roots_unit(poly, *, scale, tolerance, diagnostics):
+def _real_roots_unit(poly, *, scale, tolerance, diagnostics, deadline_check=None, counters=None):
     """Isolate all real roots on [0,1] by recursively splitting at derivative roots."""
+    def expired():
+        stopped=bool(deadline_check and deadline_check())
+        if stopped and counters is not None: counters["deadline_stop"] = True
+        return stopped
+    if expired(): return []
     p = Polynomial(poly.coef)
     while p.degree() > 0 and abs(p.coef[-1]) <= np.finfo(float).eps * max(1., np.max(np.abs(p.coef))):
         p = Polynomial(p.coef[:-1])
@@ -104,19 +109,24 @@ def _real_roots_unit(poly, *, scale, tolerance, diagnostics):
             return [root]
         return []
     critical = _real_roots_unit(p.deriv(), scale=max(1., np.max(np.abs(p.deriv().coef))),
-                                tolerance=tolerance, diagnostics=diagnostics)
+                                tolerance=tolerance, diagnostics=diagnostics,
+                                deadline_check=deadline_check,counters=counters)
+    if expired(): return []
     knots = sorted(set([0., *critical, 1.]))
     roots = []
     for x in knots:
+        if expired(): return []
         fx = float(p(x))
         if abs(fx) <= tolerance * scale:
             roots.append(x)  # includes even-multiplicity/tangent roots
     for a, b in zip(knots[:-1], knots[1:]):
+        if expired(): return []
         fa, fb = float(p(a)), float(p(b))
         if fa == 0. or fb == 0. or fa * fb > 0.:
             continue
         left, right = a, b
         for _ in range(100):
+            if expired(): return []
             mid = left + (right-left)*.5
             fm = float(p(mid))
             if abs(fm) <= tolerance*scale or np.nextafter(left,right) >= right:
@@ -172,10 +182,17 @@ def _transition_cuts(axes, ulo, uhi, fixed_q, ds, k, direction):
 
 
 def transition_intervals(path, capability, segment_index: int, fixed_q: float, direction: str,
-                         free_q_bounds: tuple[float,float], *, settings: CoupledProfileSettings) -> tuple[QInterval,...]:
+                         free_q_bounds: tuple[float,float], *, settings: CoupledProfileSettings, counters=None) -> tuple[QInterval,...]:
+    """Build strict feasible intervals; optional counters record scalar oracle probes."""
     if direction not in ("forward", "backward"):
         raise ValueError("direction must be 'forward' or 'backward'")
     if not isinstance(settings, CoupledProfileSettings): raise TypeError("settings must be CoupledProfileSettings")
+    deadline_check = None if counters is None else counters.get("deadline_check")
+    def check_deadline():
+        return bool(deadline_check and deadline_check())
+    if counters is not None:
+        counters.setdefault("strict_probe_count", 0)
+        counters.setdefault("interval_cell_count", 0)
     ds,k,kp,sign = _segment(path,capability,segment_index)
     if not math.isfinite(fixed_q) or fixed_q < 0 or len(free_q_bounds)!=2: raise ValueError("invalid q domain")
     lo,hi=map(float,free_q_bounds)
@@ -199,7 +216,16 @@ def transition_intervals(path, capability, segment_index: int, fixed_q: float, d
     cuts=sorted(cuts)
     tol=settings.interval_q_tolerance
     cuts=[cuts[0]]+[x for i,x in enumerate(cuts[1:],1) if x-cuts[i-1]>tol]
+    class _DeadlineReason:
+        value = "deadline"
+
     def query(u):
+        if check_deadline():
+            if counters is not None:
+                counters["deadline_stop"] = True
+            return {"reason": _DeadlineReason(), "moments": None}
+        if counters is not None:
+            counters["strict_probe_count"] = counters.get("strict_probe_count", 0) + 1
         ax=(u*u-fixed_q)/ds if direction=='forward' else (fixed_q-u*u)/ds
         return interp.query_evidence(u,ax,k*u*u)
     def feasible(u):
@@ -210,6 +236,11 @@ def transition_intervals(path, capability, segment_index: int, fixed_q: float, d
     # Build exact composed polynomial for each support cell by multilinear corner weights.
     pieces=[]
     for a,b in zip(cuts[:-1],cuts[1:]):
+        if check_deadline():
+            if counters is not None: counters["deadline_stop"] = True
+            break
+        if counters is not None:
+            counters["interval_cell_count"] += 1
         mid=(a+b)/2; axmid=(mid*mid-fixed_q)/ds if direction=='forward' else (fixed_q-mid*mid)/ds
         indices=[]
         for axis,val in zip(axes,(mid,axmid,k*mid*mid)):
@@ -237,11 +268,19 @@ def transition_intervals(path, capability, segment_index: int, fixed_q: float, d
         margins=(moments[0]-dem,moments[1]+dem)
         roots=[a,b]
         for margin_index,p in enumerate(margins):
+            if check_deadline():
+                if counters is not None: counters["deadline_stop"] = True
+                break
             rdiag={"segment_index":segment_index,"cell":tuple(indices),"margin_index":margin_index,
                    "polynomial_coefficients":tuple(map(float,p.coef)),"capability_identity":capability.source_identity}
             for r in _real_roots_unit(p, scale=max(1.,float(np.max(np.abs(p.coef)))),
-                                      tolerance=max(settings.yaw_moment_tolerance,1e-12), diagnostics=rdiag):
+                                      tolerance=max(settings.yaw_moment_tolerance,1e-12), diagnostics=rdiag,
+                                      deadline_check=deadline_check,counters=counters):
+                if check_deadline():
+                    if counters is not None: counters["deadline_stop"] = True
+                    break
                 if 0 < r < 1: roots.append(float(a+(b-a)*r))
+            if check_deadline(): break
         roots=sorted(set(roots))
         for witness in [a,b,*roots,*[(x+y)/2 for x,y in zip(roots[:-1],roots[1:])]]:
             ev=query(witness)
@@ -257,9 +296,21 @@ def transition_intervals(path, capability, segment_index: int, fixed_q: float, d
                     "segment_index":segment_index,"cell":tuple(indices),"query":(witness,),"error":err,
                     "capability_identity":capability.source_identity})
         for x,y in zip(roots[:-1],roots[1:]):
+            if check_deadline():
+                if counters is not None: counters["deadline_stop"] = True
+                break
             if feasible((x+y)/2): pieces.append((x,y,tuple(indices)))
+        if check_deadline():
+            if counters is not None: counters["deadline_stop"] = True
+            break
         for r in roots:
+            if check_deadline():
+                if counters is not None: counters["deadline_stop"] = True
+                break
             if feasible(r): pieces.append((r,r,tuple(indices)))
+        if check_deadline():
+            if counters is not None: counters["deadline_stop"] = True
+            break
     # Boundaries are queried independently, including exact map faces.
     for u in cuts:
         if feasible(u): pieces.append((u,u,()))

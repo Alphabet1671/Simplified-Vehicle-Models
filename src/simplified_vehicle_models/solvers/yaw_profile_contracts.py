@@ -22,11 +22,13 @@ class CoupledProfileSettings:
     # Appended to preserve all previously positional constructor arguments.
     initial_optional_seed_cap: int = 32
     refinement_reserve_per_station: int = 32
+    # Internal deterministic pair-matrix memory bound; appended for positional compatibility.
+    max_pair_batch: int = 65536
 
     def __post_init__(self):
         integer_fields = ("q_seed_count", "initial_optional_seed_cap", "refinement_reserve_per_station",
                           "max_refinement_rounds", "max_candidates_per_station", "max_total_nodes",
-                          "max_total_edges", "max_seam_anchors")
+                          "max_total_edges", "max_seam_anchors", "max_pair_batch")
         for name in integer_fields:
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int):
@@ -34,6 +36,8 @@ class CoupledProfileSettings:
             minimum = 0 if name in ("initial_optional_seed_cap", "refinement_reserve_per_station") else (2 if name == "q_seed_count" else 1)
             if value < minimum:
                 raise ValueError(f"{name} must be at least {minimum}")
+            if name == "max_pair_batch" and value > 65536:
+                raise ValueError("max_pair_batch must not exceed 65536")
         for name in ("max_wall_seconds", "interval_q_tolerance", "acceleration_tolerance",
                      "yaw_moment_tolerance", "refinement_time_relative_tolerance",
                      "refinement_speed_tolerance"):

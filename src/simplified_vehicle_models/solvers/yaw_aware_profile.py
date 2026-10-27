@@ -367,7 +367,9 @@ def _coupled_profile(path, capability, *, boundary, start_speed, maximum_speed, 
     keep = ("budget_reason", "candidate_counts", "tested_seam_anchors", "closed_seam_rotation",
             "refinement_waves", "refinement_windows", "witness_counts", "omitted_optional_witnesses",
             "candidate_cap_rejections", "timings", "edge_count", "edge_density", "stopping_uncertainty",
-            "interval_cache_entries", "initial_seed_counts", "initial_optional_omitted",
+            "interval_cache_entries", "interval_calls", "interval_cache_hits", "strict_probe_count",
+            "pair_count", "peak_pair_batch", "interval_cell_count", "frontier_by_round", "candidate_cap_hits", "deferred_requests",
+            "initial_seed_counts", "initial_optional_omitted",
             "initial_optional_seed_cap", "refinement_reserve_per_station",
             "rotated_edge_lengths_exact", "seam_seed_policy")
     diagnostics = {

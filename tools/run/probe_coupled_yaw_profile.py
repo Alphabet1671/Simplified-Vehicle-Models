@@ -123,8 +123,9 @@ def run(args):
             profile = yaw_aware_profile(path, capability, boundary=boundary, maximum_speed=speed_domain)
         doc["profile"] = {"status": "ok", "solver": args.solver, "lap_time": profile.lap_time,
                           "speed_min": float(profile.speed.min()), "speed_max": float(profile.speed.max()),
-                          "diagnostics": {k: v for k, v in profile.diagnostics.items()
-                                          if k not in ("refinement_waves", "refinement_windows")}}
+                          "diagnostics": dict(profile.diagnostics),
+                          "stage_seconds": {k: profile.diagnostics.get("timings", {}).get(k) for k in
+                              ("interval_seconds", "graph_build_seconds", "graph_solve_seconds", "refinement_seconds", "validation_seconds", "total_seconds")}}
     except Exception as error:
         # Preserve typed failure and the whole fixed path. Recover only the
         # explicit segment integer carried by the legacy exception message.

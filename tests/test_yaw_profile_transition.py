@@ -41,6 +41,15 @@ class TransitionIntervalTests(unittest.TestCase):
             np.testing.assert_array_equal(_transition_cuts(axes,lo,hi,fixed,ds,k,direction),
                                           full(axes,lo,hi,fixed,ds,k,direction))
 
+    def test_interval_counter_records_strict_probes_without_changing_roots(self):
+        counters={}
+        intervals=transition_intervals(self.path,make_map(),0,100.,'forward',(0.,200.),
+                                       settings=self.settings,counters=counters)
+        self.assertGreater(counters['strict_probe_count'],0)
+        self.assertGreater(counters['interval_cell_count'],0)
+        for item in intervals:
+            self.assertTrue(edge_evidence(self.path,make_map(),0,100.,item.lower,settings=self.settings)['feasible'])
+
     def test_narrow_high_speed_cell_uses_local_polynomial_without_unresolved(self):
         # Fine map cells at substantial u are ill-conditioned if multilinear
         # weights are expanded in global u then affine-composed.

@@ -97,6 +97,15 @@ def _spread(items, count):
     return [items[p] for p in picks]
 
 
+def _early_diagnostics(**extra):
+    """Complete diagnostic shape for failures before solver state exists."""
+    return {"interval_calls":0,"interval_cache_hits":0,"interval_cache_entries":0,
+            "strict_probe_count":0,"pair_count":0,"peak_pair_batch":0,
+            "frontier_by_round":(),"candidate_cap_hits":0,"deferred_requests":0,
+            "timings":{"interval_seconds":0.,"graph_build_seconds":0.,"graph_solve_seconds":0.,
+                       "refinement_seconds":0.,"validation_seconds":0.,"total_seconds":0.},**extra}
+
+
 def solve_coupled_profile(path, capability, *, boundary, maximum_speed,
                           settings: CoupledProfileSettings, warm_start_q=None) -> dict:
     """Find a strictly validated sampled profile; graph optimality is over generated edges."""
@@ -104,12 +113,16 @@ def solve_coupled_profile(path, capability, *, boundary, maximum_speed,
     if not isinstance(settings,CoupledProfileSettings): raise TypeError("settings must be CoupledProfileSettings")
     if boundary not in ("standing","flying"): raise ValueError("boundary must be standing or flying")
     if boundary == "standing" and (path.is_closed or capability.speed[0] != 0):
-        raise YawProfileSolveError("invalid_boundary","standing requires open path and map speed zero",{})
+        raise YawProfileSolveError("invalid_boundary","standing requires open path and map speed zero",_early_diagnostics())
     if boundary == "flying" and not path.is_closed:
-        raise YawProfileSolveError("invalid_boundary","flying requires closed path",{})
+        raise YawProfileSolveError("invalid_boundary","flying requires closed path",_early_diagnostics())
     if not math.isfinite(maximum_speed) or maximum_speed <= 0: raise ValueError("maximum_speed must be positive")
     started=time.monotonic()
-    timings={"graph_build_seconds":0.,"graph_solve_seconds":0.,"refinement_seconds":0.,"validation_seconds":0.}
+    timings={"graph_build_seconds":0.,"graph_solve_seconds":0.,"refinement_seconds":0.,"validation_seconds":0.,"interval_seconds":0.}
+    counters={"interval_calls":0,"interval_cache_hits":0,"strict_probe_count":0,"interval_cell_count":0,
+              "pair_count":0,"peak_pair_batch":0,"deadline_stop":False}
+    frontier_by_round=[]
+    interval_cache={}
     rotation=0
     rotate_order=np.arange(len(path.distance))
     if boundary=="flying":
@@ -179,7 +192,7 @@ def solve_coupled_profile(path, capability, *, boundary, maximum_speed,
     if boundary == "flying":
         low=max(domains[0][0],domains[-1][0]); high=min(domains[0][1],domains[-1][1])
         if high<low:
-            raise YawProfileSolveError("no_path_at_resolution","closed seam domains do not overlap",{"seam_rotation":rotation})
+            raise YawProfileSolveError("no_path_at_resolution","closed seam domains do not overlap",_early_diagnostics(seam_rotation=rotation))
         # Seam anchors are their own mandatory policy: preserve seam endpoints
         # and both valid endpoint warm suggestions squared. Baseline q-grid
         # points at a cyclic seam are optional anchors, not mandatory values.
@@ -191,9 +204,9 @@ def solve_coupled_profile(path, capability, *, boundary, maximum_speed,
                     if low <= snapped <= high:
                         seam_mandatory.add(snapped)
         if len(seam_mandatory)>settings.max_seam_anchors:
-            raise YawProfileSolveError("budget_exceeded","mandatory seam anchors exceed seam budget",{
-                "budget_reason":"candidate_budget","initial_budget_cause":"mandatory_seam_overflow",
-                "mandatory_seam_anchors":tuple(sorted(seam_mandatory)),"max_seam_anchors":settings.max_seam_anchors})
+            raise YawProfileSolveError("budget_exceeded","mandatory seam anchors exceed seam budget",_early_diagnostics(
+                budget_reason="candidate_budget",initial_budget_cause="mandatory_seam_overflow",
+                mandatory_seam_anchors=tuple(sorted(seam_mandatory)),max_seam_anchors=settings.max_seam_anchors))
         initial_anchor_cap=min(8,settings.max_seam_anchors)
         anchor_set=set(seam_mandatory)
         if len(anchor_set)<initial_anchor_cap:
@@ -229,23 +242,23 @@ def solve_coupled_profile(path, capability, *, boundary, maximum_speed,
     if oversize or initial_mandatory_overflow or initial_nodes>settings.max_total_nodes:
         mandatory_nodes=sum(item["mandatory"] for item in initial_seed_counts)
         cause="mandatory_overflow" if oversize or initial_mandatory_overflow or mandatory_nodes>settings.max_total_nodes else "optional_budget"
-        raise YawProfileSolveError("budget_exceeded","initial candidate seeds exceed the candidate budget",{
-            "budget_reason":"candidate_budget","initial_budget_cause":cause,
-            "mandatory_overflow_stations":tuple(initial_mandatory_overflow[:64]),
-            "oversize_stations":tuple(oversize[:64]),"candidate_counts":tuple(map(len,layers)),
-            "initial_seed_counts":tuple(initial_seed_counts),"initial_optional_omitted":dict(initial_optional_omitted)})
+        raise YawProfileSolveError("budget_exceeded","initial candidate seeds exceed the candidate budget",_early_diagnostics(
+            budget_reason="candidate_budget",initial_budget_cause=cause,
+            mandatory_overflow_stations=tuple(initial_mandatory_overflow[:64]),
+            oversize_stations=tuple(oversize[:64]),candidate_counts=tuple(map(len,layers)),
+            initial_seed_counts=tuple(initial_seed_counts),initial_optional_omitted=dict(initial_optional_omitted)))
     empty=[i for i,layer in enumerate(layers) if not layer]
     if empty:
-        raise YawProfileSolveError("no_path_at_resolution","station squared-speed domain admits no candidate",{
-            "empty_stations":tuple(empty[:64]),"empty_station_count":len(empty),"boundary":boundary})
+        raise YawProfileSolveError("no_path_at_resolution","station squared-speed domain admits no candidate",_early_diagnostics(
+            empty_stations=tuple(empty[:64]),empty_station_count=len(empty),boundary=boundary))
 
     tol=float(settings.interval_q_tolerance)
     seam_layers={0,n-1} if boundary=="flying" else ({0} if boundary=="standing" else set())
-    interval_cache={}
-    cache_identity=(tuple(map(float,path.distance)),tuple(map(float,path.segment_lengths)),
+    cache_identity=(id(capability),tuple(map(float,path.distance)),tuple(map(float,path.segment_lengths)),
                     tuple(map(float,path.curvature)),tuple(map(float,path.curvature_rate)),capability.source_identity,tuple(map(float,capability.speed)),tuple(map(float,capability.longitudinal_acceleration)),
                     tuple(map(float,capability.lateral_acceleration)),capability.feasible_mask.tobytes(),
-                    capability.yaw_moment_into_turn.tobytes(),capability.yaw_moment_out_of_turn.tobytes(),settings)
+                    capability.yaw_moment_into_turn.tobytes(),capability.yaw_moment_out_of_turn.tobytes(),
+                    float(capability.yaw_inertia).hex(),settings)
     queued=set(); pending=[]
     cap_hits={"layers":set(),"rejected":0}
     total_nodes=[sum(map(len,layers))]
@@ -256,13 +269,36 @@ def solve_coupled_profile(path, capability, *, boundary, maximum_speed,
     omitted=[0]
     refinement_radius=min(segs,INITIAL_REFINEMENT_RADIUS)
 
+    class DeadlineExceeded(Exception):
+        pass
+
     def deadline_reached():
         return time.monotonic()-started >= settings.max_wall_seconds
 
     def intervals_for(i,fixed,direction,bounds):
-        key=(cache_identity,int(i),direction,float(fixed).hex())
+        # Exact binary identities only: in particular, preserve distinct q bounds,
+        # segment geometry, settings, and map inputs. No tolerance-based reuse.
+        key=(cache_identity,int(i),direction,float(fixed).hex(),tuple(float(x).hex() for x in bounds))
         if key not in interval_cache:
-            interval_cache[key]=transition_intervals(path,capability,i,float(fixed),direction,bounds,settings=settings)
+            counters["interval_calls"]+=1
+            t_interval=time.monotonic()
+            interval_counts={"deadline_check":deadline_reached,"strict_probe_count":0,"interval_cell_count":0}
+            try:
+                value=transition_intervals(path,capability,i,float(fixed),direction,bounds,settings=settings,
+                    counters=interval_counts)
+            finally:
+                counters["strict_probe_count"]+=interval_counts["strict_probe_count"]
+                counters["interval_cell_count"]+=interval_counts["interval_cell_count"]
+                if interval_counts.get("deadline_stop"): counters["deadline_stop"] = True
+                timings["interval_seconds"]+=time.monotonic()-t_interval
+            if counters.get("deadline_stop") or deadline_reached():
+                counters["deadline_stop"] = True
+                raise DeadlineExceeded
+            interval_cache[key]=value
+        else:
+            counters["interval_cache_hits"]+=1
+        if counters.get("deadline_stop"):
+            raise DeadlineExceeded
         return interval_cache[key]
 
     def add_candidate(layer_index,q):
@@ -306,7 +342,15 @@ def solve_coupled_profile(path, capability, *, boundary, maximum_speed,
             ds=float(path.segment_lengths[i])
             mandatory=[]; optional=[]
             for fixed in carry:
-                for iv in intervals_for(i,fixed,direction,domains[target]):
+                if deadline_reached(): return inserted_total,True,steps,dead_end
+                try:
+                    components=intervals_for(i,fixed,direction,domains[target])
+                except DeadlineExceeded:
+                    return inserted_total,True,steps,dead_end
+                if frontier_by_round:
+                    frontier_by_round[-1]["interval_components"].append({"segment":i,"direction":direction,
+                        "fixed_q":float(fixed),"components":[(iv.lower,iv.upper,iv.support_id) for iv in components]})
+                for iv in components:
                     cands=[("interval_midpoint",(iv.lower+iv.upper)*.5,True),("interval_lower",iv.lower,False),("interval_upper",iv.upper,False)]
                     for knot in capability.longitudinal_acceleration:
                         projected=fixed+sign*2.0*ds*float(knot)
@@ -376,7 +420,12 @@ def solve_coupled_profile(path, capability, *, boundary, maximum_speed,
             target=i+1 if direction=="forward" else i
             ds=float(path.segment_lengths[i])
             sign=1.0 if direction=="forward" else -1.0
-            for iv in intervals_for(i,fixed,direction,domains[target]):
+            try:
+                components=intervals_for(i,fixed,direction,domains[target])
+            except DeadlineExceeded:
+                deadline_stop=True
+                break
+            for iv in components:
                 witnesses=[("interval_lower",iv.lower),("interval_midpoint",(iv.lower+iv.upper)*.5),("interval_upper",iv.upper)]
                 for knot in capability.longitudinal_acceleration:
                     projected=fixed+sign*2.0*ds*float(knot)
@@ -460,7 +509,13 @@ def solve_coupled_profile(path, capability, *, boundary, maximum_speed,
         if not reach_layers or not coreach_layers:
             return 0,False,True
         left,right=max(reach_layers),min(coreach_layers)
+        frontier_by_round.append({"reachable_stations":tuple(reach_layers),"coreachable_stations":tuple(coreach_layers),
+                                  "reachable_candidates":tuple(int(reach[offsets[k]:offsets[k+1]].sum()) for k in reach_layers),
+                                  "coreachable_candidates":tuple(int(coreach[offsets[k]:offsets[k+1]].sum()) for k in coreach_layers),
+                                  "cut":(int(left),int(right))})
         center=min(left,segs-1)
+        record_cut=frontier_by_round[-1]
+        record_cut["interval_components"]=[]
         def in_window(i):
             if boundary=="flying":
                 gap=abs(i-center)%segs
@@ -495,7 +550,7 @@ def solve_coupled_profile(path, capability, *, boundary, maximum_speed,
     refinement_rounds=0; incumbent=None; budget_reason=None; graph_result=None; packed=None; last_packed=None
     stable=0; previous_candidate=None
     for round_index in range(settings.max_refinement_rounds):
-        if deadline_reached():
+        if deadline_reached() or counters.get("deadline_stop"):
             budget_reason="wall_deadline"; break
         refinement_rounds=round_index+1
         if cap_hits["rejected"]:
@@ -507,27 +562,45 @@ def solve_coupled_profile(path, capability, *, boundary, maximum_speed,
         node_offsets=np.r_[0,np.cumsum(counts)]
         src_ids=[]; dst_ids=[]; costs=[]; edge_total=0
         for i in range(segs):
+            if deadline_reached():
+                budget_reason="wall_deadline"
+                break
             # Every candidate pair is checked by the vectorised strict oracle,
             # which reproduces edge_evidence exactly; no edge is inferred from
             # interval membership alone.
             ds=float(path.segment_lengths[i])
             base_i=int(node_offsets[i]); base_j=int(node_offsets[i+1])
             q0=np.asarray(layers[i],float); q1=np.asarray(layers[i+1],float)
-            feasible=edge_feasibility_matrix(path,capability,i,q0,q1)
-            feasible&=(q0[:,None]+q1[None,:])>0
-            a,b=np.nonzero(feasible)
-            if a.size:
-                src_ids.append(base_i+a); dst_ids.append(base_j+b)
-                costs.append(2*ds/(np.sqrt(q0[a])+np.sqrt(q1[b])))
-                edge_total+=a.size
+            pair_count=int(q0.size*q1.size)
+            counters["pair_count"]+=pair_count
+            # Flatten the row-major Cartesian product so even a single row
+            # wider than the cap is split. Chunk order is stable and includes tails.
+            for pair_start in range(0,pair_count,settings.max_pair_batch):
+                pair_end=min(pair_count,pair_start+settings.max_pair_batch)
+                flat=np.arange(pair_start,pair_end,dtype=np.int64)
+                ai=flat//q1.size; bi=flat%q1.size
+                left=q0[ai]; right=q1[bi]
+                feasible=edge_feasibility_matrix(path,capability,i,left,right,pairwise=True)
+                feasible &= (left+right)>0
+                counters["peak_pair_batch"]=max(counters["peak_pair_batch"],int(feasible.size))
+                a=ai[feasible]; b=bi[feasible]
+                if a.size:
+                    src_ids.append(base_i+a); dst_ids.append(base_j+b)
+                    costs.append(2*ds/(np.sqrt(q0[a])+np.sqrt(q1[b])))
+                    edge_total+=a.size
+                if deadline_reached():
+                    budget_reason="wall_deadline"
+                    break
+            if budget_reason=="wall_deadline": break
             if edge_total>settings.max_total_edges: break
-            if i % 64 == 63 and deadline_reached(): break
         timings["graph_build_seconds"]+=time.monotonic()-t0
         if deadline_reached():
             budget_reason="wall_deadline"; break
         if edge_total>settings.max_total_edges:
             budget_reason="edge_budget"; break
         cat=lambda parts,dtype: np.concatenate(parts).astype(dtype) if parts else np.zeros(0,dtype)
+        if budget_reason is not None:
+            break
         packed=pack_layered_q_graph(counts,np.concatenate([np.asarray(x,float) for x in layers]),
             cat(src_ids,np.int64),cat(dst_ids,np.int64),cat(costs,float),
             max_nodes=settings.max_total_nodes,max_edges=settings.max_total_edges)
@@ -607,6 +680,9 @@ def solve_coupled_profile(path, capability, *, boundary, maximum_speed,
             if stop_f or stop_b: budget_reason="wall_deadline"; break
             if inserted==0 and not pending: break
         elif graph_result["status"]=="disconnected":
+            frontier_by_round.append({"round":round_index+1,"reachable_nodes":len(graph_result.get("reachable_nodes",())),
+                                      "co_reachable_nodes":len(graph_result.get("co_reachable_nodes",())),
+                                      "cut":graph_result.get("disconnect_cut")})
             if round_index==settings.max_refinement_rounds-1: break
             t0=time.monotonic()
             changed=False
@@ -641,6 +717,8 @@ def solve_coupled_profile(path, capability, *, boundary, maximum_speed,
         "closed_seam_rotation":rotation,"rotated_edge_lengths_exact":bool(rotation),
         "tested_seam_anchors":tuple(tested_anchors),"seam_seed_policy":seam_seed_policy,
         "interval_cache_entries":len(interval_cache),"interval_work_queue_entries":len(pending),
+        **counters,"frontier_by_round":tuple(frontier_by_round),
+        "candidate_cap_hits":cap_hits["rejected"],"deferred_requests":len(pending),
         "refinement_radius":refinement_radius,"refinement_waves":tuple(refinement_waves),
         "refinement_windows":tuple(refinement_windows),"inserted_witnesses":tuple(inserted_witnesses),
         "witness_counts":dict(witness_counts),"omitted_optional_witnesses":omitted[0],

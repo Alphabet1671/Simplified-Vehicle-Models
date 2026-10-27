@@ -31,7 +31,11 @@ def normalize_channels(raw: Mapping[str, np.ndarray], units: Mapping[str, str]) 
         found = [name for name in candidates if name in raw]
         if not found:
             continue
-        name = ('SL' if 'SL' in found else found[0]) if key == 'kappa' else found[0]
+        if key == 'kappa' and 'SL' in found and 'SR' in found:
+            found.remove('SR')  # source-script preference; no magnitude-based guessing
+        if len(found) > 1:
+            raise ValueError(f"Ambiguous channel aliases for {key}: {', '.join(found)}")
+        name = found[0]
         unit = units.get(name, units.get(key))
         if unit is None:
             raise ValueError(f'Missing unit descriptor for channel {name}')
@@ -46,6 +50,8 @@ def normalize_channels(raw: Mapping[str, np.ndarray], units: Mapping[str, str]) 
 
 
 def contiguous_slices(time: np.ndarray, maximum_gap: float = .02) -> tuple[slice, ...]:
+    if not np.isfinite(maximum_gap) or maximum_gap <= 0:
+        raise ValueError('maximum_gap must be finite and positive')
     t = np.asarray(time, dtype=float).reshape(-1)
     if not np.all(np.isfinite(t)) or np.any(np.diff(t) <= 0):
         raise ValueError('time must be finite and strictly increasing')
@@ -69,7 +75,7 @@ def load_run(path: Path) -> RunData:
     names, units_array = np.asarray(channel.name).reshape(-1), np.asarray(channel.units).reshape(-1)
     if len(names) != len(units_array):
         raise ValueError('MAT channel name/unit descriptors have mismatched lengths')
-    units = {str(name): str(unit) for name, unit in zip(names, units_array)}
+    units = {str(name).strip(): str(unit).strip() for name, unit in zip(names, units_array)}
     metadata = {k: str(v) for k, v in mat.items() if k in ('tireid', 'testid', 'source') and isinstance(v, (str, np.str_))}
     if 'RUN' in fields and len(fields['RUN']):
         run_ids = np.unique(fields['RUN'])

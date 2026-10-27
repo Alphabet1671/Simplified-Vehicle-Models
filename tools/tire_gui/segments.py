@@ -44,6 +44,10 @@ def _samples(run: RunData, rows, target_key: str) -> SampleSet:
 def compatibility_selection(lateral: RunData, longitudinal: RunData) -> SteadySelection:
     if lateral.run_id != 8 or longitudinal.run_id != 72:
         raise ValueError('compatibility selection requires run 8 lateral and run 72 longitudinal')
+    if '43075' not in lateral.tire_id or 'R20' not in lateral.tire_id.upper():
+        raise ValueError('compatibility lateral run 8 requires 43075 R20 tire identity')
+    if '43100' not in longitudinal.tire_id or 'R20' not in longitudinal.tire_id.upper():
+        raise ValueError('compatibility longitudinal run 72 requires 43100 R20 tire identity')
     return SteadySelection(
         _samples(lateral, RUN8, 'fy'), _samples(longitudinal, RUN72_SA0, 'fx'),
         _samples(longitudinal, RUN72_COMB, 'fx'), _samples(longitudinal, RUN72_COMB, 'fy'),

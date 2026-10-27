@@ -60,6 +60,46 @@ def load_snapshot(steady_xml: Path, transient_xml: Path | None = None, load_doma
         transient_source = f'XML:{Path(transient_xml).name} (provisional unless fit evidence is supplied)'
     return _make_snapshot(steady, transient, 0, {'seed_kind':'repository lab XML','steady_source':str(Path(steady_xml)),'transient_source':transient_source,'transient_fit_status':'provisional'}, {n:'repository lab XML' for n in (*CANONICAL_STEADY_NAMES,*TRANSIENT_NAMES)}, load_domain)
 
+def find_steady_companion(transient_xml: Path) -> Path | None:
+    """Find only an unambiguous, validated conventional sibling; never guess a tire."""
+    path = Path(transient_xml).resolve()
+    name = path.name
+    candidates = []
+    for suffix, replacement in (('-unitire-transient-simple.xml', '-unitire-simple.xml'),
+                                ('_transient.xml', '.xml'), ('-transient.xml', '.xml')):
+        if name.endswith(suffix):
+            candidates.append(path.with_name(name[:-len(suffix)] + replacement))
+    valid = []
+    for candidate in dict.fromkeys(candidates):
+        if candidate.is_file():
+            try:
+                compile_unitire_simple(load_model(candidate))
+            except (ValueError, OSError):
+                continue
+            valid.append(candidate)
+    return valid[0] if len(valid) == 1 else None
+
+
+def load_transient_snapshot(transient_xml: Path, *, snapshot: ModelSnapshot | None = None,
+                            steady_xml: Path | None = None) -> ModelSnapshot:
+    """Attach transient scalars to an explicitly selected steady model or live snapshot."""
+    if snapshot is not None and steady_xml is not None:
+        raise ValueError('select either the current steady model or a steady XML, not both')
+    path = Path(transient_xml).resolve()
+    transient = compile_unitire_transient(load_model(path))
+    if snapshot is None:
+        if steady_xml is None:
+            raise ValueError('a transient XML contains only relaxation coefficients; select a steady tire XML companion')
+        snapshot = load_snapshot(Path(steady_xml))
+    provenance = dict(snapshot.provenance)
+    provenance.update(transient_source=f'XML:{path} (provisional, not validated)',
+                      transient_path=str(path), transient_fit_status='provisional')
+    statuses = dict(snapshot.parameter_status)
+    statuses.update({name: 'transient XML (provisional)' for name in TRANSIENT_NAMES})
+    return _make_snapshot(snapshot.steady, transient, snapshot.revision + 1, provenance,
+                          statuses, snapshot.load_domain, snapshot.session_metadata)
+
+
 def with_parameters(snapshot: ModelSnapshot, changes: Mapping[str, float]) -> ModelSnapshot:
     """Construct one validated atomic candidate; does not alter simple edit API."""
     if not changes: return snapshot

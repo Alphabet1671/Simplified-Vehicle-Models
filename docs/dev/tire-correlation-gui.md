@@ -19,7 +19,14 @@ To open an XML model on launch:
 PYTHONPATH=src:. python tools/tire_gui/app.py models/tires/hoosier-43075-r20-simple.xml
 ```
 
-Use **Open XML** to select another repository model. Use **Import MATLAB seed** to explicitly import a supported tire parameter structure; it does not import a fit report or transient coefficients. The MAT seed import requires SciPy. The GUI can be tested without a display with `QT_QPA_PLATFORM=offscreen`.
+Use **Open XML** to select another steady or transient tire XML. A transient XML contains only relaxation/trail coefficients: opening it attaches to the current steady parameters (preserving steady edits), or prompts you to choose a steady companion if none is open. Conventional sibling names are suggested, never silently paired. The Transient tab is selected automatically and imported coefficients stay provisional. To provide an explicit pair at startup:
+
+```bash
+python tools/tire_gui/app.py models/tires/iem24_murphy_real_unitire_transient.xml \
+  --steady models/tires/iem24_murphy_real_unitire.xml
+```
+
+Direct script launches now bootstrap the checkout paths; `PYTHONPATH` is not required. Use **Import MATLAB seed** to explicitly import a supported tire parameter structure; it does not import a fit report or transient coefficients. The MAT seed import requires SciPy. The GUI can be tested without a display with `QT_QPA_PLATFORM=offscreen`.
 
 ## Local data and privacy
 

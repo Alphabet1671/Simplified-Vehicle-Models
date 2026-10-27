@@ -33,6 +33,49 @@ class QtTests(unittest.TestCase):
         self.assertTrue(w.open_path(Path('models/tires/hoosier-43075-r20-simple.xml')))
         return w
 
+    def test_open_transient_xml_keeps_current_steady_and_selects_transient_tab(self):
+        w = self.window()
+        w.set_parameter('mu_0_y', 1.23456789)
+        steady = w.snapshot.steady
+        before = w.generation
+        w.candidate = FitResult(w.snapshot.revision, w.snapshot, {}, True, (), {})
+        path = Path('models/tires/iem24_murphy_real_unitire_transient.xml')
+        self.assertTrue(w.open_path(path), w.status.text())
+        self.assertEqual(w.snapshot.steady, steady)
+        self.assertEqual(w.snapshot.values['trail_lead_ratio'], .25)
+        self.assertEqual(w.tabs.currentWidget(), w.transient_plot)
+        self.assertIsNone(w.candidate)
+        self.assertGreater(w.generation, before)
+        self.assertIn(str(path.resolve()), w.source_files)
+        self.assertTrue(w.dirty)
+        w.dirty = False
+        w.close()
+
+    def test_open_transient_first_prompts_for_steady_and_cancel_preserves_empty_state(self):
+        from unittest.mock import patch
+        w = MainWindow()
+        path = Path('models/tires/iem24_murphy_real_unitire_transient.xml')
+        steady = Path('models/tires/iem24_murphy_real_unitire.xml')
+        with patch('tools.tire_gui.qt.main_window.QFileDialog.getOpenFileName', return_value=('', '')):
+            self.assertFalse(w.open_path(path))
+        self.assertIsNone(w.snapshot)
+        with patch('tools.tire_gui.qt.main_window.QFileDialog.getOpenFileName',
+                   return_value=(str(steady), '')) as prompt:
+            self.assertTrue(w.open_path(path), w.status.text())
+        self.assertIn('iem24_murphy_real_unitire.xml', prompt.call_args.args[2])
+        self.assertEqual(Path(w.snapshot.provenance['steady_source']).resolve(), steady.resolve())
+        self.assertFalse(w.dirty)
+        w.close()
+
+    def test_bad_transient_or_wrong_companion_does_not_replace_live_model(self):
+        w = self.window()
+        snapshot = w.snapshot
+        path = Path('models/tires/iem24_murphy_real_unitire_transient.xml')
+        self.assertFalse(w.open_path(path, steady_path=path))
+        self.assertIs(w.snapshot, snapshot)
+        self.assertIn('Open failed', w.status.text())
+        w.close()
+
     def test_pending_steady_candidate_plots_without_live_mutation(self):
         w = self.window()
         from tools.tire_gui.model import with_parameters

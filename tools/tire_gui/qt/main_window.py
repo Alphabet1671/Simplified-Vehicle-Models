@@ -15,7 +15,9 @@ from tools.gui_common import REPOSITORY_ROOT
 from ..contracts import FitResult
 from ..data import load_run
 from ..events import candidate_events, validate_event
-from ..model import import_mat_seed, load_snapshot, with_parameter
+from ..model import (import_mat_seed, load_snapshot, with_parameter,
+                     find_steady_companion, load_transient_snapshot)
+from simplified_vehicle_models.xml.loader import load_model
 from ..save import load_session, save_session
 from ..segments import compatibility_selection
 from .fit_worker import FitWorker
@@ -179,17 +181,54 @@ class MainWindow(QMainWindow):
         self.generation += 1
         self._invalidate_candidate()
 
-    def open_path(self, path):
+    def open_path(self, path, *, steady_path=None):
+        """Open either tire subtype; transient XMLs require an explicit steady pairing."""
         try:
-            path = Path(path)
-            snapshot = load_snapshot(path)
+            path = Path(path).resolve()
+            model = load_model(path)
+            transient = model.model_type == 'tire-model' and model.subtype == 'unitire-transient-simple'
+            if transient:
+                if steady_path is not None:
+                    snapshot = load_transient_snapshot(path, steady_xml=Path(steady_path))
+                    sources = [str(Path(steady_path).resolve()), str(path)]
+                elif self.snapshot is not None:
+                    snapshot = load_transient_snapshot(path, snapshot=self.snapshot)
+                    previous_transient = self.snapshot.provenance.get('transient_path')
+                    sources = [p for p in self.source_files if p != previous_transient]
+                    sources.append(str(path))
+                else:
+                    companion = find_steady_companion(path)
+                    selected, _ = QFileDialog.getOpenFileName(
+                        self, 'Select steady tire companion for transient XML',
+                        str(companion or path.parent), 'Steady tire XML (*.xml)')
+                    if not selected:
+                        self.status.setText('Open cancelled: transient XML needs a steady tire companion. Open a steady tire first or select its XML.')
+                        return False
+                    snapshot = load_transient_snapshot(path, steady_xml=Path(selected))
+                    sources = [str(Path(selected).resolve()), str(path)]
+            else:
+                if steady_path is not None:
+                    raise ValueError('--steady/steady_path is only used when opening a transient tire XML')
+                snapshot = load_snapshot(path)
+                sources = [str(path)]
+            was_dirty = self.dirty if transient and steady_path is None and self.snapshot is not None else False
             self.snapshot = self.seed = snapshot
-            self.source_files = [str(path)]
+            self.source_files = list(dict.fromkeys(sources))
             self.generation += 1
+            self._invalidate_candidate()
+            self.replay_cache.clear()
+            self.replay_failures.clear()
             self._history_reset()
+            self.dirty = was_dirty
             self.parameter_panel.set_snapshot(snapshot)
-            self.status.setText(f'{path.name} • repository lab seed • hybrid proxy: 43075 lateral / 43100 longitudinal')
+            if transient:
+                self.tabs.setCurrentWidget(self.transient_plot)
+                steady_label = snapshot.provenance.get('steady_source', 'current steady model')
+                self.status.setText(f'{path.name} • transient XML paired with {steady_label} • provisional, not a validated transient fit')
+            else:
+                self.status.setText(f'{path.name} • steady tire XML • hybrid proxy: 43075 lateral / 43100 longitudinal')
             self._refresh_plots()
+            self._refresh_diagnostics()
             return True
         except Exception as exc:
             self.status.setText(f'Open failed: {exc}')

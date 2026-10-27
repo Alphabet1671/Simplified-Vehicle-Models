@@ -10,7 +10,8 @@ except ImportError as exc:
 
 from tools.tire_gui.data import normalize_channels
 from tools.tire_gui.parameters import MAT_SCALAR_FIELDS, MAT_VECTOR_FIELDS, VECTOR_DEGREES, flatten_steady, unflatten_steady
-from tools.tire_gui.model import import_mat_seed, load_snapshot, predict_steady, with_parameter
+from tools.tire_gui.model import (import_mat_seed, load_snapshot, predict_steady, with_parameter,
+                                 load_transient_snapshot, find_steady_companion)
 from tools.tire_gui.contracts import SampleSet
 from simplified_vehicle_models.tires.unitire_simple import evaluate_unitire, loaded_radius
 
@@ -89,6 +90,37 @@ class ModelTests(unittest.TestCase):
                 np.testing.assert_array_equal(getattr(imported.steady, vector), coefficients)
                 for degree, coefficient in zip(VECTOR_DEGREES[vector], coefficients):
                     self.assertEqual(imported.values[f'{vector}_{degree}'], float(coefficient))
+
+    def test_transient_companion_is_explicit_and_coefficients_load(self):
+        steady = Path('models/tires/iem24_murphy_real_unitire.xml')
+        self.assertEqual(find_steady_companion(TRANSIENT).resolve(), steady.resolve())
+        snapshot = load_transient_snapshot(TRANSIENT, steady_xml=steady)
+        self.assertEqual(snapshot.transient.trail_lead_ratio, .25)
+        self.assertEqual(snapshot.provenance['transient_path'], str(TRANSIENT.resolve()))
+        self.assertEqual(snapshot.parameter_status['trail_lead_ratio'], 'transient XML (provisional)')
+        self.assertEqual(snapshot.provenance['transient_fit_status'], 'provisional')
+
+    def test_transient_attach_preserves_current_steady_and_session_metadata(self):
+        from dataclasses import replace
+        current = with_parameter(load_snapshot(STEADY), 'mu_0_y', 1.23456789)
+        current = replace(current, session_metadata={'locks': {'mu_0_y': True}})
+        paired = load_transient_snapshot(TRANSIENT, snapshot=current)
+        self.assertEqual(paired.steady, current.steady)
+        self.assertEqual(paired.values['mu_0_y'], 1.23456789)
+        self.assertEqual(paired.session_metadata, current.session_metadata)
+        self.assertEqual(paired.revision, current.revision + 1)
+
+    def test_unknown_transient_requires_companion_not_arbitrary_default(self):
+        import tempfile
+        import shutil
+        with tempfile.TemporaryDirectory() as folder:
+            target = Path(folder) / 'unrelated.xml'
+            shutil.copy2(TRANSIENT, target)
+            self.assertIsNone(find_steady_companion(target))
+            with self.assertRaisesRegex(ValueError, 'steady'):
+                load_transient_snapshot(target)
+            with self.assertRaises(ValueError):
+                load_transient_snapshot(target, steady_xml=TRANSIENT)
 
     def test_alias_channel_conversion(self):
         normalized = normalize_channels({'SA': np.array([1.]), 'FZ': np.array([-10.]), 'SL': np.array([.2])}, {'SA':'deg','FZ':'N','SL':'dimensionless'})

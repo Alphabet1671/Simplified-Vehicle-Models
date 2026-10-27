@@ -420,16 +420,21 @@ class CaseQueueTests(unittest.TestCase):
             self._wait(queue)
             self.assertEqual(finished, ["cancelled"])
 
-    def test_timeout_case(self):
+    def test_timeout_case_kills_child_process_group(self):
         with tempfile.TemporaryDirectory() as tmp:
             prepared = self._prepared(tmp, timeout=2.0)
-            command = [sys.executable, "-c", "import time; time.sleep(30)"]
+            marker = Path(tmp) / "descendant-survived"
+            descendant = f"import time; time.sleep(1); open({str(marker)!r}, 'w').write('survived')"
+            parent = f"import subprocess,sys,time; subprocess.Popen([sys.executable, '-c', {descendant!r}]); time.sleep(30)"
+            command = [sys.executable, "-c", parent]
             queue = CaseQueue(command_factory=lambda _p, _a: command)
             finished = []
             queue.caseFinished.connect(lambda key, fields: finished.append(fields["status"]))
-            queue.start([prepared], 1, timeout=0.5)
-            self._wait(queue)
+            queue.start([prepared], 1, timeout=0.25)
+            self._wait(queue, timeout=3)
+            time.sleep(1.1)
             self.assertEqual(finished, ["timed_out"])
+            self.assertFalse(marker.exists())
 
     def test_normal_exit_without_summary_is_failed(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -527,15 +532,15 @@ class MainWindowTests(unittest.TestCase):
             time.sleep(0.01)
         self.assertTrue(condition())
 
-    def test_main_window_point_mass_source_workflow_gate(self):
+    def test_main_window_point_mass_source_workflow_queues_adapter_case(self):
         window = self._window()
         window.open_model(REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_point_mass.xml")
         window.settings_tab.solver_kind.setCurrentIndex(window.settings_tab.solver_kind.findData("point-mass"))
         self.assertTrue(window.go_action.isEnabled())
         with mock.patch("tools.sim_gui.qt.main_window._warn") as warn:
             window.build_cases()
-            warn.assert_called_once()
-            self.assertIn("point-mass adaptation unavailable", warn.call_args.args[2])
+            warn.assert_not_called()
+            self.assertIsNotNone(window.study_index)
         window.settings_tab.solver_kind.setCurrentIndex(window.settings_tab.solver_kind.findData("yaw-aware"))
         self.assertFalse(window.go_action.isEnabled())
 

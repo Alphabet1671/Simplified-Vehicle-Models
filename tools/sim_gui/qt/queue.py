@@ -3,6 +3,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import os
+import signal
+import sys
 import time
 
 from PyQt6.QtCore import QProcess, QProcessEnvironment, QTimer, pyqtSignal, QObject, Qt
@@ -90,7 +93,7 @@ class CaseQueue(QObject):
             self._finish_without_process(prepared, cancelled=True)
         for running in tuple(self._running.values()):
             running.cancelled = True
-            running.process.kill()
+            self._kill_group(running)
         self._maybe_finished()
 
     def _fill(self) -> None:
@@ -125,7 +128,21 @@ class CaseQueue(QObject):
         timeout = self._timeout if self._timeout is not None else prepared.timeout_seconds
         timer.start(max(1, int(timeout * 1000)))
         self.caseStarted.emit(prepared.directory.name)
-        process.start(command[0], command[1:])
+        # The portable Python wrapper calls setsid before exec, giving every
+        # solver child its own group for timeout/cancel descendant cleanup.
+        launcher = "import os,sys; os.setsid(); os.execvpe(sys.argv[1], sys.argv[1:], os.environ)"
+        process.start(sys.executable, ["-c", launcher, *command])
+
+    @staticmethod
+    def _kill_group(running: _Running) -> None:
+        pid = int(running.process.processId())
+        if pid > 0:
+            try:
+                os.killpg(pid, signal.SIGKILL)
+                return
+            except ProcessLookupError:
+                pass
+        running.process.kill()
 
     def _read(self, key: str) -> None:
         running = self._running.get(key)
@@ -148,7 +165,7 @@ class CaseQueue(QObject):
         running = self._running.get(key)
         if running is not None and not running.finished:
             running.timed_out = True
-            running.process.kill()
+            self._kill_group(running)
 
     def _error(self, key: str, error) -> None:
         running = self._running.get(key)
@@ -205,7 +222,7 @@ class CaseQueue(QObject):
         self._stopping = True
         for running in tuple(self._running.values()):
             running.cancelled = True
-            running.process.kill()
+            self._kill_group(running)
             running.process.waitForFinished(1000)
 
     def _record(self, key: str, fields: dict) -> None:

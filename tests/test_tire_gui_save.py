@@ -90,6 +90,23 @@ class SaveTests(unittest.TestCase):
             self.assertTrue(all(p.is_file() for p in first))
             self.assertEqual(load_session(Path(folder) / 'replaceable').values['mu_0_y'], edited.values['mu_0_y'])
 
+    def test_legacy_holdout_rows_survive_session_load_and_rewrite(self):
+        with tempfile.TemporaryDirectory() as folder:
+            save_session(self.seed, Path(folder), 'legacy-holdout', include_transient=False,
+                         metadata={'selections': {'holdout_ids': [[72, 0]]}})
+            bundle = Path(folder) / 'legacy-holdout'
+            manifest_path = bundle / 'session.json'
+            manifest = json.loads(manifest_path.read_text())
+            # Emulate the v1 JSON row shape, then verify loader retains it so the
+            # Qt layer can expand it to every matching group-qualified segment.
+            manifest['selections']['holdout_ids'] = [[72, 0]]
+            manifest_path.write_text(json.dumps(manifest))
+            restored = load_session(bundle)
+            self.assertEqual(restored.session_metadata['selections']['holdout_ids'], ((72, 0),))
+            save_session(restored, Path(folder), 'migrated-holdout', include_transient=False)
+            rewritten = load_session(Path(folder) / 'migrated-holdout')
+            self.assertEqual(rewritten.session_metadata['selections']['holdout_ids'], ((72, 0),))
+
     def test_edits_preserve_session_metadata_through_save_and_load(self):
         with tempfile.TemporaryDirectory() as folder:
             save_session(self.seed, Path(folder), 'original', include_transient=False,

@@ -936,20 +936,23 @@ class MainWindow(QMainWindow):
         self._restored_load_n = selections.get('load_n')
         saved_holdouts = selections.get('holdout_ids', [])
         self.holdout_ids = set()
+        legacy_holdout_migrated = False
         for item in saved_holdouts:
             if isinstance(item, str) and ':' in item:
                 group, segment = item.rsplit(':', 1)
                 if group in {'run8', 'run72_sa0_fx', 'run72_combined', 'run72_combined_fx', 'run72_combined_fy'}:
                     self.holdout_ids.add((group, int(segment)))
             elif isinstance(item, (list, tuple)) and len(item) == 2:
-                # Legacy v1 bundles used (run_id, segment_id); map only where
-                # one compatibility group is unambiguous.
+                # Legacy v1 bundles used (run_id, segment_id); preserve old
+                # behavior by holding out every group sharing that segment index.
                 if isinstance(item[0], str) and item[0] in {'run8', 'run72_sa0_fx', 'run72_combined', 'run72_combined_fx', 'run72_combined_fy'}:
                     self.holdout_ids.add((item[0], int(item[1])))
                 elif item[0] == 8:
                     self.holdout_ids.add(('run8', int(item[1])))
+                    legacy_holdout_migrated = True
                 elif item[0] == 72:
-                    self.holdout_ids.add(('run72_sa0_fx', int(item[1])))
+                    self.holdout_ids.update({('run72_sa0_fx', int(item[1])), ('run72_combined', int(item[1]))})
+                    legacy_holdout_migrated = True
         restored_load = selections.get('load_n')
         self._restored_load_n = float(restored_load) if isinstance(restored_load, (int, float)) else None
         self._restored_events = list(metadata.get('events', []))
@@ -982,7 +985,10 @@ class MainWindow(QMainWindow):
             if item.data(Qt.ItemDataRole.UserRole) in self.holdout_ids:
                 item.setCheckState(Qt.CheckState.Checked)
         self.dirty = False
-        self.status.setText('Session restored; available source references and GUI options restored, samples not embedded.')
+        message = 'Session restored; available source references and GUI options restored, samples not embedded.'
+        if legacy_holdout_migrated:
+            message += ' Legacy run/segment holdouts were migrated to all matching qualified groups; save the session to persist the migration.'
+        self.status.setText(message)
         return snapshot
 
     def closeEvent(self, event):

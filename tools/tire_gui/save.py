@@ -112,7 +112,19 @@ def _validate_metadata(metadata):
             raise ValueError('events must contain only documented scalar fields and finite increasing start/stop windows')
         if any(not (item is None or isinstance(item, (str, bool, int)) or isinstance(item, float) and math.isfinite(item)) for item in event.values()):
             raise ValueError('event metadata fields must be scalar')
-    if any(not isinstance(k, str) or not (v is None or isinstance(v, (str, bool, int, float)) or isinstance(v, list) and len(v) <= 1000 and all(x is None or isinstance(x, (str, bool, int, float)) for x in v)) for k,v in selections.items()):
+    def valid_selection(name, value):
+        if value is None or isinstance(value, (str, bool, int, float)):
+            return True
+        if not isinstance(value, list) or len(value) > 1000:
+            return False
+        if all(x is None or isinstance(x, (str, bool, int, float)) for x in value):
+            return True
+        # Legacy tire-GUI v1 metadata serialized holdouts as [run_id, segment]
+        # rows. Retain read compatibility; new writers use group-qualified IDs.
+        return name == 'holdout_ids' and all(
+            isinstance(row, list) and len(row) == 2 and all(isinstance(x, (str, int)) and not isinstance(x, bool) for x in row)
+            for row in value)
+    if any(not isinstance(k, str) or not valid_selection(k, v) for k,v in selections.items()):
         raise ValueError('selections must map names to scalar IDs or short ID lists')
     if any(not isinstance(k, str) or not (v is None or isinstance(v, (str, bool, int, float))) for k,v in diagnostics.items()):
         raise ValueError('diagnostics must contain scalar values only')

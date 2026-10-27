@@ -19,6 +19,7 @@ from PyQt6.QtTest import QSignalSpy
 from PyQt6.QtCore import QThread, QTimer, QEventLoop, Qt
 from tools.tire_gui.contracts import FitCancelled, RunData
 from tools.tire_gui.events import TransientEvent
+from tools.tire_gui.save import save_session
 import numpy as np
 
 
@@ -114,6 +115,38 @@ class QtTests(unittest.TestCase):
         w.load_filter.setCurrentIndex(load_ix)
         self.assertTrue(np.all(w.selection.lateral.fz == 660.0))
         self.assertTrue(np.all(w.active_selection.combined_fx.fz == 660.0))
+        w.dirty = False
+        w.close()
+
+    def test_legacy_holdout_session_migrates_all_matching_groups(self):
+        from unittest.mock import patch
+        from tools.tire_gui.segments import compatibility_selection
+        w = self.window()
+        def fake_run(run_id, tire, count):
+            z = np.zeros(count)
+            return RunData(run_id, tire, {'alpha':z,'kappa':z,'fz':z+600,'fy':z,'fx':z,'mz':z,'time':np.arange(count)*.01}, {}, np.arange(count))
+        selection = compatibility_selection(fake_run(8,'43075 R20',21168), fake_run(72,'43100 R20',25992))
+        with tempfile.TemporaryDirectory() as folder:
+            save_session(w.snapshot, Path(folder), 'legacy', include_transient=True,
+                         metadata={'selections': {'holdout_ids': [[72, 0]]}})
+            bundle = Path(folder) / 'legacy'
+            manifest = bundle / 'session.json'
+            import json
+            data = json.loads(manifest.read_text())
+            data['selections']['holdout_ids'] = [[72, 0]]
+            manifest.write_text(json.dumps(data))
+            # Exercise legacy metadata through actual bundle validation/loading.
+            w.load_session_path(bundle)
+            w.runs = {8: fake_run(8,'43075 R20',21168), 72: fake_run(72,'43100 R20',25992)}
+            self.assertIn(('run72_sa0_fx', 0), w.holdout_ids)
+            self.assertIn(('run72_combined', 0), w.holdout_ids)
+            w.full_selection = selection
+            w._apply_selection_filters()
+            self.assertEqual(len(w.selection.longitudinal.target), len(selection.longitudinal.target)-180)
+            self.assertEqual(len(w.selection.combined_fx.target), len(selection.combined_fx.target)-180)
+            self.assertEqual(len(w.holdout_selection.longitudinal.target), 180)
+            self.assertEqual(len(w.holdout_selection.combined_fy.target), 180)
+            self.assertIn('Legacy run/segment holdouts were migrated', w.status.text())
         w.dirty = False
         w.close()
 

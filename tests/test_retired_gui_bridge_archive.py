@@ -28,6 +28,10 @@ class RetiredGuiBridgeArchiveTests(unittest.TestCase):
             self.assertEqual(copied.read_bytes(), source.read_bytes())
             with zipfile.ZipFile(bundle) as contents:
                 self.assertEqual(set(contents.namelist()), {"manifest.json", "tracked-files/tools/sim_gui/run_case.py"})
+                self.assertEqual(contents.read("manifest.json"), (directory / "manifest.json").read_bytes())
+                self.assertEqual(contents.read("tracked-files/tools/sim_gui/run_case.py"), copied.read_bytes())
+                self.assertEqual(hashlib.sha256(contents.read("tracked-files/tools/sim_gui/run_case.py")).hexdigest(),
+                                 manifest["files"][0]["sha256"])
 
 
 if __name__ == "__main__":

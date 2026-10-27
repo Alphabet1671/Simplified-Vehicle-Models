@@ -69,6 +69,16 @@ def archive(output_root: Path, *, now: datetime | None = None) -> tuple[Path, Pa
             expected = {path.relative_to(destination).as_posix() for path in destination.rglob("*") if path.is_file()}
             if set(bundle.namelist()) != expected:
                 raise RuntimeError("ZIP members differ from verified archive directory")
+            for member in expected:
+                staged = destination / member
+                if bundle.read(member) != staged.read_bytes():
+                    raise RuntimeError(f"ZIP payload differs from verified archive directory: {member}")
+            for entry in manifest_files:
+                member = f"tracked-files/{entry['path']}"
+                if sha256(destination / member) != entry["sha256"]:
+                    raise RuntimeError(f"manifest hash differs from staged archive: {entry['path']}")
+                if hashlib.sha256(bundle.read(member)).hexdigest() != entry["sha256"]:
+                    raise RuntimeError(f"manifest hash differs from ZIP payload: {entry['path']}")
     except Exception:
         shutil.rmtree(destination, ignore_errors=True)
         archive_path.unlink(missing_ok=True)

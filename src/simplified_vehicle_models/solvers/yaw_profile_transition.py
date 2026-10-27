@@ -189,7 +189,10 @@ def transition_intervals(path, capability, segment_index: int, fixed_q: float, d
     if not isinstance(settings, CoupledProfileSettings): raise TypeError("settings must be CoupledProfileSettings")
     deadline_check = None if counters is None else counters.get("deadline_check")
     def check_deadline():
-        return bool(deadline_check and deadline_check())
+        stopped = bool(deadline_check and deadline_check())
+        if stopped and counters is not None:
+            counters["deadline_stop"] = True
+        return stopped
     if counters is not None:
         counters.setdefault("strict_probe_count", 0)
         counters.setdefault("interval_cell_count", 0)
@@ -283,6 +286,7 @@ def transition_intervals(path, capability, segment_index: int, fixed_q: float, d
             if check_deadline(): break
         roots=sorted(set(roots))
         for witness in [a,b,*roots,*[(x+y)/2 for x,y in zip(roots[:-1],roots[1:])]]:
+            if check_deadline(): break
             ev=query(witness)
             if ev['reason'].value != 'supported':
                 continue
@@ -311,11 +315,18 @@ def transition_intervals(path, capability, segment_index: int, fixed_q: float, d
         if check_deadline():
             if counters is not None: counters["deadline_stop"] = True
             break
+    # Do not normalize/emit partial results after any bounded oracle phase expired.
+    if counters is not None and counters.get("deadline_stop"):
+        return ()
     # Boundaries are queried independently, including exact map faces.
     for u in cuts:
+        if check_deadline(): break
         if feasible(u): pieces.append((u,u,()))
+    if counters is not None and counters.get("deadline_stop"):
+        return ()
     result=[]
     for a,b,support in sorted(pieces):
+        if check_deadline(): break
         # Mapping u back to q can round an exact map face just outside its
         # domain (e.g. ax=-2 becomes -2.000000000001). Move only that
         # numerical endpoint toward the feasible interior and re-query.
@@ -323,13 +334,17 @@ def transition_intervals(path, capability, segment_index: int, fixed_q: float, d
         if aa < bb and not feasible(aa):
             aa = float(np.nextafter(aa, bb))
             for _ in range(16):
+                if check_deadline(): break
                 if feasible(aa): break
                 aa = float(np.nextafter(aa, bb))
+        if check_deadline(): break
         if aa < bb and not feasible(bb):
             bb = float(np.nextafter(bb, aa))
             for _ in range(16):
+                if check_deadline(): break
                 if feasible(bb): break
                 bb = float(np.nextafter(bb, aa))
+        if check_deadline(): break
         qa=2*aa*aa-fixed_q; qb=2*bb*bb-fixed_q
         if direction=='backward': qa=2*aa*aa-fixed_q; qb=2*bb*bb-fixed_q
         low,high=sorted((qa,qb)); low=max(lo,low); high=min(hi,high)
@@ -366,6 +381,7 @@ def transition_intervals(path, capability, segment_index: int, fixed_q: float, d
         if low > high:
             continue
         if low == high:
+            if check_deadline(): break
             if q_feasible(low):
                 item=QInterval(low,high,True,True,support)
                 if result and item.lower <= result[-1].upper and q_feasible(item.lower):
@@ -379,15 +395,23 @@ def transition_intervals(path, capability, segment_index: int, fixed_q: float, d
         # rounding produced an infeasible endpoint, isolate the nearest
         # representable feasible value toward a known feasible interior point.
         qmid = low+(high-low)*.5
+        if check_deadline(): break
         if not q_feasible(qmid):
             # The u-midpoint and q-midpoint are not identical under the
             # nonlinear transform; locate an actual strict witness before
             # retaining this piece, or fail closed as unresolved.
             candidates=np.linspace(low,high,33)[1:-1]
-            qmid=next((float(q) for q in candidates if q_feasible(float(q))), math.nan)
+            qmid=math.nan
+            for candidate in candidates:
+                if check_deadline(): break
+                if q_feasible(float(candidate)):
+                    qmid=float(candidate)
+                    break
+            if check_deadline(): break
             if not math.isfinite(qmid):
                 probe_evidence = []
                 for probe in candidates:
+                    if check_deadline(): break
                     probe=float(probe)
                     q_left=fixed_q if direction == 'forward' else probe
                     q_right=probe if direction == 'forward' else fixed_q
@@ -402,6 +426,7 @@ def transition_intervals(path, capability, segment_index: int, fixed_q: float, d
                                            "lateral_acceleration": ev['lateral_acceleration'],
                                            "into_margin": ev.get('into_margin'),
                                            "out_margin": ev.get('out_margin')})
+                if check_deadline(): break
                 raise YawProfileSolveError("interval_oracle_unresolved",
                     "candidate piece has no feasible midpoint or fixed probes; a narrow feasible component may be missed",
                     {"segment_index": segment_index, "cell": support,
@@ -412,19 +437,24 @@ def transition_intervals(path, capability, segment_index: int, fixed_q: float, d
         if not q_feasible(low):
             bad, good = low, qmid
             for _ in range(128):
+                if check_deadline(): break
                 midq = bad+(good-bad)*.5
                 if midq == bad or midq == good: break
                 if q_feasible(midq): good=midq
                 else: bad=midq
+            if check_deadline(): break
             low=good
         if not q_feasible(high):
             good, bad = qmid, high
             for _ in range(128):
+                if check_deadline(): break
                 midq = good+(bad-good)*.5
                 if midq == good or midq == bad: break
                 if q_feasible(midq): good=midq
                 else: bad=midq
+            if check_deadline(): break
             high=good
+        if check_deadline(): break
         if low>high: continue
         item=QInterval(low,high,True,True,support)
         # Merge only on actual numeric overlap and only when the connecting
@@ -432,12 +462,15 @@ def transition_intervals(path, capability, segment_index: int, fixed_q: float, d
         # may be masked holes and must remain disconnected.
         if result and item.lower <= result[-1].upper:
             prev=result[-1]
+            if check_deadline(): break
             if q_feasible(item.lower):
                 result[-1]=QInterval(prev.lower,max(prev.upper,item.upper),True,True,
                                      prev.support_id if prev.support_id==item.support_id else ())
             else:
                 result.append(item)
         else: result.append(item)
+    if counters is not None and counters.get("deadline_stop"):
+        return ()
     return tuple(result)
 
 

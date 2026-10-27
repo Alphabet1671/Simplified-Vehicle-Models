@@ -99,6 +99,23 @@ class ConnectivityDiagnosticsTests(unittest.TestCase):
         self.assertEqual(caught.exception.diagnostics['budget_reason'],'wall_deadline')
         self.assertIn('strict_probe_count',caught.exception.diagnostics)
 
+    def test_deadline_interrupts_endpoint_correction_without_partial_intervals(self):
+        path,cap=self.fixture()
+        counters={"deadline_check":lambda:False}
+        intervals=transition_intervals(path,cap,0,16.0,"forward",(15.9,16.1),
+                                       settings=CoupledProfileSettings(),counters=counters)
+        self.assertTrue(intervals)
+        calls={"n":0}
+        def fake_clock_deadline():
+            calls["n"]+=1
+            return calls["n"] >= 55
+        interrupted={"deadline_check":fake_clock_deadline}
+        partial=transition_intervals(path,cap,0,16.0,"forward",(15.9,16.1),
+                                     settings=CoupledProfileSettings(),counters=interrupted)
+        self.assertEqual(partial,())
+        self.assertTrue(interrupted.get("deadline_stop"))
+        self.assertLess(interrupted.get("strict_probe_count",0),counters.get("strict_probe_count",0))
+
     def test_representative_narrow_physical_window_scalar_batch_equivalence(self):
         """Freeze an actual MIS 0.05 m failed-transition segment and compare both oracles."""
         fixture_path=Path(__file__).parent/'fixtures'/'yaw_profile'/'mis-raw-centerline-original-window.json'
@@ -132,6 +149,14 @@ class ConnectivityDiagnosticsTests(unittest.TestCase):
             for q in (iv.lower,(iv.lower+iv.upper)*.5,iv.upper):
                 self.assertTrue(edge_evidence(path,cap,segment,q_fixed,float(q),settings=CoupledProfileSettings())['feasible'])
         self.assertTrue(np.any(batched))
+        # Freeze the actual strict component, not merely oracle agreement.
+        self.assertEqual(len(scalar),1)
+        self.assertAlmostEqual(scalar[0].lower,36.768163596591705,places=8)
+        self.assertAlmostEqual(scalar[0].upper,36.9931526756748,places=8)
+        self.assertEqual(scalar[0].support_id,())  # union includes multiple strict support cells
+        self.assertTrue(all(edge_evidence(path,cap,segment,q_fixed,float(q),settings=CoupledProfileSettings())['feasible']
+                            for q in (scalar[0].lower,(scalar[0].lower+scalar[0].upper)*.5,scalar[0].upper)))
+        self.assertTrue(np.any(~cap.feasible_mask))
 
     def test_max_pair_batch_cannot_exceed_hard_allocation_limit(self):
         with self.assertRaisesRegex(ValueError,'must not exceed 65536'):

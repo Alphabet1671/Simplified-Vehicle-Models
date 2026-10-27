@@ -77,11 +77,13 @@ class FitTests(unittest.TestCase):
         from unittest.mock import patch
         from scipy.special import logit
         def fake_minimize(fun,x0,**kwargs):
-            fun(x0)
-            return SimpleNamespace(x=np.array([logit(1-1e-12)]), success=True, nit=2)
+            terminal = np.array([logit(1-1e-12)])
+            fun(terminal)
+            return SimpleNamespace(x=terminal, success=True, nit=2)
         locked=frozenset(set(FORCE_NAMES+TRAIL_NAMES)-{'mu_0_y'})
+        truth=with_parameters(self.seed,{'mu_0_y':4.0})
         with patch('tools.tire_gui.fit.minimize',side_effect=fake_minimize):
-            result=fit_steady(self.seed,self.synthesized(self.seed),locked)
+            result=fit_steady(self.seed,self.synthesized(truth),locked)
         self.assertEqual(result.status_by_parameter['mu_0_y'],'bound-saturated')
         self.assertTrue(any('mu_0_y' in warning and 'bound' in warning for warning in result.warnings))
 
@@ -99,6 +101,34 @@ class FitTests(unittest.TestCase):
         self.assertTrue(np.isfinite(result.metrics['force_objective']))
         self.assertTrue(any('not converge' in warning for warning in result.warnings))
         self.assertEqual(self.seed.values['mu_0_y'],result.candidate.values['mu_0_y'])
+
+    def test_nonconverged_status_uses_retained_best_not_terminal_point(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from scipy.special import expit, logit
+        def fake_minimize(fun,x0,**kwargs):
+            fun(x0)  # Make the seed the best evaluated candidate.
+            terminal = np.array([logit(.999999)])
+            return SimpleNamespace(x=terminal, success=False, nit=4)
+        locked=frozenset(set(FORCE_NAMES+TRAIL_NAMES)-{'mu_0_y'})
+        with patch('tools.tire_gui.fit.minimize',side_effect=fake_minimize):
+            result=fit_steady(self.seed,self.synthesized(self.seed),locked)
+        self.assertEqual(result.candidate.values['mu_0_y'],self.seed.values['mu_0_y'])
+        self.assertEqual(result.status_by_parameter['mu_0_y'],'not converged')
+        self.assertFalse(any('mu_0_y' in warning and 'bound' in warning for warning in result.warnings))
+
+    def test_cancel_during_final_metrics_raises(self):
+        from unittest.mock import patch
+        locked=frozenset(set(FORCE_NAMES+TRAIL_NAMES)-{'mu_0_y'})
+        calls=[0]
+        def cancellation():
+            calls[0]+=1
+            # During final metrics the mock predictions are countable and no
+            # optimizer objective prediction should occur.
+            return calls[0] > 8
+        with patch('tools.tire_gui.fit.minimize', side_effect=lambda fun,x0,**kw: (fun(x0), type('Result',(),{'x':x0,'success':True,'nit':1})())[1]):
+            with self.assertRaises(FitCancelled):
+                fit_steady(self.seed,self.synthesized(self.seed),locked,cancel=cancellation)
 
 
 if __name__ == '__main__':

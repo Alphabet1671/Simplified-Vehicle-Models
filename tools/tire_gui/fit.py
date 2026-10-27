@@ -97,14 +97,22 @@ def fit_steady(snapshot: ModelSnapshot, data: SteadySelection, locked: frozenset
             return value
         result = minimize(objective, encode(starts), method='Nelder-Mead', options={'maxiter':800,'maxfev':4000,'xatol':1e-5,'fatol':1e-5, 'adaptive':False})
         if best[1] is not current: current = best[1]
-        converged = converged and bool(result.success)
+        terminal_matches_retained = all(
+            np.isclose(current.values[n], float(decode(result.x)[i]), rtol=1e-12, atol=1e-14)
+            for i, n in enumerate(names)
+        )
+        stage_converged = bool(result.success) and terminal_matches_retained
+        converged = converged and stage_converged
         saturated = []
-        for n, value, (lo, hi) in zip(names, decode(result.x), limits):
+        for n, (lo, hi) in zip(names, limits):
+            value = current.values[n]
             if min(value-lo, hi-value) <= 1e-5 * (hi-lo):
                 status[n] = 'bound-saturated'
                 saturated.append(n)
             else:
-                status[n] = 'fitted' if result.success else 'not converged'
+                status[n] = 'fitted' if stage_converged else 'not converged'
+        if result.success and not terminal_matches_retained:
+            warnings.append(f'{objective_name} optimizer terminal point was not the retained best finite candidate; marked not converged')
         if saturated: warnings.extend(f'{n} reached a configured fit bound' for n in saturated)
         metrics[f'{objective_name}_objective'] = float(best[0])
         metrics[f'{objective_name}_iterations'] = float(result.nit)
@@ -112,10 +120,18 @@ def fit_steady(snapshot: ModelSnapshot, data: SteadySelection, locked: frozenset
     optimize(active_force, FORCE_BOUNDS, 'force')
     optimize(active_trail, TRAIL_BOUNDS, 'trail')
     for name in (*FORCE_NAMES,*TRAIL_NAMES): status.setdefault(name, 'locked' if name in locked else 'unchanged')
-    # Dimensional RMSEs are scalar-only metrics.
+    # Dimensional RMSEs are scalar-only metrics; maintain responsiveness and
+    # reject invalid predictions exactly as in the optimization objectives.
     for key,samples,component in [('fy_rmse',data.lateral,'lateral_force'),('fx_rmse',data.longitudinal,'longitudinal_force'),('combined_fx_rmse',data.combined_fx,'longitudinal_force'),('combined_fy_rmse',data.combined_fy,'lateral_force'),('mz_rmse',data.mz,'aligning_moment')]:
+        if cancel(): raise FitCancelled()
         pred = predict_steady(current,samples,data.belt_speed)
-        metrics[key] = float(np.sqrt(np.mean((getattr(pred,component)-samples.target)**2)))
+        prediction = np.asarray(getattr(pred,component), dtype=float)
+        if not np.all(np.isfinite(prediction)):
+            raise ValueError('nonfinite steady prediction')
+        rmse = float(np.sqrt(np.mean((prediction-samples.target)**2)))
+        if not np.isfinite(rmse): raise ValueError('nonfinite dimensional RMSE')
+        metrics[key] = rmse
+    if cancel(): raise FitCancelled()
     for key,samples in [('lateral_count',data.lateral),('longitudinal_count',data.longitudinal),('combined_fx_count',data.combined_fx),('combined_fy_count',data.combined_fy),('mz_count',data.mz)]: metrics[key] = float(samples.target.size)
     # Steady edits invalidate prior transient fit evidence. Preserve the
     # provisional default transient coefficients and make that status explicit.

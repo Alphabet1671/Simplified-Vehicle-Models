@@ -21,6 +21,19 @@ def sha256(path):
         return None
 
 
+def _attested(value):
+    return isinstance(value, str) and bool(value) and value.lower() not in {'unknown','unavailable','none','null'}
+
+
+def _hash_mapping(value):
+    return (isinstance(value, dict) and bool(value) and
+            all(isinstance(k,str) and bool(k) and _attested(v) for k,v in value.items()))
+
+
+def _source_status(value):
+    return value == 'attested'
+
+
 def _array_digest(path):
     try:
         with np.load(path, allow_pickle=False) as z:
@@ -38,16 +51,19 @@ def plan_info(path):
         with np.load(path,allow_pickle=False) as z: meta=json.loads(str(z['metadata'].item()))
     except Exception: pass
     plan_prov=meta.get('provenance') or {}
-    # Older historical artifacts lack source revision in both NPZ metadata and
-    # adjacent inputs.json; newer writers may preserve it in either location.
-    plan_inputs_prov=((inputs or {}).get('study_contract') or {}).get('provenance') or {}
-    plan_source=(plan_prov.get('source_revision') or plan_prov.get('git_revision') or
-                 plan_inputs_prov.get('source_revision') or (inputs or {}).get('source_revision'))
-    plan_dirty=(plan_prov.get('source_dirty_hashes') if 'source_dirty_hashes' in plan_prov else
-                plan_inputs_prov.get('source_dirty_hashes', (inputs or {}).get('source_dirty_hashes')))
+    # Source revision is accepted only from embedded plan provenance or an
+    # adjacent frozen study-contract provenance; bare top-level fields are not attestations.
+    plan_contract=(inputs or {}).get('study_contract') or {}
+    plan_inputs_prov=plan_contract.get('provenance') or {}
+    plan_source=plan_prov.get('source_revision') or plan_prov.get('git_revision') or plan_inputs_prov.get('source_revision')
+    plan_dirty=(plan_prov.get('source_dirty_hashes') if 'source_dirty_hashes' in plan_prov else plan_inputs_prov.get('source_dirty_hashes'))
+    # Provenance is accepted only from plan metadata or an adjacent frozen
+    # contract, and the contract's derived status must be explicitly attested.
+    plan_status=plan_prov.get('source_provenance_status') or plan_inputs_prov.get('source_provenance_status')
     return {'path':str(path),'exists':path.is_file(),'file_sha256':sha256(path),'array_digest':_array_digest(path),
-        'source_revision':plan_source,'source_revision_status':'known' if plan_source not in (None,'','unknown') else 'unknown_or_unavailable',
-        'source_dirty_hashes':plan_dirty,
+        'source_revision':plan_source,'source_revision_status':'known' if _attested(plan_source) else 'unknown_or_unavailable',
+        'source_provenance_status':plan_status,'source_provenance_attested':_source_status(plan_status),
+        'source_dirty_hashes':plan_dirty,'source_dirty_hashes_attested':_hash_mapping(plan_dirty),
         'lap_time_s':(summary or {}).get('lap_time_s'),'solver_validation':(summary or {}).get('profile_validation',{}).get('valid'),
         'plan_status':(summary or {}).get('status'),'track':args.get('track'),'map_identity':(inputs or {}).get('map_identity'),
         'track_identity':(inputs or {}).get('track_identity'),'inputs':inputs}
@@ -145,14 +161,18 @@ def _yaw_audit(path):
 
 
 def replay_info(path, plan, *, expected_track=None, expected_map=None, plan_digest=None,
-                plan_source_revision=None, plan_dirty_hashes=None):
+                plan_source_revision=None, plan_source_status=None, plan_dirty_hashes=None):
     path=Path(path); summary=read_json(path/'summary.json'); inputs=read_json(path/'inputs.json')
     if summary is None: return {'path':str(path),'plan':str(plan),'status':'missing','exploratory_completion':False,'comparison_status':'inconclusive','identity_checks':{'status':'unknown','reason':'summary/inputs missing'},'yaw_approximation_audit':_yaw_audit(path)}
     args=(inputs or {}).get('args') or {}; provenance=((inputs or {}).get('study_contract') or {}).get('provenance') or {}
     replay_revision=provenance.get('source_revision')
-    plan_revision_known=plan_source_revision not in (None,'','unknown')
-    replay_revision_known=replay_revision not in (None,'','unknown')
-    dirty_match=(plan_dirty_hashes == provenance.get('source_dirty_hashes')) if plan_dirty_hashes is not None else None
+    replay_status=provenance.get('source_provenance_status')
+    plan_revision_known=_attested(plan_source_revision)
+    replay_revision_known=_attested(replay_revision)
+    plan_dirty_valid=_hash_mapping(plan_dirty_hashes)
+    replay_dirty=provenance.get('source_dirty_hashes')
+    replay_dirty_valid=_hash_mapping(replay_dirty)
+    dirty_match=bool(plan_dirty_valid and replay_dirty_valid and plan_dirty_hashes==replay_dirty)
     checks={'track_match':args.get('track')==expected_track,'map_identity_match':(inputs or {}).get('map_identity')==expected_map,
             'plan_path_match':Path(args.get('plan','')).resolve()==Path(plan).resolve(),
             'plan_array_digest_match':provenance.get('plan_array_digest')==plan_digest if plan_digest else False,
@@ -160,10 +180,14 @@ def replay_info(path, plan, *, expected_track=None, expected_map=None, plan_dige
             'plan_source_revision':plan_source_revision,'replay_source_revision':replay_revision,
             'plan_source_revision_known':plan_revision_known,'replay_source_revision_known':replay_revision_known,
             'source_revision_match':bool(plan_revision_known and replay_revision_known and plan_source_revision==replay_revision),
-            'plan_source_dirty_hashes':plan_dirty_hashes,'replay_source_dirty_hashes':provenance.get('source_dirty_hashes'),
+            'plan_source_provenance_status':plan_source_status,'replay_source_provenance_status':replay_status,
+            'plan_source_provenance_attested':_source_status(plan_source_status),
+            'replay_source_provenance_attested':_source_status(replay_status),
+            'plan_source_dirty_hashes':plan_dirty_hashes,'replay_source_dirty_hashes':replay_dirty,
+            'plan_source_dirty_hashes_attested':plan_dirty_valid,'replay_source_dirty_hashes_attested':replay_dirty_valid,
             'source_dirty_identity_match':dirty_match}
-    required_checks=[v for k,v in checks.items() if k not in ('plan_source_revision','replay_source_revision','plan_source_dirty_hashes','replay_source_dirty_hashes','source_dirty_identity_match')]
-    if dirty_match is not None: required_checks.append(dirty_match)
+    required_checks=[v for k,v in checks.items() if k not in ('plan_source_revision','replay_source_revision','plan_source_dirty_hashes','replay_source_dirty_hashes')]
+    required_checks.extend([_source_status(plan_source_status),_source_status(replay_status),plan_dirty_valid,replay_dirty_valid,dirty_match])
     checks['status']='pass' if all(required_checks) else 'inconclusive_or_mismatch'
     fv=summary.get('footprint_validation') or {}
     row={k:summary.get(k) for k in ('driven_time_s','speed_error_rms_mps','speed_error_max_abs_mps','lateral_error_rms_m','lateral_error_max_m','throttle_saturation_time_fraction_realized','brake_saturation_time_fraction_realized','steering_rate_saturation_time_fraction_realized','solver_validation_complete','sampled_center_contained','between_step_containment_certified')}
@@ -183,9 +207,9 @@ def build_case(spec):
     expected_map=op['map_identity'] if op['map_identity']==fp['map_identity'] else None
     expected_track=track
     optrow=replay_info(opt_run,opt,expected_track=expected_track,expected_map=expected_map,plan_digest=op['array_digest'],
-                       plan_source_revision=op['source_revision'],plan_dirty_hashes=op['source_dirty_hashes'])
+                       plan_source_revision=op['source_revision'],plan_source_status=op['source_provenance_status'],plan_dirty_hashes=op['source_dirty_hashes'])
     fixedrow=replay_info(fixed_run,fixed,expected_track=expected_track,expected_map=expected_map,plan_digest=fp['array_digest'],
-                         plan_source_revision=fp['source_revision'],plan_dirty_hashes=fp['source_dirty_hashes'])
+                         plan_source_revision=fp['source_revision'],plan_source_status=fp['source_provenance_status'],plan_dirty_hashes=fp['source_dirty_hashes'])
     pair_ok=bool(op['exists'] and fp['exists'] and op['solver_validation'] is True and fp['solver_validation'] is True and
         op['track']==track and fp['track']==track and expected_map and op['track_identity']==fp['track_identity'] and
         optrow.get('identity_checks',{}).get('status')=='pass' and fixedrow.get('identity_checks',{}).get('status')=='pass')

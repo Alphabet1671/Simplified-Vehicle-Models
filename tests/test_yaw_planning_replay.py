@@ -69,8 +69,8 @@ class YawApproximationTests(unittest.TestCase):
     def test_known_source_revision_mismatch_is_inconclusive(self):
         with tempfile.TemporaryDirectory() as td:
             root=Path(td); (root/'summary.json').write_text(json.dumps({'lap_completed':True,'solver_validation_complete':True}))
-            (root/'inputs.json').write_text(json.dumps({'args':{'track':'track','plan':'plan.npz'},'map_identity':'map','study_contract':{'provenance':{'plan_array_digest':'digest','plan_file_digest':'placeholder','source_revision':'replay-r2','source_dirty_hashes':{}}}}))
-            row=replay_info(root,'plan.npz',expected_track='track',expected_map='map',plan_digest='digest',plan_source_revision='plan-r1',plan_dirty_hashes={})
+            (root/'inputs.json').write_text(json.dumps({'args':{'track':'track','plan':'plan.npz'},'map_identity':'map','study_contract':{'provenance':{'plan_array_digest':'digest','plan_file_digest':'placeholder','source_revision':'replay-r2','source_provenance_status':'attested','source_dirty_hashes':{'file':'hash'}}}}))
+            row=replay_info(root,'plan.npz',expected_track='track',expected_map='map',plan_digest='digest',plan_source_revision='plan-r1',plan_source_status='attested',plan_dirty_hashes={'file':'hash'})
             self.assertTrue(row['exploratory_completion'])
             self.assertFalse(row['identity_checks']['source_revision_match'])
             self.assertEqual(row['comparison_status'],'inconclusive')
@@ -79,7 +79,40 @@ class YawApproximationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             root=Path(td); (root/'summary.json').write_text(json.dumps({'lap_completed':True,'solver_validation_complete':True}))
             (root/'inputs.json').write_text(json.dumps({'args':{'track':'track','plan':'plan.npz'},'map_identity':'map','study_contract':{'provenance':{'plan_array_digest':'digest','plan_file_digest':'placeholder','source_revision':'r1','source_dirty_hashes':{}}}}))
-            row=replay_info(root,'plan.npz',expected_track='track',expected_map='map',plan_digest='digest',plan_source_revision=None,plan_dirty_hashes=None)
+            row=replay_info(root,'plan.npz',expected_track='track',expected_map='map',plan_digest='digest',plan_source_revision=None,plan_source_status='historical_unknown',plan_dirty_hashes=None)
+            self.assertTrue(row['exploratory_completion'])
+            self.assertFalse(row['identity_checks']['plan_source_revision_known'])
+            self.assertEqual(row['comparison_status'],'inconclusive')
+
+    def test_empty_dirty_hashes_never_attest_identity(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td); (root/'summary.json').write_text(json.dumps({'lap_completed':True,'solver_validation_complete':True}))
+            prov={'plan_array_digest':'digest','plan_file_digest':'placeholder','source_revision':'same-r','source_provenance_status':'attested','source_dirty_hashes':{}}
+            (root/'inputs.json').write_text(json.dumps({'args':{'track':'track','plan':'plan.npz'},'map_identity':'map','study_contract':{'provenance':prov}}))
+            row=replay_info(root,'plan.npz',expected_track='track',expected_map='map',plan_digest='digest',plan_source_revision='same-r',plan_source_status='attested',plan_dirty_hashes={})
+            self.assertTrue(row['exploratory_completion'])
+            self.assertFalse(row['identity_checks']['plan_source_dirty_hashes_attested'])
+            self.assertFalse(row['identity_checks']['replay_source_dirty_hashes_attested'])
+            self.assertEqual(row['comparison_status'],'inconclusive')
+
+    def test_historical_unknown_status_blocks_matching_revision(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td); (root/'summary.json').write_text(json.dumps({'lap_completed':True,'solver_validation_complete':True}))
+            dirty={'file':'hash'}
+            prov={'plan_array_digest':'digest','plan_file_digest':'placeholder','source_revision':'same-r','source_provenance_status':'historical_unknown','source_dirty_hashes':dirty}
+            (root/'inputs.json').write_text(json.dumps({'args':{'track':'track','plan':'plan.npz'},'map_identity':'map','study_contract':{'provenance':prov}}))
+            row=replay_info(root,'plan.npz',expected_track='track',expected_map='map',plan_digest='digest',plan_source_revision='same-r',plan_source_status='historical_unknown',plan_dirty_hashes=dirty)
+            self.assertTrue(row['exploratory_completion'])
+            self.assertTrue(row['identity_checks']['source_revision_match'])
+            self.assertEqual(row['comparison_status'],'inconclusive')
+
+    def test_bare_top_level_plan_revision_is_not_attested(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td); (root/'summary.json').write_text(json.dumps({'lap_completed':True,'solver_validation_complete':True}))
+            dirty={'file':'hash'}
+            prov={'plan_array_digest':'digest','plan_file_digest':'placeholder','source_revision':'same-r','source_provenance_status':'attested','source_dirty_hashes':dirty}
+            (root/'inputs.json').write_text(json.dumps({'args':{'track':'track','plan':'plan.npz'},'map_identity':'map','source_revision':'same-r','study_contract':{'provenance':prov}}))
+            row=replay_info(root,'plan.npz',expected_track='track',expected_map='map',plan_digest='digest',plan_source_revision=None,plan_source_status=None,plan_dirty_hashes=dirty)
             self.assertTrue(row['exploratory_completion'])
             self.assertFalse(row['identity_checks']['plan_source_revision_known'])
             self.assertEqual(row['comparison_status'],'inconclusive')

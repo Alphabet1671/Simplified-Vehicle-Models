@@ -80,4 +80,17 @@ PYTHONPATH=src:. python3 tools/run/run_with_deadline.py --seconds 180 -- python3
 Ran 31 tests in 14.610s — OK
 ```
 
+## Review correction evidence (round 3)
+
+Round 3 closes a further provenance-attestation gap. Plan source identity is now read only from saved NPZ provenance or the adjacent frozen study-contract provenance; an uncontracted top-level `inputs.json.source_revision` is ignored. Both plan and replay provenance statuses must explicitly equal `attested`, revisions must be known and exactly equal, and both sides must carry a nonempty mapping of nonempty string keys to attested digest strings. Empty `{}`, the string sentinel `unknown`, `historical_unknown`, or missing fields make identity inconclusive. If dirty hashes are attested on both sides, exact mapping equality is required. Regression fixtures cover empty mappings despite matching revisions, `historical_unknown` despite matching revisions and populated hashes, and a bare top-level plan revision; each preserves true exploratory completion while comparison remains inconclusive.
+
+The historical comparison JSON was regenerated from the same immutable runs. All four historical plan records lack plan source provenance/status and nonempty dirty-hash attestations; replay provenance status is `historical_unknown` and its dirty hashes are empty. Thus every row remains `exploratory_completion: true`, `comparison_status: inconclusive`; pair identity is inconclusive. No plan revision or hashes have been inferred.
+
+Focused watchdog validation for round 3:
+
+```text
+PYTHONPATH=src:. python3 tools/run/run_with_deadline.py --seconds 180 -- python3 -m unittest tests.test_yaw_planning_replay tests.test_yaw_replay_binding tests.test_yaw_replay_metrics tests.test_yaw_lap_suite tests.test_yaw_lap_artifact tests.test_yaw_aware_record_path -q
+Ran 34 tests in 14.354s — OK
+```
+
 No physical replay was repeated and no timeout/failure was retried. Task 7 remains spatially inconclusive; no geometry/optimizer convergence, transient optimality, or reliable-pipeline claim follows.

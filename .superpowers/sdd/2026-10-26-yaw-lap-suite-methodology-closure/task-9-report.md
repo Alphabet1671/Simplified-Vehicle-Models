@@ -8,53 +8,63 @@ The legacy OCP and strict map/mask/tolerance semantics were not changed. Existin
 
 ## Saved inputs, provenance, and matched comparisons
 
-Map identity for all plans: `f8658cafbd35dc60cd195153ca4761db21d9a9d8b4819f1112a4f46ad7322419`. Track identities are preserved in original inputs. The exact named historical optimized plans are `runs/yaw_lap_suite/mis-line-40m-retained/plan.npz` and `runs/yaw_lap_suite/fsc-line-40m-grid2m/plan.npz`; their matched fixed comparators are the 2 m plans `runs/yaw_lap_suite/mis-fixed-2m/plan.npz` and `runs/yaw_lap_suite/fsc-fixed-2m/plan.npz` (not the 1 m historical baselines). Each historical plan was loaded and strictly revalidated by the replay runner against its map and track identity.
+Map identity for all plans: `f8658cafbd35dc60cd195153ca4761db21d9a9d8b4819f1112a4f46ad7322419`. The exact historical optimized plans are `runs/yaw_lap_suite/mis-line-40m-retained/plan.npz` and `runs/yaw_lap_suite/fsc-line-40m-grid2m/plan.npz`; matched fixed comparators are 2 m: `runs/yaw_lap_suite/mis-fixed-2m/plan.npz` and `runs/yaw_lap_suite/fsc-fixed-2m/plan.npz`. Each plan was loaded and strictly revalidated by replay against map/track identity. Replay used `run_with_deadline.py --seconds 1500`, duration 150 s, cooperative 1200 s, BDF, rtol `1e-6`, atol `1e-8`, max step `0.05`, and model-aware controller. The initial-state policy is the plant initialized from the bound plan’s first speed; resulting numerical initial states differ by plan. Historical plan-time package, thread/source provenance remains unavailable rather than inferred.
 
-All four primary replay processes used `tools/run/run_with_deadline.py --seconds 1500`, duration 150 s, cooperative 1200 s, BDF, rtol `1e-6`, atol `1e-8`, max step `0.05`, and the model-aware controller. Their per-run recorded initial states are available in each run's `inputs.json`; the initial-state policy is identical in code (plant initialized from each bound plan's first speed), while actual numerical initial states differ by plan and are not claimed identical. Missing historical values remain unknown; no provenance was backfilled. The original historical plans predate closure contracts, so their absent historical source/package/thread provenance remains unknown/inconclusive.
-
-| Track | Plan/controller | Planned lap (s) | Driven lap (s) | Speed RMS / max abs (m/s) | Lateral RMS / max abs (m) | Realized throttle saturation fraction | Solver validation | Center / footprint / between-step |
+| Track | Plan/controller | Planned s | Driven s | Speed RMS/max abs m/s | Lateral RMS/max abs m | Realized throttle saturation fraction | Solver validation | Center / footprint / between-step |
 |---|---|---:|---:|---:|---:|---:|---|---|
-| MIS | optimized line / model-aware | 60.58923 | 61.33835 | 0.31929 / 0.81770 | 0.06345 / 0.16293 | 0.18682 | complete | contained / unknown (wheel-contact fail) / false |
-| MIS | fixed 2 m / model-aware | 61.47060 | 62.19915 | 0.30429 / 0.84442 | 0.06003 / 0.15482 | 0.15214 | complete | contained / unknown (wheel-contact fail) / false |
-| FSC | optimized line / model-aware | 51.16844 | 51.83038 | 0.32368 / 0.91454 | 0.07510 / 0.18244 | 0.15239 | complete | contained / unknown (wheel-contact fail) / false |
-| FSC | fixed 2 m / model-aware | 51.91682 | 52.57516 | 0.31188 / 0.68035 | 0.07294 / 0.17691 | 0.13800 | complete | contained / unknown (wheel-contact fail) / false |
+| MIS | optimized / model-aware | 60.58923 | 61.33835 | .31929/.81770 | .06345/.16293 | .18682 | complete | contained / unknown (wheel contact fail) / false |
+| MIS | fixed 2 m / model-aware | 61.47060 | 62.19915 | .30429/.84442 | .06003/.15482 | .15214 | complete | contained / unknown (wheel contact fail) / false |
+| FSC | optimized / model-aware | 51.16844 | 51.83038 | .32368/.91454 | .07510/.18244 | .15239 | complete | contained / unknown (wheel contact fail) / false |
+| FSC | fixed 2 m / model-aware | 51.91682 | 52.57516 | .31188/.68035 | .07294/.17691 | .13800 | complete | contained / unknown (wheel contact fail) / false |
 
-Optimized minus fixed driven-time deltas are -0.86080 s for MIS (-1.38%) and -0.74478 s for FSC (-1.42%). This is a measured exploratory replay trade-off, not a universal improvement or convergence result. In both cases tracking speed/lateral RMS is slightly worse for optimized, while maximum speed error is smaller for MIS but larger for FSC. Requested and realized controls are distinct in the saved record; only realized saturation fractions are shown here. Brake and steering-rate realized saturation fractions are zero for these runs.
+Optimized-minus-fixed driven-time deltas: MIS -0.86080 s (-1.38%); FSC -0.74478 s (-1.42%). This is an exploratory measured replay trade-off only. Optimized speed/lateral RMS errors are modestly higher in both pairs; maximum speed error is lower for MIS and higher for FSC. Requested and realized commands are distinct. Brake and steering-rate saturation are zero in replay summaries; full footprint clearance is not certified.
 
-All centerline sampled checks are true. Four-wheel contact sample checks report negative clearance: MIS optimized -14.307 m at 1.729 s and fixed -14.192 m at 1.766 s; FSC optimized -2.411 m at 19.898 s and fixed -2.039 m at 20.086 s. These are conditional on assumed edge provenance. Whole-body envelope data are unavailable; footprint status remains `unknown`, and between-step containment is false. Therefore center containment must not be restated as vehicle footprint containment.
+Wheel contact sample minimum clearance is MIS optimized -14.307 m at 1.729 s, MIS fixed -14.192 m at 1.766 s; FSC optimized -2.411 m at 19.898 s, FSC fixed -2.039 m at 20.086 s. Edge identity is nearest-left/right with assumed/conditional edge provenance. Whole-body envelope inputs are unavailable and between-step containment is false.
 
-Full machine-readable comparison and provenance binding is in `runs/yaw_lap_suite/closure-v1/comparison-report.json`.
+## Integration sensitivity
 
-## Integration sensitivity repeats
+MIS optimized/fixed pair was repeated at max step `.025`; all completed and solver validated. Driven time and lateral RMS/max were unchanged at printed precision (optimized 61.3383533 s, .0634499/.162932 m; fixed 62.1991532 s, .0600300/.154821 m), within the 0.1% / 0.005 m / 0.01 m limits. FSC repeat was not run; its exploratory change is not claimed insensitive. No Task 7/8 final matrix was attempted.
 
-The actual MIS optimized and matched fixed replay results were repeated with maximum step `0.025` under the same 1500/1200 limits. Both completed solver validation. Driven times and lateral metrics were bit-identical at printed precision to the 0.05 s runs: optimized 61.3383533 s and lateral RMS/max 0.0634499/0.162932 m; fixed 62.1991532 s and 0.0600300/0.154821 m. Changes are 0%, passing the requested ≤0.1% time, ≤0.005 m RMS lateral, and ≤0.01 m max lateral criteria for the MIS pair. Thus the MIS driven-time gain exceeds observed integration sensitivity, but remains an exploratory paired result and does not cure the containment issue.
+## Yaw approximation: corrected method
 
-FSC 0.025 s repeats were not run: Task 7/8 dependent/final convergence work is expressly not authorized, and the task’s conditional repeat wording requires an actual relevant completed replay that can be assessed; the MIS pair is the relevant repeat for the primary interpreted trade-off. FSC comparison remains exploratory and its smaller gain is not declared integration-insensitive.
+The first review identified an invalid assumption in the original diagnostic: `acceleration-longitudinal` is body-axis acceleration, not tangential acceleration. The corrected tool computes scalar `a_t=(v_x*a_x+v_y*a_y)/V` from recorded body-frame velocity and both body accelerations, with `V=hypot(v_x,v_y)`. It also reports body yaw-rate residual `r-Vκ` separately from course-rate residual `r+beta_dot-Vκ`, with `beta=atan2(v_y,v_x)`. Curvature is mapped to monotonically **unwrapped** physical station; periodic seam neighbors are computed with a nonuniform three-point finite difference using the actual lap length and adjacent physical-distance spacings. The main trace is uniformly resampled in time at 0.01 s. Filter is periodic 11-sample boxcar (0.11 s). Residual stats are unweighted sample RMS, absolute P95 and absolute maximum over that resampled trace. Results are kinematic approximations; no residual by itself establishes map invalidity.
 
-## Yaw approximation diagnostic
+The analytic zero-sideslip constant-radius test gives zero residual. The sinusoidal-beta regression explicitly checks `beta_dot` and analytic yaw acceleration (`r=Vκ-beta_dot`, `r_dot=-beta_ddot`, constant V/κ, zero `a_t`), with second-order centered derivative tolerance. Nonuniform physical mesh regression checks periodic derivative. These tests avoid assuming body longitudinal acceleration equals tangential acceleration.
 
-The audit computes `beta=atan2(v_y,v_x)` from the recorded body-slip channel, course rate `r + beta_dot`, total speed `V=hypot(v_x,v_y)`, and `V*kappa`. Yaw-acceleration path demand is `a_t*kappa + V**2*kappa_prime`, where `a_t` is longitudinal tangential acceleration and `kappa_prime` uses physical station distance. The diagnostic trace is uniformly resampled in time at 0.01 s; curvature is interpolated on saved physical path distance, derivatives are centered, and residual summaries include raw RMS/P95/max and a periodic 11-sample boxcar filtered form. Filtered results are stored in JSON. The resampled distance wraps at the lap seam; the diagnostic uses periodic centered beta derivatives and distance-aware curvature derivative. These kinematic residuals do not establish force/moment inconsistency or map invalidity.
+### Residual summaries (raw and filtered)
 
-| Track/plan | `course_rate - Vκ` raw RMS / P95 / max (rad/s) | `yaw_acceleration - path demand` raw RMS / P95 / max (rad/s²) |
-|---|---|---|
-| MIS optimized | 0.10487 / 0.17147 / 3.91264 | 0.88470 / 1.86285 / 14.62305 |
-| MIS fixed 2 m | 0.10001 / 0.17699 / 3.45234 | 0.88191 / 1.87835 / 15.20287 |
-| FSC optimized | 0.09306 / 0.16834 / 1.05313 | 1.65895 / 2.17991 / 22.68459 |
-| FSC fixed 2 m | 0.09324 / 0.17146 / 1.03431 | 1.63261 / 2.20671 / 22.51642 |
+Format per cell: `RMS / abs-P95 / abs-max`; units for rate are rad/s, acceleration rad/s².
 
-Analytic tests cover a constant-radius zero-sideslip case (zero residual to numerical precision) and a sinusoidal-beta case where including `beta_dot` recovers course-rate demand while body yaw rate differs. The diagnostic output explicitly labels itself not force-balance proof. The current persisted channel set has yaw acceleration, body-frame acceleration, tire forces, and tire aligning moments, but this report does not claim closure of total net yaw moment; force/moment consistency remains unknown and requires a separate signed frame-consistent sum.
+| Track/plan | Body `r−Vκ`, raw; filtered | Course `r+β̇−Vκ`, raw; filtered | Yaw acceleration minus `a_tκ+V²κ′`, raw; filtered |
+|---|---|---|---|
+| MIS optimized | .09988/.21087/.45948; .09650/.20372/.43882 | .10487/.17147/3.91264; .08027/.16649/.69104 | .88105/1.84072/14.84539; .76480/1.65433/3.66468 |
+| MIS fixed 2 m | .10147/.22572/.48116; .09817/.22018/.46211 | .10001/.17699/3.45233; .07984/.17093/.61346 | .87781/1.86972/15.31929; .76360/1.64362/3.50228 |
+| FSC optimized | .10424/.18768/.95675; .09368/.18069/.67428 | .09306/.16834/1.05313; .08090/.15439/.68327 | 1.65843/2.18970/22.68457; 1.19926/1.79666/13.52028 |
+| FSC fixed 2 m | .10332/.19271/.95337; .09295/.17966/.67158 | .09324/.17146/1.03431; .08157/.16140/.68524 | 1.63143/2.20142/22.51639; 1.18719/1.84887/13.61977 |
 
-The forward traces expose available channels but no interval/curvature-reversal attribution has been added to this closure artifact. We therefore do not mark specific limit/residual intervals as cause of the observed tracking difference. No global speed derating was applied.
+Filtered values use the periodic 11-sample `.11 s` boxcar described above. Full evidence preserves the same fields per run in `runs/yaw_lap_suite/closure-v1/comparison-report.json`.
 
-## Tooling, tests, and preserved outcomes
+## Available interval and force/moment evidence; limits
 
-Extended `yaw_replay_metrics.py` with periodic centered derivatives and `yaw_approximation_diagnostics`; added `tools/reports/compare_yaw_planning_replay.py` and tests for analytic cases, irregular-grid rejection, and missing-evidence handling. The comparison tool retains each plan’s recorded inputs/summary; missing replay provenance is `unknown` and prevents success classification.
+Structured diagnostics now list (i) throttle/brake saturation intervals where the necessary realized channels and a meaningful bound are present, (ii) intervals with `|r+beta_dot−Vκ| > 0.05 rad/s` lasting at least 0.1 s, an explicitly exploratory marker (not an acceptance threshold), and (iii) curvature sign-reversal event times derived from the plan. The payload states that no pointwise reference-tracking error channel is stored in the run record, so temporal correlation with tracking-failure intervals cannot be computed; aggregate tracking metrics remain in the row. It explicitly lists steering-rate-limit attribution as unavailable because the maximum-rate bound is not recorded in those replay inputs/channels. It also states continuous envelope feasibility is not certified. Thus interval lists are descriptive, not claims that every saturation arose on a continuously feasible envelope segment.
 
-Focused watchdog validation:
+Tire force X/Y and aligning-moment channels plus wheel body positions are present. The tool computes and reports the instantaneous signed tire-generated yaw-moment sum `Σ(x_i F_yi − y_i F_xi + M_zi)` and its RMS as an available partial consistency quantity. It does **not** call that dynamics closure: yaw inertia `I_z` is absent from run record channel/vehicle geometry payload, so the required comparison to `I_z*r_dot` and remaining applied moments cannot be made. Structured reasons enumerate this missing term. No force-balance or map-invalidity conclusion is made.
+
+## Identity/status gates and artifacts
+
+The comparison tool now binds case track to each plan’s recorded track, checks plan file and array digests from replay provenance, confirms replay plan path, map identity, track identity and source revision. Any missing/mismatched identity yields `comparison_status: inconclusive`; `exploratory_completion` remains separately true for an actually completed, solver-validated lap. It does not conflate completion with pairing success or containment. The corrected JSON has identity status `pass` for both pairs; historical unknown fields remain explicit.
+
+The report JSON also provides detailed actuator/residual interval lists, curvature-reversal events, moment evidence, filter metadata and raw/filtered statistics. The ignored worktree report is this file; source/test/report paths were committed, generated replay outputs remain local evidence.
+
+## Review correction evidence (round 1)
+
+Review findings were addressed on top of commit `5301ae3` without new physical runs. Existing immutable run records were reused to regenerate the comparison JSON. Changes: project-body acceleration onto velocity for `a_t`; distinguish `r−Vκ` from `r+beta_dot−Vκ`; unwrap seam-crossing station and pass actual lap period; use nonuniform periodic three-point curvature differentiation; add filtered residual table for all cases; expose throttle/brake intervals, large sideslip-rate residual intervals, curvature reversal timestamps and explicit unavailable correlation/limit fields; compute the recorded tire yaw-moment sum while withholding full dynamics closure; enforce plan/map/track/revision/hash identities and separate exploratory completion from comparison status; extend analytic sinusoidal-beta, nonuniform periodic derivative and mismatch regressions. The previous `project_xy_to_reference` formatting was restored to avoid unrelated nonfunctional churn.
+
+Focused validation command, enforced by the process watchdog:
 
 ```text
 PYTHONPATH=src:. python3 tools/run/run_with_deadline.py --seconds 180 -- python3 -m unittest tests.test_yaw_planning_replay tests.test_yaw_replay_binding tests.test_yaw_replay_metrics tests.test_yaw_lap_suite tests.test_yaw_lap_artifact tests.test_yaw_aware_record_path -q
-Ran 24 tests in 14.337s — OK
+Ran 29 tests in 14.395s — OK
 ```
 
-Primary and repeat replay process exits were 0. No timed-out or failed replay was retried. No Task 7/8 final matrix or geometry selection was attempted. The measured optimized-line runs cannot validate transient optimality, and capability-map feasibility is not a transient optimality statement.
+No physical replay was repeated and no timeout/failure was retried. Task 7 remains spatially inconclusive; no geometry/optimizer convergence, transient optimality, or reliable-pipeline claim follows.

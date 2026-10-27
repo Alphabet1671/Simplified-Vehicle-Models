@@ -3,7 +3,8 @@ import tempfile
 import json
 from pathlib import Path
 import numpy as np
-from simplified_vehicle_models.planning.yaw_replay_metrics import yaw_approximation_diagnostics
+from simplified_vehicle_models.planning.yaw_replay_metrics import yaw_approximation_diagnostics, tangential_acceleration_from_body, periodic_centered_derivative, _periodic_nonuniform_derivative
+from tools.reports.compare_yaw_planning_replay import replay_info
 from tools.reports.compare_yaw_planning_replay import plan_info, replay_info
 
 class YawApproximationTests(unittest.TestCase):
@@ -24,6 +25,47 @@ class YawApproximationTests(unittest.TestCase):
 
     def test_nonuniform_spacing_rejected(self):
         with self.assertRaises(ValueError): yaw_approximation_diagnostics([0,1,3],[0,1,3],[1,1,1],[0,0,0],[0,0,0],[0,0,0],[0,0,0],[0,0,0])
+
+    def test_sinusoidal_beta_derivative_and_analytic_yaw_accel(self):
+        n=2048; dt=.01; t=np.arange(n)*dt; period_t=n*dt; v=17.; beta=.12*np.sin(2*np.pi*t/period_t)
+        beta_dot=.12*(2*np.pi/period_t)*np.cos(2*np.pi*t/period_t)
+        beta_ddot=-.12*(2*np.pi/period_t)**2*np.sin(2*np.pi*t/period_t)
+        k=.012; r=v*k-beta_dot; rdot=-beta_ddot
+        at=np.zeros(n); station=np.arange(n)*v*dt; lap=v*period_t
+        out=yaw_approximation_diagnostics(t,station,v*np.cos(beta),v*np.sin(beta),r,rdot,at,np.full(n,k),lap_length=lap)
+        np.testing.assert_allclose(out['beta_dot_rad_s'],beta_dot,atol=1e-6)
+        self.assertLess(out['raw']['course_rate_minus_Vkappa']['rms'],1e-6)
+        self.assertLess(out['raw']['yaw_acceleration_minus_path_demand']['rms'],.009)
+
+    def test_wrapped_station_unwrap_and_nonuniform_periodic_derivative(self):
+        # Lift a seam-crossing trace to an unwrapped coordinate, then derivative
+        # of periodic sin(2πs/L) on a nonuniform mesh should remain accurate.
+        period=12.; wrapped=np.array([9.,10.,11.,0.2,1.5,3.]); unwrapped=np.unwrap(wrapped*2*np.pi/period)*period/(2*np.pi)
+        self.assertTrue(np.all(np.diff(unwrapped)>0))
+        s=np.array([0.,.7,2.1,4.,6.8,9.2]); values=np.sin(2*np.pi*s/period)
+        d=_periodic_nonuniform_derivative(values,s,period)
+        exact=2*np.pi/period*np.cos(2*np.pi*s/period)
+        self.assertLess(np.max(np.abs(d-exact)),.15)
+
+    def test_tangential_acceleration_projects_body_frame(self):
+        vx=np.array([10*np.cos(.4)]); vy=np.array([10*np.sin(.4)])
+        at=tangential_acceleration_from_body(vx,vy,[2*np.cos(.4)-3*np.sin(.4)],[2*np.sin(.4)+3*np.cos(.4)])
+        np.testing.assert_allclose(at,[2.])
+
+    def test_yaw_acceleration_withheld_without_tangential_acceleration(self):
+        t=np.arange(8)*.1; s=np.arange(8)*.2
+        result=yaw_approximation_diagnostics(t,s,np.ones(8)*2,np.zeros(8),np.zeros(8),np.zeros(8),None,np.zeros(8))
+        self.assertEqual(result['yaw_accel_residual_status'],'unknown_tangential_acceleration_unavailable')
+        self.assertNotIn('yaw_acceleration_minus_path_demand',result['raw'])
+
+    def test_identity_mismatch_inconclusive(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td); (root/'summary.json').write_text(json.dumps({'lap_completed':True,'solver_validation_complete':True}))
+            (root/'inputs.json').write_text(json.dumps({'args':{'track':'wrong','plan':'other.npz'},'map_identity':'wrong','study_contract':{'provenance':{'plan_array_digest':'wrong','source_revision':'unknown'}}}))
+            row=replay_info(root,'plan.npz',expected_track='expected',expected_map='map',plan_digest='digest')
+            self.assertTrue(row['exploratory_completion'])
+            self.assertEqual(row['comparison_status'],'inconclusive')
+            self.assertEqual(row['identity_checks']['status'],'inconclusive_or_mismatch')
 
     def test_missing_evidence_is_inconclusive_unknown(self):
         with tempfile.TemporaryDirectory() as td:

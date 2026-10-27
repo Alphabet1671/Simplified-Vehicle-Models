@@ -22,6 +22,10 @@ __pycache__/
 .ipynb_checkpoints/
 .DS_Store
 
+# Licensed TTC measurements and local correlation artifacts; never commit.
+/private/ttc/
+/tire_fits_out/
+
 # Private real-car source files; never commit this directory.
 /IEM24 Files/
 *.xlsx

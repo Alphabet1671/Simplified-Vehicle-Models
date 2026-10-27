@@ -9,6 +9,16 @@ TRANSIENT_NAMES = ('longitudinal_length_scale', 'lateral_length_scale', 'trail_p
 STEADY_SCALARS = tuple(f.name for f in fields(UniTireSimpleParameters) if f.name not in {*VECTOR_DEGREES, 'effective_radius'})
 CANONICAL_STEADY_NAMES = (*STEADY_SCALARS, *VECTOR_FIELDS)
 
+# MATLAB source struct fields mapped to the canonical XML/parameter API. These
+# tables are intentionally independent from exporter-private implementation data.
+MAT_SCALAR_FIELDS = {
+    'Fz_rated':'f_z_rated','Kcx':'k_cx','Kcy':'k_cy','E1':'e_1','mu0x':'mu_0_x','musx':'mu_s_x','hx':'h_x','vmx':'v_m_x',
+    'mu0y':'mu_0_y','musy':'mu_s_y','hy':'h_y','vmy':'v_m_y','K11':'k_11','K12':'k_12','K13':'k_13','K21':'k_21','K22':'k_22','K23':'k_23',
+    'MxR1':'m_x_r_1','MxR2':'m_x_r_2','MxR3':'m_x_r_3','R1':'r_1','R2':'r_2','R3':'r_3','Fy_shift0':'f_y_shift_0','Fy_shiftFz':'f_y_shift_fz',
+    'KRl0':'k_rl_0','KRl1':'k_rl_1','KRl2':'k_rl_2','frr0':'f_rr_0','frr1':'f_rr_1','frr2':'f_rr_2','hrr':'h_rr','omega_cr':'omega_cr',
+    'omega_eps':'omega_eps','vroll_min':'vroll_min','force_eps':'force_eps','stiff_eps':'stiff_eps','slip_eps':'slip_eps'}
+MAT_VECTOR_FIELDS = {'Kx':'k_x','Ky':'k_y','Dx0':'d_x_0','De':'d_e','D1':'d_1','D2':'d_2'}
+
 @dataclass(frozen=True)
 class ParameterSpec:
     name: str

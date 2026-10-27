@@ -4,6 +4,7 @@ import unittest
 import numpy as np
 
 from tools.tire_gui.data import normalize_channels
+from tools.tire_gui.parameters import MAT_SCALAR_FIELDS, MAT_VECTOR_FIELDS, VECTOR_DEGREES, flatten_steady, unflatten_steady
 from tools.tire_gui.model import import_mat_seed, load_snapshot, predict_steady, with_parameter
 from tools.tire_gui.contracts import SampleSet
 from simplified_vehicle_models.tires.unitire_simple import evaluate_unitire, loaded_radius
@@ -32,6 +33,17 @@ class ModelTests(unittest.TestCase):
     def test_canonical_vectors_and_prediction_match_evaluator(self):
         snap = load_snapshot(STEADY)
         self.assertEqual(tuple(snap.values[f'k_x_{i}'] for i in (2, 1, 0)), snap.steady.k_x)
+        precise = dict(snap.values)
+        vector_names = {'k_x_2': 7660.409078173157, 'k_x_1': 20000.000000000004, 'k_x_0': 8191.007990757679,
+                        'k_y_2': 654.9807055362453, 'k_y_1': 19999.99886208581, 'k_y_0': 10000.000000000002,
+                        'd_x_0_1': .017161153667128679, 'd_x_0_0': .010864401757777131,
+                        'd_e_1': .000204667577986679, 'd_e_0': -.000370467684249365,
+                        'd_1_1': .007939258612776069, 'd_1_0': .18306301414726702,
+                        'd_2_1': .06468408760663875, 'd_2_0': .03685184791816076}
+        precise.update(vector_names)
+        round_tripped = unflatten_steady(precise, snap.steady)
+        flattened = flatten_steady(round_tripped)
+        for name, value in vector_names.items(): self.assertEqual(flattened[name], value)
         samples = SampleSet(np.array([.02, -.03]), np.array([.01, 0]), np.array([500., 1100.]), np.zeros(2), np.zeros(2, dtype=int))
         pred = predict_steady(snap, samples, 40.193 / 3.6)
         from simplified_vehicle_models.tires.unitire_simple import loaded_radius
@@ -48,19 +60,30 @@ class ModelTests(unittest.TestCase):
             mat_path = Path(td) / 'seed.mat'
             tire = {}
             # MATLAB exporter field names, all required supported scalars and vectors.
-            fields = {'Fz_rated':'f_z_rated','Kcx':'k_cx','Kcy':'k_cy','E1':'e_1','mu0x':'mu_0_x','musx':'mu_s_x','hx':'h_x','vmx':'v_m_x','mu0y':'mu_0_y','musy':'mu_s_y','hy':'h_y','vmy':'v_m_y','K11':'k_11','K12':'k_12','K13':'k_13','K21':'k_21','K22':'k_22','K23':'k_23','MxR1':'m_x_r_1','MxR2':'m_x_r_2','MxR3':'m_x_r_3','R1':'r_1','R2':'r_2','R3':'r_3','Fy_shift0':'f_y_shift_0','Fy_shiftFz':'f_y_shift_fz','KRl0':'k_rl_0','KRl1':'k_rl_1','KRl2':'k_rl_2','frr0':'f_rr_0','frr1':'f_rr_1','frr2':'f_rr_2','hrr':'h_rr','omega_cr':'omega_cr','omega_eps':'omega_eps','vroll_min':'vroll_min','force_eps':'force_eps','stiff_eps':'stiff_eps','slip_eps':'slip_eps'}
-            from dataclasses import fields as dataclass_fields
-            names = {f.name for f in dataclass_fields(load_snapshot(STEADY).steady)} - {'effective_radius','k_x','k_y','d_x_0','d_e','d_1','d_2'}
             values = load_snapshot(STEADY).values
-            reverse = {v:k for k,v in fields.items()}
-            for name in names: tire[reverse[name]] = values[name]
-            for matlab, canonical in [('Kx','k_x'),('Ky','k_y'),('Dx0','d_x_0'),('De','d_e'),('D1','d_1'),('D2','d_2')]:
-                degrees = [2,1,0] if canonical in ('k_x','k_y') else [1,0]
-                tire[matlab] = np.array([values[f'{canonical}_{d}'] for d in degrees])
+            source_scalars = {source: values[canonical] for source, canonical in MAT_SCALAR_FIELDS.items()}
+            source_vectors = {}
+            vector_coefficients = {
+                'k_x': [7660.409078173157, 20000.000000000004, 8191.007990757679],
+                'k_y': [654.9807055362453, 19999.99886208581, 10000.000000000002],
+                'd_x_0': [.017161153667128679, .010864401757777131],
+                'd_e': [.000204667577986679, -.000370467684249365],
+                'd_1': [.007939258612776069, .18306301414726702],
+                'd_2': [.06468408760663875, .03685184791816076],
+            }
+            for canonical, coefficients in vector_coefficients.items():
+                source = next(key for key, value in MAT_VECTOR_FIELDS.items() if value == canonical)
+                source_vectors[source] = np.asarray(coefficients, dtype=np.float64)
+            tire.update(source_scalars)
+            tire.update(source_vectors)
             savemat(mat_path, {'tire': tire, 'fitData': {'ignored': np.arange(3)}})
             imported = import_mat_seed(mat_path, load_snapshot(STEADY))
             self.assertEqual(imported.provenance['seed_kind'], 'requested MATLAB fit')
             self.assertNotIn('fitData', imported.values)
+            for vector, coefficients in vector_coefficients.items():
+                np.testing.assert_array_equal(getattr(imported.steady, vector), coefficients)
+                for degree, coefficient in zip(VECTOR_DEGREES[vector], coefficients):
+                    self.assertEqual(imported.values[f'{vector}_{degree}'], float(coefficient))
 
     def test_alias_channel_conversion(self):
         normalized = normalize_channels({'SA': np.array([1.]), 'FZ': np.array([-10.]), 'SL': np.array([.2])}, {'SA':'deg','FZ':'N','SL':'dimensionless'})

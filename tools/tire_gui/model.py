@@ -9,7 +9,15 @@ from simplified_vehicle_models.xml.loader import load_model
 from simplified_vehicle_models.tires.unitire_simple import compile_unitire_simple, evaluate_unitire, loaded_radius
 from simplified_vehicle_models.tires.unitire_transient import TransientTireParameters, compile_unitire_transient
 from .contracts import ModelSnapshot, SampleSet
-from .parameters import CANONICAL_STEADY_NAMES, TRANSIENT_NAMES, flatten_steady, unflatten_steady
+from .parameters import (
+    CANONICAL_STEADY_NAMES,
+    MAT_SCALAR_FIELDS,
+    MAT_VECTOR_FIELDS,
+    TRANSIENT_NAMES,
+    VECTOR_DEGREES,
+    flatten_steady,
+    unflatten_steady,
+)
 
 
 def _fingerprint(values):
@@ -86,14 +94,14 @@ def import_mat_seed(path: Path, template: ModelSnapshot) -> ModelSnapshot:
     mat = loadmat(Path(path), squeeze_me=True, struct_as_record=False)
     if 'tire' not in mat: raise ValueError('MAT seed is missing tire structure')
     tire = mat['tire']; values = dict(template.values)
-    scalar_names = {'Fz_rated':'f_z_rated','Kcx':'k_cx','Kcy':'k_cy','E1':'e_1','mu0x':'mu_0_x','musx':'mu_s_x','hx':'h_x','vmx':'v_m_x','mu0y':'mu_0_y','musy':'mu_s_y','hy':'h_y','vmy':'v_m_y','K11':'k_11','K12':'k_12','K13':'k_13','K21':'k_21','K22':'k_22','K23':'k_23','MxR1':'m_x_r_1','MxR2':'m_x_r_2','MxR3':'m_x_r_3','R1':'r_1','R2':'r_2','R3':'r_3','Fy_shift0':'f_y_shift_0','Fy_shiftFz':'f_y_shift_fz','KRl0':'k_rl_0','KRl1':'k_rl_1','KRl2':'k_rl_2','frr0':'f_rr_0','frr1':'f_rr_1','frr2':'f_rr_2','hrr':'h_rr','omega_cr':'omega_cr','omega_eps':'omega_eps','vroll_min':'vroll_min','force_eps':'force_eps','stiff_eps':'stiff_eps','slip_eps':'slip_eps'}
-    for source, target in scalar_names.items():
+    for source, target in MAT_SCALAR_FIELDS.items():
         if not hasattr(tire, source): raise ValueError(f'MAT tire is missing {source}')
         values[target] = float(np.asarray(getattr(tire, source)).reshape(()))
-    for source, target, degree in [('Kx','k_x',2),('Ky','k_y',2),('Dx0','d_x_0',1),('De','d_e',1),('D1','d_1',1),('D2','d_2',1)]:
+    for source, target in MAT_VECTOR_FIELDS.items():
+        degrees = VECTOR_DEGREES[target]
         coefficients = np.asarray(getattr(tire, source), dtype=float).reshape(-1)
-        if len(coefficients) != degree+1: raise ValueError(f'MAT {source} must have {degree+1} coefficients')
-        for i, coefficient in enumerate(coefficients): values[f'{target}_{degree-i}'] = float(coefficient)
+        if len(coefficients) != len(degrees): raise ValueError(f'MAT {source} must have {len(degrees)} coefficients')
+        for degree, coefficient in zip(degrees, coefficients): values[f'{target}_{degree}'] = float(coefficient)
     steady = unflatten_steady({n:values[n] for n in CANONICAL_STEADY_NAMES}, template.steady)
     provenance = dict(template.provenance); provenance.update(seed_kind='requested MATLAB fit', steady_source=str(Path(path)), transient_fit_status='provisional')
     statuses = dict(template.parameter_status); statuses.update({n:'requested MATLAB fit' for n in CANONICAL_STEADY_NAMES})

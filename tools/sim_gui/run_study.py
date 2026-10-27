@@ -125,13 +125,17 @@ def run_study(definition: StudyDefinition, output_root: Path = REPOSITORY_ROOT /
             return_code = None
             with (attempt / "run.log").open("w") as log:
                 process = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT,
-                                           cwd=REPOSITORY_ROOT, env=child_environment())
+                                           cwd=REPOSITORY_ROOT, env=child_environment(), start_new_session=True)
                 registry.add(process)
                 try:
                     return_code = process.wait(timeout=item.timeout_seconds)
                 except subprocess.TimeoutExpired:
                     timed_out = True
-                    process.kill()
+                    import signal
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
                     return_code = process.wait()
                 finally:
                     registry.discard(process)

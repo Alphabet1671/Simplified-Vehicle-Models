@@ -486,35 +486,41 @@ class ExecutionTests(unittest.TestCase):
         self.assertEqual(parse_progress('{"rhs_time": 400}', 300.0), 1.0)
         self.assertIsNone(parse_progress('not json', 300.0))
 
-    def test_prepare_case_preflight_rejects_point_mass_before_materializing(self):
+    def test_prepare_case_no_longer_preflight_blocks_point_mass(self):
         from tools.sim_gui.execute import prepare_case
         definition = StudyDefinition("point", "missing.xml", "track.xml", "14dof-simple", {},
                                      RunSettings(solver_kind="point-mass"), "one-at-a-time", ())
         case = CaseSpec("case_000", "baseline", "14dof-simple", "track.xml", {}, {})
+        source = REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_14dof_simple.xml"
+        configuration = VehicleConfiguration.open(source)
+        definition = StudyDefinition("point", source.as_posix(), "models/tracks/2024_michigan_endurance_closed.xml",
+                                     "14dof-simple", {k: p.relative_to(REPOSITORY_ROOT).as_posix() for k,p in configuration.choices.items()},
+                                     RunSettings(solver_kind="point-mass"), "one-at-a-time", ())
         with tempfile.TemporaryDirectory() as folder:
-            with self.assertRaisesRegex(ValueError, "point-mass adaptation unavailable"):
-                prepare_case(Path(folder), definition, case)
-            self.assertFalse((Path(folder) / "cases").exists())
+            prepared = prepare_case(Path(folder), definition, case)
+            contract = json.loads((prepared.directory / "case.json").read_text())
+            self.assertEqual(contract["resolution_mapping"]["source_model"], "14dof-simple")
+            self.assertEqual(contract["resolution_mapping"]["solver_kind"], "point-mass")
+            self.assertEqual(contract["resolution_mapping"]["solution_model"], "point-mass")
+            self.assertEqual(prepared.solver_kind, "point-mass")
 
-    def test_child_command_uses_yaw_suite_and_exact_map(self):
+    def test_child_command_uses_adapter_and_exact_case_binding(self):
         from tools.sim_gui.execute import PreparedCase
         argv = yaw_runner_argv(RunSettings(yaw_map="/tmp/completed.npz"), Path("track.xml"))
         prepared = PreparedCase(Path('/tmp/case'), Path('/tmp/formulation.xml'), Path('/tmp/vehicle.xml'), argv)
         command = child_command(prepared, Path('/tmp/case/attempt_A'))
-        self.assertTrue(command[2].endswith("tools/run/run_yaw_lap_suite.py"))
-        self.assertEqual(command[command.index("--yaw-map") + 1], "/tmp/completed.npz")
-        self.assertEqual(command[-2:], ["--output-dir", "/tmp/case/attempt_A"])
+        self.assertTrue(command[2].endswith("tools/sim_gui/run_yaw_case.py"))
+        self.assertEqual(command[-4:], ["--case-dir", "/tmp/case", "--child-attempt", "/tmp/case/attempt_A"])
         self.assertNotIn("run_iem24_forward_driver", " ".join(command))
-        with self.assertRaises(ValueError):
-            child_command(PreparedCase(prepared.directory, prepared.formulation, prepared.vehicle, []), Path('/tmp/a'))
+        bare = child_command(PreparedCase(prepared.directory, prepared.formulation, prepared.vehicle, []), Path('/tmp/a'))
+        self.assertTrue(bare[2].endswith("tools/sim_gui/run_yaw_case.py"))
 
-    def test_point_mass_child_is_rejected_before_execution(self):
+    def test_point_mass_child_uses_same_case_adapter(self):
         from tools.sim_gui.execute import PreparedCase
-        argv = ["--model", "14dof-simple", "--track", "track.xml", "--planner", "live", "--record"]
-        prepared = PreparedCase(Path('/tmp/case'), Path('/tmp/formulation.xml'), Path('/tmp/vehicle.xml'), argv,
+        prepared = PreparedCase(Path('/tmp/case'), Path('/tmp/formulation.xml'), Path('/tmp/vehicle.xml'), [],
                                 model="point-mass", solver_kind="point-mass")
-        with self.assertRaisesRegex(ValueError, "point-mass adaptation unavailable"):
-            child_command(prepared, Path('/tmp/case/attempt_A'))
+        command = child_command(prepared, Path('/tmp/case/attempt_A'))
+        self.assertTrue(command[2].endswith("tools/sim_gui/run_yaw_case.py"))
 
     def test_finish_case_records_timeout_without_legacy_solver(self):
         from tools.sim_gui.execute import PreparedCase
@@ -531,13 +537,15 @@ class ExecutionTests(unittest.TestCase):
         from tools.sim_gui.execute import PreparedCase
         with tempfile.TemporaryDirectory() as d:
             prepared = PreparedCase(Path(d), Path(d) / 'f.xml', Path(d) / 'v.xml', ['--model', 'planar-7dof'])
-            for code, timed, cancelled, expected in ((0, False, False, 'completed'), (2, False, False, 'rejected'),
+            for code, timed, cancelled, expected in ((0, False, False, 'planned'), (2, False, False, 'rejected'),
                                                        (1, False, False, 'failed'), (0, True, False, 'timed_out'),
                                                        (0, False, True, 'cancelled')):
                 attempt = Path(d) / ('attempt_' + expected)
                 attempt.mkdir()
                 if code == 0 and not timed and not cancelled:
-                    (attempt / 'summary.json').write_text('{}')
+                    (attempt / 'summary.json').write_text('{"status":"planned","lap_completed":false}')
+                    (attempt / 'inputs.json').write_text('{}')
+                    (attempt / 'plan.npz').touch()
                 result = finish_case(prepared, attempt, return_code=code, timed_out=timed,
                                      cancelled=cancelled, wall_seconds=1.25, command=['cmd'])
                 self.assertEqual(result['status'], expected)

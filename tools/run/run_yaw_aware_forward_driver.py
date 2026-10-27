@@ -14,6 +14,7 @@ import math
 from collections.abc import Mapping
 from pathlib import Path
 import time
+import sys
 
 import numpy as np
 
@@ -31,8 +32,12 @@ DIAGNOSTIC_NONCLAIMS = {
 
 
 def prepare_output(path):
-    """Create a new output directory; never reuse/overwrite an existing one."""
+    """Create output, or accept an existing empty GUI attempt directory."""
     path = Path(path)
+    if path.exists():
+        if not path.is_dir() or any(path.iterdir()):
+            raise FileExistsError(f"output directory must be new or empty: {path}")
+        return path
     path.mkdir(parents=True, exist_ok=False)
     return path
 
@@ -94,6 +99,9 @@ def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--track", type=Path, required=True, help="signed XY track XML with left/right edges")
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--formulation", type=Path, default=PLANAR_FORMULATION,
+                        help="selected formulation used by the GUI adapter")
+    parser.add_argument("--solution-model", choices=("planar-7dof", "14dof-simple"), default="planar-7dof")
     parser.add_argument("--model", choices=("planar-7dof", "vertical-14dof"), default="planar-7dof")
     parser.add_argument("--map", choices=("no-tv", "physical-tv"), default="no-tv")
     parser.add_argument("--yaw-speed-points", type=int, default=8)
@@ -228,7 +236,7 @@ def record_metadata(args, track, vehicle, capability, plan, result):
         except ValueError:
             return str(path)
 
-    formulation = PLANAR_FORMULATION
+    formulation = Path(getattr(args, "formulation", PLANAR_FORMULATION)).expanduser().resolve()
     track_path = Path(args.track)
     sources = [formulation, track_path]
     data_path = None
@@ -303,7 +311,14 @@ def run(args):
 
     output = prepare_output(args.output_dir)
     started = time.perf_counter()
-    vehicle = compile_formulation(str(PLANAR_FORMULATION)).model
+    compiled_source = compile_formulation(str(Path(getattr(args, "formulation", PLANAR_FORMULATION)).expanduser().resolve())).model
+    if getattr(args, "solution_model", getattr(sys.modules[__name__], "PLANAR_SOLUTION_MODEL", "planar-7dof")) == "14dof-simple":
+        from simplified_vehicle_models.formulations.vertical_14dof import VerticalVehicleParameters
+        if not isinstance(compiled_source, VerticalVehicleParameters):
+            raise ValueError("selected 14dof-simple formulation did not compile as 14dof-simple")
+        vehicle = compiled_source.planar
+    else:
+        vehicle = compiled_source
     track = load_track(args.track)
     if track.path_coordinates is None:
         raise ValueError("track must provide signed XY centerline geometry")

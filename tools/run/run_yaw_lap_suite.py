@@ -51,6 +51,9 @@ def parse_args(argv=None):
     p.add_argument('--initial-state-overrides',type=Path,help='JSON dictionary of explicit state deltas for one replay')
     p.add_argument('--plant-variation',type=Path,help='JSON dictionary of declared actuator lag multipliers')
     add_yaw_map_options(p)
+    p.add_argument('--formulation',type=Path,default=Path('models/formulations/iem24_murphy_real_planar_7dof.xml'),
+                   help='explicit selected vehicle formulation; GUI supplies its variant')
+    p.add_argument('--solution-model',choices=('planar-7dof','14dof-simple'),default='planar-7dof')
     args=p.parse_args(argv)
     if args.yaw_map is None:p.error('--yaw-map completed artifact is required; suite never rebuilds maps')
     if args.mode=='replay' and args.plan is None:p.error('replay requires --plan')
@@ -103,6 +106,9 @@ def _failure_summary(error):
 
 def run(args):
     from tools.run import run_yaw_aware_forward_driver as runner
+    # Share the exact variant and solution form with downstream compilation.
+    runner.PLANAR_FORMULATION = Path(args.formulation).expanduser().resolve()
+    runner.PLANAR_SOLUTION_MODEL = args.solution_model
     from tools.run.yaw_map_options import resolve_yaw_map
     from simplified_vehicle_models.compiler.compile import compile_formulation
     from simplified_vehicle_models.formulations.point_mass import point_mass_view_of_planar
@@ -111,7 +117,17 @@ def run(args):
     from simplified_vehicle_models.solvers.yaw_profile_contracts import CoupledProfileSettings,YawProfileSolveError
     from simplified_vehicle_models.planning.yaw_lap_artifact import save_lap_plan,load_lap_plan
     output=runner.prepare_output(args.output_dir)
-    vehicle=compile_formulation(str(runner.PLANAR_FORMULATION)).model
+    formulation=Path(args.formulation).expanduser().resolve()
+    compiled_source=compile_formulation(str(formulation)).model
+    if args.solution_model=='14dof-simple':
+        from simplified_vehicle_models.formulations.vertical_14dof import VerticalVehicleParameters
+        if not isinstance(compiled_source,VerticalVehicleParameters):
+            raise ValueError('selected 14dof-simple formulation did not compile as 14dof-simple')
+        vehicle=compiled_source.planar
+    else:
+        vehicle=compiled_source
+        if getattr(vehicle,'model_type',None)!='planar-7dof':
+            raise ValueError(f'yaw-aware suite requires planar-7dof, received {getattr(vehicle,"model_type",None)!r}')
     pm=point_mass_view_of_planar(vehicle);vmax=runner.physical_map_speed_limit(pm)
     capability,map_report=resolve_yaw_map(pm,vehicle.yaw_inertia,np.linspace(0.,vmax,12),
         runner.anchored_axis(args.yaw_map_ax_min,args.yaw_map_ax_max,9),args)
@@ -141,7 +157,7 @@ def run(args):
     except (OSError,subprocess.SubprocessError):
         source_revision='unknown';dirty_hashes='unknown'
     provenance={'source_revision':source_revision,'source_dirty_hashes':dirty_hashes,
-        'vehicle_configuration_hashes':source_provenance(str(runner.PLANAR_FORMULATION)), 
+        'vehicle_configuration_hashes':source_provenance(str(formulation)),
         'track_data_hashes':track_provenance,'map_file_sha256':hashlib.sha256(args.yaw_map.read_bytes()).hexdigest(),
         'map_source_identity':capability.source_identity,'plan_file_digest':'pending','plan_array_digest':'pending',
         # Planning has no forward-plant state; replay records its actual initial
@@ -166,7 +182,7 @@ def run(args):
         'geometry_spacing_m':args.spacing,'control_spacing_m':args.control_spacing,
         'map_identity':capability.source_identity,'map_file_sha256':hashlib.sha256(args.yaw_map.read_bytes()).hexdigest(),
         'map_source_identity':capability.source_identity,'track_identity':track_identity,
-        'track_data_hashes':track_provenance,'vehicle_configuration_hashes':source_provenance(str(runner.PLANAR_FORMULATION)),
+        'track_data_hashes':track_provenance,'vehicle_configuration_hashes':source_provenance(str(formulation)),
         'boundary_type':'flying' if track.is_closed else 'standing','maximum_speed_mps':vmax,
         'replay_treatment':args.controller,
         'solver':{'method':'BDF','rtol':1e-6,'atol':1e-8,'maximum_step':args.maximum_step},

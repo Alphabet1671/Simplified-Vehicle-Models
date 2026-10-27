@@ -1,14 +1,34 @@
 from dataclasses import dataclass, field
-from typing import Mapping
 from types import MappingProxyType
+from typing import Mapping
 
 import numpy as np
+
+from simplified_vehicle_models.parameters.tire import UniTireSimpleParameters
+from simplified_vehicle_models.tires.unitire_transient import TransientTireParameters
 
 
 def _freeze_array(value):
     arr = np.array(value, copy=True)
     arr.setflags(write=False)
     return arr
+
+
+@dataclass(frozen=True)
+class ModelSnapshot:
+    revision: int
+    steady: UniTireSimpleParameters
+    transient: TransientTireParameters
+    values: Mapping[str, float]
+    provenance: Mapping[str, str]
+    parameter_status: Mapping[str, str] = field(default_factory=dict)
+    steady_fingerprint: str = ''
+    load_domain: tuple[float, float] = (0.0, 1500.0)
+
+    def __post_init__(self):
+        object.__setattr__(self, 'values', MappingProxyType(dict(self.values)))
+        object.__setattr__(self, 'provenance', MappingProxyType(dict(self.provenance)))
+        object.__setattr__(self, 'parameter_status', MappingProxyType(dict(self.parameter_status)))
 
 
 @dataclass(frozen=True)

@@ -13,6 +13,7 @@ dependencies = ["numpy>=2.0"]
 forward = ["scipy>=1.11"]
 no-tv = ["scipy>=1.11", "casadi>=3.6,<4"]
 gui = ["PyQt6>=6.5"]
+tire-gui = ["PyQt6>=6.5", "scipy>=1.11", "matplotlib>=3.8"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

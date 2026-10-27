@@ -472,13 +472,16 @@ def optimize_yaw_aware_line(track: TrackProfile, corridor: Corridor | None,
         status = "iteration_limit"
         optimizer_stop_kind = "outer_pass_limit"
     if settings.directional_poll and stop_reason[0] is None:
-        baseline = best_eval[2].lap_time
+        # Freeze the audit origin and baseline: immediate promotion is allowed,
+        # but it must not shift the remaining directions in this same audit.
+        audit_coeff = best_coeff.copy()
+        audit_baseline = best_eval[2].lap_time
         poll_incomplete = False
         for j, (lower_bound, upper_bound) in enumerate(bounds):
             for sign in (-1., 1.):
-                candidate = best_coeff.copy()
+                candidate = audit_coeff.copy()
                 candidate[j] = np.clip(candidate[j] + sign * settings.directional_poll_step, lower_bound, upper_bound)
-                if candidate[j] == best_coeff[j]:
+                if candidate[j] == audit_coeff[j]:
                     continue
                 try:
                     poll_record, poll_eval = evaluate(candidate, -1, "directional_poll")
@@ -488,7 +491,7 @@ def optimize_yaw_aware_line(track: TrackProfile, corridor: Corridor | None,
                     break
                 if poll_eval is None:
                     continue
-                improvement = baseline - poll_eval[2].lap_time
+                improvement = audit_baseline - poll_eval[2].lap_time
                 poll_best_improvement_s = max(poll_best_improvement_s, improvement)
                 if poll_eval[2].lap_time < best_eval[2].lap_time-settings.minimum_improvement_seconds:
                     best_coeff,best_eval= candidate,poll_eval
@@ -497,30 +500,19 @@ def optimize_yaw_aware_line(track: TrackProfile, corridor: Corridor | None,
         directional_poll_status = ("inconclusive" if poll_incomplete else
             "improving_direction_found" if poll_best_improvement_s > settings.directional_poll_improvement_seconds else
             "coordinate_poll_stopping_at_0.01_m")
-        if directional_poll_status != "coordinate_poll_stopping_at_0.01_m" and optimizer_stop_kind == "two_complete_passes_within_lap_time_tolerance":
+        if directional_poll_status != "coordinate_poll_stopping_at_0.01_m":
+            # An improving or incomplete audit is authoritative: never let the
+            # pass-history classification turn it back into convergence.
             status = "iteration_limit"
             optimizer_stop_kind = "directional_poll_inconclusive" if poll_incomplete else "directional_poll_improvement_found"
-        elif directional_poll_status == "coordinate_poll_stopping_at_0.01_m":
+        elif optimizer_stop_kind == "two_complete_passes_within_lap_time_tolerance":
             optimizer_stop_kind = "coordinate_poll_stopping_at_0.01_m"
     trajectory, path, profile = best_eval
     speed_plan = to_speed_plan(path, profile)
     if settings.directional_poll and stop_reason[0] is not None:
         directional_poll_status = "inconclusive"
-    if stop_reason[0] is not None:
         status = "budget_exceeded"
         optimizer_stop_kind = "budget_exceeded"
-    elif len(pass_summary) == 1:
-        status = "single_pass"
-        optimizer_stop_kind = "single_pass"
-    elif selected_optimizer_attempts and not all(selected_optimizer_attempts):
-        status = "iteration_limit"
-        optimizer_stop_kind = "optimizer_iteration_limit"
-    elif completed_full_passes >= 2 and len(pass_summary) >= 2 and all(p["complete"] for p in pass_summary[-2:]) and abs(pass_summary[-2]["lap_time"]-pass_summary[-1]["lap_time"]) < settings.lap_time_tolerance:
-        status = "converged"
-        optimizer_stop_kind = "two_complete_passes_within_lap_time_tolerance"
-    else:
-        status = "iteration_limit"
-        optimizer_stop_kind = "outer_pass_limit"
     shape = _shape_metrics(path, profile, trajectory)
     diagnostics = {"candidate_evaluations": tuple(records), "selected_coefficients": best_coeff.tolist(),
         "map_source_kind": capability.source_kind, "map_source_identity": capability.source_identity,

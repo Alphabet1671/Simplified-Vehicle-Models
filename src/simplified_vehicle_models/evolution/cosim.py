@@ -88,6 +88,10 @@ def simulate(plant, driver, tv, initial_state, settings: CosimSettings, *,
     while True:
         if deadline is not None and time.monotonic() >= deadline:
             failure = "deadline"; break
+        tick_dt = min(dt, max_time - t)
+        if tick_dt <= 0.0:
+            completed = stop_distance >= 1e8
+            break
         command = driver.command(plant.observe(state))
         plant.tv_torques = None
         request = plant.driver_torques(state, command)
@@ -98,10 +102,12 @@ def simulate(plant, driver, tv, initial_state, settings: CosimSettings, *,
         plant.tv_torques = held
         torques.append(held)
         try:
-            state = integrate_tick(command, t, state, dt)
+            state = integrate_tick(command, t, state, tick_dt)
         except (TrialStateError, RuntimeError, ValueError) as error:
             failure = f"{type(error).__name__}: {error}"; break
-        t += dt
+        t += tick_dt
+        if abs(t - max_time) <= 1e-12:
+            t = max_time
         times.append(t); states.append(state.copy())
         if state[0] >= stop_distance:
             completed = True; break

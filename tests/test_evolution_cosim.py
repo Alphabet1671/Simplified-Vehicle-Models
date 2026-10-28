@@ -57,6 +57,15 @@ class CosimTests(unittest.TestCase):
                      stop_distance=1e9, max_time=1.0, deadline=time.monotonic() + 60)
         np.testing.assert_allclose(a.state[-1][:6], b.state[-1][:6], rtol=0, atol=0.02)
 
+    def test_non_aligned_max_time_clips_final_tick(self):
+        _, plan, plant, driver = _setup(F, T)
+        tv = CountingTV()
+        r = simulate(plant, driver, tv, plant.initial_state(float(plan.speed[0])),
+                     CosimSettings(controller_dt=0.01), stop_distance=1e9, max_time=0.235,
+                     deadline=time.monotonic() + 60)
+        self.assertAlmostEqual(r.time[-1], 0.235, delta=1e-12)
+        self.assertEqual(tv.steps, 24)
+
     def test_deadline_stops_cleanly(self):
         _, plan, plant, driver = _setup(F, T)
         r = simulate(plant, driver, PassthroughTV(), plant.initial_state(float(plan.speed[0])),

@@ -18,6 +18,7 @@ The library: XML compiler, models, solvers.
 | `controls/` | Driver-input conversion and controller contracts. |
 | `core/` | Shared conventions, types and numerical helpers. |
 | `drivetrain/` | Drivetrain component code. |
+| `evolution/` | Fixed-rate co-simulation and torque-vectoring controller contracts. |
 | `formulations/` | Vehicle formulations and capability sampling. |
 | `hydraulics/` | Hydraulic circuit elements and solver. |
 | `parameters/` | Parameter containers for the vehicle, tire, aero and drivetrain. |

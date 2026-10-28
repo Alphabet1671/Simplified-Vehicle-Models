@@ -23,4 +23,4 @@ Workload assumptions include 38 complexes, lambda 4, J 152, 100% lap corner-limi
 - Incomplete acceptance matrix; missing cases listed in decision doc.
 - `tools/run/README.md`, `src/simplified_vehicle_models/evolution/README.md`, and `tests/README.md` need update for newly added/changed files.
 - Files changed: `src/simplified_vehicle_models/evolution/tick_integrators.py`, `tools/run/benchmark_rollout.py`, `tests/test_evolution_integrators.py`, three local READMEs, `bench/throughput-decision.md`, and this report.
-- Commit not yet created. No push.
+- Commits: `518113f` (integrator throughput gate/tests/measurements), `28c88d3` (normalize deadline failures); no push.

@@ -1,7 +1,7 @@
 {
   "source_attempt": "docs/validation/iem24-murphy/forward-usability-fixes/seven_dof/finer/attempt_1792213953457115000",
   "model": "planar-7dof",
-  "track": "models/tracks/2024_michigan_endurance_multilap_closed.xml",
+  "track": "models/tracks/mis_ev_endurance_2024_multilap_linear.xml",
   "formulation": "models/formulations/iem24_murphy_real_planar_7dof.xml",
   "method": "transient_forward_driver",
   "status": "Completed",

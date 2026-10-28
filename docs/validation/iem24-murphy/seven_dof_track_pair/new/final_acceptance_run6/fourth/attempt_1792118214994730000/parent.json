@@ -29,7 +29,7 @@
     "--timeout-seconds",
     "300",
     "--track",
-    "models/tracks/2024_michigan_endurance_multilap_closed.xml",
+    "models/tracks/mis_ev_endurance_2024_multilap_linear.xml",
     "--output-root",
     "docs/validation/iem24-murphy/seven_dof_track_pair/new/final_acceptance_run6/fourth",
     "--child-attempt",

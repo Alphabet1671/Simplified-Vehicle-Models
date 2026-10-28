@@ -43,7 +43,9 @@ def simulate_event(snapshot: ModelSnapshot, event: TransientEvent, maximum_step:
     validate_event(event,require_approval=False,check_conditions=False)
     run=event.run; c=run.channels; start,stop=event.start,event.stop
     t=np.asarray(c['time'][start:stop],float)
-    if np.any(c['speed'][start:stop] <= 0): raise ValueError('measured event speed must be positive')
+    # Replay preserves measured stops and signed encoder jitter. The transient
+    # evaluator uses |V| and its documented low-speed rate floor; only fitting
+    # eligibility requires a positive, stable moving-belt condition.
     steady, transient=snapshot.steady,snapshot.transient
     ia0=_inputs(run,event.start); state=steady_rolling_state(steady,transient,ia0[0],ia0[1],ia0[2])
     y0=np.array([state.longitudinal_slip,state.lateral_deformation,state.trail_angle],float)

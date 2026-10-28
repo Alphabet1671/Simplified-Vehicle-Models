@@ -46,11 +46,11 @@ class DataTests(unittest.TestCase):
                 contiguous_slices(np.array([0., .01]), gap)
 
     def test_synthetic_mat_loader_happy_and_descriptor_error(self):
-        channel = {'name': np.array(['ET', 'SA', 'FZ', 'FX', 'FY', 'MZ', 'V', 'N', 'SL', 'IA', 'P']),
-                   'units': np.array(['sec', 'deg', 'N', 'N', 'N', 'N-m', 'kph', 'rpm', 'none', 'deg', 'kPa'])}
+        channel = {'name': np.array(['ET', 'SA', 'FZ', 'FX', 'FY', 'MZ', 'V', 'N', 'RE', 'SL', 'IA', 'P']),
+                   'units': np.array(['sec', 'deg', 'N', 'N', 'N', 'N-m', 'kph', 'rpm', 'cm', 'none', 'deg', 'kPa'])}
         arrays = {'ET': np.array([0., .01]), 'SA': np.array([1., 2.]), 'FZ': np.array([-10., -20.]),
                   'FX': np.array([1., 2.]), 'FY': np.array([3., 4.]), 'MZ': np.array([.1, .2]),
-                  'V': np.array([36., 36.]), 'N': np.array([60., 60.]), 'SL': np.array([.1, .2]),
+                  'V': np.array([36., 36.]), 'N': np.array([60., 60.]), 'RE': np.array([20., 19.]), 'SL': np.array([.1, .2]),
                   'IA': np.array([0., 0.]), 'P': np.array([100., 100.]), 'RUN': np.array([8, 8]),
                   'tireid': 'Hoosier 43075 R20'}
         with tempfile.TemporaryDirectory() as tmp:
@@ -59,6 +59,7 @@ class DataTests(unittest.TestCase):
             loaded = load_run(path)
             self.assertEqual((loaded.run_id, loaded.tire_id), (8, 'Hoosier 43075 R20'))
             np.testing.assert_array_equal(loaded.channels['fz'], [10., 20.])
+            np.testing.assert_allclose(loaded.channels['effective_radius'], [.20, .19])
             bad = Path(tmp) / 'bad.mat'
             savemat(bad, arrays)
             with self.assertRaisesRegex(ValueError, 'descriptor'):

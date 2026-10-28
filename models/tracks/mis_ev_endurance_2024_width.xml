@@ -1,14 +1,14 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<model schema-version="1.0" id="2024-michigan-endurance-closed-edged" type="track-model" subtype="closed-xy-profile">
-    <!-- Same geometry as 2024_michigan_endurance_closed.xml. That file is not
+<model schema-version="1.0" id="mis_ev_endurance_2024_width" type="track-model" subtype="closed-xy-profile">
+    <!-- Same geometry as mis_ev_endurance_2024_linear.xml. That file is not
          edited, so its recorded source hash stays valid. Only a lateral
          corridor is added, and that corridor is ASSUMED, not surveyed. -->
     <metadata>
         <title>2024 Michigan Endurance Closed (assumed corridor)</title>
         <source sha256="091e4745a5ff6ccf7d48729154033bb555edd028f0e3e2ed2f3f270e14f6e5b7">0615CompEndurance.mat</source>
     </metadata>
-    <data ref="2024_michigan_endurance_closed.csv" />
-    <data role="width" ref="2024_michigan_endurance_closed_width.csv" />
+    <data ref="mis_ev_endurance_2024_linear.csv" />
+    <data role="width" ref="mis_ev_endurance_2024_width_data.csv" />
     <parameters>
         <parameter name="is_closed" value="true" />
         <parameter name="terminal_segment_is_duplicate" value="true" />

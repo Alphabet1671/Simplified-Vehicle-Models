@@ -27,6 +27,6 @@
   "node_count": 2034,
   "regen_enabled": false,
   "regen_recovered_energy_j": 0.0,
-  "track": "models/tracks/2024_michigan_endurance_closed.xml",
+  "track": "models/tracks/mis_ev_endurance_2024_linear.xml",
   "track_length_m": 1016.70064959
 }

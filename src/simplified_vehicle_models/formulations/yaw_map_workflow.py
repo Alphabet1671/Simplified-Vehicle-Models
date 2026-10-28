@@ -331,7 +331,36 @@ def _refine_axes(capability: YawCapabilityMap, audit: YawMapCompletionAudit,
     return tuple(sorted(speed)), tuple(sorted(ax)), _fill_lateral_axis(ay, settings.maximum_lateral_cell_width)
 
 
-def build_yaw_map_workflow(
+def build_yaw_map_workflow(vehicle, speed_knots, longitudinal_acceleration_knots, evaluator, *,
+                           yaw_inertia, tv_limits=None, settings=YawMapWorkflowSettings(),
+                           map_builder=build_physical_yaw_map, validation_evaluator=None,
+                           progress_callback=None):
+    """Workflow entry point owning any automatically-created validation pool."""
+    owned_validation = None
+    if validation_evaluator is None:
+        try:
+            from simplified_vehicle_models.formulations.yaw_map_parallel import ParallelYawEvaluator
+            from simplified_vehicle_models.formulations.yaw_map_physical import PhysicalYawEvaluator
+            if isinstance(evaluator, ParallelYawEvaluator):
+                owned_validation = ParallelYawEvaluator(evaluator.vehicle, evaluator.tv_limits,
+                    workers=evaluator.workers, time_budget_seconds=settings.time_budget_seconds,
+                    use_reduced=evaluator.use_reduced, batch_size=evaluator.batch_size)
+            elif isinstance(evaluator, PhysicalYawEvaluator):
+                owned_validation = PhysicalYawEvaluator(evaluator.vehicle, evaluator.tv_limits,
+                    time_budget_seconds=settings.time_budget_seconds, use_reduced=evaluator.use_reduced)
+        except ImportError:
+            pass
+    try:
+        return _build_yaw_map_workflow_impl(vehicle, speed_knots, longitudinal_acceleration_knots,
+            evaluator, yaw_inertia=yaw_inertia, tv_limits=tv_limits, settings=settings,
+            map_builder=map_builder, validation_evaluator=validation_evaluator or owned_validation,
+            progress_callback=progress_callback)
+    finally:
+        if owned_validation is not None:
+            owned_validation.close()
+
+
+def _build_yaw_map_workflow_impl(
     vehicle,
     speed_knots: Iterable[float],
     longitudinal_acceleration_knots: Iterable[float],
@@ -342,6 +371,7 @@ def build_yaw_map_workflow(
     settings: YawMapWorkflowSettings = YawMapWorkflowSettings(),
     map_builder: Callable[..., YawCapabilityMap] = build_physical_yaw_map,
     validation_evaluator: Callable[[float, float, float], ProbeResult] | None = None,
+    progress_callback: Callable[[str, dict], None] | None = None,
 ) -> YawMapWorkflowResult:
     """Discover, build, directly audit, and finitely refine a strict map.
 
@@ -358,13 +388,73 @@ def build_yaw_map_workflow(
     speeds = _validated_knots(speed_knots, "speed_knots", nonnegative=True)
     accelerations = _validated_knots(longitudinal_acceleration_knots, "longitudinal_acceleration_knots")
     started = time.monotonic()
+    absolute_deadline = started + settings.time_budget_seconds
+    # Concrete physical evaluators must not silently share their cache with
+    # validation. Generic callables remain supported for synthetic tests.
+    physical_type = None
+    try:
+        from simplified_vehicle_models.formulations.yaw_map_physical import PhysicalYawEvaluator
+        from simplified_vehicle_models.formulations.yaw_map_parallel import ParallelYawEvaluator
+        physical_type = (PhysicalYawEvaluator, ParallelYawEvaluator)
+    except ImportError:
+        pass
+    if physical_type and isinstance(evaluator, physical_type):
+        if validation_evaluator is evaluator:
+            raise ValueError('validation_evaluator must be independent from the physical training evaluator')
+        if validation_evaluator is not None and isinstance(validation_evaluator, physical_type):
+            if validation_evaluator is evaluator:
+                raise ValueError('physical validation evaluator must be a distinct object')
+            if (validation_evaluator.vehicle is not evaluator.vehicle
+                    or validation_evaluator.tv_limits != evaluator.tv_limits
+                    or validation_evaluator.use_reduced != evaluator.use_reduced):
+                raise ValueError('physical validation evaluator inputs must match training evaluator')
+        if validation_evaluator is None:
+            if isinstance(evaluator, PhysicalYawEvaluator):
+                validation_evaluator = PhysicalYawEvaluator(evaluator.vehicle, evaluator.tv_limits,
+                    time_budget_seconds=settings.time_budget_seconds, use_reduced=evaluator.use_reduced)
+            else:
+                validation_evaluator = ParallelYawEvaluator(evaluator.vehicle, evaluator.tv_limits,
+                    workers=evaluator.workers, time_budget_seconds=settings.time_budget_seconds,
+                    use_reduced=evaluator.use_reduced, batch_size=evaluator.batch_size)
+    if physical_type and isinstance(evaluator, ParallelYawEvaluator):
+        evaluator.set_deadline(absolute_deadline)
+    if physical_type and isinstance(validation_evaluator, ParallelYawEvaluator):
+        validation_evaluator.set_deadline(absolute_deadline)
     # Discovery owns its finite probe budget; this wrapper adds the workflow's
     # deadline without relabelling unrun work as physical infeasibility.
     def deadline_evaluator(speed: float, ax: float, ay: float) -> ProbeResult:
-        if time.monotonic() - started > settings.time_budget_seconds:
+        if time.monotonic() >= absolute_deadline:
             return ProbeResult(ProbeStatus.UNRESOLVED, "workflow time budget exhausted")
         return evaluator(speed, ax, ay)
+    deadline_evaluator.set_deadline = lambda deadline: evaluator.set_deadline(deadline) if hasattr(evaluator, 'set_deadline') else None
+    def deadline_evaluator_many(points):
+        points = list(points)
+        allowed = []
+        results = [None] * len(points)
+        for index, point in enumerate(points):
+            if time.monotonic() >= absolute_deadline:
+                results[index] = ProbeResult(ProbeStatus.UNRESOLVED, 'workflow time budget exhausted')
+            else:
+                allowed.append((index, point))
+        batch = getattr(evaluator, 'probe_many', None)
+        if allowed:
+            if callable(batch) and hasattr(evaluator, 'set_deadline'):
+                evaluator.set_deadline(absolute_deadline)
+            values = batch([p for _, p in allowed]) if callable(batch) else [evaluator(*p) for _, p in allowed]
+            if len(values) != len(allowed): raise ValueError('evaluator probe_many returned incorrect result count')
+            for (index, _), result in zip(allowed, values):
+                if not isinstance(result, ProbeResult): raise TypeError('evaluator must return ProbeResult')
+                results[index] = result
+        return results
+    deadline_evaluator.probe_many = deadline_evaluator_many
+    def progress(event, **fields):
+        if progress_callback is not None:
+            progress_callback(event, fields)
+
+    progress('discovery_start', speed_points=len(speeds), ax_points=len(accelerations))
     domain = discover_yaw_map_domain(vehicle, speeds, accelerations, deadline_evaluator, settings.discovery)
+    progress('discovery_complete', complete=domain.diagnostics.complete,
+             probes=domain.diagnostics.probe_count)
     lateral = _domain_axis(domain, settings.maximum_lateral_cell_width)
     map_speed, map_ax = speeds, accelerations
     # Acceptance coordinates are fixed subdivisions of the declared domain;
@@ -379,8 +469,11 @@ def build_yaw_map_workflow(
     # discovery budget, and all LP calls remain explicitly accounted for.
     audit_settings = replace(settings.discovery, probe_budget=settings.maximum_audit_probes,
                              speed_ax_audit_subdivisions=0)
+    progress('training_audit_discovery_start')
     training_domain = discover_yaw_map_domain(vehicle, training_speeds, training_ax,
                                                deadline_evaluator, audit_settings)
+    progress('training_audit_discovery_complete', complete=training_domain.diagnostics.complete,
+             probes=training_domain.diagnostics.probe_count)
     rounds = 0
     last_capability: YawCapabilityMap | None = None
     last_audit: YawMapCompletionAudit | None = None
@@ -394,14 +487,25 @@ def build_yaw_map_workflow(
             # valuable partial coverage for a 1x1x1 placeholder.
             if last_capability is None:
                 grid = YawCapabilityGrid((map_speed[0],), (map_ax[0],), (0.0,))
-                try:
-                    capability = map_builder(vehicle, grid, tv_limits, yaw_inertia=yaw_inertia)
-                except YawCapabilityNumericalError:
+                expired = time.monotonic() >= absolute_deadline
+                if expired:
+                    # A process evaluator may already have reaped its workers
+                    # on deadline. Do not invoke its builder again while
+                    # unwinding; preserve a controlled unresolved artifact.
                     zeros = np.zeros((1, 1, 1))
                     capability = YawCapabilityMap(grid.speed, grid.longitudinal_acceleration,
                         grid.lateral_acceleration, zeros, zeros, np.zeros((1,1,1),bool), yaw_inertia,
                         'physical_no_tv_v1' if tv_limits is None else 'physical_tv_v1',
                         'unresolved-budget-placeholder')
+                else:
+                    try:
+                        capability = map_builder(vehicle, grid, tv_limits, yaw_inertia=yaw_inertia)
+                    except YawCapabilityNumericalError:
+                        zeros = np.zeros((1, 1, 1))
+                        capability = YawCapabilityMap(grid.speed, grid.longitudinal_acceleration,
+                            grid.lateral_acceleration, zeros, zeros, np.zeros((1,1,1),bool), yaw_inertia,
+                            'physical_no_tv_v1' if tv_limits is None else 'physical_tv_v1',
+                            'unresolved-budget-placeholder')
             else:
                 capability = last_capability
             if last_audit is None:
@@ -420,6 +524,7 @@ def build_yaw_map_workflow(
                                 or time.monotonic() - started > settings.time_budget_seconds))
             break
         grid = YawCapabilityGrid(map_speed, map_ax, lateral)
+        progress('map_build_start', round=rounds, nodes=node_count)
         try:
             capability = map_builder(vehicle, grid, tv_limits, yaw_inertia=yaw_inertia)
         except YawCapabilityNumericalError as error:
@@ -439,7 +544,11 @@ def build_yaw_map_workflow(
                 float(grid.lateral_acceleration[0]), ProbeStatus.UNRESOLVED, None, None, False, str(error)),),
                 (), None, settings.discovery.lateral_interpolation_loss_tolerance)
             break
+        progress('map_build_complete', round=rounds)
+        progress('training_map_audit_start', round=rounds)
         audit = _audit_map(capability, training_domain, settings=settings, started=started)
+        progress('training_map_audit_complete', round=rounds, complete=audit.complete,
+                 probes=audit.direct_probe_count, interpolation_loss=audit.maximum_interpolation_loss)
         last_capability, last_audit = capability, audit
         # Train to a stricter guard band than untouched validation. This is
         # fixed a priori, never selected from the validation residuals.
@@ -477,12 +586,38 @@ def build_yaw_map_workflow(
         map_speed, map_ax, lateral = refined
         rounds += 1
     def validation_probe(speed, ax, ay):
-        if time.monotonic() - started > settings.time_budget_seconds:
+        if time.monotonic() >= absolute_deadline:
             return ProbeResult(ProbeStatus.UNRESOLVED, 'workflow time budget exhausted')
         return (validation_evaluator or evaluator)(speed, ax, ay)
+    def validation_probe_many(points):
+        selected = validation_evaluator or evaluator
+        points = list(points); allowed = []; results = [None] * len(points)
+        for index, point in enumerate(points):
+            if time.monotonic() >= absolute_deadline:
+                results[index] = ProbeResult(ProbeStatus.UNRESOLVED, 'workflow time budget exhausted')
+            else: allowed.append((index, point))
+        batch = getattr(selected, 'probe_many', None)
+        if allowed:
+            if callable(batch) and hasattr(selected, 'set_deadline'):
+                selected.set_deadline(absolute_deadline)
+            values = batch([p for _, p in allowed]) if callable(batch) else [selected(*p) for _, p in allowed]
+            if len(values) != len(allowed): raise ValueError('validation probe_many returned incorrect result count')
+            for (index, _), result in zip(allowed, values):
+                if not isinstance(result, ProbeResult): raise TypeError('validation evaluator must return ProbeResult')
+                results[index] = result
+        return results
+    validation_probe.set_deadline = lambda deadline: (validation_evaluator or evaluator).set_deadline(deadline) if hasattr((validation_evaluator or evaluator), 'set_deadline') else None
+    validation_probe.probe_many = validation_probe_many
+    progress('validation_discovery_start')
     validation_domain = discover_yaw_map_domain(vehicle, validation_speeds, validation_ax,
                                                  validation_probe, audit_settings)
+    progress('validation_discovery_complete', complete=validation_domain.diagnostics.complete,
+             probes=validation_domain.diagnostics.probe_count)
+    progress('validation_map_audit_start')
     validation_audit = _audit_map(capability, validation_domain, settings=settings, started=started)
+    progress('validation_map_audit_complete', complete=validation_audit.complete,
+             probes=validation_audit.direct_probe_count,
+             interpolation_loss=validation_audit.maximum_interpolation_loss)
     complete = (independent_holdouts and domain.diagnostics.complete
                 and training_domain.diagnostics.complete and audit.complete
                 and validation_domain.diagnostics.complete and validation_audit.complete)

@@ -1,6 +1,6 @@
 # FSC synthetic-3 m yaw-aware no-TV diagnostic — 2026-10-25
 
-**Track identity:** [fsc_may_2026_synthetic_3m_edged.xml](../../models/tracks/fsc_may_2026_synthetic_3m_edged.xml). The centreline is the copied original FSC one-dimensional reconstruction; the corridor is a **synthetic assumed 3.0 m total width** (1.5 m left and 1.5 m right), not surveyed course boundaries. Read [the FSC corridor provenance note](fsc-synthetic-corridor-2026-10-25.md) before interpreting clearance.
+**Track identity:** [fsc_may_endurance_2026_width.xml](../../models/tracks/fsc_may_endurance_2026_width.xml). The centreline is the copied original FSC one-dimensional reconstruction; the corridor is a **synthetic assumed 3.0 m total width** (1.5 m left and 1.5 m right), not surveyed course boundaries. Read [the FSC corridor provenance note](fsc-synthetic-corridor-2026-10-25.md) before interpreting clearance.
 
 ## Result
 
@@ -31,7 +31,7 @@ The coarse lateral-control/optimization settings were deliberately used only to 
 
 ```sh
 PYTHONPATH=src:. python3 tools/run/run_yaw_aware_forward_driver.py \
-  --track models/tracks/fsc_may_2026_synthetic_3m_edged.xml \
+  --track models/tracks/fsc_may_endurance_2026_width.xml \
   --output-dir runs/yaw_aware_driver/fsc-synthetic-3m-no-tv-20261025b \
   --yaw-speed-points 7 --yaw-ax-points 7 --yaw-ay-points 13 \
   --maximum-speed 7 --lateral-margin 0.15 \

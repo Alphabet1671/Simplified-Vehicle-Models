@@ -22,7 +22,7 @@ from tools.reports.compare_iem24_murphy_stint import (
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 OUTPUT_DIR = REPOSITORY_ROOT / "docs/validation/iem24-murphy"
-CLOSED_TRACK = REPOSITORY_ROOT / "models/tracks/2024_michigan_endurance_closed.xml"
+CLOSED_TRACK = REPOSITORY_ROOT / "models/tracks/mis_ev_endurance_2024_linear.xml"
 
 
 class ComparisonHelperTests(unittest.TestCase):
@@ -145,7 +145,7 @@ class ComparisonIntegrationTests(unittest.TestCase):
                     # original track (its summary records it), so reproduce it there;
                     # the tool's own default is now the canonical multilap track.
                     "--track",
-                    "models/tracks/2024_michigan_endurance_closed.xml",
+                    "models/tracks/mis_ev_endurance_2024_linear.xml",
                 ],
             ), redirect_stdout(io.StringIO()):
                 compare_main()

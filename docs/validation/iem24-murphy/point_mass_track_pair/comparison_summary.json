@@ -18,7 +18,7 @@
   "comparisons": {
     "Original track": {
       "run": {
-        "track": "models/tracks/2024_michigan_endurance_closed.xml",
+        "track": "models/tracks/mis_ev_endurance_2024_linear.xml",
         "track_sha256": "2880418d148b763e1360d25eb4b7a8a4144bb16e6e56017facf7f36bddc47180",
         "geometry_sha256": "ff8dcdc715eaff07eeb1d7a9e0a0739072480150577622ec8854000a0a44dbd4",
         "formulation": "models/formulations/iem24_murphy_real_planar_7dof.xml",

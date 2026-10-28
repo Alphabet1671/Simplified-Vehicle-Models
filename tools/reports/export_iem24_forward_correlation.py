@@ -16,7 +16,7 @@ import numpy as np
 
 # Attempts that predate --track carry no settings["track"]; they were all run on
 # the original track, so that is the documented fallback for historical runs.
-LEGACY_TRACK = "models/tracks/2024_michigan_endurance_closed.xml"
+LEGACY_TRACK = "models/tracks/mis_ev_endurance_2024_linear.xml"
 FORMULATION = "models/formulations/iem24_murphy_real_planar_7dof.xml"
 
 

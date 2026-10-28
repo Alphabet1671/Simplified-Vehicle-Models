@@ -197,7 +197,10 @@ def _cell_lp(vehicle, speed, ax, ay, tv_limits, direction, *, ideal=False, stric
     # Preserve front/rear axle-total brake-bias equality for every physical
     # cell, including hydraulic TV cells. Hydraulic TV may only redistribute
     # braking left/right within each axle under its separate force-difference cap.
-    row=np.zeros(n); row[8:10]=1-vehicle.brake_bias; row[10:12]=-vehicle.brake_bias
+    # Planar parameters expose the signed balance-bar setting and derive the
+    # resulting torque share; point-mass parameters already carry that share.
+    front_brake_share = vehicle.front_brake_share
+    row=np.zeros(n); row[8:10]=1-front_brake_share; row[10:12]=-front_brake_share
     aeq.append(row); beq.append(0.)
     # Each axle's hydraulic braking is left/right equal absent hydraulic TV.
     # When enabled, the dedicated force-difference cap below is applied.

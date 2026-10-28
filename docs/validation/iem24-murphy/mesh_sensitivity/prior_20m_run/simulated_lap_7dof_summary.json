@@ -35,5 +35,5 @@
   "solver": "planar 7-DOF distance-domain OCP",
   "status": "Solve_Succeeded",
   "tire_model": "tester-fitted UniTire with provisional surface-mu scaling informed by measured peak deceleration/cornering (not a tire re-fit)",
-  "track": "models/tracks/2024_michigan_endurance_closed.xml"
+  "track": "models/tracks/mis_ev_endurance_2024_linear.xml"
 }

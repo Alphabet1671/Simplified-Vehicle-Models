@@ -927,7 +927,7 @@ def _michigan_lap_length() -> float:
 
     from simplified_vehicle_models.tracks.profile import load_track
 
-    track = load_track(ROOT / "models/tracks/2024_michigan_endurance_closed.xml")
+    track = load_track(ROOT / "models/tracks/mis_ev_endurance_2024_linear.xml")
     return float(track.lap_length)
 
 

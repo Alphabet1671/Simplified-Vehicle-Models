@@ -304,7 +304,7 @@ class RunnerOrchestrationTest(unittest.TestCase):
         from tools.run.solve_minimum_time_line import _validate_track_for_line_pipeline
 
         tracks = (
-            ("MIS", Path("models/tracks/2024_michigan_endurance_closed_edged.xml"), True, True),
+            ("MIS", Path("models/tracks/mis_ev_endurance_2024_width.xml"), True, True),
             ("FSC", Path("tracks_out/fsc_may_2026.xml"), True, False),
             ("skidpad", Path("models/tracks/fsae_2026_skidpad.xml"), False, False),
             ("acceleration", Path("models/tracks/fsae_2026_acceleration.xml"), False, False),

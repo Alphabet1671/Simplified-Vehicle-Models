@@ -12,10 +12,10 @@ import time
 import xml.etree.ElementTree as ElementTree
 
 #: Canonical ten-lap MIS endurance track: the active default for new runs.
-DEFAULT_TRACK = Path("models/tracks/2024_michigan_endurance_multilap_closed.xml")
+DEFAULT_TRACK = Path("models/tracks/mis_ev_endurance_2024_multilap_linear.xml")
 #: Track of every attempt that predates --track (no settings["track"] recorded).
 #: Historical warm-start matching must keep resolving to this, not DEFAULT_TRACK.
-LEGACY_TRACK = Path("models/tracks/2024_michigan_endurance_closed.xml")
+LEGACY_TRACK = Path("models/tracks/mis_ev_endurance_2024_linear.xml")
 FORMULATION = Path("models/formulations/iem24_murphy_real_planar_7dof.xml")
 VEHICLE = Path("models/vehicles/iem24_murphy_real_planar.xml")
 

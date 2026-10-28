@@ -56,15 +56,15 @@ Planning grid 0.5 m, 2,000 m lateral controls. This is a profile-integration smo
 
 ```sh
 PYTHONPATH=src:. python3 tools/run/probe_coupled_yaw_profile.py \
-  --track models/tracks/2024_michigan_endurance_closed_edged.xml \
+  --track models/tracks/mis_ev_endurance_2024_width.xml \
   --output runs/yaw_profile_bench/mis-zero-0p05-coupled.json \
   --geometry zero-offset --spacing .05 --anchored --solver coupled --wall-seconds 1500
 
 PYTHONPATH=src:. python3 tools/run/preflight_yaw_track.py \
-  --track models/tracks/fsc_may_2026_synthetic_3m_edged.xml --spacing .05
+  --track models/tracks/fsc_may_endurance_2026_width.xml --spacing .05
 
 PYTHONPATH=src:. python3 tools/run/run_yaw_aware_forward_driver.py \
-  --track models/tracks/2024_michigan_endurance_closed_edged.xml \
+  --track models/tracks/mis_ev_endurance_2024_width.xml \
   --output-dir runs/yaw_aware_driver/mis-coupled-replay-smoke \
   --yaw-speed-points 12 --yaw-ax-points 9 --yaw-ay-points 17 \
   --planning-grid-spacing .5 --control-spacing 2000 \

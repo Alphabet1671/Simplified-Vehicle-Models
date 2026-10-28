@@ -31,7 +31,7 @@ import time
 
 import numpy as np
 
-TRACK = Path("models/tracks/2024_michigan_endurance_multilap_closed.xml")
+TRACK = Path("models/tracks/mis_ev_endurance_2024_multilap_linear.xml")
 MODEL_NAMES = ("point_mass", "planar_7dof", "vertical_14dof")
 
 

@@ -19,7 +19,7 @@ from simplified_vehicle_models.tracks.profile import load_track
 from tools.reports.compare_planar_point_mass import FORMULATION, _point_mass_track, _point_mass_vehicle
 
 ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_TRACKS = (Path('models/tracks/2024_michigan_endurance_closed.xml'),
+DEFAULT_TRACKS = (Path('models/tracks/mis_ev_endurance_2024_linear.xml'),
                   Path('docs/validation/iem24-murphy/multilap_track_candidate.xml'))
 
 

@@ -65,11 +65,11 @@ class SteadyCombinedSlip(Protocol):
 
 @runtime_checkable
 class TransientCombinedSlip(Protocol):
-    """Provide the scalar coefficients of a transient layer over a steady tire.
+    """Provide a steady tire plus scalar transient coefficients.
 
-    The value holds only PROPOSED dimensionless coefficients and carries no
-    state. Pass the value, a steady tire value, and a state to the evaluation
-    function of its subtype. The state is held by the solver, not here.
+    The value carries no dynamic state; the solver owns that state. Its
+    embedded steady parameters may be exposed to steady consumers by an
+    explicit capability adapter.
     """
 
     longitudinal_length_scale: float

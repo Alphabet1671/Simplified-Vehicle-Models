@@ -425,6 +425,14 @@ def evaluate_unitire(
 def compile_unitire_simple(model: Model) -> UniTireSimpleParameters:
     """Compile one fitted simplified steady-state UniTire model."""
 
+    if model.subtype == "unitire-transient-simple":
+        # Lazy import avoids a module cycle while allowing the complete XML to
+        # serve the unchanged steady capability as well as the transient one.
+        from simplified_vehicle_models.tires.unitire_transient import (
+            compile_unitire_transient,
+        )
+
+        return compile_unitire_transient(model).steady
     require_model_type(model, TIRE_MODEL_TYPE, UNITIRE_SIMPLE_SUBTYPE)
     values = closed_parameters(model, _UNITS)
     require_positive(

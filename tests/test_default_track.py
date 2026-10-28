@@ -7,8 +7,8 @@ from tools.reports import plot_iem24_endurance_correlation as endurance_plot
 from tools.run.run_iem24_forward_driver import DEFAULT_TRACK, LEGACY_TRACK
 
 ROOT = Path(__file__).resolve().parents[1]
-CANONICAL = "models/tracks/2024_michigan_endurance_multilap_closed.xml"
-ORIGINAL = "models/tracks/2024_michigan_endurance_closed.xml"
+CANONICAL = "models/tracks/mis_ev_endurance_2024_multilap_linear.xml"
+ORIGINAL = "models/tracks/mis_ev_endurance_2024_linear.xml"
 
 
 def source(name):

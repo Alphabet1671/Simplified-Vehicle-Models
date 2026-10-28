@@ -1,6 +1,6 @@
 {
   "result_status": "three simulations of one canonical MIS lap against the median of 10 measured flying laps; no result is validated",
-  "track": "models/tracks/2024_michigan_endurance_multilap_closed.xml",
+  "track": "models/tracks/mis_ev_endurance_2024_multilap_linear.xml",
   "track_length_m": 1009.19501535,
   "measured_laps": [
     1,
@@ -37,7 +37,7 @@
   "models": {
     "point_mass": {
       "attempt": "docs/validation/iem24-murphy/four_way_latest_model/runs/point_mass",
-      "track": "models/tracks/2024_michigan_endurance_multilap_closed.xml",
+      "track": "models/tracks/mis_ev_endurance_2024_multilap_linear.xml",
       "lap_time_s": 59.62045630216931,
       "metrics": {
         "speed_mps": {
@@ -123,7 +123,7 @@
     },
     "planar_7dof": {
       "attempt": "docs/validation/iem24-murphy/forward-usability-fixes/seven_dof/finer/attempt_1792213953457115000",
-      "track": "models/tracks/2024_michigan_endurance_multilap_closed.xml",
+      "track": "models/tracks/mis_ev_endurance_2024_multilap_linear.xml",
       "lap_time_s": 64.95195666300549,
       "metrics": {
         "speed_mps": {
@@ -216,7 +216,7 @@
     },
     "vertical_14dof": {
       "attempt": "docs/validation/iem24-murphy/forward-usability-fixes/vertical_14dof/fourth/attempt_1792215994764460000",
-      "track": "models/tracks/2024_michigan_endurance_multilap_closed.xml",
+      "track": "models/tracks/mis_ev_endurance_2024_multilap_linear.xml",
       "lap_time_s": 65.01011164168546,
       "metrics": {
         "speed_mps": {

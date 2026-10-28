@@ -28,15 +28,15 @@
   "comparisons": {
     "Original track (legacy)": {
       "attempt": "docs/validation/iem24-murphy/seven_dof_track_pair/original/attempt_1792091044461992000",
-      "track": "models/tracks/2024_michigan_endurance_closed.xml",
+      "track": "models/tracks/mis_ev_endurance_2024_linear.xml",
       "track_length_m": 1016.70064959,
       "model_inputs": {
         "track_xml": {
-          "path": "models/tracks/2024_michigan_endurance_closed.xml",
+          "path": "models/tracks/mis_ev_endurance_2024_linear.xml",
           "sha256": "2880418d148b763e1360d25eb4b7a8a4144bb16e6e56017facf7f36bddc47180"
         },
         "track_csv": {
-          "path": "models/tracks/2024_michigan_endurance_closed.csv",
+          "path": "models/tracks/mis_ev_endurance_2024_linear.csv",
           "sha256": "ff8dcdc715eaff07eeb1d7a9e0a0739072480150577622ec8854000a0a44dbd4"
         },
         "tire_xml": {
@@ -163,15 +163,15 @@
     },
     "Canonical track (ten-lap median)": {
       "attempt": "docs/validation/iem24-murphy/seven_dof_track_pair/new/attempt_1792091049300790000",
-      "track": "models/tracks/2024_michigan_endurance_multilap_closed.xml",
+      "track": "models/tracks/mis_ev_endurance_2024_multilap_linear.xml",
       "track_length_m": 1009.19501535,
       "model_inputs": {
         "track_xml": {
-          "path": "models/tracks/2024_michigan_endurance_multilap_closed.xml",
+          "path": "models/tracks/mis_ev_endurance_2024_multilap_linear.xml",
           "sha256": "ffc367c0286ba698f3706ae8baf34946c641c01ad4f71935d3ec14a3a326f2c3"
         },
         "track_csv": {
-          "path": "models/tracks/2024_michigan_endurance_multilap_closed.csv",
+          "path": "models/tracks/mis_ev_endurance_2024_multilap_linear.csv",
           "sha256": "2db5a981f12d0c055afa3b167a9e6efa07cd09b1f6e7b2c51afea44f00e73d77"
         },
         "tire_xml": {

@@ -10,7 +10,7 @@ A planar 7DoF, physical-no-TV yaw-aware run completed one MIS lap and was export
 
 | Item | Value |
 |---|---:|
-| Track | `models/tracks/2024_michigan_endurance_closed_edged.xml` |
+| Track | `models/tracks/mis_ev_endurance_2024_width.xml` |
 | Map | `physical_no_tv_v1` |
 | Yaw-map grid | 7 speed × 7 longitudinal-acceleration × 13 lateral-acceleration points |
 | Map speed range | 0–8 m/s |
@@ -28,7 +28,7 @@ The intentionally coarse line/planning grid makes this a **pipeline smoke test**
 
 ```sh
 PYTHONPATH=src:. python3 tools/run/run_yaw_aware_forward_driver.py \
-  --track models/tracks/2024_michigan_endurance_closed_edged.xml \
+  --track models/tracks/mis_ev_endurance_2024_width.xml \
   --output-dir runs/yaw_aware_driver/mis-no-tv-animation-20261025 \
   --yaw-speed-points 7 --yaw-ax-points 7 --yaw-ay-points 13 \
   --maximum-speed 8 --lateral-margin 0.15 \

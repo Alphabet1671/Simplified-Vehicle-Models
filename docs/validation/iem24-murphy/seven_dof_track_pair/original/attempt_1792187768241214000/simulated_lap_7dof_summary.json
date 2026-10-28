@@ -1,6 +1,6 @@
 {
   "source_attempt": "docs/validation/iem24-murphy/seven_dof_track_pair/original/attempt_1792187768241214000",
-  "track": "models/tracks/2024_michigan_endurance_closed.xml",
+  "track": "models/tracks/mis_ev_endurance_2024_linear.xml",
   "track_source_hashes": {
     "track_xml": "2880418d148b763e1360d25eb4b7a8a4144bb16e6e56017facf7f36bddc47180",
     "track_csv": "ff8dcdc715eaff07eeb1d7a9e0a0739072480150577622ec8854000a0a44dbd4",

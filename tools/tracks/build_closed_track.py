@@ -47,7 +47,7 @@ from simplified_vehicle_models.core.conventions import (
 
 SOURCE_MAT = Path("/Users/alphabet1671/Desktop/0615CompEndurance.mat")
 
-MODEL_ID = "2024-michigan-endurance-closed"
+MODEL_ID = "mis_ev_endurance_2024_linear"
 TRACK_TITLE = "2024 Michigan Endurance Closed"
 TRACK_SUBTYPE = "closed-xy-profile"
 

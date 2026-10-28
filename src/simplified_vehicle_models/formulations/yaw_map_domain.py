@@ -215,6 +215,32 @@ def discover_yaw_map_domain(
     exhausted = False
     direct_probe_count = 0
 
+    def probe_many(points):
+        nonlocal exhausted, direct_probe_count
+        points = list(points)
+        pending = []
+        outputs = {}
+        for speed, ax, ay in points:
+            key = (speed, ax, ay)
+            if key in cache:
+                outputs[key] = cache[key]
+            elif direct_probe_count + len(pending) < settings.probe_budget:
+                if key not in pending: pending.append(key)
+            else:
+                exhausted = True
+                result = ProbeResult(ProbeStatus.UNRESOLVED, 'probe budget exhausted')
+                unresolved.append((*key, result.detail)); outputs[key] = result
+        if pending:
+            direct_probe_count += len(pending)
+            batch = getattr(evaluator, 'probe_many', None)
+            results = batch(pending) if callable(batch) else [evaluator(*p) for p in pending]
+            if len(results) != len(pending): raise ValueError('probe_many returned incorrect result count')
+            for key, result in zip(pending, results):
+                if not isinstance(result, ProbeResult): raise TypeError('evaluator must return ProbeResult')
+                cache[key] = result; outputs[key] = result
+                if result.status is ProbeStatus.UNRESOLVED: unresolved.append((*key, result.detail))
+        return [outputs[(s,a,y)] for s,a,y in points]
+
     def probe(speed: float, ax: float, ay: float) -> ProbeResult:
         nonlocal exhausted, direct_probe_count
         key = (speed, ax, ay)
@@ -244,7 +270,7 @@ def discover_yaw_map_domain(
             slice_unresolved: list[float] = []
             for sign in (-1, 1):
                 values = tuple(float(sign * magnitude) for magnitude in magnitude_samples)
-                outcomes = tuple(probe(speed, ax, ay) for ay in values)
+                outcomes = tuple(probe_many((speed, ax, ay) for ay in values))
                 slice_unresolved.extend(ay for ay, result in zip(values, outcomes)
                                         if result.status is ProbeStatus.UNRESOLVED)
                 start: int | None = None

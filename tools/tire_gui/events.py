@@ -55,6 +55,9 @@ def validate_event(event: TransientEvent, *, require_approval=True, check_condit
     ia = channels['ia'][baseline]
     pressure = channels['pressure'][baseline]
     speed = channels['speed'][baseline]
+    # Camber is unsupported by the model, including display-only replay.
+    if np.max(np.abs(channels['ia'][event.start:event.stop])) > np.deg2rad(.25):
+        raise ValueError('event inclination is outside +/-0.25 degrees')
     if not check_conditions:
         return True
     def check_relative(values, reference, label):

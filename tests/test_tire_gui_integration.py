@@ -104,8 +104,8 @@ class TireGuiIntegrationTests(unittest.TestCase):
         self.assertIn(transient_result.status_by_parameter['lateral_length_scale'],
                       ('fitted', 'unidentified / provisional'))
 
-        # A steady manual edit must stale transient evidence. Save the paired XML
-        # and session metadata, then compile the emitted files using real loaders.
+        # A steady manual edit must stale transient evidence. Save one complete
+        # XML plus session metadata, then exercise both compiler interfaces.
         edited = with_parameters(transient_result.candidate, {'mu_0_y': transient_result.candidate.values['mu_0_y'] * .99})
         self.assertEqual(edited.provenance['transient_fit_status'], 'stale')
         self.assertTrue(all(edited.parameter_status[n] == 'stale' for n in ('lateral_length_scale', 'trail_pole_ratio', 'trail_lead_ratio')))
@@ -117,9 +117,9 @@ class TireGuiIntegrationTests(unittest.TestCase):
                     'source_files': ['synthetic://run7']}
         with tempfile.TemporaryDirectory() as folder:
             paths = save_session(edited, Path(folder), 'roundtrip', include_transient=True, metadata=metadata)
-            self.assertEqual(len(paths), 3)
+            self.assertEqual(len(paths), 2)
             steady_model = compile_unitire_simple(load_model(paths[0]))
-            transient_model = compile_unitire_transient(load_model(paths[1]))
+            transient_model = compile_unitire_transient(load_model(paths[0]))
             self.assertEqual(steady_model.mu_0_y, edited.values['mu_0_y'])
             self.assertEqual(transient_model.lateral_length_scale, edited.values['lateral_length_scale'])
             restored = load_session(Path(folder) / 'roundtrip')

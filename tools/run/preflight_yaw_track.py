@@ -5,7 +5,7 @@ zero-offset path, and reports map holes, near-holes, lateral-axis saturation
 and curvature-rate noise. Exit code 2 when a blocking issue is found.
 
     PYTHONPATH=src:. python3 tools/run/preflight_yaw_track.py \
-        --track models/tracks/2024_michigan_endurance_closed_edged.xml --spacing .05
+        --track models/tracks/mis_ev_endurance_2024_width.xml --spacing .05
 """
 from __future__ import annotations
 

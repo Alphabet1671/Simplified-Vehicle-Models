@@ -88,9 +88,9 @@ class YawMapTest(unittest.TestCase):
         # Hydraulic vectoring does not remove the front/rear axle-total bias
         # equality. Its coefficient vector is (1-bias) per front wheel and
         # -bias per rear wheel in hydraulic variables [8:12].
-        bias = vehicle.brake_bias
+        front_share = vehicle.front_brake_share
         expected = np.array([0., 0., 0., 0., 0., 0., 0., 0.,
-                             1.-bias, 1.-bias, -bias, -bias, 0., 0.])
+                             1.-front_share, 1.-front_share, -front_share, -front_share, 0., 0.])
         for _, _, aeq, beq in observed:
             self.assertTrue(any(np.array_equal(row, expected) and bound == 0.
                                 for row, bound in zip(aeq, beq)))
@@ -103,10 +103,17 @@ class YawMapTest(unittest.TestCase):
         model=compile_formulation(str(ROOT / "models/formulations/iem24_murphy_real_planar_7dof.xml")).model
         vehicle=point_mass_view_of_planar(model)
         self.assertNotIn("fl", vehicle.drivetrain.drivetrain.transmission.driven_wheels)
-        self.assertGreater(vehicle.brake_bias, 0.)
+        self.assertGreater(vehicle.front_brake_share, 0.)
         for ax in (-1., -3., -6.):
             self.assertIsNotNone(_cell_lp(vehicle, 15., ax, 0., None, 1.), ax)
             self.assertIsNotNone(_cell_lp(vehicle, 15., ax, 0., None, -1.), ax)
+
+    def test_planar_and_point_mass_brake_splits_match(self):
+        from simplified_vehicle_models.formulations.yaw_capability import _cell_lp
+        model=compile_formulation(str(ROOT / "models/formulations/iem24_murphy_real_planar_7dof.xml")).model
+        point_mass=point_mass_view_of_planar(model)
+        self.assertAlmostEqual(point_mass.front_brake_share, model.front_brake_share)
+        self.assertIsNotNone(_cell_lp(point_mass, 15., -3., 0., None, 1.))
 
     def test_legacy_drivetrain_is_rejected(self):
         from dataclasses import replace

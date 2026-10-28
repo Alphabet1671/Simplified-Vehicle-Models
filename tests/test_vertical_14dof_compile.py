@@ -30,7 +30,7 @@ from simplified_vehicle_models.tires.unitire_simple import loaded_radius
 ROOT = Path(__file__).resolve().parents[1]
 FORMULATION = ROOT / "models/formulations/iem24_murphy_real_14dof_simple.xml"
 PLANAR_FORMULATION = ROOT / "models/formulations/iem24_murphy_real_planar_7dof.xml"
-NEW_ROLES = ("suspension", "tire-transient")
+NEW_ROLES = ("suspension",)
 
 
 class Vertical14DofCompileTests(unittest.TestCase):
@@ -125,9 +125,11 @@ class Vertical14DofCompileTests(unittest.TestCase):
         dampers = self.vehicle.suspension.network.dampers
         self.assertIsNot(dampers[0], dampers[1])
 
-    def test_steady_and_transient_tires_use_separate_roles(self) -> None:
+    def test_steady_and_transient_tires_share_role_via_adapter(self) -> None:
         self.assertEqual(self.manifest.capability(STEADY_COMBINED_SLIP).component_role, "tire")
-        self.assertEqual(self.manifest.capability(TRANSIENT_COMBINED_SLIP).component_role, "tire-transient")
+        self.assertEqual(self.manifest.capability(TRANSIENT_COMBINED_SLIP).component_role, "tire")
+        self.assertEqual(self.manifest.capability(STEADY_COMBINED_SLIP).adapter_names, ("transient_to_steady",))
+        self.assertEqual(sum(record.role == "tire" for record in self.manifest.loaded_components), 1)
 
     def test_no_unused_components_or_unconsumed_parameters(self) -> None:
         self.assertEqual(self.manifest.unused_components, ())
@@ -194,7 +196,7 @@ class RejectionTests(unittest.TestCase):
         ):
             with self.subTest(name=name):
                 self.setUp()
-                self.edit("tires/iem24_murphy_real_unitire.xml", old, old.replace('"0.0"', '"1e-9"'))
+                self.edit("tires/iem24_murphy_real_unitire_transient.xml", old, old.replace('"0.0"', '"1e-9"'))
                 with self.assertRaisesRegex(ValueError, name):
                     self.compile()
 
@@ -250,11 +252,11 @@ class RejectionTests(unittest.TestCase):
 
     def test_nonpositive_relaxation_length_is_rejected_at_compile(self) -> None:
         # A negative lateral stiffness polynomial makes sigma_y nonpositive in the load range.
-        text = (self.models / "tires/iem24_murphy_real_unitire.xml").read_text()
+        text = (self.models / "tires/iem24_murphy_real_unitire_transient.xml").read_text()
         import re
         match = re.search(r'<parameter name="k_y_0" value="([^"]+)"', text)
         self.assertIsNotNone(match)
-        self.edit("tires/iem24_murphy_real_unitire.xml", match.group(0), '<parameter name="k_y_0" value="-1.0"')
+        self.edit("tires/iem24_murphy_real_unitire_transient.xml", match.group(0), '<parameter name="k_y_0" value="-1.0"')
         with self.assertRaises(ValueError):
             self.compile()
 

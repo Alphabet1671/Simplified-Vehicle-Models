@@ -127,7 +127,7 @@
     "lap_length_m": 1016.70064959,
     "lap_time_s": 77.56125377531949,
     "minimum_bus_voltage_v": 560.7946208836827,
-    "track": "models/tracks/2024_michigan_endurance_closed.xml"
+    "track": "models/tracks/mis_ev_endurance_2024_linear.xml"
   },
   "track": {
     "lap_length_m": 1016.70064959,

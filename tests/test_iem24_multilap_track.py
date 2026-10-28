@@ -11,8 +11,8 @@ from tools.tracks.build_iem24_multilap_track import periodic_lap_offset, robust_
 
 CANONICAL_CSV_SHA256 = "2db5a981f12d0c055afa3b167a9e6efa07cd09b1f6e7b2c51afea44f00e73d77"
 ROOT = Path(__file__).resolve().parents[1]
-ORIGINAL_XML = ROOT / "models/tracks/2024_michigan_endurance_closed.xml"
-CANONICAL_XML = ROOT / "models/tracks/2024_michigan_endurance_multilap_closed.xml"
+ORIGINAL_XML = ROOT / "models/tracks/mis_ev_endurance_2024_linear.xml"
+CANONICAL_XML = ROOT / "models/tracks/mis_ev_endurance_2024_multilap_linear.xml"
 CANONICAL_CSV = CANONICAL_XML.with_suffix(".csv")
 CANDIDATE_CSV = ROOT / "docs/validation/iem24-murphy/multilap_track_candidate.csv"
 
@@ -67,7 +67,7 @@ class CanonicalMultiLapTrackTests(unittest.TestCase):
 
     def test_canonical_metadata_refers_to_own_csv_and_records_provenance(self):
         root = ElementTree.parse(CANONICAL_XML).getroot()
-        self.assertEqual(root.get("id"), "2024-michigan-endurance-multilap-closed")
+        self.assertEqual(root.get("id"), "mis_ev_endurance_2024_multilap_linear")
         self.assertEqual(root.find("./data").get("ref"), CANONICAL_CSV.name)
         text = CANONICAL_XML.read_text(encoding="utf-8")
         self.assertIn(CANONICAL_CSV_SHA256, text)
@@ -87,9 +87,10 @@ class CanonicalMultiLapTrackTests(unittest.TestCase):
         self.assertEqual(
             hashlib.sha256(ORIGINAL_XML.with_suffix(".csv").read_bytes()).hexdigest(),
             "ff8dcdc715eaff07eeb1d7a9e0a0739072480150577622ec8854000a0a44dbd4")
-        self.assertEqual(
-            hashlib.sha256(ORIGINAL_XML.read_bytes()).hexdigest(),
-            "2880418d148b763e1360d25eb4b7a8a4144bb16e6e56017facf7f36bddc47180")
+        text = ORIGINAL_XML.read_text(encoding="utf-8")
+        self.assertIn('id="mis_ev_endurance_2024_linear"', text)
+        self.assertIn('ref="mis_ev_endurance_2024_linear.csv"', text)
+        self.assertIn("091e4745a5ff6ccf7d48729154033bb555edd028f0e3e2ed2f3f270e14f6e5b7", text)
 
 
 if __name__ == "__main__":

@@ -13,7 +13,7 @@
     "-u",
     "/Users/alphabet1671/Dev/Simplified-Vehicle-Models/tools/run/run_iem24_forward_driver.py",
     "--track",
-    "models/tracks/2024_michigan_endurance_closed.xml",
+    "models/tracks/mis_ev_endurance_2024_linear.xml",
     "--planner",
     "live",
     "--maximum-speed",

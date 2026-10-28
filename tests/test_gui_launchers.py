@@ -52,13 +52,12 @@ class GuiLauncherTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
 
     @unittest.skipUnless(PYTHON.exists(), 'repository .venv is unavailable')
-    def test_transient_tire_cli_accepts_explicit_steady_companion(self):
+    def test_transient_tire_cli_opens_single_self_contained_xml(self):
         env = dict(os.environ)
         env.pop('PYTHONPATH', None)
         env.update(QT_QPA_PLATFORM='offscreen', TIRE_GUI_QUIT_AFTER_MS='100')
         command = [str(PYTHON), str(ROOT / 'tools/tire_gui/app.py'),
-                   str(ROOT / 'models/tires/iem24_murphy_real_unitire_transient.xml'),
-                   '--steady', str(ROOT / 'models/tires/iem24_murphy_real_unitire.xml')]
+                   str(ROOT / 'models/tires/iem24_murphy_real_unitire_transient.xml')]
         process = subprocess.Popen(command, cwd=tempfile.gettempdir(), env=env,
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                    text=True, start_new_session=True)

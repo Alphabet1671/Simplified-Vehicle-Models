@@ -51,15 +51,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from simplified_vehicle_models.compiler.adapters import register_adapter
 import numpy as np
 
 from simplified_vehicle_models.compiler.capabilities import (
+    STEADY_COMBINED_SLIP,
     TRANSIENT_COMBINED_SLIP,
 )
 from simplified_vehicle_models.compiler.registry import register_component
 from simplified_vehicle_models.parameters.tire import UniTireSimpleParameters
 from simplified_vehicle_models.tires.unitire_simple import (
+    _UNITS as _STEADY_UNITS,
     TireForces,
+    compile_unitire_simple,
     evaluate_unitire,
 )
 from simplified_vehicle_models.xml.model import Model
@@ -104,6 +108,13 @@ class TransientTireParameters:
     lateral_length_scale: float
     trail_pole_ratio: float
     trail_lead_ratio: float
+
+
+@dataclass(frozen=True, slots=True)
+class UniTireTransientParameters(TransientTireParameters):
+    """A self-contained transient tire with its steady coefficients."""
+
+    steady: UniTireSimpleParameters
 
 
 @dataclass(frozen=True, slots=True)
@@ -275,12 +286,23 @@ def evaluate_transient_unitire(
     return forces, rates
 
 
-def compile_unitire_transient(model: Model) -> TransientTireParameters:
-    """Compile the scalar coefficients of the transient layer."""
+def compile_unitire_transient(model: Model) -> UniTireTransientParameters:
+    """Compile a complete steady-plus-transient UniTire XML model."""
 
     require_model_type(model, TIRE_MODEL_TYPE, UNITIRE_TRANSIENT_SUBTYPE)
     require_no_references(model)
-    values = closed_parameters(model, _UNITS)
+    values = closed_parameters(model, {**_STEADY_UNITS, **_UNITS})
+    steady_model = Model(
+        path=model.path,
+        model_id=model.model_id,
+        model_type=TIRE_MODEL_TYPE,
+        subtype="unitire-simple",
+        parameters={name: values[name] for name in _STEADY_UNITS},
+        units={name: model.units[name] for name in _STEADY_UNITS},
+        references=(),
+    )
+    steady = compile_unitire_simple(steady_model)
+    values = {name: values[name] for name in _UNITS}
     require_positive(
         model,
         values,
@@ -292,8 +314,16 @@ def compile_unitire_transient(model: Model) -> TransientTireParameters:
         raise ValueError(
             f"{model.path}: trail_lead_ratio must be from zero through one"
         )
-    return TransientTireParameters(**values)
+    return UniTireTransientParameters(**values, steady=steady)
 
+
+def transient_to_steady(parameters: UniTireTransientParameters) -> UniTireSimpleParameters:
+    """Expose the embedded steady tire capability."""
+
+    return parameters.steady
+
+
+register_adapter(TRANSIENT_COMBINED_SLIP, STEADY_COMBINED_SLIP, transient_to_steady)
 
 register_component(
     TIRE_MODEL_TYPE,

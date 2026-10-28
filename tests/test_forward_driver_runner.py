@@ -32,8 +32,8 @@ from tools.run.run_iem24_forward_driver import (
     wall_margin_seconds, warm_start_matches, wheel_speed_indices,
 )
 
-CANONICAL_TRACK = "models/tracks/2024_michigan_endurance_multilap_closed.xml"
-ORIGINAL_TRACK = "models/tracks/2024_michigan_endurance_closed.xml"
+CANONICAL_TRACK = "models/tracks/mis_ev_endurance_2024_multilap_linear.xml"
+ORIGINAL_TRACK = "models/tracks/mis_ev_endurance_2024_linear.xml"
 UNSIGNED_TRACK = "models/tracks/2024_michigan_endurance_v11.xml"
 
 BASELINE_FIXTURE = Path(__file__).resolve().parent / "fixtures/forward_driver_runner_planar_baseline.json"
@@ -58,7 +58,6 @@ VOLATILE_SUMMARY_KEYS = (
 REQUIRED_14DOF_SOURCES = (
     "models/vehicles/iem24_murphy_real_planar.xml",
     "models/formulations/iem24_murphy_real_14dof_simple.xml",
-    "models/tires/iem24_murphy_real_unitire.xml",
     "models/tires/iem24_murphy_real_unitire_transient.xml",
     "models/suspensions/iem24_murphy_real_suspension.xml",
     "models/suspension-kinematics/iem24_murphy_real_suspension_kinematics.xml",
@@ -307,8 +306,9 @@ class RunnerTests(unittest.TestCase):
 
     def test_track_files_resolve_csv_and_tire(self):
         xml, csv = track_files(CANONICAL_TRACK)
-        self.assertEqual(csv, Path("models/tracks/2024_michigan_endurance_multilap_closed.csv"))
-        self.assertEqual(tire_xml_path(), Path("models/tires/iem24_murphy_real_unitire.xml"))
+        self.assertEqual(csv, Path("models/tracks/mis_ev_endurance_2024_multilap_linear.csv"))
+        self.assertEqual(tire_xml_path(),
+                         Path("models/tires/iem24_murphy_real_unitire_transient.xml"))
 
     def test_track_is_forwarded_to_child_command(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -377,7 +377,7 @@ class RunnerTests(unittest.TestCase):
 
     def test_export_checks_track_setting_and_recorded_hashes(self):
         paths = {"track_xml": CANONICAL_TRACK,
-                 "track_csv": "models/tracks/2024_michigan_endurance_multilap_closed.csv",
+                 "track_csv": "models/tracks/mis_ev_endurance_2024_multilap_linear.csv",
                  "tire_xml": "models/tires/iem24_murphy_real_unitire.xml",
                  "formulation_xml": "models/formulations/iem24_murphy_real_planar_7dof.xml",
                  "vehicle_xml": "models/vehicles/iem24_murphy_real_planar.xml"}
@@ -500,9 +500,12 @@ class ForwardRunnerModelTests(unittest.TestCase):
         summary = json.loads((root / "summary.json").read_text())
         provenance = summary["model_provenance"]
         transient = Path("models/tires/iem24_murphy_real_unitire_transient.xml")
-        steady = Path("models/tires/iem24_murphy_real_unitire.xml")
+        steady = transient
         self.assertEqual(provenance["transient_tire_xml"], str(transient))
         self.assertEqual(provenance["steady_tire_xml"], str(steady))
+        self.assertEqual(provenance["transient_tire_xml_sha256"],
+                         provenance["steady_tire_xml_sha256"])
+        self.assertIn("Self-contained", provenance["note"])
         # The DOI is read from the hashed XML, not repeated as a literal.
         self.assertEqual(provenance["transient_tire_doi"], "10.3390/machines10070527")
         self.assertIn("10.3390/machines10070527", transient.read_text())
@@ -619,9 +622,10 @@ class ForwardRunnerModelTests(unittest.TestCase):
                       planar)
         self.assertIn(Path("src/simplified_vehicle_models/solvers/planar_forward.py").resolve(),
                       planar)
+        self.assertIn(Path("src/simplified_vehicle_models/tires/unitire_transient.py").resolve(),
+                      planar)
         for vertical_only in ("src/simplified_vehicle_models/solvers/vertical_forward.py",
-                              "src/simplified_vehicle_models/solvers/vertical_equilibrium.py",
-                              "src/simplified_vehicle_models/tires/unitire_transient.py"):
+                              "src/simplified_vehicle_models/solvers/vertical_equilibrium.py"):
             self.assertNotIn(Path(vertical_only).resolve(), planar)
         # Two sources may not share a basename: the snapshot writes by basename.
         names = [Path(path).name for path in source_files("14dof-simple", DEFAULT_TRACK)]
@@ -648,10 +652,12 @@ class ForwardRunnerModelTests(unittest.TestCase):
 
     def test_14dof_component_roles_resolve_to_distinct_components(self):
         inputs = model_inputs("14dof-simple", DEFAULT_TRACK)
-        self.assertEqual(inputs["tire_xml"],
-                         Path("models/tires/iem24_murphy_real_unitire.xml"))
-        self.assertEqual(inputs["tire_transient_xml"],
-                         Path("models/tires/iem24_murphy_real_unitire_transient.xml"))
+        tire_xml = Path("models/tires/iem24_murphy_real_unitire_transient.xml")
+        self.assertEqual(inputs["tire_xml"], tire_xml)
+        self.assertNotIn("tire_transient_xml", inputs)
+        hashed_inputs = [path for path in source_files("14dof-simple", DEFAULT_TRACK)
+                         if path == tire_xml]
+        self.assertEqual(hashed_inputs, [tire_xml])
         self.assertEqual(inputs["suspension_xml"],
                          Path("models/suspensions/iem24_murphy_real_suspension.xml"))
         # The suspension assembly nests five children; each is recorded under
@@ -676,22 +682,28 @@ class ForwardRunnerModelTests(unittest.TestCase):
             self.assertTrue(Path(path).is_file(), path)
         # The planar model resolves only its own roles.
         planar = model_inputs("planar-7dof", DEFAULT_TRACK)
-        self.assertEqual(planar["tire_xml"], Path("models/tires/iem24_murphy_real_unitire.xml"))
+        self.assertEqual(planar["tire_xml"],
+                         Path("models/tires/iem24_murphy_real_unitire_transient.xml"))
         for key in ("tire_transient_xml", "suspension_xml", "suspension_kinematics_xml",
                     "suspension_damper_front_xml", "suspension_damper_rear_xml"):
             self.assertNotIn(key, planar)
         compiled = compile_formulation(str(model_spec("14dof-simple").formulation))
         roles = {record.role for record in compiled.manifest.loaded_components}
-        self.assertTrue({"suspension", "tire-transient", "suspension/kinematics",
+        self.assertTrue({"suspension", "tire", "suspension/kinematics",
                          "suspension/spring", "suspension/arb", "suspension/damper-front",
                          "suspension/damper-rear"} <= roles)
         components = {compiled.manifest.capability(capability).component_model_id
                       for capability in (SUSPENSION_FORCES, TRANSIENT_COMBINED_SLIP)}
         self.assertEqual(len(components), 2)
+        self.assertEqual(compiled.manifest.unused_components, ())
         model_ids = {record.model_id for record in compiled.manifest.loaded_components
                      if record.role.startswith("suspension/")}
         self.assertEqual(len(model_ids), 5)
-        self.assertEqual(compiled.manifest.unused_components, ())
+        tire_roles = [record for record in compiled.manifest.loaded_components
+                      if record.role == "tire"]
+        self.assertEqual(len(tire_roles), 1)
+        self.assertEqual(compiled.manifest.capability(TRANSIENT_COMBINED_SLIP).component_model_id,
+                         tire_roles[0].model_id)
 
 
 class WallBudgetTests(unittest.TestCase):

@@ -190,7 +190,7 @@ class RunCaseIntegrationTests(unittest.TestCase):
                    for key, path in baseline.choices.items()}
         definition = StudyDefinition(
             "_test", source.as_posix(),
-            "models/tracks/2024_michigan_endurance_closed.xml", "planar-7dof", choices,
+            "models/tracks/mis_ev_endurance_2024_linear.xml", "planar-7dof", choices,
             RunSettings(duration=0.3, profile_seconds=120.0), "one-at-a-time",
             (__import__('tools.sim_gui.study', fromlist=['Dimension']).Dimension(
                 "tire", (choices["tire"], "models/tires/hoosier-43075-r20-simple.xml")),),
@@ -216,7 +216,7 @@ class RunCaseIntegrationTests(unittest.TestCase):
         baseline = VehicleConfiguration.open(source)
         choices = {key: path.relative_to(REPOSITORY_ROOT).as_posix() for key, path in baseline.choices.items()}
         definition = StudyDefinition("invalid", source.as_posix(),
-            "models/tracks/2024_michigan_endurance_closed.xml", "planar-7dof", choices,
+            "models/tracks/mis_ev_endurance_2024_linear.xml", "planar-7dof", choices,
             RunSettings(duration=0.3, profile_seconds=120.0), "one-at-a-time", ())
         with unittest.mock.patch("tools.sim_gui.run_study.prepare_case", side_effect=ValueError("bad variant")):
             output = run_study(definition, output_root=self.study_dir, parallel=1)
@@ -234,7 +234,7 @@ class RunCaseIntegrationTests(unittest.TestCase):
         choices["tire"] = "models/tires/hoosier-43075-r20-simple.xml"
         definition = StudyDefinition(
             "_test", source.as_posix(),
-            "models/tracks/2024_michigan_endurance_closed.xml", "planar-7dof", choices,
+            "models/tracks/mis_ev_endurance_2024_linear.xml", "planar-7dof", choices,
             RunSettings(duration=0.3, profile_seconds=120.0), "one-at-a-time", (),
         )
         case = CaseSpec("case_000", "hoosier", "planar-7dof", definition.track,

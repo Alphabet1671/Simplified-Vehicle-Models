@@ -4,7 +4,7 @@
   "comparison": {
     "vehicle_formulation": "models/formulations/placeholder_planar_7dof.xml",
     "vehicle_assembly": "models/vehicles/placeholder_2024_formula.xml",
-    "track": "models/tracks/2024_michigan_endurance_closed.xml",
+    "track": "models/tracks/mis_ev_endurance_2024_linear.xml",
     "track_length_m": 1016.70064959,
     "mesh_spacing_m": 1.0,
     "nodes": 1018,

@@ -15,7 +15,7 @@
     "--model",
     "14dof-simple",
     "--track",
-    "models/tracks/2024_michigan_endurance_multilap_closed.xml",
+    "models/tracks/mis_ev_endurance_2024_multilap_linear.xml",
     "--planner",
     "live",
     "--maximum-speed",

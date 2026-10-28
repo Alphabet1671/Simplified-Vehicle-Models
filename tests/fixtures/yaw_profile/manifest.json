@@ -14,7 +14,7 @@
       "source_output_sha256": "5f0ff2d7edebe8ae1ff4b8c724416c2708ce4ccdab59f1fabf057081f7789075",
       "geometry": "raw-centerline",
       "anchored": true,
-      "track": "models/tracks/fsc_may_2026_synthetic_3m_edged.xml",
+      "track": "models/tracks/fsc_may_endurance_2026_width.xml",
       "failed_segment": 83,
       "window_m": [
         0,
@@ -26,7 +26,7 @@
         "python3",
         "tools/run/probe_coupled_yaw_profile.py",
         "--track",
-        "models/tracks/fsc_may_2026_synthetic_3m_edged.xml",
+        "models/tracks/fsc_may_endurance_2026_width.xml",
         "--output",
         "<ignored-output.json>",
         "--geometry",
@@ -49,7 +49,7 @@
       "source_output_sha256": "627aa4a3f646a9eee359314017fe39cdb1e1bfb251cfa62ba9538a80a2b88406",
       "geometry": "raw-centerline",
       "anchored": false,
-      "track": "models/tracks/fsc_may_2026_synthetic_3m_edged.xml",
+      "track": "models/tracks/fsc_may_endurance_2026_width.xml",
       "failed_segment": 83,
       "window_m": [
         0,
@@ -61,7 +61,7 @@
         "python3",
         "tools/run/probe_coupled_yaw_profile.py",
         "--track",
-        "models/tracks/fsc_may_2026_synthetic_3m_edged.xml",
+        "models/tracks/fsc_may_endurance_2026_width.xml",
         "--output",
         "<ignored-output.json>",
         "--geometry",
@@ -83,7 +83,7 @@
       "source_output_sha256": "523130e198392ed57aa1e3fc54b9ed6762a9b0f2a7ed3e4ef24e4721885c2186",
       "geometry": "zero-offset",
       "anchored": true,
-      "track": "models/tracks/fsc_may_2026_synthetic_3m_edged.xml",
+      "track": "models/tracks/fsc_may_endurance_2026_width.xml",
       "failed_segment": 7,
       "window_m": [
         0,
@@ -95,7 +95,7 @@
         "python3",
         "tools/run/probe_coupled_yaw_profile.py",
         "--track",
-        "models/tracks/fsc_may_2026_synthetic_3m_edged.xml",
+        "models/tracks/fsc_may_endurance_2026_width.xml",
         "--output",
         "<ignored-output.json>",
         "--geometry",
@@ -118,7 +118,7 @@
       "source_output_sha256": "dc7170c314181a0f78c91f8bbecf9e188e941b07520c38f022639cc69b72cfcc",
       "geometry": "zero-offset",
       "anchored": false,
-      "track": "models/tracks/fsc_may_2026_synthetic_3m_edged.xml",
+      "track": "models/tracks/fsc_may_endurance_2026_width.xml",
       "failed_segment": 7,
       "window_m": [
         0,
@@ -130,7 +130,7 @@
         "python3",
         "tools/run/probe_coupled_yaw_profile.py",
         "--track",
-        "models/tracks/fsc_may_2026_synthetic_3m_edged.xml",
+        "models/tracks/fsc_may_endurance_2026_width.xml",
         "--output",
         "<ignored-output.json>",
         "--geometry",
@@ -152,7 +152,7 @@
       "source_output_sha256": "a2d6b76b195cc69cfc217fcea78da56bf8c32a6d466ae7c5692db2bf3b638ba0",
       "geometry": "raw-centerline",
       "anchored": true,
-      "track": "models/tracks/2024_michigan_endurance_closed_edged.xml",
+      "track": "models/tracks/mis_ev_endurance_2024_width.xml",
       "failed_segment": 10,
       "window_m": [
         0,
@@ -164,7 +164,7 @@
         "python3",
         "tools/run/probe_coupled_yaw_profile.py",
         "--track",
-        "models/tracks/2024_michigan_endurance_closed_edged.xml",
+        "models/tracks/mis_ev_endurance_2024_width.xml",
         "--output",
         "<ignored-output.json>",
         "--geometry",
@@ -187,7 +187,7 @@
       "source_output_sha256": "9e8ef13bb689153a22762de73e05174ad810afcce784d3b45cdf01509da6d156",
       "geometry": "raw-centerline",
       "anchored": false,
-      "track": "models/tracks/2024_michigan_endurance_closed.xml",
+      "track": "models/tracks/mis_ev_endurance_2024_linear.xml",
       "failed_segment": 10,
       "window_m": [
         0,
@@ -199,7 +199,7 @@
         "python3",
         "tools/run/probe_coupled_yaw_profile.py",
         "--track",
-        "models/tracks/2024_michigan_endurance_closed.xml",
+        "models/tracks/mis_ev_endurance_2024_linear.xml",
         "--output",
         "<ignored-output.json>",
         "--geometry",
@@ -221,7 +221,7 @@
       "source_output_sha256": "8455e05306d0e393788295d0592b30c0c2ca1762aad550b3ad5e3aa7dba3003e",
       "geometry": "raw-centerline",
       "anchored": false,
-      "track": "models/tracks/2024_michigan_endurance_closed_edged.xml",
+      "track": "models/tracks/mis_ev_endurance_2024_width.xml",
       "failed_segment": 10,
       "window_m": [
         0,
@@ -233,7 +233,7 @@
         "python3",
         "tools/run/probe_coupled_yaw_profile.py",
         "--track",
-        "models/tracks/2024_michigan_endurance_closed_edged.xml",
+        "models/tracks/mis_ev_endurance_2024_width.xml",
         "--output",
         "<ignored-output.json>",
         "--geometry",
@@ -255,7 +255,7 @@
       "source_output_sha256": "09aa14527de43d0e193b1dee2f1ca0404be0d33dd60d5afb4f3be9838f8e21a2",
       "geometry": "zero-offset",
       "anchored": true,
-      "track": "models/tracks/2024_michigan_endurance_closed_edged.xml",
+      "track": "models/tracks/mis_ev_endurance_2024_width.xml",
       "failed_segment": 15,
       "window_m": [
         0,
@@ -267,7 +267,7 @@
         "python3",
         "tools/run/probe_coupled_yaw_profile.py",
         "--track",
-        "models/tracks/2024_michigan_endurance_closed_edged.xml",
+        "models/tracks/mis_ev_endurance_2024_width.xml",
         "--output",
         "<ignored-output.json>",
         "--geometry",
@@ -290,7 +290,7 @@
       "source_output_sha256": "3b660009ba549f32b448c9d4ba0585cb16add52c1fa163ea21f26fa95fc0f9a3",
       "geometry": "zero-offset",
       "anchored": false,
-      "track": "models/tracks/2024_michigan_endurance_closed_edged.xml",
+      "track": "models/tracks/mis_ev_endurance_2024_width.xml",
       "failed_segment": 14,
       "window_m": [
         0,
@@ -302,7 +302,7 @@
         "python3",
         "tools/run/probe_coupled_yaw_profile.py",
         "--track",
-        "models/tracks/2024_michigan_endurance_closed_edged.xml",
+        "models/tracks/mis_ev_endurance_2024_width.xml",
         "--output",
         "<ignored-output.json>",
         "--geometry",
@@ -328,7 +328,7 @@
   "comparisons": [
     {
       "geometry": "raw-centerline",
-      "track": "models/tracks/2024_michigan_endurance_closed_edged.xml",
+      "track": "models/tracks/mis_ev_endurance_2024_width.xml",
       "original_fixture": "mis-raw-original-window.json",
       "anchored_fixture": "mis-raw-anchored-window.json",
       "original_observation": {
@@ -343,7 +343,7 @@
     },
     {
       "geometry": "zero-offset",
-      "track": "models/tracks/2024_michigan_endurance_closed_edged.xml",
+      "track": "models/tracks/mis_ev_endurance_2024_width.xml",
       "original_fixture": "mis-zero-original-window.json",
       "anchored_fixture": "mis-zero-anchored-window.json",
       "original_observation": {
@@ -358,7 +358,7 @@
     },
     {
       "geometry": "raw-centerline",
-      "track": "models/tracks/fsc_may_2026_synthetic_3m_edged.xml",
+      "track": "models/tracks/fsc_may_endurance_2026_width.xml",
       "original_fixture": "fsc-raw-original-window.json",
       "anchored_fixture": "fsc-raw-anchored-window.json",
       "original_observation": {
@@ -373,7 +373,7 @@
     },
     {
       "geometry": "zero-offset",
-      "track": "models/tracks/fsc_may_2026_synthetic_3m_edged.xml",
+      "track": "models/tracks/fsc_may_endurance_2026_width.xml",
       "original_fixture": "fsc-zero-original-window.json",
       "anchored_fixture": "fsc-zero-anchored-window.json",
       "original_observation": {

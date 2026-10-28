@@ -33,7 +33,7 @@ from simplified_vehicle_models.xml.loader import load_model
 ROOT = Path(__file__).resolve().parents[2]
 FORMULATION = ROOT / "models/formulations/iem24_murphy_real_planar_7dof.xml"
 ASSEMBLY = ROOT / "models/vehicles/iem24_murphy_real_planar.xml"
-TRACK = ROOT / "models/tracks/2024_michigan_endurance_multilap_closed.xml"
+TRACK = ROOT / "models/tracks/mis_ev_endurance_2024_multilap_linear.xml"
 
 
 def _point_mass_track(track: TrackProfile, spacing: float) -> TrackProfile:

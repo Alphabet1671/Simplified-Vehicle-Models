@@ -51,53 +51,40 @@ def _make_snapshot(steady, transient, revision, provenance, statuses=None, load_
 def load_snapshot(steady_xml: Path, transient_xml: Path | None = None, load_domain: tuple[float, float] = (0.0, 1500.0)) -> ModelSnapshot:
     if len(load_domain) != 2 or not np.all(np.isfinite(load_domain)) or load_domain[0] < 0 or load_domain[1] <= load_domain[0]:
         raise ValueError('load_domain must be finite, nonnegative, and increasing')
-    steady = compile_unitire_simple(load_model(steady_xml))
-    if transient_xml is None:
-        transient = TransientTireParameters(1., 1., 1., .25)
-        transient_source = 'provisional default (not fitted)'
+    model = load_model(steady_xml)
+    if model.subtype == 'unitire-transient-simple':
+        if transient_xml is not None:
+            raise ValueError('a self-contained transient XML cannot be paired with another transient source')
+        compiled = compile_unitire_transient(model)
+        steady = compiled.steady
+        transient = TransientTireParameters(*(getattr(compiled, name) for name in TRANSIENT_NAMES))
+        source = str(Path(steady_xml))
+        provenance = {'seed_kind':'self-contained transient XML','steady_source':source,'transient_source':f'XML:{Path(steady_xml).name} (provisional; not fitted)','transient_path':str(Path(steady_xml).resolve()),'transient_fit_status':'provisional'}
+        statuses = {n:'transient XML (provisional)' for n in (*CANONICAL_STEADY_NAMES,*TRANSIENT_NAMES)}
     else:
-        transient = compile_unitire_transient(load_model(transient_xml))
-        transient_source = f'XML:{Path(transient_xml).name} (provisional unless fit evidence is supplied)'
-    return _make_snapshot(steady, transient, 0, {'seed_kind':'repository lab XML','steady_source':str(Path(steady_xml)),'transient_source':transient_source,'transient_fit_status':'provisional'}, {n:'repository lab XML' for n in (*CANONICAL_STEADY_NAMES,*TRANSIENT_NAMES)}, load_domain)
-
-def find_steady_companion(transient_xml: Path) -> Path | None:
-    """Find only an unambiguous, validated conventional sibling; never guess a tire."""
-    path = Path(transient_xml).resolve()
-    name = path.name
-    candidates = []
-    for suffix, replacement in (('-unitire-transient-simple.xml', '-unitire-simple.xml'),
-                                ('_transient.xml', '.xml'), ('-transient.xml', '.xml')):
-        if name.endswith(suffix):
-            candidates.append(path.with_name(name[:-len(suffix)] + replacement))
-    valid = []
-    for candidate in dict.fromkeys(candidates):
-        if candidate.is_file():
-            try:
-                compile_unitire_simple(load_model(candidate))
-            except (ValueError, OSError):
-                continue
-            valid.append(candidate)
-    return valid[0] if len(valid) == 1 else None
-
+        steady = compile_unitire_simple(model)
+        if transient_xml is None:
+            transient = TransientTireParameters(1., 1., 1., .25)
+            transient_source = 'provisional default (not fitted)'
+        else:
+            raise ValueError('transient XML must be a self-contained transient model, not a separate companion')
+        provenance = {'seed_kind':'repository lab XML','steady_source':str(Path(steady_xml)),'transient_source':transient_source,'transient_fit_status':'provisional'}
+        statuses = {n:'repository lab XML' for n in (*CANONICAL_STEADY_NAMES,*TRANSIENT_NAMES)}
+    return _make_snapshot(steady, transient, 0, provenance, statuses, load_domain)
 
 def load_transient_snapshot(transient_xml: Path, *, snapshot: ModelSnapshot | None = None,
                             steady_xml: Path | None = None) -> ModelSnapshot:
-    """Attach transient scalars to an explicitly selected steady model or live snapshot."""
-    if snapshot is not None and steady_xml is not None:
-        raise ValueError('select either the current steady model or a steady XML, not both')
+    """Load a complete transient model; legacy pairing is explicitly refused."""
+    if steady_xml is not None:
+        raise ValueError('transient XML is self-contained; companion pairing is not supported')
     path = Path(transient_xml).resolve()
-    transient = compile_unitire_transient(load_model(path))
+    opened = load_snapshot(path)
     if snapshot is None:
-        if steady_xml is None:
-            raise ValueError('a transient XML contains only relaxation coefficients; select a steady tire XML companion')
-        snapshot = load_snapshot(Path(steady_xml))
-    provenance = dict(snapshot.provenance)
-    provenance.update(transient_source=f'XML:{path} (provisional, not validated)',
-                      transient_path=str(path), transient_fit_status='provisional')
-    statuses = dict(snapshot.parameter_status)
-    statuses.update({name: 'transient XML (provisional)' for name in TRANSIENT_NAMES})
-    return _make_snapshot(snapshot.steady, transient, snapshot.revision + 1, provenance,
-                          statuses, snapshot.load_domain, snapshot.session_metadata)
+        return opened
+    provenance = dict(opened.provenance)
+    provenance['seed_kind'] = 'self-contained transient XML replacing current model'
+    return _make_snapshot(opened.steady, opened.transient, snapshot.revision + 1, provenance,
+                          opened.parameter_status, opened.load_domain, snapshot.session_metadata)
 
 
 def with_parameters(snapshot: ModelSnapshot, changes: Mapping[str, float]) -> ModelSnapshot:

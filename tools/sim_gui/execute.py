@@ -1,7 +1,7 @@
 """Prepare, execute, and finish one simulation GUI case."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import json
 import hashlib
 from pathlib import Path
@@ -41,7 +41,7 @@ def _atomic_json(path: Path, data: dict[str, Any]) -> None:
     temporary.replace(path)
 
 
-def prepare_case(study_dir: Path, definition: StudyDefinition, case: CaseSpec) -> PreparedCase:
+def prepare_case(study_dir: Path, definition: StudyDefinition, case: CaseSpec, *, yaw_map_resolver=None) -> PreparedCase:
     """Materialize the selected source configuration and its solver form."""
     directory = Path(study_dir) / "cases" / case.id
     model_dir = directory / "model"
@@ -70,6 +70,9 @@ def prepare_case(study_dir: Path, definition: StudyDefinition, case: CaseSpec) -
             tree.getroot().remove(required)
         tree.write(files.formulation, encoding="UTF-8", xml_declaration=True)
     track = _resolve(case.track)
+    if settings.solver_kind == "yaw-aware" and yaw_map_resolver is not None:
+        artifact = yaw_map_resolver(files.formulation, settings)
+        settings = replace(settings, yaw_map=str(Path(artifact).resolve()))
     validate(settings, case.model, track)
 
     if settings.solver_kind == "yaw-aware":

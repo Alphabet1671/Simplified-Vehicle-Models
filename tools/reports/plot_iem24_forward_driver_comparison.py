@@ -32,7 +32,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 #: Attempts that predate --track record no settings["track"]; they ran on this
 #: original track, so replaying them must not silently use the new default.
-LEGACY_TRACK = "models/tracks/2024_michigan_endurance_closed.xml"
+LEGACY_TRACK = "models/tracks/mis_ev_endurance_2024_linear.xml"
 
 
 def _recompute_accelerations(trace_path: Path, attempt_dir: Path) -> np.ndarray:

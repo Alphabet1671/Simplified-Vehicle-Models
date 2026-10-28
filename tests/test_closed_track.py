@@ -22,7 +22,7 @@ from tools.tracks.build_closed_track import (
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
-CLOSED_PATH = REPOSITORY_ROOT / "models/tracks/2024_michigan_endurance_closed.xml"
+CLOSED_PATH = REPOSITORY_ROOT / "models/tracks/mis_ev_endurance_2024_linear.xml"
 LEGACY_PATH = REPOSITORY_ROOT / "models/tracks/2024_michigan_endurance_v11.xml"
 
 

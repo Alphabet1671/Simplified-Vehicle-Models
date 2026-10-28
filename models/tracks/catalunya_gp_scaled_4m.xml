@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<model schema-version="1.0" id="catalunya-gp-scaled-4m" type="track-model" subtype="closed-xy-profile">
+    <metadata>
+        <title>Catalunya GP historical SVG - scaled 80 kW / 270 kg / 99% vmax - 4 m wide</title>
+        <source sha256="8a0884bdfbccc70a37667ad6e1a08b0a4a1f5929391f791506fb063125d1cbbd">https://commons.wikimedia.org/wiki/File:Formula1_Circuit_Catalunya.svg</source>
+        <attribution>Will Pittenger; Wikimedia revision by Sentoan, 2017-05-18. Adapted by centerline extraction, reversal, uniform scaling and 4 m corridor. CC BY-SA 3.0.</attribution>
+        <license>https://creativecommons.org/licenses/by-sa/3.0/</license>
+    </metadata>
+    <data ref="catalunya_gp_scaled_4m.csv" />
+    <parameters>
+        <parameter name="is_closed" value="true" />
+        <parameter name="terminal_segment_is_duplicate" value="true" />
+        <parameter name="node_spacing" value="0.25" unit="m" />
+        <parameter name="smoothing_length" value="0" unit="m" />
+        <parameter name="maximum_radius" value="1000000" unit="m" />
+        <parameter name="half_width" value="2" unit="m" />
+        <parameter name="width_provenance" value="assumed" />
+        <parameter name="half_width_note" value="Uniform synthetic 4 m corridor; 2 m each side; not surveyed" />
+    </parameters>
+</model>

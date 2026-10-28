@@ -32,7 +32,7 @@ class TrackOpsTests(unittest.TestCase):
             np.testing.assert_allclose(out.x_north,r.x_north,atol=1e-8)
 
     def test_closed_save_reverse_curvature_and_double(self):
-        t=load_track_data(TRACKS/"2024_michigan_endurance_closed.xml"); r=reverse_track(t); rr=reverse_track(r)
+        t=load_track_data(TRACKS/"mis_ev_endurance_2024_linear.xml"); r=reverse_track(t); rr=reverse_track(r)
         np.testing.assert_allclose(r.x_north[0],t.x_north[0]); np.testing.assert_allclose(r.curvature,-t.curvature[::-1],atol=1e-10)
         np.testing.assert_allclose(rr.x_north,t.x_north,atol=1e-9); np.testing.assert_allclose(rr.curvature,t.curvature,atol=1e-10)
         with tempfile.TemporaryDirectory() as d:
@@ -51,7 +51,7 @@ class TrackOpsTests(unittest.TestCase):
             np.testing.assert_allclose(persisted.curvature,t.curvature)
 
     def test_both_canonical_sections_exact_seam_and_saved_validation(self):
-        for name in ("2024_michigan_endurance_closed.xml","2024_michigan_endurance_multilap_closed.xml"):
+        for name in ("mis_ev_endurance_2024_linear.xml","mis_ev_endurance_2024_multilap_linear.xml"):
             t=load_track_data(TRACKS/name); parts=split_closed(t,[t.length,t.length/3,2*t.length/3])
             self.assertEqual(len(parts),3)
             np.testing.assert_allclose([parts[0].x_north[0],parts[0].y_east[0]],[t.x_north[0],t.y_east[0]],atol=1e-8)
@@ -63,7 +63,7 @@ class TrackOpsTests(unittest.TestCase):
                     self.assertIn("maximum departure from source polyline",item.xml.read_text())
 
     def test_cuts_invalid_and_late_destination_guard(self):
-        t=load_track_data(TRACKS/"2024_michigan_endurance_closed.xml")
+        t=load_track_data(TRACKS/"mis_ev_endurance_2024_linear.xml")
         for cuts in ([],[2,2],[0,t.length],[float("nan"),3],[-1,3],[0,t.length+1]):
             with self.subTest(cuts=cuts),self.assertRaises(ValueError): split_closed(t,cuts)
         with tempfile.TemporaryDirectory() as d:
@@ -73,7 +73,7 @@ class TrackOpsTests(unittest.TestCase):
         with self.assertRaises(SaveRefused): save_track_data(t,TRACKS,"forbidden_task3_probe","id","title")
 
     def test_late_install_failure_restores_all_originals(self):
-        t=load_track_data(TRACKS/"2024_michigan_endurance_closed.xml")
+        t=load_track_data(TRACKS/"mis_ev_endurance_2024_linear.xml")
         with tempfile.TemporaryDirectory() as d:
             save_sections(t,[0,t.length/2],d,"part","id","Title")
             before={p.name:p.read_bytes() for p in Path(d).iterdir()}; real=os.replace; calls=0
@@ -96,7 +96,7 @@ class TrackOpsTests(unittest.TestCase):
             if calls==1:
                 raise ValueError("forced strict validation retry")
             return real(*args,**kwargs)
-        t=load_track_data(TRACKS/"2024_michigan_endurance_closed.xml")
+        t=load_track_data(TRACKS/"mis_ev_endurance_2024_linear.xml")
         with mock.patch("simplified_vehicle_models.tracks.profile._validate_open_geometry_arrays",side_effect=fail_once):
             parts=split_closed(t,[0,t.length/2])
         self.assertEqual(len(parts),2)
@@ -104,7 +104,7 @@ class TrackOpsTests(unittest.TestCase):
 
     def test_adaptive_refinement_stops_at_node_cap(self):
         from simplified_vehicle_models.tracks import profile as profile_module
-        t=load_track_data(TRACKS/"2024_michigan_endurance_closed.xml")
+        t=load_track_data(TRACKS/"mis_ev_endurance_2024_linear.xml")
         with mock.patch("simplified_vehicle_models.tracks.profile._validate_open_geometry_arrays",side_effect=ValueError("forced strict failure")), \
              mock.patch("tools.track_gui.track_ops.MAX_SECTION_NODES",6000):
             with self.assertRaisesRegex(ValueError,"node resource limit"):

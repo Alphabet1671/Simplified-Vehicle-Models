@@ -32,7 +32,7 @@ class CommandAndStatusTests(unittest.TestCase):
             attempt.mkdir(parents=True)
             prepared = PreparedCase(case, case/'f', case/'v', [], solver_kind='yaw-aware')
             kwargs = dict(return_code=0, timed_out=False, cancelled=False, wall_seconds=1., command=[])
-            track=REPOSITORY_ROOT/'models/tracks/2024_michigan_endurance_closed.xml'
+            track=REPOSITORY_ROOT/'models/tracks/mis_ev_endurance_2024_linear.xml'
             formulation=REPOSITORY_ROOT/'models/formulations/iem24_murphy_real_planar_7dof.xml'
             yaw_map=REPOSITORY_ROOT/'runs/yaw_map_build/iem24-vehicle-limit-final.npz'
             identity={'solver_kind':'yaw-aware','source_model':'planar-7dof','solution_model':'planar-7dof',
@@ -117,7 +117,7 @@ class PreparationTests(unittest.TestCase):
             attempt=root/'attempt'; attempt.mkdir()
             form=case_dir/'model'/'formulation.xml'; form.touch()
             track=root/'track.xml'; track.touch(); yaw_map=root/'map.npz'; yaw_map.touch()
-            case={'model':'planar-7dof','track':str(REPOSITORY_ROOT / 'models/tracks/2024_michigan_endurance_closed.xml'),'formulation':'model/formulation.xml',
+            case={'model':'planar-7dof','track':str(REPOSITORY_ROOT / 'models/tracks/mis_ev_endurance_2024_linear.xml'),'formulation':'model/formulation.xml',
                   'argv':['--yaw-map',str(yaw_map),'--track',str(track),'--mode','fixed']}
             yaw_map=REPOSITORY_ROOT / 'runs/yaw_aware_driver/mis-coupled-plan-smoke/yaw_map.npz'
             settings=RunSettings(yaw_map=str(yaw_map))
@@ -129,7 +129,7 @@ class PreparationTests(unittest.TestCase):
             argv=parse.call_args.args[0]
             self.assertEqual(argv[argv.index('--formulation')+1], str(form.resolve()))
             self.assertEqual(argv[argv.index('--yaw-map')+1], str(yaw_map.resolve()))
-            self.assertEqual(argv[argv.index('--track')+1], str((REPOSITORY_ROOT / 'models/tracks/2024_michigan_endurance_closed.xml').resolve()))
+            self.assertEqual(argv[argv.index('--track')+1], str((REPOSITORY_ROOT / 'models/tracks/mis_ev_endurance_2024_linear.xml').resolve()))
             self.assertNotIn('--planner', argv)
             self.assertNotIn('run_iem24_forward_driver', argv)
 
@@ -164,7 +164,7 @@ class PreparationTests(unittest.TestCase):
 
     def test_point_mass_boundary_rejects_open_track_before_solver(self):
         settings=RunSettings(solver_kind='point-mass')
-        with mock.patch('tools.sim_gui.run_yaw_case._resolve', return_value=REPOSITORY_ROOT / 'models/tracks/2024_michigan_endurance_closed.xml'), \
+        with mock.patch('tools.sim_gui.run_yaw_case._resolve', return_value=REPOSITORY_ROOT / 'models/tracks/mis_ev_endurance_2024_linear.xml'), \
              mock.patch('simplified_vehicle_models.tracks.profile.load_track', return_value=mock.Mock(is_closed=False)):
             with self.assertRaisesRegex(ValueError,'closed tracks only'):
                 _point_mass({'track':'track.xml','model':'planar-7dof','formulation':'model/formulation.xml'},

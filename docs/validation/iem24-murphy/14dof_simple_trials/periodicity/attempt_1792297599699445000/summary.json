@@ -20,7 +20,7 @@
     "method": "BDF",
     "spacing": 0.5,
     "planner": "live",
-    "track": "models/tracks/2024_michigan_endurance_closed.xml",
+    "track": "models/tracks/mis_ev_endurance_2024_linear.xml",
     "warm_start": "docs/validation/iem24-murphy/14dof_simple_trials/attempt_1792297154801812000",
     "child_attempt": "docs/validation/iem24-murphy/14dof_simple_trials/periodicity/attempt_1792297599699445000"
   },
@@ -42,8 +42,8 @@
     "src/simplified_vehicle_models/suspension/layouts/independent_corner.py": "b4920954b50fdb7eaaae3ca339be874e6cc6ab17eb0982cb4590dec600fcf148",
     "src/simplified_vehicle_models/suspension/monotone_spline.py": "78ae779ac71ae8551184f7af485722f007f1f9972f13f50b3176ebf546a20f64",
     "src/simplified_vehicle_models/suspension/network.py": "893b6f7cfaf2b76939be0b2c08b2751befc077619c56061cef4d5d3d57edf03d",
-    "models/tracks/2024_michigan_endurance_closed.xml": "2880418d148b763e1360d25eb4b7a8a4144bb16e6e56017facf7f36bddc47180",
-    "models/tracks/2024_michigan_endurance_closed.csv": "ff8dcdc715eaff07eeb1d7a9e0a0739072480150577622ec8854000a0a44dbd4",
+    "models/tracks/mis_ev_endurance_2024_linear.xml": "2880418d148b763e1360d25eb4b7a8a4144bb16e6e56017facf7f36bddc47180",
+    "models/tracks/mis_ev_endurance_2024_linear.csv": "ff8dcdc715eaff07eeb1d7a9e0a0739072480150577622ec8854000a0a44dbd4",
     "models/tires/iem24_murphy_real_unitire.xml": "301c55c8213fd9a4149bdec39a8c6fbc6a756e750bd6bd92e80b6567bcbd917b",
     "models/formulations/iem24_murphy_real_14dof_simple.xml": "158a3884ec286cae128ee079436291f874af7d94a8a54dd401c112ea4b7f2a54",
     "models/vehicles/iem24_murphy_real_planar.xml": "3ac48648dbad6daa4d969ca4e66b6b99bd3c77abf86bd79709f51b066427c92d",
@@ -58,8 +58,8 @@
     "models/dampers/multimatic_dssv_vc01_rear.xml": "8093ee96b4f943796ec4cbd491d9590d2d8161c80151b9b4720f360ecbbfb705"
   },
   "model_inputs": {
-    "track_xml": "models/tracks/2024_michigan_endurance_closed.xml",
-    "track_csv": "models/tracks/2024_michigan_endurance_closed.csv",
+    "track_xml": "models/tracks/mis_ev_endurance_2024_linear.xml",
+    "track_csv": "models/tracks/mis_ev_endurance_2024_linear.csv",
     "tire_xml": "models/tires/iem24_murphy_real_unitire.xml",
     "formulation_xml": "models/formulations/iem24_murphy_real_14dof_simple.xml",
     "vehicle_xml": "models/vehicles/iem24_murphy_real_planar.xml",

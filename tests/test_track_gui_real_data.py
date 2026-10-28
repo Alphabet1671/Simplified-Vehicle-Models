@@ -22,7 +22,7 @@ FSC_DEFAULT = Path('/Users/alphabet1671/Dev/Simplified-Vehicle-Models/IEM24 File
 MIS = Path(os.environ.get('TRACK_GUI_MIS_MAT', MIS_DEFAULT))
 FSC = Path(os.environ.get('TRACK_GUI_FSC_MAT', FSC_DEFAULT))
 ROOT = Path(__file__).resolve().parents[1]
-CANONICAL = ROOT / 'models' / 'tracks' / '2024_michigan_endurance_closed.xml'
+CANONICAL = ROOT / 'models' / 'tracks' / 'mis_ev_endurance_2024_linear.xml'
 _OPTIONAL_DEPS = importlib.util.find_spec('scipy') is not None and importlib.util.find_spec('matplotlib') is not None
 _PRIVATE_SKIP = 'requires optional SciPy and matplotlib dependencies'
 

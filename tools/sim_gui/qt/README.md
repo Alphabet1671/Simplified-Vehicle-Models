@@ -16,3 +16,4 @@ Qt layer of the simulation GUI.
 | `study_tab.py` | Qt study definition and case preview tab. |
 | `track_tab.py` | Qt tab for selecting a track model and previewing its centerline. |
 | `workers.py` | Background-friendly workers for preparing and validating study cases. |
+| `yaw_map_controller.py` | GUI-thread prompt, cancellable child-process build with command/timestamp/terminal logging, and validation continuation for automatic yaw maps. |

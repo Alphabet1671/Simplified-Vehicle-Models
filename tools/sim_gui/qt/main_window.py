@@ -37,6 +37,7 @@ from tools.sim_gui.qt.single_run_tab import SingleRunTab
 from tools.sim_gui.qt.study_tab import StudyTab
 from tools.sim_gui.qt.track_tab import TrackTab
 from tools.sim_gui.qt.workers import ValidationWorker
+from tools.sim_gui.qt.yaw_map_controller import YawMapController
 from tools.sim_gui.run_study import _study_directory
 from tools.sim_gui.study import MAXIMUM_CASES, StudyDefinition, StudyIndex, WARNING_CASES, _atomic, expand
 from tools.sim_gui.vehicle import VehicleConfiguration
@@ -57,6 +58,7 @@ class MainWindow(QMainWindow):
         self.study_index = None
         self._maneuver_study: ManeuverStudyDefinition | None = None
         self._prepared = []
+        self._prepared_definition = None
         self._running = False
         self._run_requested = False
         self._run_mode = None
@@ -67,6 +69,8 @@ class MainWindow(QMainWindow):
         self._validation_worker = None
         self._validation_cancelled = False
         self._progress_dialog = None
+        self._yaw_map_consent = False
+        self._yaw_map_controller = None
         self._queue.caseFinished.connect(self._case_finished)
         self._queue.caseProgress.connect(self._case_progress)
         self._queue.caseProgress.connect(self._single_progress)
@@ -96,6 +100,9 @@ class MainWindow(QMainWindow):
 
         self.model_panel.configurationChanged.connect(self._configuration_changed)
         self.settings_tab.settingsChanged.connect(self._settings_changed)
+        self.settings_tab.settingsChanged.connect(self._invalidate_prepared)
+        self.track_tab.trackChanged.connect(self._invalidate_prepared)
+        self.model_panel.configurationChanged.connect(self._invalidate_prepared)
         self.queue_table.itemSelectionChanged.connect(self._selection_changed)
         self.single_tab.goRequested.connect(self.run_single)
         self.single_tab.stopRequested.connect(self.stop_cases)
@@ -166,12 +173,14 @@ class MainWindow(QMainWindow):
             self.configuration is not None
             and self.configuration.runnable
             and self._run_mode is None
+            and self._validation_thread is None
         )
         self.go_action.setEnabled(enabled)
         self.run_study_action.setEnabled(enabled)
-        self.stop_action.setEnabled(self._run_mode is not None)
+        self.stop_action.setEnabled(self._run_mode is not None or self._validation_thread is not None)
 
     def _configuration_changed(self, configuration) -> None:
+        self._invalidate_prepared()
         self.configuration = configuration
         self.maneuver_tab.set_vehicle_configuration(self._maneuver_definition_seed(configuration))
         self.maneuver_tab.clear_run()
@@ -295,7 +304,13 @@ class MainWindow(QMainWindow):
         status = summary.get("status", "Finished") if isinstance(summary, dict) else "Finished"
         self.status.showMessage(f"Maneuver {status.lower()}")
 
+    def _invalidate_prepared(self, *_args) -> None:
+        if self._validation_thread is None and self._run_mode is None:
+            self._prepared = []
+            self._prepared_definition = None
+
     def _settings_changed(self, settings) -> None:
+        self._invalidate_prepared()
         if self.study_tab is not None:
             self.study_tab.settings = settings
 
@@ -391,10 +406,19 @@ class MainWindow(QMainWindow):
         self.study_index = StudyIndex.create(study_dir, definition, cases)
         self._queue.study_index = self.study_index
         self._prepared = []
+        self._prepared_definition = definition.to_json()
+        self._run_mode = "building"
+        self._validation_cancelled = False
+        self._case_error = None
+        self._refresh_actions()
         self.queue_table.set_cases(self.study_index.cases)
         self._refresh_status()
         thread = QThread(self)
-        worker = ValidationWorker(study_dir, definition, cases)
+        self._yaw_map_consent = False
+        self._yaw_map_controller = YawMapController(self, cache_root=REPOSITORY_ROOT / "runs" / "yaw_maps")
+        self._yaw_map_controller.stateChanged.connect(self._yaw_map_state_changed)
+        self._yaw_map_controller._consented = False
+        worker = ValidationWorker(study_dir, definition, cases, yaw_map_resolver=self._yaw_map_controller.resolve)
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.caseReady.connect(self._case_ready)
@@ -413,8 +437,14 @@ class MainWindow(QMainWindow):
         self._progress_dialog = dialog
         thread.start()
 
+    def _yaw_map_state_changed(self, busy: bool, message: str) -> None:
+        if busy:
+            self.status.showMessage(message)
+
     def _cancel_validation(self) -> None:
         self._validation_cancelled = True
+        if self._yaw_map_controller is not None:
+            self._yaw_map_controller.cancel()
         if self._validation_worker is not None:
             self._validation_worker.cancel()
 
@@ -427,16 +457,29 @@ class MainWindow(QMainWindow):
         single = self._run_mode == "single"
         self._validation_thread = None
         self._validation_worker = None
+        if self._yaw_map_controller is not None:
+            if not self._yaw_map_controller.shutdown():
+                # Keep ownership if bounded shutdown could not prove the child was reaped.
+                return
+            self._yaw_map_controller.deleteLater()
+            self._yaw_map_controller = None
         if self._progress_dialog is not None:
             # QProgressDialog.close() emits canceled; a normal finish is not a cancel.
             self._progress_dialog.canceled.disconnect(self._cancel_validation)
             self._progress_dialog.close()
             self._progress_dialog = None
-        if self._validation_cancelled:
+        invalid_cases = self.study_index is not None and any(item.get("status") == "invalid" for item in self.study_index.cases)
+        if self._validation_cancelled or invalid_cases:
+            cancelled = self._validation_cancelled
             self._validation_cancelled = False
+            self._run_requested = False
             self._prepared = []
+            self._prepared_definition = None
+            if not single:
+                self._run_mode = None
+                self._refresh_actions()
             if single:
-                self._finish_single_without_queue("cancelled")
+                self._finish_single_without_queue("cancelled" if cancelled else "failed", self._case_error or "case preparation did not complete")
             else:
                 self._run_requested = False
                 self._refresh_actions()
@@ -449,6 +492,7 @@ class MainWindow(QMainWindow):
                     "failed", self._case_error or "case could not be prepared"
                 )
                 return
+            self._run_requested = False
             self._running = True
             self.single_tab.set_status("running")
             self._single_log_timer.start()
@@ -458,10 +502,19 @@ class MainWindow(QMainWindow):
             return
         self.queue_table.set_cases(self.study_index.cases)
         self._refresh_status()
+        self._run_mode = None
+        self._refresh_actions()
         if self._run_requested:
+            if self._prepared_definition != self._definition().to_json():
+                self._prepared = []
+                self._prepared_definition = None
+                # Definition changed during preparation; re-expand and resolve
+                # the current variants instead of launching stale snapshots.
+                self.build_cases()
+                return
             self._run_requested = False
             if self._prepared:
-                self.run_cases()
+                self._start_study_queue()
             else:
                 self.status.showMessage("No valid cases to run")
                 self._refresh_actions()
@@ -509,9 +562,16 @@ class MainWindow(QMainWindow):
         if self.tabs.currentWidget() is self.maneuver_tab and self._maneuver_study is not None:
             self._run_maneuver_study(self._maneuver_study)
             return
-        if not self._prepared:
+        current_definition = self._definition().to_json()
+        if not self._prepared or self._prepared_definition != current_definition:
+            # Preparation may overlap edits in the Study tab. Never launch those
+            # snapshots against a definition that is no longer current.
+            self._prepared = []
+            self._prepared_definition = None
             self._run_requested = True
             self.build_cases()
+            return
+        self._run_requested = False
         if self._prepared and self._validation_thread is None:
             self._start_study_queue()
 
@@ -530,7 +590,7 @@ class MainWindow(QMainWindow):
         if self._run_mode == "maneuver":
             self._queue.stop()
             return
-        if self._run_mode == "single" and self._validation_thread is not None:
+        if self._validation_thread is not None:
             self._cancel_validation()
             return
         self._queue.stop()
@@ -579,16 +639,23 @@ class MainWindow(QMainWindow):
         self.study_index = index
         self._queue.study_index = index
         self._prepared = []
+        self._prepared_definition = None
         self._case_error = None
         self._validation_cancelled = False
+        self._run_requested = True
         self._run_mode = "single"
+        self._validation_cancelled = False
         self.single_tab.clear_run()
         self.single_tab.set_log("")
         self.single_tab.set_status("Preparing…")
         self.single_tab.set_running(True)
         self._refresh_actions()
         thread = QThread(self)
-        worker = ValidationWorker(study_dir, definition, cases)
+        self._yaw_map_consent = False
+        self._yaw_map_controller = YawMapController(self, cache_root=REPOSITORY_ROOT / "runs" / "yaw_maps")
+        self._yaw_map_controller.stateChanged.connect(self._yaw_map_state_changed)
+        self._yaw_map_controller._consented = False
+        worker = ValidationWorker(study_dir, definition, cases, yaw_map_resolver=self._yaw_map_controller.resolve)
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.caseReady.connect(self._case_ready)
@@ -637,6 +704,7 @@ class MainWindow(QMainWindow):
 
     def _track_changed(self, path) -> None:
         """Mirror a Track tab choice into the single-run tab."""
+        self._invalidate_prepared()
         if self._syncing_track:
             return
         self._syncing_track = True
@@ -819,9 +887,21 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         """Stop active processes before closing; always shut down the queue."""
+        if self._yaw_map_controller is not None:
+            self._yaw_map_controller.shutdown()
         if self._validation_thread is not None:
-            self._validation_thread.quit()
-            self._validation_thread.wait(10000)
+            self._cancel_validation()
+            # Process queued controller/worker signals while the waiter unwinds.
+            deadline = QEventLoop()
+            self._validation_thread.finished.connect(deadline.quit)
+            QTimer.singleShot(10000, deadline.quit)
+            deadline.exec()
+            if self._validation_thread is not None and self._validation_thread.isRunning():
+                event.ignore()
+                return
+            if self._yaw_map_controller is not None and not self._yaw_map_controller.shutdown():
+                event.ignore()
+                return
         if self.maneuver_controller.is_running():
             self.maneuver_controller.cancel()
             maneuver_loop = QEventLoop()

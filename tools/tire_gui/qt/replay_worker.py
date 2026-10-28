@@ -18,8 +18,7 @@ class ReplayWorker(QObject):
     def run(self):
         try:
             current = simulate_event(self.snapshot, self.event, .01, _cancel_check=self._cancel.is_set)
-            seed_snapshot = self.seed
-            seed = simulate_event(seed_snapshot, self.event, .01, _cancel_check=self._cancel.is_set) if seed_snapshot is not None else None
-            self.finished.emit((self.generation, current, seed))
+            # Display compares the live model only; no seed/baseline replay.
+            self.finished.emit((self.generation, current, None))
         except Exception as exc:
             self.failed.emit(str(exc))

@@ -6,7 +6,7 @@
 - Aero: CL·A = 3.5 m², CD·A = 1.55 m², aero balance 50 % at 1.22 kg/m³.
 - Chassis/control: planar 7-DOF `models/formulations/iem24_murphy_real_planar_7dof.xml`; LLTD 42 %, two rear motors, 10.5 N·m controller maximum per motor, 10.9:1 gearing, 95 % drivetrain efficiency, 20 kW per motor and a current compiled motor limit of 1947.787 rad/s (18,600 rpm); mechanical brakes and no reported regeneration. Control limits include 0.5236 rad steering angle, π rad/s steering rate, 1176.8 N maximum pedal force, 0.08 s steering lag, 0.18 s pedal travel / 0.03 s pedal lag, and fixed controller gains preview 0.10, heading 1.8, lateral 2.0, yaw 0.12. The run-record manifest does not embed a current configuration source hash; this is disclosed rather than inferred.
 - Initial conditions: recorded initial SOC = 0.829085; recorded initial terminal bus voltage = 575.510 V. Recorded replay initial state is speed components v_x/v_y = 10.699/−0.915 m/s, yaw rate = −1.324 rad/s, heading error = 0.0853 rad and steering = −0.1877 rad; wheel-speed states are plant states. These are nominal plant initial conditions, not fitted to measured telemetry; only the stint-start battery voltage was carried into the compiled battery initialisation.
-- Simulated flying lap: exactly 64.802231718 s over 1016.676 m of model path arclength, mapped onto the 1016.701 m reference centreline on `models/tracks/2024_michigan_endurance_closed_edged.xml`, from the saved model-aware forward replay used for the video.
+- Simulated flying lap: exactly 64.802231718 s over 1016.676 m of model path arclength, mapped onto the 1016.701 m reference centreline on `models/tracks/mis_ev_endurance_2024_width.xml`, from the saved model-aware forward replay used for the video.
 
 ## Measured data
 

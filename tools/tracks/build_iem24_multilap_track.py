@@ -133,7 +133,7 @@ def write_candidate_xml(destination: Path, csv_name: str, diagnostics: dict) -> 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--measured", type=Path, default=Path("docs/validation/iem24-murphy/measured_stint.csv"))
-    parser.add_argument("--track", type=Path, default=Path("models/tracks/2024_michigan_endurance_closed.xml"))
+    parser.add_argument("--track", type=Path, default=Path("models/tracks/mis_ev_endurance_2024_linear.xml"))
     parser.add_argument("--output", type=Path, default=Path("docs/validation/iem24-murphy/multilap_track_candidate"))
     options = parser.parse_args()
     path = load_track(options.track).path_coordinates

@@ -66,6 +66,18 @@ class YawMapWorkflowTest(unittest.TestCase):
         values.update(kwargs)
         return YawMapWorkflowSettings(**values)
 
+    def test_progress_callback_reports_independent_validation_phases(self):
+        events = []
+        limit = lambda _speed, _ax: 2.
+        result = build_yaw_map_workflow(vehicle(), [0., 10.], [-1., 1.], evaluator(limit),
+            yaw_inertia=1., settings=self.settings(maximum_refinement_rounds=1),
+            map_builder=synthetic_builder(limit), progress_callback=lambda event, fields: events.append((event, fields)))
+        self.assertTrue(result.complete)
+        self.assertIn('discovery_start', [event for event, _ in events])
+        self.assertIn('map_build_start', [event for event, _ in events])
+        self.assertIn('validation_discovery_start', [event for event, _ in events])
+        self.assertIn('validation_map_audit_complete', [event for event, _ in events])
+
     def test_builds_signed_nonuniform_axis_with_zero_and_maximum_cell_width(self):
         limit = lambda speed, ax: 2. + .1 * speed - .2 * ax
         result = build_yaw_map_workflow(vehicle(), [0., 10.], [-1., 0., 2.], evaluator(limit),

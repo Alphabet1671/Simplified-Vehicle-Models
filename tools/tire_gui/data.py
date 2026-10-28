@@ -10,7 +10,7 @@ ALIASES = {
     'kappa': ('SL', 'SR', 'KAPPA', 'kappa', 'LONGSLIP', 'SlipRatio', 'slip_ratio'),
     'fz': ('FZ', 'Fz', 'fz'), 'fx': ('FX', 'Fx', 'fx'), 'fy': ('FY', 'Fy', 'fy'),
     'mz': ('MZ', 'Mz', 'mz', 'MALIGN', 'AligningMoment', 'aligning_moment'),
-    'speed': ('V', 'speed'), 'omega': ('N', 'omega'), 'ia': ('IA', 'ia'), 'pressure': ('P', 'pressure'),
+    'speed': ('V', 'speed'), 'omega': ('N', 'omega'), 'effective_radius': ('RE', 'effective_radius'), 'ia': ('IA', 'ia'), 'pressure': ('P', 'pressure'),
 }
 UNIT_FACTORS = {
     'alpha': {'deg': np.pi/180, 'degree': np.pi/180, 'rad': 1.0},
@@ -18,6 +18,7 @@ UNIT_FACTORS = {
     'mz': {'N*m': 1.0, 'Nm': 1.0, 'N-m': 1.0},
     'speed': {'kph': 1/3.6, 'km/h': 1/3.6, 'm/s': 1.0},
     'omega': {'rpm': 2*np.pi/60, 'rad/s': 1.0},
+    'effective_radius': {'cm': 0.01, 'm': 1.0},
     'kappa': {'dimensionless': 1.0, '1': 1.0, '': 1.0, 'none': 1.0},
     'time': {'s': 1.0, 'sec': 1.0}, 'ia': {'deg': np.pi/180, 'rad': 1.0},
     'pressure': {'kPa': 1000.0, 'Pa': 1.0},

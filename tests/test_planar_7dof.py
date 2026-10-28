@@ -101,7 +101,7 @@ class PlanarCompileTests(unittest.TestCase):
         # The shared assembly also holds the 14DoF-only roles and parameters.
         self.assertEqual(
             self.compiled.manifest.unused_roles(),
-            ("suspension", "tire-transient"),
+            ("suspension",),
         )
         self.assertEqual(
             self.compiled.manifest.unconsumed_names(),

@@ -8,15 +8,14 @@ from PyQt6.QtWidgets import (
     QCheckBox, QComboBox, QFileDialog, QHBoxLayout, QInputDialog, QLabel,
     QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QPlainTextEdit,
     QProgressBar, QPushButton, QSpinBox, QSplitter, QTabWidget, QVBoxLayout,
-    QWidget,
+    QGridLayout, QScrollArea, QWidget,
 )
 
 from tools.gui_common import REPOSITORY_ROOT
 from ..contracts import FitResult
 from ..data import load_run
 from ..events import candidate_events, validate_event
-from ..model import (import_mat_seed, load_snapshot, with_parameter,
-                     find_steady_companion, load_transient_snapshot)
+from ..model import import_mat_seed, load_snapshot, with_parameter, load_transient_snapshot
 from simplified_vehicle_models.xml.loader import load_model
 from ..save import load_session, save_session
 from ..segments import compatibility_selection
@@ -24,6 +23,7 @@ from .fit_worker import FitWorker
 from .parameter_panel import ParameterPanel
 from .plot_panel import PlotPanel
 from .replay_worker import ReplayWorker
+from .transient_panel import TransientPanel, event_identity
 
 DEFAULT_DATA = REPOSITORY_ROOT / 'private/ttc/TTC'
 DEFAULT_OUTPUT = REPOSITORY_ROOT / 'tire_fits_out'
@@ -45,6 +45,8 @@ class MainWindow(QMainWindow):
         self.history = []
         self.history_index = -1
         self.source_files = []
+        self.run_sources = {}
+        self._speed_restore = {}
         self.selection = None
         self.holdout_ids = set()
         self.active_selection = None
@@ -53,19 +55,22 @@ class MainWindow(QMainWindow):
 
         root = QWidget(self)
         layout = QVBoxLayout(root)
-        bar = QHBoxLayout()
+        bar = QGridLayout()
         self.open_button = QPushButton('Open XML')
         self.seed_button = QPushButton('Import MATLAB seed')
         self.data_button = QPushButton('Data folder')
         self.session_button = QPushButton('Restore session…')
         self.save_button = QPushButton('Save fit as…')
-        for button in (self.open_button, self.seed_button, self.data_button, self.session_button, self.save_button):
-            bar.addWidget(button)
+        for index, button in enumerate((self.open_button, self.seed_button, self.data_button, self.session_button, self.save_button)):
+            bar.addWidget(button, index // 3, index % 3)
         layout.addLayout(bar)
 
         self.tabs = QTabWidget()
         self.steady_plot = PlotPanel(count=4)
-        self.transient_plot = PlotPanel(count=6)
+        self.transient_plot = TransientPanel()
+        self.ramp_events = []
+        self._display_replay_keys = {}
+        self._closing = False
         self.diagnostics = QPlainTextEdit()
         self.diagnostics.setReadOnly(True)
         self.tabs.addTab(self.steady_plot, 'Steady-state')
@@ -73,16 +78,38 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.diagnostics, 'Fit diagnostics')
 
         side = QWidget()
-        side_layout = QVBoxLayout(side)
-        side_layout.addWidget(QLabel('Model coefficients • finite engineering bounds • locks'))
+        outer_side_layout = QVBoxLayout(side)
+        outer_side_layout.setContentsMargins(0, 0, 0, 0)
+        self.sidebar_tabs = QTabWidget()
+        outer_side_layout.addWidget(self.sidebar_tabs)
+        self.coefficients_page = QWidget()
+        coefficient_layout = QVBoxLayout(self.coefficients_page)
+        coefficient_layout.addWidget(QLabel('Model coefficients • finite engineering bounds • locks'))
         self.parameter_panel = ParameterPanel()
-        side_layout.addWidget(self.parameter_panel)
+        coefficient_layout.addWidget(self.parameter_panel, 1)
+        self.sidebar_tabs.addTab(self.coefficients_page, 'Coefficients')
+        self.data_controls_page = QWidget()
+        controls_layout = QVBoxLayout(self.data_controls_page)
+        side_scroll = QScrollArea()
+        side_scroll.setWidgetResizable(True)
+        side_content = QWidget()
+        side_layout = QVBoxLayout(side_content)
         self.run_combo = QComboBox()
-        self.run_combo.setToolTip('Select the run whose transient events are displayed; steady fitting always uses the fixed 43075/43100 compatibility selection.')
+        self.run_combo.setToolTip('Select the run whose events can be approved; transient plots include all loaded runs; steady fitting uses the fixed 43075/43100 compatibility selection.')
         self.segment_list = QListWidget()
         self.load_filter = QComboBox()
         self.load_filter.addItem('All compatibility loads', None)
         self.load_filter.currentIndexChanged.connect(self._condition_filter_changed)
+        self.speed_source = QComboBox()
+        for label, value in (('Automatic belt speed (with provenance)', 'auto'),
+                             ('Measured belt encoder V', 'measured'),
+                             ('Wheel N × effective radius / (1 + slip)', 'wheel'),
+                             ('Enter verified belt speed…', 'override')):
+            self.speed_source.addItem(label, value)
+        self.speed_source.activated.connect(self._change_belt_speed)
+        self.transient_pressure = QComboBox()
+        self.transient_pressure.setToolTip('Compare one pressure set at a time; each plot overlays all Fz levels.')
+        self.transient_pressure.currentIndexChanged.connect(self._refresh_transient_event)
         self.event_list = QListWidget()
         self.event_from = QSpinBox()
         self.event_to = QSpinBox()
@@ -94,14 +121,20 @@ class MainWindow(QMainWindow):
         self.condition_label = QLabel('Run conditions: load / pressure / IA / speed not loaded')
         for label, widget in (
             ('Transient event run (steady fit uses fixed compatibility runs 8 + 72)', self.run_combo),
+            ('Belt speed source — selected run only', self.speed_source),
+            ('Transient comparison pressure set', self.transient_pressure),
             ('Nominal load condition (applies to steady fit and diagnostics)', self.load_filter),
             ('Compatibility segments — check to hold out whole group-qualified segment', self.segment_list),
-            ('Transient candidates (Run 7)', self.event_list), ('', self.condition_label), ('', self.event_from),
+            ('Transient candidates (selected run)', self.event_list), ('', self.condition_label), ('', self.event_from),
             ('', self.baseline_to), ('', self.event_to), ('', self.approve_button),
         ):
             if label:
                 side_layout.addWidget(QLabel(label))
             side_layout.addWidget(widget)
+        side_layout.addStretch(1)
+        side_scroll.setWidget(side_content)
+        controls_layout.addWidget(side_scroll)
+        self.sidebar_tabs.addTab(self.data_controls_page, 'Data & fitting')
 
         self.fit_button = QPushButton('Fit steady')
         self.fit_transient_button = QPushButton('Fit approved events')
@@ -115,18 +148,23 @@ class MainWindow(QMainWindow):
         self.restore_seed_button = QPushButton('Restore seed')
         self.progress = QProgressBar()
         self.status = QLabel('No model loaded')
-        actions = QHBoxLayout()
-        for button in (self.fit_button, self.fit_transient_button, self.fit_longitudinal_button,
-                       self.cancel_button, self.apply_button, self.discard_button, self.undo_button,
-                       self.redo_button, self.reset_button, self.restore_seed_button):
-            actions.addWidget(button)
+        actions = QGridLayout()
+        action_buttons = (self.fit_button, self.fit_transient_button, self.fit_longitudinal_button,
+                          self.cancel_button, self.apply_button, self.discard_button, self.undo_button,
+                          self.redo_button, self.reset_button, self.restore_seed_button)
+        for index, button in enumerate(action_buttons):
+            actions.addWidget(button, index // 5, index % 5)
         layout.addLayout(actions)
         layout.addWidget(self.progress)
         layout.addWidget(self.status)
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.addWidget(side)
         splitter.addWidget(self.tabs)
+        side.setMinimumWidth(620)
+        splitter.setStretchFactor(0, 2)
         splitter.setStretchFactor(1, 3)
+        splitter.setSizes([660, 900])
+        self.main_splitter = splitter
         layout.addWidget(splitter, 1)
         self.setCentralWidget(root)
 
@@ -182,36 +220,19 @@ class MainWindow(QMainWindow):
         self._invalidate_candidate()
 
     def open_path(self, path, *, steady_path=None):
-        """Open either tire subtype; transient XMLs require an explicit steady pairing."""
+        """Open a steady model or complete self-contained transient XML."""
         try:
             path = Path(path).resolve()
+            if steady_path is not None:
+                raise ValueError('transient XML is self-contained; --steady companion pairing is unsupported')
             model = load_model(path)
             transient = model.model_type == 'tire-model' and model.subtype == 'unitire-transient-simple'
-            if transient:
-                if steady_path is not None:
-                    snapshot = load_transient_snapshot(path, steady_xml=Path(steady_path))
-                    sources = [str(Path(steady_path).resolve()), str(path)]
-                elif self.snapshot is not None:
-                    snapshot = load_transient_snapshot(path, snapshot=self.snapshot)
-                    previous_transient = self.snapshot.provenance.get('transient_path')
-                    sources = [p for p in self.source_files if p != previous_transient]
-                    sources.append(str(path))
-                else:
-                    companion = find_steady_companion(path)
-                    selected, _ = QFileDialog.getOpenFileName(
-                        self, 'Select steady tire companion for transient XML',
-                        str(companion or path.parent), 'Steady tire XML (*.xml)')
-                    if not selected:
-                        self.status.setText('Open cancelled: transient XML needs a steady tire companion. Open a steady tire first or select its XML.')
-                        return False
-                    snapshot = load_transient_snapshot(path, steady_xml=Path(selected))
-                    sources = [str(Path(selected).resolve()), str(path)]
+            if transient and self.snapshot is not None:
+                snapshot = load_transient_snapshot(path, snapshot=self.snapshot)
             else:
-                if steady_path is not None:
-                    raise ValueError('--steady/steady_path is only used when opening a transient tire XML')
                 snapshot = load_snapshot(path)
-                sources = [str(path)]
-            was_dirty = self.dirty if transient and steady_path is None and self.snapshot is not None else False
+            sources = [str(path)]
+            was_dirty = False
             self.snapshot = self.seed = snapshot
             self.source_files = list(dict.fromkeys(sources))
             self.generation += 1
@@ -223,8 +244,7 @@ class MainWindow(QMainWindow):
             self.parameter_panel.set_snapshot(snapshot)
             if transient:
                 self.tabs.setCurrentWidget(self.transient_plot)
-                steady_label = snapshot.provenance.get('steady_source', 'current steady model')
-                self.status.setText(f'{path.name} • transient XML paired with {steady_label} • provisional, not a validated transient fit')
+                self.status.setText(f'{path.name} • self-contained transient XML • provisional, not a validated transient fit')
             else:
                 self.status.setText(f'{path.name} • steady tire XML • hybrid proxy: 43075 lateral / 43100 longitudinal')
             self._refresh_plots()
@@ -270,6 +290,7 @@ class MainWindow(QMainWindow):
             self.status.setText('Edited • transient fit status stale after steady edits')
             self.plot_timer.start()
             self._refresh_diagnostics()
+            self._refresh_transient_event()
         except Exception as exc:
             self.status.setText(f'Edit refused: {exc}')
 
@@ -289,6 +310,7 @@ class MainWindow(QMainWindow):
         self._invalidate_candidate()
         self.parameter_panel.set_snapshot(self.snapshot)
         self.plot_timer.start()
+        self._refresh_transient_event()
         return True
 
     def redo(self):
@@ -300,6 +322,7 @@ class MainWindow(QMainWindow):
         self._invalidate_candidate()
         self.parameter_panel.set_snapshot(self.snapshot)
         self.plot_timer.start()
+        self._refresh_transient_event()
         return True
 
     def reset_group(self):
@@ -324,12 +347,18 @@ class MainWindow(QMainWindow):
         self._invalidate_candidate()
         self.parameter_panel.set_snapshot(self.snapshot)
         self.plot_timer.start()
+        self._refresh_transient_event()
         return True
 
     def load_data_path(self, path):
         path = Path(path)
         run = load_run(path, require_monotonic_time=False)
+        from ..belt_speed import resolve_belt_speed
+        source, override = self._speed_restore.pop(run.run_id, ('auto', None))
+        run = resolve_belt_speed(run, source=source, override=override)
         self.runs[run.run_id] = run
+        self.run_sources[run.run_id] = str(path.resolve())
+        self._rebuild_ramps()
         self.full_selection = None
         self.active_selection = None
         self.source_files.append(str(path))
@@ -338,6 +367,40 @@ class MainWindow(QMainWindow):
         self._invalidate_candidate()
         self._refresh_run()
         return run
+
+    def _rebuild_ramps(self):
+        from ..transient_plotting import isolated_step_events
+        self.ramp_events = []
+        for run in self.runs.values():
+            try:
+                self.ramp_events.extend(isolated_step_events(run))
+            except ValueError as exc:
+                self.status.setText(f'Run {run.run_id} ramps unavailable: {exc}')
+
+    def _change_belt_speed(self, *_):
+        run = self.runs.get(self.run_combo.currentData())
+        if run is None:
+            return
+        source = self.speed_source.currentData()
+        override = None
+        if source == 'override':
+            override, ok = QInputDialog.getDouble(self, 'Verified belt speed',
+                                                 'Belt speed (m/s), selected run:', 11.16, .001, 100., 3)
+            if not ok:
+                return
+        try:
+            from ..belt_speed import resolve_belt_speed
+            resolved = resolve_belt_speed(run, source=source, override=override)
+            self.runs[run.run_id] = resolved
+            self.generation += 1
+            self._invalidate_candidate()
+            self.replay_cache.clear()
+            self._rebuild_ramps()
+            self._refresh_run()
+            self.status.setText(f'Belt speed: {resolved.metadata.get("belt_speed_source", source)}; '
+                                + resolved.metadata.get('belt_speed_warning', ''))
+        except ValueError as exc:
+            self.status.setText(f'Belt speed unchanged: {exc}')
 
     def _choose_data(self):
         folder = QFileDialog.getExistingDirectory(self, 'Private TTC data folder', str(DEFAULT_DATA))
@@ -350,10 +413,15 @@ class MainWindow(QMainWindow):
                 self.status.setText(f'{path.name}: {exc}')
 
     def _source_for_run(self, run):
-        for path in reversed(self.source_files):
-            if f'run{run.run_id}' in Path(path).name.lower():
-                return str(path)
-        return str(self.source_files[-1]) if self.source_files else ''
+        source = self.run_sources.get(run.run_id)
+        if source:
+            return source
+        # Exact run tokens avoid treating run72 as a match for run7.
+        import re
+        token = re.compile(rf'run[_-]?{int(run.run_id)}(?![0-9])', re.IGNORECASE)
+        matches = [str(Path(path).resolve()) for path in self.source_files
+                   if token.search(Path(path).stem)]
+        return matches[-1] if len(matches) == 1 else ''
 
     def _run_label(self, run):
         label = f'Run {run.run_id} — {run.tire_id}' + (' (43100 longitudinal proxy)' if run.run_id == 72 else '')
@@ -386,6 +454,8 @@ class MainWindow(QMainWindow):
                               baseline_stop=self.baseline_to.value(), approved=False, exclusions=())
             validate_event(updated, require_approval=False)
             self.events[index] = updated
+            self.ramp_events = [updated if event_identity(e) == event_identity(event) else e
+                                for e in self.ramp_events]
             self.generation += 1
             self._invalidate_candidate()
             self.event_list.item(index).setText(
@@ -398,106 +468,89 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             self.status.setText(f'Event boundary invalid: {exc}')
 
+    def _replay_key(self, event):
+        return (self.snapshot.steady_fingerprint,
+                tuple(sorted(self.snapshot.values.items())),
+                event_identity(event))
+
+    def _prune_replay_cache(self):
+        # Retain only results relevant to the currently displayed model/events.
+        current = set(self._display_replay_keys)
+        self.replay_cache = {key: value for key, value in self.replay_cache.items() if key in current}
+        self.replay_failures.intersection_update(current)
+
     def _refresh_transient_event(self):
-        index = self.event_list.currentRow()
-        if index < 0 or index >= len(self.events):
+        if self.snapshot is None or self._closing:
             return
-        event = self.events[index]
-        channels = event.run.channels
-        start, stop = max(0, event.start - 100), min(len(channels['time']), event.stop + 150)
-        times = channels['time'][start:stop]
-        for axis in self.transient_plot.axes:
-            axis.clear()
-        self.transient_plot.axes[0].plot(times, channels['alpha'][start:stop] * 180 / 3.141592653589793, label='SA command (deg)')
-        self.transient_plot.axes[1].plot(times, channels['fy'][start:stop], label='Measured Fy (N)')
-        if 'mz' in channels:
-            self.transient_plot.axes[2].plot(times, channels['mz'][start:stop], label='Measured Mz (N·m)')
-        self.transient_plot.axes[3].plot(times, channels['fx'][start:stop], label='Measured Fx (N)')
-        self.transient_plot.axes[4].set_title('Replay residuals (current replay pending)')
-        self.transient_plot.axes[5].set_title('Relaxation lengths (m)')
-        for axis in self.transient_plot.axes:
-            axis.grid(True, alpha=.25)
-            axis.legend(fontsize='small')
-            axis.set_xlabel('Elapsed time (s)')
-        key = (self.snapshot.steady_fingerprint, tuple(self.snapshot.values[n] for n in ('longitudinal_length_scale','lateral_length_scale','trail_pole_ratio','trail_lead_ratio')), event.run.run_id, event.start, event.stop, event.baseline_stop, self.generation)
-        if key in self.replay_cache:
-            self._plot_replay(key, self.replay_cache[key])
-        elif key in self.replay_failures:
-            self.transient_plot.axes[1].set_title('Replay unavailable; see status')
-        elif self.replay_thread is not None:
-            self.transient_plot.axes[1].set_title('Current/seed replay queued after active replay')
-        elif self.snapshot is not None:
-            self.replay_thread = QThread(self)
-            self.replay_worker = ReplayWorker(self.snapshot, self.seed, event, self.generation)
-            self.replay_worker.moveToThread(self.replay_thread)
-            self.replay_thread.started.connect(self.replay_worker.run)
-            self.replay_worker.finished.connect(lambda result, key=key: self._replay_done(key, result))
-            self.replay_worker.failed.connect(lambda text, key=key: self._replay_failed(key, text))
-            direct = Qt.ConnectionType.DirectConnection
-            self.replay_worker.finished.connect(self.replay_thread.quit, direct)
-            self.replay_worker.failed.connect(self.replay_thread.quit, direct)
-            self.replay_thread.finished.connect(self._replay_stopped)
-            self.replay_thread.finished.connect(self.replay_thread.deleteLater)
-            self.replay_thread.start()
-        self.transient_plot.figure.tight_layout()
-        self.transient_plot.canvas.draw_idle()
+        from ..transient_plotting import grouped_ramps
+        groups = grouped_ramps(tuple(self.ramp_events), require_moving=False)
+        pressures = sorted(set(round(g.pressure / 5000) * 5 for g in groups))
+        chosen = self.transient_pressure.currentData()
+        if [self.transient_pressure.itemData(i) for i in range(self.transient_pressure.count())] != pressures:
+            self.transient_pressure.blockSignals(True)
+            self.transient_pressure.clear()
+            for pressure in pressures:
+                self.transient_pressure.addItem(f'≈ {pressure:g} kPa', pressure)
+            if pressures:
+                target = chosen if chosen in pressures else min(pressures, key=lambda p: abs(p-82.7))
+                self.transient_pressure.setCurrentIndex(pressures.index(target))
+            self.transient_pressure.blockSignals(False)
+        chosen = self.transient_pressure.currentData()
+        groups = tuple(g for g in groups if round(g.pressure / 5000) * 5 == chosen)
+        old_keys = set(getattr(self, '_display_replay_keys', {}))
+        new_keys = {self._replay_key(event) for group in groups for event in group.events}
+        if old_keys != new_keys:
+            self.transient_plot.replays.clear()
+        self.transient_plot.show_groups(groups)
+        self._display_replay_keys = {self._replay_key(event): event
+                                     for group in groups for event in group.events}
+        self._prune_replay_cache()
+        for key, event in self._display_replay_keys.items():
+            if key in self.replay_cache:
+                self.transient_plot.add_replay(event, self.replay_cache[key])
+        self._start_next_replay()
+
+    def _start_next_replay(self):
+        if self.replay_thread is not None or self.snapshot is None or self._closing:
+            return
+        request = next(((key, event) for key, event in self._display_replay_keys.items()
+                        if key not in self.replay_cache and key not in self.replay_failures), None)
+        if request is None:
+            return
+        key, event = request
+        self.replay_thread = QThread(self)
+        self.replay_worker = ReplayWorker(self.snapshot, self.seed, event, self.generation)
+        self.replay_worker.moveToThread(self.replay_thread)
+        self.replay_thread.started.connect(self.replay_worker.run)
+        self.replay_worker.finished.connect(lambda result, key=key: self._replay_done(key, result))
+        self.replay_worker.failed.connect(lambda text, key=key: self._replay_failed(key, text))
+        direct = Qt.ConnectionType.DirectConnection
+        self.replay_worker.finished.connect(self.replay_thread.quit, direct)
+        self.replay_worker.failed.connect(self.replay_thread.quit, direct)
+        self.replay_thread.finished.connect(self._replay_stopped)
+        self.replay_thread.finished.connect(self.replay_thread.deleteLater)
+        self.replay_thread.start()
 
     def _replay_done(self, key, result):
         generation, current, seed = result
+        if generation != self.generation or self._closing or key not in self._display_replay_keys:
+            return
         self.replay_cache[key] = (current, seed)
-        if generation == self.generation and key[-1] == self.generation:
-            self._plot_replay(key, (current, seed))
+        self._prune_replay_cache()
+        event = self._display_replay_keys.get(key)
+        if event is not None:
+            self.transient_plot.add_replay(event, (current, seed))
 
     def _replay_failed(self, key, text):
-        # Cache against the immutable request so failed old replays cannot poison
-        # a newer selection made while the worker was still running.
         self.replay_failures.add(key)
-        self.status.setText('Transient replay unavailable: ' + text)
+        if key in self._display_replay_keys and not self._closing:
+            self.status.setText('Transient replay unavailable: ' + text)
 
     def _replay_stopped(self):
         if self.replay_worker:
             self.replay_worker.deleteLater()
         self.replay_worker = self.replay_thread = None
-        index = self.event_list.currentRow()
-        if 0 <= index < len(self.events):
-            event = self.events[index]
-            key = (self.snapshot.steady_fingerprint, tuple(self.snapshot.values[n] for n in ('longitudinal_length_scale','lateral_length_scale','trail_pole_ratio','trail_lead_ratio')), event.run.run_id, event.start, event.stop, event.baseline_stop, self.generation)
-            if key in self.replay_cache:
-                self._plot_replay(key, self.replay_cache[key])
-            else:
-                self._refresh_transient_event()
-
-    def _plot_replay(self, key, predictions):
-        current, seed = predictions
-        index = self.event_list.currentRow()
-        if index < 0 or index >= len(self.events):
-            return
-        event = self.events[index]
-        if (event.run.run_id, event.start, event.stop, event.baseline_stop) != (key[2], key[3], key[4], key[5]):
-            return
-        t = event.run.channels['time'][event.start:event.stop]
-        for index, (channel, units, column) in enumerate((('fx','N',0),('fy','N',1),('mz','N·m',2))):
-            if channel not in event.run.channels:
-                continue
-            measured = event.run.channels[channel][event.start:event.stop]
-            axis = self.transient_plot.axes[index + 1]
-            axis.plot(t, current[:, column], label='Current replay', color='#1665a8')
-            if seed is not None:
-                axis.plot(t, seed[:, column], label='Seed replay', color='#bd5a20', linestyle='--')
-            residual_axis = self.transient_plot.axes[4]
-            residual_axis.plot(t, measured-current[:, column], label=f'{channel.upper()} residual')
-            axis.set_ylabel(f'{channel.upper()} ({units})')
-        # Plot load-dependent relaxation lengths (m) in the fourth axis.
-        from simplified_vehicle_models.tires.unitire_transient import relaxation_lengths
-        fz = event.run.channels['fz'][event.start:event.stop]
-        sx, sy = zip(*(relaxation_lengths(self.snapshot.steady, self.snapshot.transient, float(load)) for load in fz))
-        axis = self.transient_plot.axes[5]
-        axis.plot(t, sx, label='sigma_x (m)')
-        axis.plot(t, sy, label='sigma_y (m)')
-        axis.set_ylabel('Relaxation length (m)')
-        for axis in self.transient_plot.axes:
-            axis.legend(fontsize='small')
-        self.transient_plot.canvas.draw_idle()
+        self._start_next_replay()
 
     def approve_event(self):
         index = self.event_list.currentRow()
@@ -553,13 +606,20 @@ class MainWindow(QMainWindow):
         if not run:
             self._refresh_plots()
             return
-        if run_id == 7:
+        if run is not None:
+            source_key = run.metadata.get('belt_speed_source', 'auto')
+            source_ix = self.speed_source.findData(source_key)
+            self.speed_source.blockSignals(True)
+            if source_ix >= 0:
+                self.speed_source.setCurrentIndex(source_ix)
+            self.speed_source.blockSignals(False)
             try:
-                self.events = list(candidate_events(run))
+                self.events = [event for event in self.ramp_events if event.run is run]
+                # Do not fall back to continuous sweep legs or nonzero-IA candidates.
             except Exception as exc:
                 self.status.setText(str(exc))
             source = self._source_for_run(run)
-            rows = [row for row in getattr(self, '_restored_events', []) if int(row.get('run_id', -1)) == 7 and (not row.get('source_file') or row.get('source_file') == source)]
+            rows = [row for row in getattr(self, '_restored_events', []) if int(row.get('run_id', -1)) == run_id and (not row.get('source_file') or row.get('source_file') == source)]
             for row in rows:
                 start, stop = int(row['start']), int(row['stop'])
                 existing = next((i for i, event in enumerate(self.events) if event.start == start and event.stop == stop), None)
@@ -567,9 +627,14 @@ class MainWindow(QMainWindow):
                     from ..events import TransientEvent
                     event = TransientEvent(run, start, stop, int(row['baseline_stop']), bool(row.get('approved', False)), row.get('axis', 'lateral'), ())
                     self.events.append(event)
+                elif existing is not None:
+                    self.events[existing] = replace(
+                        self.events[existing], baseline_stop=int(row.get('baseline_stop', self.events[existing].baseline_stop)),
+                        approved=bool(row.get('approved', False)), axis=row.get('axis', self.events[existing].axis), exclusions=())
             for index, event in enumerate(self.events):
-                reasons = '; '.join(event.exclusions) or 'review required'
-                self.event_list.addItem(f'Candidate {index + 1}: {run.channels["time"][event.start]:.2f}–{run.channels["time"][event.stop - 1]:.2f} s; baseline {event.baseline_stop - event.start} samples; {reasons}')
+                reasons = '; '.join(event.exclusions) or ('approved' if event.approved else 'review required')
+                prefix = 'APPROVED' if event.approved else f'Candidate {index + 1}'
+                self.event_list.addItem(f'{prefix}: {run.channels["time"][event.start]:.2f}–{run.channels["time"][event.stop - 1]:.2f} s; baseline {event.baseline_stop - event.start} samples; {reasons}')
                 self.event_list.item(index).setData(Qt.ItemDataRole.UserRole, (event.start, event.stop, event.baseline_stop))
             self.event_from.setRange(0, max(0, len(run.raw_indices) - 1))
             self.event_to.setRange(1, len(run.raw_indices))
@@ -579,7 +644,7 @@ class MainWindow(QMainWindow):
                 self.event_from.setValue(event.start)
                 self.event_to.setValue(event.stop)
                 self.baseline_to.setValue(event.baseline_stop)
-            self.transient_plot.message('Run 7 — elapsed time only (0.15–798.652 s); acquisition date unavailable. Review candidates; no calendar timestamp inferred.')
+            # All loaded runs contribute display ramps, independently of approval.
             if self.events:
                 self.event_list.setCurrentRow(0)
         if self.full_selection is None and 8 in self.runs and 72 in self.runs:
@@ -829,7 +894,7 @@ class MainWindow(QMainWindow):
                 def synthetic(a, k):
                     return SampleSet(a, k, np.full(len(a), load), np.zeros(len(a)), np.full(len(a), -1, dtype=int), raw_indices=np.arange(len(a), dtype=int))
                 lat, lon = synthetic(alpha, np.zeros_like(alpha)), synthetic(np.zeros_like(kappa), kappa)
-                mixed, mz = synthetic(alpha, kappa), synthetic(alpha, np.zeros_like(alpha))
+                mixed, mz = synthetic(np.full_like(kappa, np.deg2rad(3.0)), kappa), synthetic(alpha, np.zeros_like(alpha))
                 data = SteadySelection(lat, lon, mixed, mixed, mz, 40.193 / 3.6)
             elif self.full_selection is None:
                 self.full_selection = compatibility_selection(self.runs[8], self.runs[72])
@@ -845,60 +910,44 @@ class MainWindow(QMainWindow):
                 ('Combined slip Fx/Fz vs Fy/Fz', data.combined_fx, 'longitudinal_force', None, 'Fy/Fz', 'Fx/Fz'),
                 ('Mz vs alpha', data.mz, 'aligning_moment', data.mz.alpha, 'alpha (rad)', 'Mz (N·m)'),
             ]
+            from ..plotting import model_sweeps
             for axis, (title, samples, component, x, xlabel, ylabel) in zip(self.steady_plot.axes, groups):
                 axis.clear()
-                denominator = samples.fz if '/Fz' in ylabel else 1
-                measured = samples.target / denominator
-                prediction = predict_steady(self.snapshot, samples, data.belt_speed)
-                current = getattr(prediction, component) / denominator
-                if title.startswith('Combined slip'):
-                    if no_measurements:
-                        x = samples.alpha
-                        order = np.argsort(x)
-                    else:
+                combined = title.startswith('Combined slip')
+                variable = 'kappa' if combined or component == 'longitudinal_force' else 'alpha'
+                if not no_measurements:
+                    denominator = samples.fz if combined else 1
+                    measured = samples.target / denominator
+                    prediction = predict_steady(self.snapshot, samples, data.belt_speed)
+                    current = getattr(prediction, component) / denominator
+                    if combined:
+                        # Match measured axes by acquisition identity, not array position.
                         fy = data.combined_fy
-                        fy_measured = {int(ix): float(val / fz) for ix, val, fz in zip(fy.raw_indices, fy.target, fy.fz)}
-                        fx_measured = {int(ix): float(val / fz) for ix, val, fz in zip(samples.raw_indices, samples.target, samples.fz)}
-                        common = sorted(set(fy_measured) & set(fx_measured))
-                        x = np.asarray([fy_measured[i] for i in common])
-                        measured = np.asarray([fx_measured[i] for i in common])
-                        fx_prediction = predict_steady(self.snapshot, samples, data.belt_speed)
-                        current_by_raw = {int(ix): float(val / fz) for ix, val, fz in zip(samples.raw_indices, fx_prediction.longitudinal_force, samples.fz)}
-                        current = np.asarray([current_by_raw[i] for i in common])
-                        order = np.argsort(x)
-                    if not no_measurements:
-                        axis.scatter(x, measured, s=5, c='#555555', label='Measured', alpha=.65)
-                    axis.plot(x[order], current[order], label='Current fit', color='#1665a8')
-                    if candidate_model is not None:
-                        candidate_pred = predict_steady(candidate_model, samples, data.belt_speed)
-                        if no_measurements:
-                            axis.plot(x[order], candidate_pred.longitudinal_force[order] / denominator, label='Pending candidate', color='#238636', linestyle=':')
-                        else:
-                            candidate_by_raw = {int(ix): float(val / fz) for ix, val, fz in zip(samples.raw_indices, candidate_pred.longitudinal_force, samples.fz)}
-                            axis.plot(x[order], [candidate_by_raw[i] for i in np.asarray(common)[order]], label='Pending candidate', color='#238636', linestyle=':')
-                    if self.seed:
-                        if no_measurements:
-                            seed = predict_steady(self.seed, samples, data.belt_speed).longitudinal_force / denominator
-                            axis.plot(x[order], seed[order], label='Seed', color='#bd5a20', linestyle='--')
-                        else:
-                            seed_pred = predict_steady(self.seed, samples, data.belt_speed)
-                            seed_by_raw = {int(ix): float(val / fz) for ix, val, fz in zip(samples.raw_indices, seed_pred.longitudinal_force, samples.fz)}
-                            axis.plot(x[order], [seed_by_raw[i] for i in np.asarray(common)[order]], label='Seed', color='#bd5a20', linestyle='--')
-                    if not no_measurements:
-                        axis.plot(x[order], (measured-current)[order], label='Residual', color='#8a3b3b', alpha=.7)
-                else:
-                    order = x.argsort()
-                    if not no_measurements:
-                        axis.scatter(x, measured, s=5, c='#555555', label='Measured', alpha=.65)
-                    axis.plot(x[order], current[order], label='Current fit', color='#1665a8')
-                    if candidate_model is not None:
-                        proposed = getattr(predict_steady(candidate_model, samples, data.belt_speed), component) / denominator
-                        axis.plot(x[order], proposed[order], label='Pending candidate', color='#238636', linestyle=':')
-                    if self.seed and not no_measurements:
-                        seed = getattr(predict_steady(self.seed, samples, data.belt_speed), component) / denominator
-                        axis.plot(x[order], seed[order], label='Seed', color='#bd5a20', linestyle='--')
-                    if not no_measurements:
-                        axis.plot(x[order], (measured-current)[order], label='Residual', color='#8a3b3b', alpha=.7)
+                        fy_by_raw = {int(i): val / fz for i, val, fz in zip(fy.raw_indices, fy.target, fy.fz)}
+                        indices = np.asarray([i for i, raw in enumerate(samples.raw_indices) if int(raw) in fy_by_raw], dtype=int)
+                        x = np.asarray([fy_by_raw[int(samples.raw_indices[i])] for i in indices])
+                        measured, current = measured[indices], current[indices]
+                    axis.scatter(x, measured, s=5, c='#555555', label='Measured', alpha=.65)
+                    axis.scatter(x, measured-current, s=5, c='#8a3b3b', label='Residual', alpha=.5)
+                models = [(self.snapshot, 'Current fit', '#1665a8', '-')]
+                if candidate_model is not None:
+                    models.append((candidate_model, 'Pending candidate', '#238636', ':'))
+                if self.seed is not None:
+                    models.append((self.seed, 'Seed', '#bd5a20', '--'))
+                sweeps = model_sweeps(samples, variable)
+                for index, sweep in enumerate(sweeps):
+                    for model, label, color, style in models:
+                        prediction = predict_steady(model, sweep, data.belt_speed)
+                        denominator = sweep.fz if combined else 1
+                        # Parametric model Fy/Fz vs Fx/Fz in kappa order, not
+                        # sorted by noisy measured Fy (which scrambles curves).
+                        curve_x = prediction.lateral_force / denominator if combined else getattr(sweep, variable)
+                        curve_y = getattr(prediction, component) / denominator
+                        axis.plot(curve_x, curve_y, label=label if index == 0 else '_nolegend_', color=color, linestyle=style)
+                if sweeps and not no_measurements:
+                    loads = ', '.join(f'{load:g}' for load in sorted(set(samples.fz)))
+                    axis.text(.02, .98, f'Separate sweeps • Fz: {loads} N', transform=axis.transAxes,
+                              va='top', fontsize='x-small')
                 if no_measurements:
                     axis.text(.02, .98, 'No measurements — model-only sweep', transform=axis.transAxes, va='top', fontsize='small')
                 axis.set_title(title)
@@ -912,6 +961,7 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             self.steady_plot.message(f'Plots unavailable: {exc}')
         self._refresh_diagnostics()
+        self._refresh_transient_event()
 
     def _refresh_diagnostics(self, result=None):
         if self.snapshot is None:
@@ -942,6 +992,18 @@ class MainWindow(QMainWindow):
                         pred = getattr(predict_steady(result.candidate, samples, hold.belt_speed), component)
                         rmse = float(np.sqrt(np.mean((pred-samples.target)**2)))
                         lines.append(f'  {key}: {rmse:.6g}; n={len(samples.target)}')
+        for run in self.runs.values():
+            channels = getattr(run, 'channels', {})
+            if 'speed' in channels:
+                speed = channels['speed']
+                metadata = getattr(run, 'metadata', {})
+                run_id = getattr(run, 'run_id', 'unknown')
+                lines.append(f'Run {run_id} belt speed: {metadata.get("belt_speed_source", "measured")} '
+                             f'[{np.min(speed):.3f}, {np.max(speed):.3f}] m/s; '
+                             + metadata.get('belt_speed_warning', ''))
+        lines.append(f'Transient display: {len(self.ramp_events)} isolated zero-IA step-steer events; '
+                     'continuous sweeps excluded; |IA| ≤ 0.25° sensor tolerance throughout each event. '
+                     'Measured near-stationary speeds retained; display is not fitting approval.')
         self.diagnostics.setPlainText('\n'.join(lines))
 
     def save_session(self, output_dir, stem, overwrite=False):
@@ -955,6 +1017,12 @@ class MainWindow(QMainWindow):
             'events': [{'id': f'{e.run.run_id}:{i}', 'start': int(e.start), 'stop': int(e.stop), 'run_id': int(e.run.run_id), 'axis': str(e.axis), 'approved': bool(e.approved), 'reason': '; '.join(e.exclusions), 'source_file': self._source_for_run(e.run), 'segment_id': str(i), 'baseline_stop': int(e.baseline_stop)} for i, e in enumerate(self.events)],
             'diagnostics': {'generation': self.generation},
         }
+        for run_id, run in self.runs.items():
+            source = run.metadata.get('belt_speed_source')
+            if source:
+                metadata['selections'][f'belt_speed_source_{run_id}'] = source
+                if source == 'override':
+                    metadata['selections'][f'belt_speed_override_{run_id}'] = float(run.channels['speed'][0])
         return save_session(self.snapshot, Path(output_dir), stem, include_transient=True, overwrite=overwrite, metadata=metadata)
 
     def _choose_session(self):
@@ -1006,6 +1074,7 @@ class MainWindow(QMainWindow):
         snapshot = load_session(Path(path))
         metadata = snapshot.session_metadata
         self.runs = {}
+        self.run_sources = {}
         self.run_combo.clear()
         self.snapshot = snapshot
         self.seed = snapshot
@@ -1041,29 +1110,36 @@ class MainWindow(QMainWindow):
         restored_load = selections.get('load_n')
         self._restored_load_n = float(restored_load) if isinstance(restored_load, (int, float)) else None
         self._restored_events = list(metadata.get('events', []))
+        self._speed_restore = {}
         self.runs = {}
+        self.run_sources = {}
         self.run_combo.clear()
         source_paths = [Path(p) for p in self.source_files if Path(p).is_file()]
+        for source in source_paths:
+            try:
+                probe = load_run(source, require_monotonic_time=False)
+                loaded_id = probe.run_id
+                speed_source = selections.get(f'belt_speed_source_{loaded_id}', 'auto')
+                override = selections.get(f'belt_speed_override_{loaded_id}')
+                self._speed_restore[loaded_id] = (speed_source, override)
+            except Exception:
+                continue
         for source in source_paths:
             try:
                 self.load_data_path(source)
             except Exception:
                 continue
+        self._rebuild_ramps()
+        # Refresh event objects so restored ramps refer to the resolved-speed runs.
+        current_id = self.run_combo.currentData()
+        for loaded_id in self.runs:
+            if loaded_id == current_id:
+                self._refresh_run()
+                break
         run_index = self.run_combo.findData(run_id)
         if run_index >= 0:
             self.run_combo.setCurrentIndex(run_index)
-        saved_events = {(int(row.get('run_id', -1)), int(row['start']), int(row['stop'])): row for row in metadata.get('events', [])}
-        for run_id, run in self.runs.items():
-            for row in (row for row in metadata.get('events', []) if int(row.get('run_id', -1)) == run_id):
-                start, stop = int(row['start']), int(row['stop'])
-                if not any(e.run.run_id == run_id and e.start == start and e.stop == stop for e in self.events) and 0 <= start < int(row.get('baseline_stop', start + 20)) < stop <= len(run.raw_indices):
-                    from ..events import TransientEvent
-                    self.events.append(TransientEvent(run, start, stop, int(row['baseline_stop']), bool(row.get('approved', False)), row.get('axis', 'lateral'), ()))
-        for i, event in enumerate(self.events):
-            row = saved_events.get((int(event.run.run_id), int(event.start), int(event.stop)))
-            if row:
-                self.events[i] = replace(event, baseline_stop=int(row.get('baseline_stop', event.baseline_stop)), approved=bool(row.get('approved', False)), axis=row.get('axis', event.axis), exclusions=())
-        if self.run_combo.currentData() == 7:
+        if self.run_combo.currentData() in self.runs:
             self._refresh_run()
         for index in range(self.segment_list.count()):
             item = self.segment_list.item(index)
@@ -1082,6 +1158,7 @@ class MainWindow(QMainWindow):
             if answer != QMessageBox.StandardButton.Yes:
                 event.ignore()
                 return
+        self._closing = True
         self.settings.setValue('geometry', self.saveGeometry())
         # Replay integration may be processing a large event; cooperatively stop it
         # and keep the window alive until its QThread has actually returned.
@@ -1091,6 +1168,7 @@ class MainWindow(QMainWindow):
                 self.replay_thread.quit()
                 if not self.replay_thread.wait(5000):
                     event.ignore()
+                    self._closing = False
                     self.status.setText('Waiting for safe replay cancellation…')
                     return
                 self.replay_worker.deleteLater()
@@ -1102,6 +1180,7 @@ class MainWindow(QMainWindow):
                 self.thread.quit()
                 if not self.thread.wait(10000):
                     event.ignore()
+                    self._closing = False
                     self.status.setText('Waiting for safe fitting cancellation…')
                     return
             self.worker.deleteLater()

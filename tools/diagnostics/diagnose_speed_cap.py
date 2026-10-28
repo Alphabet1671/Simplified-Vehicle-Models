@@ -24,7 +24,7 @@ from simplified_vehicle_models.solvers.forward_driver import _build_live_limit_s
 
 
 #: Canonical ten-lap MIS track (repository default).
-TRACK = "models/tracks/2024_michigan_endurance_multilap_closed.xml"
+TRACK = "models/tracks/mis_ev_endurance_2024_multilap_linear.xml"
 
 
 def main():

@@ -36,5 +36,5 @@
   "status": "Maximum_Iterations_Exceeded",
   "study_settings_provenance": "Verified after completion from managed job bash-3503 command `tools/run_iem24_murphy_planar_7dof.py --spacing 1 --iterations 8000`; runner defaults disabled projection/scaling; formulation, track, lateral bound, and brake cap were verified against this summary. Only configuration metadata was added; numerical solver output is unchanged.",
   "tire_model": "tester-fitted UniTire with provisional surface-mu scaling informed by measured peak deceleration/cornering (not a tire re-fit)",
-  "track": "models/tracks/2024_michigan_endurance_closed.xml"
+  "track": "models/tracks/mis_ev_endurance_2024_linear.xml"
 }

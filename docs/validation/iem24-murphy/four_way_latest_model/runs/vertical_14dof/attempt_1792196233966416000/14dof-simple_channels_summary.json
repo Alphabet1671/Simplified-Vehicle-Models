@@ -1,7 +1,7 @@
 {
   "source_attempt": "docs/validation/iem24-murphy/four_way_latest_model/runs/vertical_14dof/attempt_1792196233966416000",
   "model": "14dof-simple",
-  "track": "models/tracks/2024_michigan_endurance_multilap_closed.xml",
+  "track": "models/tracks/mis_ev_endurance_2024_multilap_linear.xml",
   "formulation": "models/formulations/iem24_murphy_real_14dof_simple.xml",
   "method": "transient_forward_driver",
   "status": "Completed",

@@ -147,11 +147,11 @@ Task 9 generated lap evidence for the delivered `14dof-simple` rung. **It change
 
 | Item | Value |
 |---|---|
-| Acceptance attempt | `docs/validation/iem24-murphy/14dof_simple_trials/attempt_1792288406878879000` (cold lap, `models/tracks/2024_michigan_endurance_closed.xml`, BDF, `rtol` 1e-5, `maximum_step` 0.005 s, live planner, 1800 s user-selected wall budget) |
+| Acceptance attempt | `docs/validation/iem24-murphy/14dof_simple_trials/attempt_1792288406878879000` (cold lap, `models/tracks/mis_ev_endurance_2024_linear.xml`, BDF, `rtol` 1e-5, `maximum_step` 0.005 s, live planner, 1800 s user-selected wall budget) |
 | Paired attempts | periodicity baseline `.../14dof_simple_trials/periodicity/attempt_1792288811970287000` (warm start, cold-lap settings); refinement `.../14dof_simple_trials/refinement/attempt_1792288547293860000` (same warm start, `maximum_step` 0.0025 s, `rtol` 1e-6) |
 | Gate table | `.../attempt_1792288406878879000/gates.json`, written by `tools/gates/check_14dof_simple_gates.py`; checked by `tests/test_vertical_14dof_evidence.py` |
 | Measured lap | 66.56339750 s over 1016.70064959 m; 20 075 accepted steps, 74 486 evaluations; solver wall 128.68 s, child wall 140.11 s, peak child RSS 1.65 GB |
-| Acceptance attempt | `docs/validation/iem24-murphy/14dof_simple_trials/attempt_1792200889773363000` (cold lap, `models/tracks/2024_michigan_endurance_closed.xml`, BDF, `rtol` 1e-5, `maximum_step` 0.005 s, live planner, 1800 s user-selected wall budget) |
+| Acceptance attempt | `docs/validation/iem24-murphy/14dof_simple_trials/attempt_1792200889773363000` (cold lap, `models/tracks/mis_ev_endurance_2024_linear.xml`, BDF, `rtol` 1e-5, `maximum_step` 0.005 s, live planner, 1800 s user-selected wall budget) |
 | Paired attempts | periodicity baseline `.../14dof_simple_trials/periodicity/attempt_1792201049606993000` (warm start, cold-lap settings); refinement `.../14dof_simple_trials/refinement/attempt_1792201049616532000` (same warm start, `maximum_step` 0.0025 s, `rtol` 1e-6) |
 | Gate table | `.../attempt_1792200889773363000/gates.json`, written by `tools/gates/check_14dof_simple_gates.py`; checked by `tests/test_vertical_14dof_evidence.py` |
 | Measured lap | 66.56339750 s over 1016.70064959 m; 20 075 accepted steps, 74 486 evaluations; solver wall 125.81 s, child wall 138.03 s, peak child RSS 1.65 GB |

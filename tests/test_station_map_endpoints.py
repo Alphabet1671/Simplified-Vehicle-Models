@@ -8,7 +8,7 @@ from simplified_vehicle_models.tracks.line_trajectory import StationMap
 
 ROOT = Path(__file__).resolve().parents[1]
 FSC_XML = ROOT / "tracks_out/fsc_may_2026.xml"
-MIS_XML = ROOT / "models/tracks/2024_michigan_endurance_closed_edged.xml"
+MIS_XML = ROOT / "models/tracks/mis_ev_endurance_2024_width.xml"
 
 
 class StationMapEndpointTests(unittest.TestCase):

@@ -20,7 +20,7 @@ Both diagnostics intentionally omit `--maximum-speed`.
 
 ```sh
 PYTHONPATH=src:. python3 tools/run/run_yaw_aware_forward_driver.py \
-  --track models/tracks/2024_michigan_endurance_closed_edged.xml \
+  --track models/tracks/mis_ev_endurance_2024_width.xml \
   --output-dir runs/yaw_aware_driver/mis-physical-domain-no-tv-20261025 \
   --yaw-speed-points 12 --yaw-ax-points 9 --yaw-ay-points 17 \
   --lateral-margin 0.15 --control-spacing 2000 --planning-grid-spacing 0.05 \
@@ -30,7 +30,7 @@ PYTHONPATH=src:. python3 tools/run/run_yaw_aware_forward_driver.py \
 
 ```sh
 PYTHONPATH=src:. python3 tools/run/run_yaw_aware_forward_driver.py \
-  --track models/tracks/fsc_may_2026_synthetic_3m_edged.xml \
+  --track models/tracks/fsc_may_endurance_2026_width.xml \
   --output-dir runs/yaw_aware_driver/fsc-synthetic-3m-physical-domain-no-tv-20261025 \
   --yaw-speed-points 12 --yaw-ax-points 9 --yaw-ay-points 17 \
   --lateral-margin 0.15 --control-spacing 2000 --planning-grid-spacing 0.05 \

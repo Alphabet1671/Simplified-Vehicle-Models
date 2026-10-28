@@ -58,7 +58,7 @@ def _profile(path: Path, grid: np.ndarray, *, torque_nm: float) -> tuple[dict[st
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", type=Path, default=Path("docs/validation/iem24-murphy"))
-    parser.add_argument("--track", type=Path, default=Path("models/tracks/2024_michigan_endurance_multilap_closed.xml"))
+    parser.add_argument("--track", type=Path, default=Path("models/tracks/mis_ev_endurance_2024_multilap_linear.xml"))
     parser.add_argument("--bins", type=int, default=1020, help="Distance-axis bins (about 1 m per bin on the MIS lap).")
     args = parser.parse_args()
     output = args.output_dir

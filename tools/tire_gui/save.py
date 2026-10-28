@@ -20,7 +20,7 @@ from .model import _make_snapshot
 from .parameters import CANONICAL_STEADY_NAMES, TRANSIENT_NAMES, UNITS, VECTOR_FIELDS
 
 _STEADY_XML_NAMES = tuple(n for n in CANONICAL_STEADY_NAMES if n not in VECTOR_FIELDS) + tuple(VECTOR_FIELDS)
-_VERSION = 1
+_VERSION = 2
 _STEM = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")
 _ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
@@ -142,11 +142,17 @@ def _owned_bundle(dest: Path, stem: str):
         if manifest_path.is_symlink() or not manifest_path.is_file():
             return None
         previous = json.loads(manifest_path.read_text(encoding='utf-8'))
-        if not isinstance(previous, dict) or previous.get('version') != _VERSION or previous.get('tool') != 'tire-gui':
+        if not isinstance(previous, dict) or type(previous.get('version')) is not int or previous['version'] not in (1, 2) or previous.get('tool') != 'tire-gui':
             return None
-        allowed = {'session.json', f'{stem}-unitire-simple.xml'}
-        if previous.get('transient_included') is True:
-            allowed.add(f'{stem}-unitire-transient-simple.xml')
+        if type(previous.get('transient_included')) is not bool:
+            return None
+        if previous.get('version') == 1:
+            allowed = {'session.json', f'{stem}-unitire-simple.xml'}
+            if previous.get('transient_included') is True:
+                allowed.add(f'{stem}-unitire-transient-simple.xml')
+        else:
+            suffix = '-unitire-transient-simple.xml' if previous.get('transient_included') is True else '-unitire-simple.xml'
+            allowed = {'session.json', f'{stem}{suffix}'}
         entries = list(dest.iterdir())
         if any(item.is_symlink() or not item.is_file() or item.name not in allowed for item in entries) or {item.name for item in entries} != allowed:
             return None
@@ -190,17 +196,18 @@ def save_session(snapshot: ModelSnapshot, output_dir: Path, stem: str, *, includ
             raise FileExistsError('overwrite refused: destination is not an exact recognized tool bundle')
     temp = Path(tempfile.mkdtemp(prefix=f'.{stem}.tmp-', dir=root)).resolve()
     try:
-        steady_path = temp / f'{stem}-unitire-simple.xml'
-        steady_id = f'{stem}-steady-{uuid.uuid4().hex}'
-        _xml(steady_path, steady_id, 'unitire-simple', snapshot.values, _STEADY_XML_NAMES)
-        _validate_xml(steady_path, False)
-        result = [dest / steady_path.name]
-        transient_id = None
         if include_transient:
-            transient_path = temp / f'{stem}-unitire-transient-simple.xml'
-            transient_id = f'{stem}-transient-{uuid.uuid4().hex}'
-            _xml(transient_path, transient_id, 'unitire-transient-simple', snapshot.values, TRANSIENT_NAMES)
-            _validate_xml(transient_path, True); result.append(dest / transient_path.name)
+            xml_path = temp / f'{stem}-unitire-transient-simple.xml'
+            model_id = f'{stem}-transient-{uuid.uuid4().hex}'
+            _xml(xml_path, model_id, 'unitire-transient-simple', snapshot.values,
+                 (*_STEADY_XML_NAMES, *TRANSIENT_NAMES))
+            _validate_xml(xml_path, True)
+        else:
+            xml_path = temp / f'{stem}-unitire-simple.xml'
+            model_id = f'{stem}-steady-{uuid.uuid4().hex}'
+            _xml(xml_path, model_id, 'unitire-simple', snapshot.values, _STEADY_XML_NAMES)
+            _validate_xml(xml_path, False)
+        result = [dest / xml_path.name]
         manifest = _manifest(snapshot, metadata, include_transient); manifest['tool'] = 'tire-gui'
         (temp / 'session.json').write_text(json.dumps(manifest, indent=2, allow_nan=False) + '\n', encoding='utf-8')
         if original_identity is None:
@@ -226,6 +233,30 @@ def save_session(snapshot: ModelSnapshot, output_dir: Path, stem: str, *, includ
         raise
 
 
+def _compile_legacy_pair(steady_model, transient_model, stem, parsed):
+    """Validate and combine an exact v1 coefficient-only transient pair in memory."""
+    from simplified_vehicle_models.xml.model import Model
+    if transient_model.references:
+        raise ValueError('legacy transient XML references are not permitted')
+    if transient_model.subtype != 'unitire-transient-simple' or not re.fullmatch(re.escape(f'{stem}-transient-') + r'[0-9a-f]{32}', transient_model.model_id):
+        raise ValueError('malformed or duplicate legacy transient XML model ID/subtype')
+    if transient_model.model_id == steady_model.model_id:
+        raise ValueError('duplicate model IDs in legacy pair')
+    if set(transient_model.parameters) != set(TRANSIENT_NAMES) or set(transient_model.units) != set(TRANSIENT_NAMES):
+        raise ValueError('legacy transient XML has unknown or missing parameters')
+    for name in TRANSIENT_NAMES:
+        if transient_model.units[name] != UNITS[name] or float(transient_model.parameters[name]) != parsed[name]:
+            raise ValueError(f'legacy transient XML does not match canonical value/unit for {name}')
+    complete_parameters = dict(steady_model.parameters)
+    complete_units = dict(steady_model.units)
+    complete_parameters.update(transient_model.parameters)
+    complete_units.update(transient_model.units)
+    combined = Model(path=transient_model.path, model_id=transient_model.model_id,
+                     model_type=transient_model.model_type, subtype=transient_model.subtype,
+                     parameters=complete_parameters, units=complete_units, references=())
+    return compile_unitire_transient(combined)
+
+
 def load_session(path: Path) -> ModelSnapshot:
     bundle = Path(path).expanduser()
     if bundle.is_symlink() or not bundle.is_dir():
@@ -238,14 +269,19 @@ def load_session(path: Path) -> ModelSnapshot:
         data = json.loads(manifest_path.read_text(encoding='utf-8'))
     except (OSError, json.JSONDecodeError) as exc:
         raise ValueError(f'malformed session manifest: {exc}') from exc
-    if not isinstance(data, dict) or data.get('version') != _VERSION or data.get('tool') != 'tire-gui':
+    if (not isinstance(data, dict) or type(data.get('version')) is not int
+            or data['version'] not in (1, 2) or data.get('tool') != 'tire-gui'):
         raise ValueError('unknown session format version or producer')
     stem = bundle.name
-    expected = {'session.json', f'{stem}-unitire-simple.xml'}
-    if data.get('transient_included') is True:
-        expected.add(f'{stem}-unitire-transient-simple.xml')
-    elif data.get('transient_included') is not False:
+    if type(data.get('transient_included')) is not bool:
         raise ValueError('invalid transient_included flag')
+    if data['version'] == 1:
+        expected = {'session.json', f'{stem}-unitire-simple.xml'}
+        if data['transient_included']:
+            expected.add(f'{stem}-unitire-transient-simple.xml')
+    else:
+        suffix = '-unitire-transient-simple.xml' if data['transient_included'] else '-unitire-simple.xml'
+        expected = {'session.json', f'{stem}{suffix}'}
     entries = list(bundle.iterdir())
     if any(p.is_symlink() or not p.is_file() for p in entries) or {p.name for p in entries} != expected:
         raise ValueError('session bundle contains missing, extra, or unsafe entries')
@@ -271,23 +307,41 @@ def load_session(path: Path) -> ModelSnapshot:
     domain = data.get('load_domain')
     if not isinstance(domain, list) or len(domain) != 2 or any(isinstance(v, bool) or not isinstance(v, (int,float)) or not math.isfinite(v) for v in domain):
         raise ValueError('invalid load domain')
-    steady_path = bundle / f'{stem}-unitire-simple.xml'
-    steady_model = load_model(steady_path); steady = compile_unitire_simple(steady_model)
-    if steady_model.subtype != 'unitire-simple' or not re.fullmatch(re.escape(f'{stem}-steady-') + r'[0-9a-f]{32}', steady_model.model_id):
-        raise ValueError('malformed steady XML model ID/subtype')
-    canonical_xml = {n: float(steady_model.parameters[n]) for n in CANONICAL_STEADY_NAMES if n not in VECTOR_FIELDS}
-    for flat, (vector, _) in VECTOR_FIELDS.items(): canonical_xml[flat] = float(steady_model.parameters[f'{vector}_{flat.rsplit("_",1)[1]}'])
-    if canonical_xml != {n: parsed[n] for n in CANONICAL_STEADY_NAMES}:
-        raise ValueError('steady XML does not match canonical session values')
     from simplified_vehicle_models.tires.unitire_transient import TransientTireParameters
-    if data['transient_included']:
-        transient_model = load_model(bundle / f'{stem}-unitire-transient-simple.xml'); transient = compile_unitire_transient(transient_model)
-        if transient_model.subtype != 'unitire-transient-simple' or not re.fullmatch(re.escape(f'{stem}-transient-') + r'[0-9a-f]{32}', transient_model.model_id) or transient_model.model_id == steady_model.model_id:
-            raise ValueError('malformed or duplicate transient XML model ID/subtype')
-        if {n: float(v) for n,v in transient_model.parameters.items()} != {n: parsed[n] for n in TRANSIENT_NAMES}:
-            raise ValueError('transient XML does not match canonical session values')
+    if data['version'] == 2:
+        xml_path = next(p for p in entries if p.suffix == '.xml')
+        model = load_model(xml_path)
+        if data['transient_included']:
+            transient = compile_unitire_transient(model)
+            if model.subtype != 'unitire-transient-simple' or not re.fullmatch(re.escape(f'{stem}-transient-') + r'[0-9a-f]{32}', model.model_id):
+                raise ValueError('malformed transient XML model ID/subtype')
+            steady = transient.steady
+            xml_values = {n: float(model.parameters[n]) for n in (*CANONICAL_STEADY_NAMES, *TRANSIENT_NAMES) if n not in VECTOR_FIELDS}
+            for flat, (vector, _) in VECTOR_FIELDS.items(): xml_values[flat] = float(model.parameters[f'{vector}_{flat.rsplit("_",1)[1]}'])
+            if xml_values != parsed:
+                raise ValueError('transient XML does not match canonical session values')
+        else:
+            steady = compile_unitire_simple(model)
+            transient = TransientTireParameters(*(parsed[n] for n in TRANSIENT_NAMES))
+            if model.subtype != 'unitire-simple' or not re.fullmatch(re.escape(f'{stem}-steady-') + r'[0-9a-f]{32}', model.model_id):
+                raise ValueError('malformed steady XML model ID/subtype')
+            canonical_xml = {n: float(model.parameters[n]) for n in CANONICAL_STEADY_NAMES if n not in VECTOR_FIELDS}
+            for flat, (vector, _) in VECTOR_FIELDS.items(): canonical_xml[flat] = float(model.parameters[f'{vector}_{flat.rsplit("_",1)[1]}'])
+            if canonical_xml != {n: parsed[n] for n in CANONICAL_STEADY_NAMES}:
+                raise ValueError('steady XML does not match canonical session values')
     else:
-        transient = TransientTireParameters(*(parsed[n] for n in TRANSIENT_NAMES))
+        steady_model = load_model(bundle / f'{stem}-unitire-simple.xml'); steady = compile_unitire_simple(steady_model)
+        if steady_model.subtype != 'unitire-simple' or not re.fullmatch(re.escape(f'{stem}-steady-') + r'[0-9a-f]{32}', steady_model.model_id):
+            raise ValueError('malformed steady XML model ID/subtype')
+        canonical_xml = {n: float(steady_model.parameters[n]) for n in CANONICAL_STEADY_NAMES if n not in VECTOR_FIELDS}
+        for flat, (vector, _) in VECTOR_FIELDS.items(): canonical_xml[flat] = float(steady_model.parameters[f'{vector}_{flat.rsplit("_",1)[1]}'])
+        if canonical_xml != {n: parsed[n] for n in CANONICAL_STEADY_NAMES}:
+            raise ValueError('steady XML does not match canonical session values')
+        if data['transient_included']:
+            transient_model = load_model(bundle / f'{stem}-unitire-transient-simple.xml')
+            transient = _compile_legacy_pair(steady_model, transient_model, stem, parsed)
+        else:
+            transient = TransientTireParameters(*(parsed[n] for n in TRANSIENT_NAMES))
     provenance = data.get('provenance', {}); statuses = data.get('parameter_status', {})
     if not isinstance(provenance, dict) or not isinstance(statuses, dict):
         raise ValueError('invalid provenance or parameter status')

@@ -198,7 +198,7 @@ class OpenEvaluatePathTests(unittest.TestCase):
 
     def test_closed_path_still_wraps(self) -> None:
         closed = load_track(
-            Path(__file__).resolve().parents[1] / "models/tracks/2024_michigan_endurance_multilap_closed.xml"
+            Path(__file__).resolve().parents[1] / "models/tracks/mis_ev_endurance_2024_multilap_linear.xml"
         ).path_coordinates
         self.assertTrue(closed.is_closed)
         length = closed.lap_length

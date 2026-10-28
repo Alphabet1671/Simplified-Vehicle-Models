@@ -11,4 +11,5 @@ Qt layer of the tire correlation GUI.
 | `main_window.py` | Native PyQt interface for TTC tire correlation. |
 | `parameter_panel.py` | Python module `parameter_panel`. |
 | `plot_panel.py` | Python module `plot_panel`. |
-| `replay_worker.py` | Python module `replay_worker`. |
+| `replay_worker.py` | Cancellable sampled-input transient model replay off the GUI thread. |
+| `transient_panel.py` | Lateral-only condition grids with load overlays, measured SA and aligned current-model replay curves. |

@@ -50,7 +50,7 @@ class OpenCourseTextTests(unittest.TestCase):
 class ClosedTrackKeywordTests(unittest.TestCase):
     def test_defaults_keep_the_committed_values(self):
         parameters = inspect.signature(build_closed_track.write_xml).parameters
-        self.assertEqual(parameters["model_id"].default, "2024-michigan-endurance-closed")
+        self.assertEqual(parameters["model_id"].default, "mis_ev_endurance_2024_linear")
         self.assertEqual(parameters["title"].default, "2024 Michigan Endurance Closed")
         self.assertEqual(build_closed_track.TRACK_TITLE, parameters["title"].default)
         self.assertEqual(parameters["model_id"].kind, inspect.Parameter.KEYWORD_ONLY)

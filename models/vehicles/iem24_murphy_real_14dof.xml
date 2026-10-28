@@ -44,11 +44,10 @@
     <data role="ackermann" path="../data/iem24_murphy_parallel_steering.csv" format="csv" />
     <data role="pedal-ratio" path="../data/murphy_pedal_ratio.csv" format="csv" />
     <components>
-        <component role="tire" ref="../tires/iem24_murphy_real_unitire.xml" />
+        <component role="tire" ref="../tires/iem24_murphy_real_unitire_transient.xml" />
         <component role="aero" ref="../aero/iem24_murphy_real_aero.xml" />
         <component role="powertrain" ref="../powertrains/iem24_murphy_real_planar.xml" />
         <component role="drivetrain" ref="../drivetrains/iem24_murphy_real.xml" />
         <component role="suspension" ref="../suspensions/iem24_murphy_real_suspension.xml" />
-        <component role="tire-transient" ref="../tires/iem24_murphy_real_unitire_transient.xml" />
     </components>
 </model>

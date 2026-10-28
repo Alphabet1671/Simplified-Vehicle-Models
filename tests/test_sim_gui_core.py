@@ -491,10 +491,10 @@ class ExecutionTests(unittest.TestCase):
         from tools.sim_gui.execute import prepare_case
         definition = StudyDefinition("point", "missing.xml", "track.xml", "14dof-simple", {},
                                      RunSettings(solver_kind="point-mass"), "one-at-a-time", ())
-        case = CaseSpec("case_000", "baseline", "14dof-simple", "models/tracks/2024_michigan_endurance_closed.xml", {}, {})
+        case = CaseSpec("case_000", "baseline", "14dof-simple", "models/tracks/mis_ev_endurance_2024_linear.xml", {}, {})
         source = REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_14dof_simple.xml"
         configuration = VehicleConfiguration.open(source)
-        definition = StudyDefinition("point", source.as_posix(), "models/tracks/2024_michigan_endurance_closed.xml",
+        definition = StudyDefinition("point", source.as_posix(), "models/tracks/mis_ev_endurance_2024_linear.xml",
                                      "14dof-simple", {k: p.relative_to(REPOSITORY_ROOT).as_posix() for k,p in configuration.choices.items()},
                                      RunSettings(solver_kind="point-mass"), "one-at-a-time", ())
         with tempfile.TemporaryDirectory() as folder:
@@ -545,7 +545,7 @@ class ExecutionTests(unittest.TestCase):
                 attempt.mkdir()
                 if code == 0 and not timed and not cancelled:
                     from tools.sim_gui.settings import RunSettings
-                    track = REPOSITORY_ROOT / 'models/tracks/2024_michigan_endurance_closed.xml'
+                    track = REPOSITORY_ROOT / 'models/tracks/mis_ev_endurance_2024_linear.xml'
                     form = REPOSITORY_ROOT / 'models/formulations/iem24_murphy_real_planar_7dof.xml'
                     yaw_map = REPOSITORY_ROOT / 'runs/yaw_map_build/iem24-vehicle-limit-final.npz'
                     identity = {'solver_kind':'yaw-aware','source_model':'planar-7dof','solution_model':'planar-7dof',

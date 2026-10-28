@@ -75,8 +75,12 @@ class EventTests(unittest.TestCase):
                 channels[channel][120:]=value
                 changed=RunData(run.run_id,run.tire_id,channels,run.metadata,run.raw_indices)
                 event=approved(changed)
-                replay=simulate_event(snap,event,.005)
-                self.assertTrue(np.all(np.isfinite(replay)))
+                if channel == 'ia':
+                    with self.assertRaisesRegex(ValueError, 'inclination'):
+                        simulate_event(snap,event,.005)
+                else:
+                    replay=simulate_event(snap,event,.005)
+                    self.assertTrue(np.all(np.isfinite(replay)))
                 with self.assertRaisesRegex(ValueError,reason):
                     fit_transient(snap,(event,),frozenset(),lambda:False,lambda p:None)
 
@@ -115,6 +119,35 @@ class EventTests(unittest.TestCase):
         pred = simulate_event(load_snapshot(STEADY), event, .002)
         self.assertEqual(pred.shape, (200, 3))
         self.assertTrue(np.all(np.isfinite(pred)))
+
+    def test_lateral_replay_uses_sa_without_reinterpreting_it_as_slip_ratio(self):
+        from unittest.mock import patch
+        from tools.tire_gui import transient as replay
+        run = make_step_run()
+        calls = []
+        original = replay.evaluate_transient_unitire
+        def record(steady, transient, state, alpha, kappa, *conditions):
+            calls.append((alpha, kappa))
+            return original(steady, transient, state, alpha, kappa, *conditions)
+        with patch.object(replay, 'evaluate_transient_unitire', side_effect=record):
+            prediction = simulate_event(load_snapshot(STEADY), approved(run), .01)
+        self.assertTrue(any(abs(alpha) > .02 for alpha, _ in calls))
+        self.assertTrue(all(kappa == 0 for _, kappa in calls))
+        self.assertGreater(np.ptp(prediction[:, 1]), 1.)
+        np.testing.assert_allclose(prediction[:, 0], 0., atol=1e-10)
+
+    def test_replay_accepts_stationary_encoder_samples_without_fabricating_speed(self):
+        run = make_step_run()
+        channels = dict(run.channels)
+        channels['speed'] = np.zeros(len(run.raw_indices))
+        channels['speed'][::4] = -.003
+        stopped = RunData(run.run_id, run.tire_id, channels, run.metadata, run.raw_indices)
+        prediction = simulate_event(load_snapshot(STEADY), approved(stopped), .01)
+        self.assertTrue(np.all(np.isfinite(prediction)))
+        np.testing.assert_array_equal(stopped.channels['speed'], channels['speed'])
+        from tools.tire_gui.events import validate_event
+        with self.assertRaisesRegex(ValueError, 'speed'):
+            validate_event(approved(stopped))
 
     def test_measured_speed_changes_transient_replay(self):
         snap = load_snapshot(STEADY)

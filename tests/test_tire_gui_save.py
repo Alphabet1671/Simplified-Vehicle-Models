@@ -8,8 +8,8 @@ from simplified_vehicle_models.tires.unitire_simple import compile_unitire_simpl
 from simplified_vehicle_models.tires.unitire_transient import compile_unitire_transient
 from simplified_vehicle_models.xml.loader import load_model
 from tools.tire_gui.model import load_snapshot, with_parameter
-from tools.tire_gui.parameters import CANONICAL_STEADY_NAMES, TRANSIENT_NAMES
-from tools.tire_gui.save import load_session, save_session
+from tools.tire_gui.parameters import CANONICAL_STEADY_NAMES, TRANSIENT_NAMES, flatten_steady, UNITS
+from tools.tire_gui.save import load_session, save_session, _xml, _STEADY_XML_NAMES
 
 SEED = Path('models/tires/hoosier-43075-r20-simple.xml')
 
@@ -33,13 +33,94 @@ class SaveTests(unittest.TestCase):
         snapshot = with_parameter(self.seed, 'mu_0_y', 0.9123456789012345)
         with tempfile.TemporaryDirectory() as folder:
             paths = save_session(snapshot, Path(folder), 'precise', include_transient=True)
-            self.assertEqual(len(paths), 3)
-            steady = compile_unitire_simple(load_model(paths[0]))
-            transient = compile_unitire_transient(load_model(paths[1]))
+            self.assertEqual(len(paths), 2)
+            combined = load_model(paths[0])
+            steady = compile_unitire_simple(combined)
+            transient = compile_unitire_transient(combined)
             self.assertEqual(steady.mu_0_y, snapshot.values['mu_0_y'])
             self.assertEqual(transient.lateral_length_scale, snapshot.values['lateral_length_scale'])
-            self.assertEqual(set(load_model(paths[0]).parameters), set(CANONICAL_STEADY_NAMES))
-            self.assertEqual(set(load_model(paths[1]).parameters), set(TRANSIENT_NAMES))
+            self.assertEqual(flatten_steady(transient.steady), {n: snapshot.values[n] for n in CANONICAL_STEADY_NAMES})
+            for name in TRANSIENT_NAMES:
+                self.assertEqual(getattr(transient, name), snapshot.values[name])
+            self.assertTrue(set(CANONICAL_STEADY_NAMES).issubset(combined.parameters))
+            self.assertTrue(set(TRANSIENT_NAMES).issubset(combined.parameters))
+
+    def _write_v1_pair(self, bundle, stem, *, reference=False, duplicate_ids=False):
+        from tools.tire_gui.save import _manifest
+        from simplified_vehicle_models.xml.model import ModelReference
+        bundle.mkdir()
+        steady_path = bundle / f'{stem}-unitire-simple.xml'
+        transient_path = bundle / f'{stem}-unitire-transient-simple.xml'
+        _xml(steady_path, f'{stem}-steady-' + '1' * 32, 'unitire-simple', self.seed.values, _STEADY_XML_NAMES)
+        transient_id = (f'{stem}-steady-' + '1' * 32) if duplicate_ids else (f'{stem}-transient-' + '2' * 32)
+        _xml(transient_path, transient_id, 'unitire-transient-simple', self.seed.values, TRANSIENT_NAMES)
+        if reference:
+            import xml.etree.ElementTree as ET
+            tree = ET.parse(transient_path)
+            steady_path = bundle / f'{stem}-unitire-simple.xml'
+            ET.SubElement(tree.getroot(), 'components')
+            ET.SubElement(tree.getroot().find('components'), 'tire', {'role': 'tire', 'ref': steady_path.name})
+            tree.write(transient_path, encoding='utf-8', xml_declaration=True)
+        manifest = _manifest(self.seed, None, True)
+        manifest.update(version=1, tool='tire-gui')
+        (bundle / 'session.json').write_text(json.dumps(manifest))
+        return bundle
+
+    def test_v1_pair_loads_and_can_be_rewritten_as_v2(self):
+        with tempfile.TemporaryDirectory() as folder:
+            bundle = self._write_v1_pair(Path(folder) / 'legacy-v1', 'legacy-v1')
+            legacy = load_session(bundle)
+            new_paths = save_session(legacy, Path(folder), 'rewritten', include_transient=True)
+            self.assertEqual(len(new_paths), 2)
+            self.assertEqual(load_session(Path(folder) / 'rewritten').values['mu_0_y'], legacy.values['mu_0_y'])
+            self.assertEqual(json.loads(new_paths[-1].read_text())['version'], 2)
+
+    def test_v1_duplicate_ids_are_rejected(self):
+        with tempfile.TemporaryDirectory() as folder:
+            bundle = self._write_v1_pair(Path(folder) / 'legacy-duplicate', 'legacy-duplicate', duplicate_ids=True)
+            with self.assertRaises(ValueError):
+                load_session(bundle)
+
+    def test_v1_bundle_can_be_overwritten_and_backup_is_preserved(self):
+        with tempfile.TemporaryDirectory() as folder:
+            bundle = self._write_v1_pair(Path(folder) / 'legacy-overwrite', 'legacy-overwrite')
+            old_manifest = (bundle / 'session.json').read_text()
+            changed = with_parameter(self.seed, 'mu_0_y', self.seed.values['mu_0_y'] + .01)
+            result = save_session(changed, Path(folder), 'legacy-overwrite', include_transient=False, overwrite=True)
+            self.assertEqual(len(result), 2)
+            backup = next(Path(folder).glob('.legacy-overwrite.backup-*'))
+            self.assertEqual((backup / 'session.json').read_text(), old_manifest)
+            restored = load_session(bundle)
+            self.assertEqual(dict(restored.values), dict(changed.values))
+
+    def test_v1_transient_references_are_rejected(self):
+        with tempfile.TemporaryDirectory() as folder:
+            bundle = self._write_v1_pair(Path(folder) / 'legacy-reference', 'legacy-reference', reference=True)
+            with self.assertRaisesRegex(ValueError, 'references'):
+                load_session(bundle)
+
+    def test_v2_full_transient_embedded_steady_tamper_rejected(self):
+        with tempfile.TemporaryDirectory() as folder:
+            paths = save_session(self.seed, Path(folder), 'tampered-steady', include_transient=True)
+            xml = paths[0]
+            text = xml.read_text()
+            self.assertIn('name="mu_0_y"', text)
+            marker = text.index('name="mu_0_y"')
+            value_start = text.index('value="', marker) + len('value="')
+            value_end = text.index('"', value_start)
+            original = text[value_start:value_end]
+            xml.write_text(text[:value_start] + repr(float(original) + 1e-6) + text[value_end:])
+            with self.assertRaisesRegex(ValueError, 'match canonical'):
+                load_session(Path(folder) / 'tampered-steady')
+
+    def test_v2_steady_bundle_has_one_xml_and_restores_manifest_transient_defaults(self):
+        with tempfile.TemporaryDirectory() as folder:
+            paths = save_session(self.seed, Path(folder), 'steady-only', include_transient=False,
+                                 metadata={'locks': {'mu_0_y': True}})
+            self.assertEqual(len(paths), 2)
+            self.assertEqual({p.name for p in (Path(folder) / 'steady-only').iterdir()},
+                             {'session.json', 'steady-only-unitire-simple.xml'})
+            self.assertEqual(load_session(Path(folder) / 'steady-only').session_metadata['locks']['mu_0_y'], True)
 
     def test_session_restores_private_metadata_and_no_measurements(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -82,12 +163,14 @@ class SaveTests(unittest.TestCase):
             edited = with_parameter(self.seed, 'mu_0_y', self.seed.values['mu_0_y'] * 0.99)
             new_paths = save_session(edited, Path(folder), 'replaceable', include_transient=True,
                                      overwrite=True)
-            self.assertEqual(len(new_paths), 3)
+            self.assertEqual(len(new_paths), 2)
             self.assertNotEqual((Path(folder) / 'replaceable' / 'session.json').read_text(), old_manifest)
             backups = list(Path(folder).glob('.replaceable.backup-*'))
             self.assertEqual(len(backups), 1)
             self.assertEqual((backups[0] / 'session.json').read_text(), old_manifest)
-            self.assertTrue(all(p.is_file() for p in first))
+            backup_xml = list(backups[0].glob('*.xml'))
+            self.assertEqual(len(backup_xml), 1)
+            self.assertTrue(backup_xml[0].is_file())
             self.assertEqual(load_session(Path(folder) / 'replaceable').values['mu_0_y'], edited.values['mu_0_y'])
 
     def test_legacy_holdout_rows_survive_session_load_and_rewrite(self):
@@ -152,21 +235,20 @@ class SaveTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 load_session(bundle)
             extra.unlink()
-            xml = next(bundle.glob('*-unitire-simple.xml'))
+            xml = next(bundle.glob('*-unitire-transient-simple.xml'))
             text = xml.read_text()
-            xml.write_text(text.replace('id="strict-steady-', 'id="bad id-', 1))
+            xml.write_text(text.replace('id="strict-transient-', 'id="bad id-', 1))
             with self.assertRaises(ValueError):
                 load_session(bundle)
 
-    def test_load_rejects_duplicate_model_ids(self):
+    def test_load_rejects_malformed_transient_model_id(self):
         with tempfile.TemporaryDirectory() as folder:
             save_session(self.seed, Path(folder), 'dupid', include_transient=True)
             bundle = Path(folder) / 'dupid'
-            steady = next(bundle.glob('*-unitire-simple.xml')).read_text()
             transient_path = next(bundle.glob('*-unitire-transient-simple.xml'))
             text = transient_path.read_text()
-            steady_id = steady.split('id="', 1)[1].split('"', 1)[0]
-            transient_path.write_text(text.replace(text.split('id="', 1)[1].split('"', 1)[0], steady_id, 1))
+            transient_id = text.split('id="', 1)[1].split('"', 1)[0]
+            transient_path.write_text(text.replace(transient_id, 'not-a-valid-id', 1))
             with self.assertRaises(ValueError):
                 load_session(bundle)
 
@@ -182,10 +264,10 @@ class SaveTests(unittest.TestCase):
             save_session(self.seed, Path('models'), 'do-not-overwrite', include_transient=False)
         self.assertTrue(SEED.is_file())
 
-    def test_interrupted_pair_write_leaves_no_partial_bundle(self):
+    def test_interrupted_single_xml_write_leaves_no_partial_bundle(self):
         with tempfile.TemporaryDirectory() as folder:
-            with patch('tools.tire_gui.save._validate_xml', side_effect=[None, RuntimeError('transient compilation interrupted')]):
-                with self.assertRaisesRegex(RuntimeError, 'interrupted'):
+            with patch('tools.tire_gui.save._validate_xml', side_effect=RuntimeError('single XML compilation interrupted')):
+                with self.assertRaisesRegex(RuntimeError, 'single XML'):
                     save_session(self.seed, Path(folder), 'interrupted', include_transient=True)
             self.assertEqual(list(Path(folder).iterdir()), [])
 
@@ -198,11 +280,23 @@ class SaveTests(unittest.TestCase):
             manifest_path.write_text(json.dumps(manifest))
             with self.assertRaises(ValueError):
                 load_session(Path(folder) / 'bundle')
-            manifest['version'] = 1
+            manifest['version'] = 2
             manifest['steady_fingerprint'] = '0' * 64
             manifest_path.write_text(json.dumps(manifest))
-            with self.assertRaises(ValueError):
+            with self.assertRaisesRegex(ValueError, 'fingerprint'):
                 load_session(Path(folder) / 'bundle')
+
+    def test_manifest_rejects_boolean_version_and_non_boolean_transient_flag(self):
+        with tempfile.TemporaryDirectory() as folder:
+            save_session(self.seed, Path(folder), 'strict-types', include_transient=False)
+            manifest_path = Path(folder) / 'strict-types' / 'session.json'
+            original = json.loads(manifest_path.read_text())
+            for field, value in (('version', True), ('transient_included', 0), ('transient_included', [])):
+                data = dict(original)
+                data[field] = value
+                manifest_path.write_text(json.dumps(data))
+                with self.assertRaises(ValueError):
+                    load_session(manifest_path.parent)
 
     def test_malformed_session_values_rejected(self):
         with tempfile.TemporaryDirectory() as folder:

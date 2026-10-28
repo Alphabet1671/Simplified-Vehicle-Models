@@ -149,7 +149,7 @@ class TrackTabTests(unittest.TestCase):
         try:
             self.assertEqual(second._combo.count(), 0)
             self.assertIsNone(second.track())
-            path = REPOSITORY_ROOT / "models/tracks/2024_michigan_endurance_closed.xml"
+            path = REPOSITORY_ROOT / "models/tracks/mis_ev_endurance_2024_linear.xml"
             self.tab.set_track(path)
             self.tab.set_track(path.parent / ".." / "tracks" / path.name)
             self.assertEqual(self.tab._combo.count(), 1)
@@ -189,7 +189,7 @@ class TrackTabTests(unittest.TestCase):
         self.assertEqual(self.tab._combo.count(), before_count)
 
     def test_preview_paints_the_centerline(self):
-        self.tab.set_track(REPOSITORY_ROOT / "models/tracks/2024_michigan_endurance_closed.xml")
+        self.tab.set_track(REPOSITORY_ROOT / "models/tracks/mis_ev_endurance_2024_linear.xml")
         from PyQt6.QtGui import QImage
         preview = self.tab.preview
         preview.resize(320, 240)
@@ -201,10 +201,10 @@ class TrackTabTests(unittest.TestCase):
         self.assertGreater(len(colours), 1)
 
     def test_track_changed_emits_the_resolved_path(self):
-        self.tab.set_track(REPOSITORY_ROOT / "models/tracks/2024_michigan_endurance_closed.xml")
+        self.tab.set_track(REPOSITORY_ROOT / "models/tracks/mis_ev_endurance_2024_linear.xml")
         emitted = []
         self.tab.trackChanged.connect(emitted.append)
-        target = REPOSITORY_ROOT / "models/tracks/2024_michigan_endurance_multilap_closed.xml"
+        target = REPOSITORY_ROOT / "models/tracks/mis_ev_endurance_2024_multilap_linear.xml"
         self.tab.set_track(target)
         self.assertEqual(emitted, [target.resolve()])
 
@@ -215,7 +215,7 @@ class SingleRunTabTests(unittest.TestCase):
         self.tab = SingleRunTab()
         self.addCleanup(self.tab.deleteLater)
         self.model = REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_planar_7dof.xml"
-        self.track = REPOSITORY_ROOT / "models/tracks/2024_michigan_endurance_closed.xml"
+        self.track = REPOSITORY_ROOT / "models/tracks/mis_ev_endurance_2024_linear.xml"
 
     def _index_of(self, combo, path):
         target = Path(path).resolve()
@@ -394,7 +394,7 @@ class ValidationWorkerTests(unittest.TestCase):
         source = REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_planar_7dof.xml"
         cfg = VehicleConfiguration.open(source)
         hoosier = REPOSITORY_ROOT / "models/tires/hoosier-43075-r20-simple.xml"
-        definition = StudyDefinition("test", str(source), "models/tracks/2024_michigan_endurance_closed.xml", "planar-7dof", {"tire": str(cfg.choices["tire"])}, RunSettings(), "one-at-a-time", ())
+        definition = StudyDefinition("test", str(source), "models/tracks/mis_ev_endurance_2024_linear.xml", "planar-7dof", {"tire": str(cfg.choices["tire"])}, RunSettings(), "one-at-a-time", ())
         cases = (CaseSpec("case_000", "baseline", "planar-7dof", definition.track, definition.choices, {}), CaseSpec("case_001", "hoosier", "planar-7dof", definition.track, {"tire": str(hoosier)}, {}))
         with tempfile.TemporaryDirectory() as tmp:
             worker = ValidationWorker(Path(tmp), definition, cases)
@@ -405,6 +405,32 @@ class ValidationWorkerTests(unittest.TestCase):
         self.assertEqual(len(ready), 2)
         self.assertTrue(all(item is not None and error is None for item, error in ready))
         self.assertEqual(progress, [(1, 2), (2, 2)])
+
+    def test_resolver_forwarding_and_legacy_prepare_call(self):
+        source = REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_planar_7dof.xml"
+        cfg = VehicleConfiguration.open(source)
+        definition = StudyDefinition("test", str(source), "models/tracks/mis_ev_endurance_2024_linear.xml", "planar-7dof", {"tire": str(cfg.choices["tire"])}, RunSettings(), "one-at-a-time", ())
+        cases = (CaseSpec("case_000", "baseline", "planar-7dof", definition.track, definition.choices, {}),)
+        resolver = object()
+        with tempfile.TemporaryDirectory() as tmp:
+            prepare_patch = mock.patch("tools.sim_gui.qt.workers.prepare_case", return_value=object())
+            validate_patch = mock.patch("tools.sim_gui.qt.workers.validate_case", return_value=None)
+            prepare = prepare_patch.start()
+            validate_patch.start()
+            self.addCleanup(prepare_patch.stop)
+            self.addCleanup(validate_patch.stop)
+            ready = []
+            forwarded = ValidationWorker(Path(tmp), definition, cases, yaw_map_resolver=resolver)
+            forwarded.caseReady.connect(lambda item, error: ready.append((item, error)))
+            forwarded.run()
+            prepare.assert_called_once_with(Path(tmp), definition, cases[0], yaw_map_resolver=resolver)
+            legacy = ValidationWorker(Path(tmp), definition, cases)
+            legacy.caseReady.connect(lambda item, error: ready.append((item, error)))
+            legacy.run()
+            self.assertEqual(prepare.call_count, 2)
+            self.assertEqual(prepare.call_args.args, (Path(tmp), definition, cases[0]))
+            self.assertEqual(prepare.call_args.kwargs, {})
+        self.assertEqual(len(ready), 2)
 
 
 @unittest.skipIf(QApplication is None, "PyQt6 is not installed")
@@ -521,7 +547,7 @@ class MainWindowTests(unittest.TestCase):
         output = Path(tempfile.mkdtemp())
         self.addCleanup(lambda: shutil.rmtree(output, ignore_errors=True))
         window = MainWindow(output_root=output, settings_store=store)
-        window.track_tab.set_track(REPOSITORY_ROOT / "models/tracks/2024_michigan_endurance_closed.xml")
+        window.track_tab.set_track(REPOSITORY_ROOT / "models/tracks/mis_ev_endurance_2024_linear.xml")
         self.addCleanup(window.close)
         return window
 
@@ -551,7 +577,7 @@ class MainWindowTests(unittest.TestCase):
         window = MainWindow(output_root=output, settings_store=store)
         self.addCleanup(window.close)
         window.open_model(REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_planar_7dof.xml")
-        window.track_tab.set_track(REPOSITORY_ROOT / "models/tracks/2024_michigan_endurance_closed.xml")
+        window.track_tab.set_track(REPOSITORY_ROOT / "models/tracks/mis_ev_endurance_2024_linear.xml")
         window.settings_tab.duration.setValue(0.3)
         window.settings_tab.timeout_seconds.setValue(120.0)
         window.run_cases()
@@ -690,14 +716,14 @@ class MainWindowTests(unittest.TestCase):
     def test_definition_uses_the_track_tab(self):
         window = self._window()
         window.open_model(REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_planar_7dof.xml")
-        track = REPOSITORY_ROOT / "models/tracks/2024_michigan_endurance_closed.xml"
+        track = REPOSITORY_ROOT / "models/tracks/mis_ev_endurance_2024_linear.xml"
         window.track_tab.set_track(track)
         self.assertEqual(Path(window._definition().track).resolve(), track.resolve())
 
     def test_single_run_completes_and_writes_a_record(self):
         window = self._window()
         window.open_model(REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_planar_7dof.xml")
-        window.track_tab.set_track(REPOSITORY_ROOT / "models/tracks/2024_michigan_endurance_closed.xml")
+        window.track_tab.set_track(REPOSITORY_ROOT / "models/tracks/mis_ev_endurance_2024_linear.xml")
         window.settings_tab.duration.setValue(0.3)
         window.settings_tab.timeout_seconds.setValue(120.0)
         export = Path(tempfile.mkdtemp())
@@ -773,8 +799,8 @@ class MainWindowTests(unittest.TestCase):
         self.assertIsNotNone(window.configuration)
         self.assertEqual(window.configuration.source.resolve(), planar.resolve())
         self.assertEqual(single.model_path().resolve(), planar.resolve())
-        track = REPOSITORY_ROOT / "models/tracks/2024_michigan_endurance_closed.xml"
-        other = REPOSITORY_ROOT / "models/tracks/2024_michigan_endurance_multilap_closed.xml"
+        track = REPOSITORY_ROOT / "models/tracks/mis_ev_endurance_2024_linear.xml"
+        other = REPOSITORY_ROOT / "models/tracks/mis_ev_endurance_2024_multilap_linear.xml"
         window.track_tab.set_track(other)
         index = next(
             i for i in range(single.track_combo.count())

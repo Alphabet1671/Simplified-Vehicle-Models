@@ -90,6 +90,24 @@ class TransientTireTests(unittest.TestCase):
     def _sigma_y(self, fz):
         return relaxation_lengths(self.steady, self.transient, fz)[1]
 
+    def test_combined_xml_compiles_as_both_steady_and_transient(self) -> None:
+        combined = compile_unitire_transient(load_model(TRANSIENT_PATH))
+        self.assertEqual(compile_unitire_simple(load_model(TRANSIENT_PATH)), combined.steady)
+        self.assertEqual(combined.steady, self.steady)
+
+    def test_complete_model_rejects_missing_unknown_and_wrong_unit_fields(self) -> None:
+        model = load_model(TRANSIENT_PATH)
+        for mutate in (
+            lambda parameters, units: (parameters.pop("k_cx"), units.pop("k_cx")),
+            lambda parameters, units: parameters.__setitem__("surprise", 1.0),
+            lambda parameters, units: units.__setitem__("trail_lead_ratio", "m"),
+            lambda parameters, units: parameters.pop("trail_lead_ratio"),
+        ):
+            parameters, units = dict(model.parameters), dict(model.units)
+            mutate(parameters, units)
+            with self.subTest(parameters=parameters, units=units), self.assertRaises(ValueError):
+                compile_unitire_transient(replace(model, parameters=parameters, units=units))
+
     # Registration and parameters ---------------------------------------
 
     def test_registry_protocol_and_proposed_values(self) -> None:

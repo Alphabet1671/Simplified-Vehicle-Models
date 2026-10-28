@@ -72,8 +72,8 @@ from simplified_vehicle_models.tracks.profile import load_track  # noqa: E402
 
 BASE = ROOT / "docs/validation/iem24-murphy"
 OUTPUT = BASE / "four_way_latest_model"
-TRACK = "models/tracks/2024_michigan_endurance_multilap_closed.xml"
-LEGACY_TRACK = "models/tracks/2024_michigan_endurance_closed.xml"
+TRACK = "models/tracks/mis_ev_endurance_2024_multilap_linear.xml"
+LEGACY_TRACK = "models/tracks/mis_ev_endurance_2024_linear.xml"
 POINT_MASS_FORMULATION = "models/formulations/iem24_murphy_real_planar_7dof.xml"
 PLANAR_FORMULATION = "models/formulations/iem24_murphy_real_planar_7dof.xml"
 VERTICAL_FORMULATION = "models/formulations/iem24_murphy_real_14dof_simple.xml"

@@ -17,12 +17,13 @@ class ValidationWorker(QObject):
     casePrepareFailed = pyqtSignal(str, str)
     finished = pyqtSignal()
 
-    def __init__(self, study_dir, definition: StudyDefinition, cases: tuple[CaseSpec, ...], parent=None) -> None:
+    def __init__(self, study_dir, definition: StudyDefinition, cases: tuple[CaseSpec, ...], parent=None, *, yaw_map_resolver=None) -> None:
         """Create a worker for ``cases`` in ``study_dir``."""
         super().__init__(parent)
         self.study_dir = study_dir
         self.definition = definition
         self.cases = tuple(cases)
+        self.yaw_map_resolver = yaw_map_resolver
         self._cancel_mutex = QMutex()
         self._cancelled = False
 
@@ -42,7 +43,11 @@ class ValidationWorker(QObject):
             if self._is_cancelled():
                 break
             try:
-                prepared = prepare_case(self.study_dir, self.definition, case)
+                if self.yaw_map_resolver is None:
+                    prepared = prepare_case(self.study_dir, self.definition, case)
+                else:
+                    prepared = prepare_case(self.study_dir, self.definition, case,
+                                            yaw_map_resolver=self.yaw_map_resolver)
                 error = validate_case(prepared)
             except Exception as exc:
                 prepared = None

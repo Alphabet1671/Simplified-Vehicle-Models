@@ -1,11 +1,66 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <model schema-version="1.0" id="iem24-murphy-real-unitire-transient" type="tire-model" subtype="unitire-transient-simple">
-    <!-- PROPOSED provisional transient coefficients, not fitted to this Hoosier and not validated. This file holds only scalars; the steady force law stays in iem24_murphy_real_unitire.xml (shared assembly role "tire"; this file is role "tire-transient"). Reduced specialization of Ma et al., Machines 2022, 10(7), 527, DOI 10.3390/machines10070527, motivated by equations 52-55, 60-61, 64 and 69-70 (equation numbers and the paper content stated here come from the project plan; the paper text was not re-verified). A transient tire fitting tool is required before any measured-vehicle accuracy claim. -->
+    <!-- PROPOSED provisional transient coefficients, not fitted to this Hoosier and not validated. This self-contained file holds the steady force-law coefficients plus transient scalars and serves shared assembly role "tire". Reduced specialization of Ma et al., Machines 2022, 10(7), 527, DOI 10.3390/machines10070527, motivated by equations 52-55, 60-61, 64 and 69-70 (equation numbers and the paper content stated here come from the project plan; the paper text was not re-verified). A transient tire fitting tool is required before any measured-vehicle accuracy claim. -->
     <!-- PROPOSED: longitudinal relaxation length = scale * k_x(Fz)/k_cx (extension, not from the paper). Basis: unit scale on the steady slip-stiffness-over-carcass-stiffness ratio, an engineering guess with no longitudinal data. About 0.1195 m at rated load 660 N. -->
     <!-- PROPOSED: lateral relaxation length = scale * k_y(Fz)/k_cy. Basis: unit scale on the steady relaxation length reported by the steady tire (same k_y/k_cy), not fitted to transient data. About 0.1533 m at rated load. -->
     <!-- PROPOSED: trail pole ratio m (dimensionless); trail time constant length = sigma_y/m. Basis: neutral value 1.0 (trail lags the effective angle by one lateral relaxation length), chosen without data; the pole of equations 69-70 is tire-specific in the paper. -->
     <!-- PROPOSED: trail lead ratio n (dimensionless, 0 to 1); Basis: 0.25 is a modest lead chosen without data to approximate the zero of equation 64 (project choice); the published n is tire-specific. -->
+    <!-- Steady coefficients copied unchanged from iem24_murphy_real_unitire.xml: PROPOSED road-grip baseline, not measured or validated road coefficients. Slip stiffness, shape and trail terms retain the Hoosier lab fit. mu_0_x, mu_s_x, mu_0_y and mu_s_y are each exactly 2/3 of the lab fit, a TTC Round 9 team-reported road prior (https://www.millikenresearch.com/Contents_Round9.pdf), not inferred from the 120-grit belt label or validated by the vehicle. Longitudinal data use a 43100 R20 proxy (run 72), not the 43075 R20 lateral tire (run 8). See docs/validation/iem24-murphy/road_grip_calibration.md. This file is self-contained and does not load the source XML at runtime. -->
     <parameters>
+        <parameter name="f_z_rated" value="660.0" unit="N" />
+        <parameter name="k_cx" value="300000.0" unit="N/m" />
+        <parameter name="k_cy" value="200000.0" unit="N/m" />
+        <parameter name="k_x_2" value="7660.409078173158" unit="N" />
+        <parameter name="k_x_1" value="20000.0" unit="N" />
+        <parameter name="k_x_0" value="8191.007990757677" unit="N" />
+        <parameter name="k_y_2" value="654.9807055362467" unit="N" />
+        <parameter name="k_y_1" value="19999.998862085806" unit="N" />
+        <parameter name="k_y_0" value="10000.0" unit="N" />
+        <parameter name="d_x_0_1" value="0.017161153667128677" unit="m" />
+        <parameter name="d_x_0_0" value="0.01086440175777713" unit="m" />
+        <parameter name="d_e_1" value="0.000204667577986678" unit="m" />
+        <parameter name="d_e_0" value="-0.0003704676842493648" unit="m" />
+        <parameter name="d_1_1" value="0.007939258612776067" unit="1" />
+        <parameter name="d_1_0" value="0.183063014147267" unit="1" />
+        <parameter name="d_2_1" value="0.06468408760663874" unit="1" />
+        <parameter name="d_2_0" value="0.03685184791816076" unit="1" />
+        <parameter name="e_1" value="-0.01547791924434061" unit="1" />
+        <parameter name="mu_0_x" value="1.5574416400047397" unit="1" />
+        <parameter name="mu_s_x" value="1.3439608151200135" unit="1" />
+        <parameter name="h_x" value="2.2955432513388416" unit="1" />
+        <parameter name="v_m_x" value="3.0" unit="m/s" />
+        <parameter name="mu_0_y" value="1.586920318532493" unit="1" />
+        <parameter name="mu_s_y" value="1.3690425477724781" unit="1" />
+        <parameter name="h_y" value="0.020000000000250366" unit="1" />
+        <parameter name="v_m_y" value="2.999207661856495" unit="m/s" />
+        <parameter name="k_11" value="0.0" unit="N*m" />
+        <parameter name="k_12" value="0.0" unit="N*m" />
+        <parameter name="k_13" value="0.0" unit="N*m" />
+        <parameter name="k_21" value="0.0" unit="N*m" />
+        <parameter name="k_22" value="0.0" unit="N*m" />
+        <parameter name="k_23" value="0.0" unit="N*m" />
+        <parameter name="m_x_r_1" value="0.0" unit="N*m" />
+        <parameter name="m_x_r_2" value="0.0" unit="N*m" />
+        <parameter name="m_x_r_3" value="0.0" unit="N*m" />
+        <parameter name="r_1" value="0.2045" unit="m" />
+        <parameter name="r_2" value="-0.008316" unit="m" />
+        <parameter name="r_3" value="5.673291e-05" unit="m" />
+        <parameter name="f_y_shift_0" value="0.0" unit="N" />
+        <parameter name="f_y_shift_fz" value="0.0" unit="N" />
+        <parameter name="k_rl_0" value="0.0" unit="m/N^2" />
+        <parameter name="k_rl_1" value="0.0" unit="m/N^2" />
+        <parameter name="k_rl_2" value="0.0" unit="m/N^2" />
+        <parameter name="f_rr_0" value="0.0" unit="1" />
+        <parameter name="f_rr_1" value="0.0" unit="1" />
+        <parameter name="f_rr_2" value="0.0" unit="1" />
+        <parameter name="h_rr" value="0.0" unit="1" />
+        <parameter name="omega_cr" value="1000000.0" unit="rad/s" />
+        <parameter name="omega_eps" value="1e-06" unit="rad/s" />
+        <parameter name="vroll_min" value="0.1" unit="m/s" />
+        <parameter name="force_eps" value="1.0" unit="N" />
+        <parameter name="stiff_eps" value="1.0" unit="1" />
+        <parameter name="slip_eps" value="1e-09" unit="1" />
+        <!-- Transient coefficients retained as provisional estimates. -->
         <parameter name="longitudinal_length_scale" value="1.0" unit="1" />
         <parameter name="lateral_length_scale" value="1.0" unit="1" />
         <parameter name="trail_pole_ratio" value="1.0" unit="1" />

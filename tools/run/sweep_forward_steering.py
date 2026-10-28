@@ -41,7 +41,7 @@ def main(argv=None):
         before = set(args.output_root.glob("attempt_*"))
         command = [sys.executable, "tools/run/run_iem24_forward_driver.py", "--model", args.model,
                    "--output-root", str(args.output_root),
-                   "--track", "models/tracks/2024_michigan_endurance_multilap_closed.xml",
+                   "--track", "models/tracks/mis_ev_endurance_2024_multilap_linear.xml",
                    "--planner", "live", "--maximum-speed", "60.0", "--pedal-travel-time", "0.175",
                    "--maximum-step", str(canonical["maximum_step"]), "--rtol", "1e-05",
                    "--method", "BDF", "--spacing", "0.5", "--duration", "300.0",

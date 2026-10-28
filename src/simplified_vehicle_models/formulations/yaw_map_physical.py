@@ -29,6 +29,13 @@ class PhysicalYawEvaluator:
                 self.cells[key] = direct_yaw_cell(self.vehicle, *key, self.tv_limits)
         return self.cells[key]
 
+    def cells_many(self, coordinates):
+        """Evaluate coordinates in order, reusing cached cells and deadline."""
+        return [self.cell(*point) for point in coordinates]
+
+    def probe_many(self, coordinates):
+        return [ProbeResult(cell.status, cell.detail) for cell in self.cells_many(coordinates)]
+
     def __call__(self, speed, ax, ay):
         cell = self.cell(speed, ax, ay)
         return ProbeResult(cell.status, cell.detail)
@@ -39,10 +46,11 @@ class PhysicalYawEvaluator:
         shape = tuple(len(x) for x in (grid.speed, grid.longitudinal_acceleration, grid.lateral_acceleration))
         into, out = np.zeros(shape), np.zeros(shape)
         mask = np.zeros(shape, bool)
-        for i, v in enumerate(grid.speed):
-            for j, ax in enumerate(grid.longitudinal_acceleration):
-                for k, ay in enumerate(grid.lateral_acceleration):
-                    cell = self.cell(v, ax, ay)
+        coordinates = [(v, ax, ay) for v in grid.speed for ax in grid.longitudinal_acceleration
+                       for ay in grid.lateral_acceleration]
+        cells = self.cells_many(coordinates)
+        for index, cell in enumerate(cells):
+                    i, rem = divmod(index, shape[1] * shape[2]); j, k = divmod(rem, shape[2])
                     if cell.status is ProbeStatus.UNRESOLVED:
                         raise YawCapabilityNumericalError(cell.detail)
                     if cell.status is ProbeStatus.FEASIBLE:

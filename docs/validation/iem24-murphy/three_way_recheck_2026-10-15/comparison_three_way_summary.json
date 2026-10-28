@@ -136,7 +136,7 @@
       "status": "Maximum_Iterations_Exceeded",
       "study_settings_provenance": "Verified after completion from managed job bash-3503 command `tools/run_iem24_murphy_planar_7dof.py --spacing 1 --iterations 8000`; runner defaults disabled projection/scaling; formulation, track, lateral bound, and brake cap were verified against this summary. Only configuration metadata was added; numerical solver output is unchanged.",
       "tire_model": "tester-fitted UniTire with provisional surface-mu scaling informed by measured peak deceleration/cornering (not a tire re-fit)",
-      "track": "models/tracks/2024_michigan_endurance_closed.xml"
+      "track": "models/tracks/mis_ev_endurance_2024_linear.xml"
     },
     "point_mass": {
       "apps_max_motor_torque_nm": 10.5,
@@ -167,11 +167,11 @@
       "node_count": 2034,
       "regen_enabled": false,
       "regen_recovered_energy_j": 0.0,
-      "track": "models/tracks/2024_michigan_endurance_closed.xml",
+      "track": "models/tracks/mis_ev_endurance_2024_linear.xml",
       "track_length_m": 1016.70064959
     }
   },
   "tire_note": "Planar 7DoF uses tester-fitted UniTire with provisional surface-mu scaling informed by measured peak deceleration/cornering; this is not a tire re-fit and differs from the point-mass tire law.",
-  "track": "models/tracks/2024_michigan_endurance_closed.xml",
+  "track": "models/tracks/mis_ev_endurance_2024_linear.xml",
   "voltage_reference": "Each measured flying lap, point-mass lap, and 7DoF lap is offset by its own first sample; measured_stint.csv is read-only and unchanged."
 }

@@ -39,16 +39,16 @@
 ### Task 2: Commit original FSC centerline and synthetic-width track
 
 **Files:**
-- Create: `models/tracks/fsc_may_2026_centerline.csv`
-- Create: `models/tracks/fsc_may_2026_centerline.xml`
-- Create: `models/tracks/fsc_may_2026_synthetic_3m_width.csv`
-- Create: `models/tracks/fsc_may_2026_synthetic_3m_edged.xml`
+- Create: `models/tracks/fsc_may_endurance_2026_linear.csv`
+- Create: `models/tracks/fsc_may_endurance_2026_linear.xml`
+- Create: `models/tracks/fsc_may_endurance_2026_width_data.csv`
+- Create: `models/tracks/fsc_may_endurance_2026_width.xml`
 - Create: `docs/dev/fsc-synthetic-corridor-2026-10-25.md`
 - Test: `tests/test_fsc_synthetic_track.py`
 
 **Interfaces:**
-- `fsc_may_2026_centerline.*` is a byte/content-provenance-preserving copy of the original 1D FSC source, with its XML data reference changed only to the co-located CSV.
-- `fsc_may_2026_synthetic_3m_edged.xml` references the copied centerline CSV and a same-station width CSV of exact `half_width_left=half_width_right=1.5` m.
+- `fsc_may_endurance_2026_linear.*` is a byte/content-provenance-preserving copy of the original 1D FSC source, with its XML data reference changed only to the co-located CSV.
+- `fsc_may_endurance_2026_width.xml` references the copied centerline CSV and a same-station width CSV of exact `half_width_left=half_width_right=1.5` m.
 
 - [ ] **Step 1:** Test that both FSC tracks load, preserve closed topology and finite geometry, and that the edged track has `width_provenance == "assumed"` and exact 1.5 m widths.
 - [ ] **Step 2:** Copy source CSV; create XML with visible provenance/disclosure; generate width rows matching source stations.

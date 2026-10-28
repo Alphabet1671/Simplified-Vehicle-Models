@@ -18,7 +18,7 @@ edged signed track → yaw map → yaw-aware line + speed plan → forward simul
 
 1. **Record-path adapter.** Convert the selected `YawAwareLinePlan` to physical-path `PathCoordinates`; run-record world pose must use this offset path, not the source centreline.
 2. **Dedicated runner.** Add a `run_yaw_aware_forward_driver.py` diagnostic CLI. The existing centreline runner remains unchanged.
-3. **MIS no-TV preflight and bounded run.** Use [the edged MIS track](../../models/tracks/2024_michigan_endurance_closed_edged.xml), a physical no-TV map, and the existing planar 7DoF forward plant first.
+3. **MIS no-TV preflight and bounded run.** Use [the edged MIS track](../../models/tracks/mis_ev_endurance_2024_width.xml), a physical no-TV map, and the existing planar 7DoF forward plant first.
 4. **MIS animation.** Write `run_record.npz`, dry-run the existing [animation exporter](../../tools/anim/export_animation.py), then write an MP4 with ffmpeg or a PNG sequence without it.
 5. **FSC admission.** Only use an authoritative signed XY FSC track with independently supplied left/right edges. If no such model exists in the repository, record the block and stop rather than fabricating a course.
 6. **Future TV/FM U run.** The controller-specific FMU harness remains shelved under [the FMU harness plan](../superpowers/plans/2026-10-25-fmu-yaw-capability-harness.md). A parameterized physical-TV map is not an FMU validation.

@@ -50,8 +50,8 @@ MAT = Path.home() / 'Desktop/0615CompEndurance.mat'
 STANDARD = ROOT / 'docs/standards/mis-2024-report-standard.md'
 
 FORMULATION = 'models/formulations/iem24_murphy_real_planar_7dof.xml'
-LEGACY_TRACK = 'models/tracks/2024_michigan_endurance_closed.xml'
-CANONICAL_TRACK = 'models/tracks/2024_michigan_endurance_multilap_closed.xml'
+LEGACY_TRACK = 'models/tracks/mis_ev_endurance_2024_linear.xml'
+CANONICAL_TRACK = 'models/tracks/mis_ev_endurance_2024_multilap_linear.xml'
 MODEL_ROLES = ('track_xml', 'track_csv', 'tire_xml', 'formulation_xml', 'vehicle_xml')
 SHARED_ROLES = ('tire_xml', 'formulation_xml', 'vehicle_xml')
 #: Settings that must be identical for the pair to differ only by track.

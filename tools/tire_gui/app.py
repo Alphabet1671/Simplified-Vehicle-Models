@@ -14,12 +14,11 @@ if __package__ in {None, ""}:
 def main(argv=None) -> int:
     """Create the tire GUI and optionally open an input file."""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("path", nargs="?", help="steady or transient tire XML to open")
-    parser.add_argument("--steady", type=Path,
-                        help="steady tire XML companion when opening a transient model")
+    parser.add_argument("path", nargs="?", help="steady or self-contained transient tire XML to open")
+    parser.add_argument("--steady", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
-    if args.steady is not None and not args.path:
-        parser.error('--steady requires a transient XML path')
+    if args.steady is not None:
+        parser.error('--steady is obsolete: transient tire XMLs are self-contained; pass one XML path')
     try:
         from PyQt6.QtCore import QTimer
         from PyQt6.QtWidgets import QApplication
@@ -34,7 +33,7 @@ def main(argv=None) -> int:
     app = QApplication.instance() or QApplication(sys.argv)
     window = MainWindow()
     if args.path:
-        if not window.open_path(Path(args.path), steady_path=args.steady):
+        if not window.open_path(Path(args.path)):
             print(window.status.text(), file=sys.stderr)
             window.deleteLater()
             return 2

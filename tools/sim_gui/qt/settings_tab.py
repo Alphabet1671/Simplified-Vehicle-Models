@@ -48,7 +48,7 @@ class SettingsTab(QWidget):
         self.solver_kind.setCurrentIndex(self.solver_kind.findData(self._settings.solver_kind))
         self.solver_kind.currentIndexChanged.connect(self._changed)
         self._form.addRow("Solver workflow", self.solver_kind)
-        self.prerequisite = QLabel("Yaw-aware requires an existing completed, identity-checked vehicle-limit yaw map; this GUI never rebuilds it.")
+        self.prerequisite = QLabel("Yaw-aware automatically builds a completed, identity-matched vehicle-limit yaw map when needed. Browse to optionally override with an existing map.")
         self.prerequisite.setWordWrap(True)
         self._form.addRow(self.prerequisite)
         self.limitation = QLabel("Yaw-aware output is sampled/discrete evidence, not continuous feasibility or containment certification.")

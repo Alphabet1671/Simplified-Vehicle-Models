@@ -13,7 +13,7 @@ from tools.run import run_yaw_aware_forward_driver as runner
 
 
 def _args(directory, **overrides):
-    args = runner.parse_args(["--track", "models/tracks/2024_michigan_endurance_closed_edged.xml",
+    args = runner.parse_args(["--track", "models/tracks/mis_ev_endurance_2024_width.xml",
                               "--output-dir", str(Path(directory) / "run"),
                               "--yaw-speed-points", "3", "--yaw-ax-points", "3", "--yaw-ay-points", "3"])
     for key, value in overrides.items():
@@ -116,7 +116,7 @@ class RunnerFailureTests(_Common, unittest.TestCase):
 class RecordProvenanceRoundTripTests(unittest.TestCase):
     def test_yaw_profile_provenance_survives_save_and_load(self):
         from simplified_vehicle_models.results.run_record import RunRecorder, load_run_record
-        args = SimpleNamespace(model="planar-7dof", track=Path("models/tracks/2024_michigan_endurance_closed_edged.xml"),
+        args = SimpleNamespace(model="planar-7dof", track=Path("models/tracks/mis_ev_endurance_2024_width.xml"),
                                maximum_speed=None, lateral_margin=.15, control_spacing=60., planning_grid_spacing=.05,
                                planner_iterations=1, planner_passes=1, method="BDF", rtol=1e-6, maximum_step=.05,
                                duration=1., wall_seconds=1., line_csv_sha256="ab" * 32,

@@ -88,7 +88,7 @@ class MatrixCase:
 
 def default_cases() -> dict[str, MatrixCase]:
     """Return preregistered full-geometry cases without writing a cut-open XML."""
-    mis = Path("models/tracks/2024_michigan_endurance_closed_edged.xml")
+    mis = Path("models/tracks/mis_ev_endurance_2024_width.xml")
     fsc = Path("tracks_out/fsc_may_2026.xml")
     return {
         "mis_closed": MatrixCase("mis_closed", mis, "closed", "closed_flying", 0.0, None),

@@ -10,7 +10,7 @@ From the yaw-aware worktree:
 export PYTHONPATH=src:.
 python3 tools/run/run_with_deadline.py --seconds 240 -- \
   python3 tools/run/run_yaw_lap_suite.py \
-  --mode fixed --track models/tracks/fsc_may_2026_synthetic_3m_edged.xml \
+  --mode fixed --track models/tracks/fsc_may_endurance_2026_width.xml \
   --yaw-map runs/yaw_map_build/iem24-vehicle-limit-final.npz \
   --spacing 1 --profile-seconds 180 --output-dir runs/yaw_lap_suite/example-fixed
 ```
@@ -20,7 +20,7 @@ Planning writes a compressed plan with speed, physical and reference stations, s
 ```bash
 python3 tools/run/run_with_deadline.py --seconds 950 -- \
   python3 tools/run/run_yaw_lap_suite.py \
-  --mode replay --track models/tracks/fsc_may_2026_synthetic_3m_edged.xml \
+  --mode replay --track models/tracks/fsc_may_endurance_2026_width.xml \
   --yaw-map runs/yaw_map_build/iem24-vehicle-limit-final.npz \
   --plan runs/yaw_lap_suite/example-fixed/plan.npz \
   --controller model-aware --replay-seconds 850 --duration 90 \
@@ -36,7 +36,7 @@ Optional model-aware gain overrides are recorded in inputs: `--preview-seconds`,
 ```bash
 python3 tools/run/run_with_deadline.py --seconds 1000 -- \
   python3 tools/run/run_yaw_lap_suite.py \
-  --mode line --track models/tracks/fsc_may_2026_synthetic_3m_edged.xml \
+  --mode line --track models/tracks/fsc_may_endurance_2026_width.xml \
   --yaw-map runs/yaw_map_build/iem24-vehicle-limit-final.npz \
   --spacing 2 --control-spacing 40 --profile-seconds 60 \
   --line-evaluations 24 --line-seconds 900 \

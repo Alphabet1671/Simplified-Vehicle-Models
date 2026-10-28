@@ -17,7 +17,7 @@
     "method": "BDF",
     "spacing": 0.5,
     "planner": "live",
-    "track": "models/tracks/2024_michigan_endurance_multilap_closed.xml",
+    "track": "models/tracks/mis_ev_endurance_2024_multilap_linear.xml",
     "warm_start": "docs/validation/iem24-murphy/seven_dof_track_pair/new/final_acceptance_run5/cold/attempt_1792107798389276000",
     "child_attempt": "docs/validation/iem24-murphy/seven_dof_track_pair/new/final_acceptance_run5/warm/attempt_1792107908593341000"
   },
@@ -31,14 +31,14 @@
     "src/simplified_vehicle_models/formulations/planar_7dof.py": "2add724a62149814f24262b5f201d77490f6b2eb16ff0d15f4484f050fd49ad1",
     "src/simplified_vehicle_models/tires/unitire_simple.py": "b1e4df85b08f771bc6b2a3e590c2a8d255d60eeb39186422adf2314372ee71f7",
     "models/vehicles/iem24_murphy_real_planar.xml": "46d3d342457c2f0fb55b864fc592f54d15b4d94a3dff4d7ba8004f07ca923a2e",
-    "models/tracks/2024_michigan_endurance_multilap_closed.xml": "ffc367c0286ba698f3706ae8baf34946c641c01ad4f71935d3ec14a3a326f2c3",
-    "models/tracks/2024_michigan_endurance_multilap_closed.csv": "2db5a981f12d0c055afa3b167a9e6efa07cd09b1f6e7b2c51afea44f00e73d77",
+    "models/tracks/mis_ev_endurance_2024_multilap_linear.xml": "ffc367c0286ba698f3706ae8baf34946c641c01ad4f71935d3ec14a3a326f2c3",
+    "models/tracks/mis_ev_endurance_2024_multilap_linear.csv": "2db5a981f12d0c055afa3b167a9e6efa07cd09b1f6e7b2c51afea44f00e73d77",
     "models/tires/iem24_murphy_real_unitire.xml": "301c55c8213fd9a4149bdec39a8c6fbc6a756e750bd6bd92e80b6567bcbd917b",
     "models/formulations/iem24_murphy_real_planar_7dof.xml": "8420c2d4e929f629c52fb9a21e1b1e5d047bf2356615d3edfc0a8e95bf6878d8"
   },
   "model_inputs": {
-    "track_xml": "models/tracks/2024_michigan_endurance_multilap_closed.xml",
-    "track_csv": "models/tracks/2024_michigan_endurance_multilap_closed.csv",
+    "track_xml": "models/tracks/mis_ev_endurance_2024_multilap_linear.xml",
+    "track_csv": "models/tracks/mis_ev_endurance_2024_multilap_linear.csv",
     "tire_xml": "models/tires/iem24_murphy_real_unitire.xml",
     "formulation_xml": "models/formulations/iem24_murphy_real_planar_7dof.xml",
     "vehicle_xml": "models/vehicles/iem24_murphy_real_planar.xml"

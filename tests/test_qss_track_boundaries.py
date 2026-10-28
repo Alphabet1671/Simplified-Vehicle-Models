@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 class TrackBoundaryViewsTest(unittest.TestCase):
     def test_real_tracks_cut_open_without_changing_geometry(self):
         for name, relative in (
-            ('MIS', 'models/tracks/2024_michigan_endurance_closed_edged.xml'),
+            ('MIS', 'models/tracks/mis_ev_endurance_2024_width.xml'),
             ('FSC', 'tracks_out/fsc_may_2026.xml'),
         ):
             with self.subTest(track=name):
@@ -40,7 +40,7 @@ class TrackBoundaryViewsTest(unittest.TestCase):
                 self.assertEqual(source.read_bytes(), original_bytes)
 
     def test_open_prefix_preserves_source_samples_and_grid(self):
-        track = load_track(ROOT / 'models/tracks/2024_michigan_endurance_closed_edged.xml')
+        track = load_track(ROOT / 'models/tracks/mis_ev_endurance_2024_width.xml')
         prefix = track_view(track, is_closed=False, length=200.0)
         self.assertFalse(prefix.is_closed)
         self.assertLessEqual(prefix.lap_length, 200.0)
@@ -53,7 +53,7 @@ class TrackBoundaryViewsTest(unittest.TestCase):
         self.assertEqual(prefix.path_coordinates.distance.shape, prefix.distance.shape)
 
     def test_cases_keep_full_pair_identical_in_size(self):
-        track = load_track(ROOT / 'models/tracks/2024_michigan_endurance_closed_edged.xml')
+        track = load_track(ROOT / 'models/tracks/mis_ev_endurance_2024_width.xml')
         cases = dict(make_cases(track, 200.0))
         self.assertEqual(set(cases), {'closed_full', 'open_full', 'open_prefix'})
         self.assertEqual(cases['closed_full'].distance.size, cases['open_full'].distance.size)
@@ -71,7 +71,7 @@ class TrackBoundaryViewsTest(unittest.TestCase):
             self.assertEqual(output.read_bytes(), contents)
 
     def test_invalid_lengths_or_closed_crops_are_rejected(self):
-        track = load_track(ROOT / 'models/tracks/2024_michigan_endurance_closed_edged.xml')
+        track = load_track(ROOT / 'models/tracks/mis_ev_endurance_2024_width.xml')
         for length in (0.0, -1.0, float('nan'), track.lap_length + 1):
             with self.subTest(length=length), self.assertRaises(ValueError):
                 track_view(track, is_closed=False, length=length)
@@ -152,7 +152,7 @@ class MatchedTranscriptionTest(unittest.TestCase):
         from tools.diagnostics.compare_qss_track_boundaries import common_seed
 
         for name, relative in (
-            ('MIS', 'models/tracks/2024_michigan_endurance_closed_edged.xml'),
+            ('MIS', 'models/tracks/mis_ev_endurance_2024_width.xml'),
             ('FSC', 'tracks_out/fsc_may_2026.xml'),
         ):
             with self.subTest(track=name):

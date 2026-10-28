@@ -1,5 +1,5 @@
 {
-  "track": "models/tracks/2024_michigan_endurance_multilap_closed.xml",
+  "track": "models/tracks/mis_ev_endurance_2024_multilap_linear.xml",
   "track_sha256": "ffc367c0286ba698f3706ae8baf34946c641c01ad4f71935d3ec14a3a326f2c3",
   "geometry_sha256": "2db5a981f12d0c055afa3b167a9e6efa07cd09b1f6e7b2c51afea44f00e73d77",
   "formulation": "models/formulations/iem24_murphy_real_planar_7dof.xml",

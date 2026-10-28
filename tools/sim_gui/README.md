@@ -16,6 +16,7 @@ Simulation GUI.
 | `settings.py` | Run settings mapping to the forward runner command line. |
 | `study.py` | Study definitions, sweep expansion, and persistent case indexes. |
 | `variant.py` | Write isolated XML model variants for simulation cases. |
+| `yaw_map.py` | Resolve yaw-map candidates, accepted cache artifacts, and child build requests. |
 | `vehicle.py` | Vehicle assembly configuration and nested component selection. |
 
 ## Subdirectories

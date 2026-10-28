@@ -25,9 +25,9 @@ from simplified_vehicle_models.tracks.profile import load_track
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_OUTPUT = ROOT / "docs/validation/iem24-murphy"
 #: Canonical ten-lap MIS track (repository default).
-DEFAULT_TRACK = Path("models/tracks/2024_michigan_endurance_multilap_closed.xml")
+DEFAULT_TRACK = Path("models/tracks/mis_ev_endurance_2024_multilap_linear.xml")
 #: Exports that record no track were built on the original track.
-LEGACY_TRACK = Path("models/tracks/2024_michigan_endurance_closed.xml")
+LEGACY_TRACK = Path("models/tracks/mis_ev_endurance_2024_linear.xml")
 
 
 def check_export_track(summary: dict, track: Path) -> None:

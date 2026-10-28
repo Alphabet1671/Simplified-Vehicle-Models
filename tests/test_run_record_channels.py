@@ -19,7 +19,7 @@ from simplified_vehicle_models.tracks.profile import load_track
 
 PLANAR_XML = "models/formulations/iem24_murphy_real_planar_7dof.xml"
 VERTICAL_XML = "models/formulations/iem24_murphy_real_14dof_simple.xml"
-TRACK = "models/tracks/2024_michigan_endurance_closed.xml"
+TRACK = "models/tracks/mis_ev_endurance_2024_linear.xml"
 DURATION = 0.6
 
 

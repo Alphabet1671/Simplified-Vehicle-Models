@@ -28,6 +28,16 @@ def _inside(path: Path, roots: tuple[Path, ...], name: str) -> Path:
     return resolved
 
 
+def _verify_yaw_map_identity(case: dict, map_path: Path) -> None:
+    """Reject a changed map before any lap-suite invocation."""
+    identity = case.get("input_identity", {})
+    expected_digest = identity.get("yaw_map_sha256")
+    if (identity.get("yaw_map") != str(map_path)
+            or not expected_digest
+            or hashlib.sha256(map_path.read_bytes()).hexdigest() != expected_digest):
+        raise ValueError("yaw map differs from immutable case identity")
+
+
 def _write_json(path: Path, data: dict) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(data, indent=2, sort_keys=True, allow_nan=False) + "\n")
@@ -91,6 +101,8 @@ def _yaw(case: dict, attempt: Path, settings: RunSettings, case_dir: Path) -> in
     else:
         if not isinstance(compiled_source, PlanarVehicleParameters):
             raise ValueError(f"yaw-aware source must compile as planar-7dof; received {source_model}")
+    # case.json is immutable; check again just before invoking the suite.
+    _verify_yaw_map_identity(case, map_path)
     argv.extend(("--formulation", str(formulation), "--output-dir", str(attempt)))
     args = suite.parse_args(argv)
     result = int(suite.run(args))

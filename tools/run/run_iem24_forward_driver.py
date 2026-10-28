@@ -17,7 +17,7 @@ import xml.etree.ElementTree as ElementTree
 import numpy as np
 
 #: Canonical ten-lap MIS endurance track: the active default for new runs.
-DEFAULT_TRACK = Path("models/tracks/2024_michigan_endurance_multilap_closed.xml")
+DEFAULT_TRACK = Path("models/tracks/mis_ev_endurance_2024_multilap_linear.xml")
 #: Fraction of the point-mass cornering grip the live planner uses on an open
 #: course when --lateral-margin is not given. At 1 the car is planned at the
 #: steady-state grip limit and cannot change direction: the skidpad's
@@ -29,7 +29,7 @@ OPEN_COURSE_LATERAL_MARGIN = 0.90
 
 #: Track of every attempt that predates --track (no settings["track"] recorded).
 #: Historical warm-start matching must keep resolving to this, not DEFAULT_TRACK.
-LEGACY_TRACK = Path("models/tracks/2024_michigan_endurance_closed.xml")
+LEGACY_TRACK = Path("models/tracks/mis_ev_endurance_2024_linear.xml")
 #: Planar 7DoF formulation. ``FORMULATION`` is the historical name other tools
 #: import; it keeps meaning the planar formulation.
 PLANAR_FORMULATION = Path("models/formulations/iem24_murphy_real_planar_7dof.xml")
@@ -61,6 +61,9 @@ _PLANAR_SOURCES = _SOLVER_SOURCES + (
     Path("src/simplified_vehicle_models/solvers/load_interval.py"),
     Path("src/simplified_vehicle_models/formulations/planar_7dof.py"),
     Path("src/simplified_vehicle_models/tires/unitire_simple.py"),
+    # Planar compilation resolves the self-contained transient tire and adapts
+    # its steady capability, so this implementation is part of provenance.
+    Path("src/simplified_vehicle_models/tires/unitire_transient.py"),
 )
 _VERTICAL_SOURCES = _SOLVER_SOURCES + (
     Path("src/simplified_vehicle_models/solvers/vertical_forward.py"),
@@ -127,7 +130,7 @@ MODELS: dict[str, ModelSpec] = {
         plant_module="simplified_vehicle_models.solvers.vertical_forward",
         plant_class="VerticalForwardPlant",
         solver_sources=_VERTICAL_SOURCES,
-        component_roles=("tire", "tire-transient", "suspension"),
+        component_roles=("tire", "suspension"),
         planar_dense_certificate=False,
         wall_margin_fraction=.02,
     ),
@@ -243,9 +246,10 @@ def model_inputs(model: str, track_xml):
     """Return the named physical inputs of one model: role name -> path.
 
     The track, its referenced CSV, the vehicle assembly, the formulation and
-    the steady tire XML are always present. A model with extra component roles
-    (the vertical 14DoF suspension and the transient tire) also records each of
-    those component XMLs and every data table they reference. A component that
+    the tire XML are always present. The shared tire XML is self-contained and
+    provides steady and transient capabilities. A model with extra component
+    roles (the vertical 14DoF suspension) also records each component XML and
+    every data table it references. A component that
     nests children (the suspension assembly: kinematics, spring, ARB, dampers)
     also records each child under its role path, for example
     ``suspension_damper_front_xml``.
@@ -412,19 +416,20 @@ def vertical_model_provenance(vehicle, inputs, hashes):
     recorded in the transient XML, and the PROPOSED coefficients actually
     compiled.
     """
-    transient_xml, steady_xml = inputs["tire_transient_xml"], inputs["tire_xml"]
+    tire_xml = inputs["tire_xml"]
     parameters = vehicle.transient_tire
     return {
-        "steady_tire_xml": str(steady_xml),
-        "steady_tire_xml_sha256": hashes[str(steady_xml)],
-        "transient_tire_xml": str(transient_xml),
-        "transient_tire_xml_sha256": hashes[str(transient_xml)],
-        "transient_tire_doi": recorded_doi(transient_xml),
+        "steady_tire_xml": str(tire_xml),
+        "steady_tire_xml_sha256": hashes[str(tire_xml)],
+        "transient_tire_xml": str(tire_xml),
+        "transient_tire_xml_sha256": hashes[str(tire_xml)],
+        "transient_tire_doi": recorded_doi(tire_xml),
         "transient_tire_parameters": {
             name: float(getattr(parameters, name))
             for name in ("longitudinal_length_scale", "lateral_length_scale",
                          "trail_pole_ratio", "trail_lead_ratio")},
-        "note": ("PROPOSED transient coefficients, not fitted to this tire; equations, "
+        "note": ("Self-contained tire XML supplies both steady and transient capabilities; "
+                 "PROPOSED transient coefficients, not fitted to this tire. Equations, "
                  "reduced-model limits and the full parameter table are Task 9's "
                  "docs/validation/14dof-simple-parameters.md"),
     }

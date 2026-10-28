@@ -97,7 +97,7 @@ A test double path must assert that `RunRecordSink` receives optimized-path geom
 - Create: `runs/yaw_aware_driver/mis-no-tv-<timestamp>/` (gitignored artifacts)
 - Create: `docs/dev/yaw-aware-mis-diagnostic-2026-10-25.md`
 
-- [ ] **Step 1: Run a preflight** on `models/tracks/2024_michigan_endurance_closed_edged.xml` with the no-TV map and `--record`, using a conservative yaw grid and no more than the planar 300-second wall cap.
+- [ ] **Step 1: Run a preflight** on `models/tracks/mis_ev_endurance_2024_width.xml` with the no-TV map and `--record`, using a conservative yaw grid and no more than the planar 300-second wall cap.
 - [ ] **Step 2: If preflight completes, run the selected bounded MIS attempt** and preserve its command, output identity, plan/summary, and run record. If it fails, retain the failure directory and record the exact failing condition.
 - [ ] **Step 3: Verify record sources and dry-run animation.**
 

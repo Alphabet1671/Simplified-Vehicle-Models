@@ -118,7 +118,7 @@ class SaveTests(unittest.TestCase):
         verdict = check_files(self.edit)
         self.assertTrue(verdict.ok)
         self.assertIn("pitch_radius_of_gyration = 0.386 m", verdict.unconsumed)
-        self.assertEqual(verdict.unused_roles, ("suspension", "tire-transient"))
+        self.assertEqual(verdict.unused_roles, ("suspension",))
 
     def test_existing_files_need_overwrite(self):
         edit = self.edit.with_parameter(ASSEMBLY, "cg_height", 0.315)

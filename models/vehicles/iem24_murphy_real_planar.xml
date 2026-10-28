@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- Shared IEM24 assembly: measured vehicle parameters with tester-fitted UniTire. The planar 7DoF formulation uses the planar roles; the 14DoF-simple formulation also uses the suspension, damper-front, damper-rear and tire-transient roles and the vertical parameters. -->
+<!-- Shared IEM24 assembly: the self-contained UniTire component serves steady planar and transient vertical tire capabilities. The 14DoF-simple formulation additionally uses suspension and vertical parameters. -->
 <model schema-version="1.0" id="iem24-murphy-real-planar" type="vehicle-assembly" subtype="four-wheel">
     <parameters>
         <!-- Geometry source: User-confirmed 2026-10-16; 1.016 m was an error. Track width 1.240 m; 45 % of the mass on the front axle (front_mass_fraction 0.45). -->
@@ -45,11 +45,10 @@
     <data role="ackermann" path="../data/iem24_murphy_parallel_steering.csv" format="csv" />
     <data role="pedal-ratio" path="../data/murphy_pedal_ratio.csv" format="csv" />
     <components>
-        <component role="tire" ref="../tires/iem24_murphy_real_unitire.xml" />
+        <component role="tire" ref="../tires/iem24_murphy_real_unitire_transient.xml" />
         <component role="aero" ref="../aero/iem24_murphy_real_aero.xml" />
         <component role="powertrain" ref="../powertrains/iem24_murphy_real_planar.xml" />
         <component role="drivetrain" ref="../drivetrains/iem24_murphy_real.xml" />
         <component role="suspension" ref="../suspensions/iem24_murphy_real_suspension.xml" />
-        <component role="tire-transient" ref="../tires/iem24_murphy_real_unitire_transient.xml" />
     </components>
 </model>

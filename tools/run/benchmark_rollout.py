@@ -56,15 +56,30 @@ def benchmark(formulation: Path, track: Path, start_distance: float, duration: f
     started = time.perf_counter()
     failure = None
     try:
-        if method != "radau-baseline":
+        if method == "radau-baseline":
+            result = solve_forward(plant, driver, initial, duration=duration,
+                                   wall_seconds=wall_limit, maximum_step=0.02, rtol=1e-6,
+                                   atol=1e-8, method="Radau",
+                                   maximum_wall_seconds=max(300.0, wall_limit))
+            final = result.state[:, -1]
+            simulated = float(result.time[-1])
+            completed = simulated >= duration * 0.999
+        elif method.startswith("cosim-"):
+            from simplified_vehicle_models.evolution.cosim import CosimSettings, simulate
+            from simplified_vehicle_models.evolution.tv_controllers import PassthroughTV
+            from simplified_vehicle_models.evolution.cosim import tv_plant_class
+            plant = tv_plant_class(type(plant))(plant.vehicle, plan)
+            result = simulate(plant, driver, PassthroughTV(), initial,
+                              CosimSettings(controller_dt=0.01, integrator=method[6:]),
+                              stop_distance=1e9, max_time=duration,
+                              deadline=time.monotonic() + wall_limit)
+            final = result.state[-1]
+            simulated = float(result.time[-1])
+            completed = result.completed
+            if not completed:
+                failure = result.failure
+        else:
             raise ValueError(f"unknown method {method!r}")
-        result = solve_forward(plant, driver, initial, duration=duration,
-                               wall_seconds=wall_limit, maximum_step=0.02, rtol=1e-6,
-                               atol=1e-8, method="Radau",
-                               maximum_wall_seconds=max(300.0, wall_limit))
-        final = result.state[:, -1]
-        simulated = float(result.time[-1])
-        completed = simulated >= duration * 0.999
     except Exception as error:
         failure, final, simulated, completed = f"{type(error).__name__}: {error}", initial, 0.0, False
     wall = time.perf_counter() - started
@@ -80,7 +95,8 @@ def main(argv=None) -> int:
     parser.add_argument("--formulation", type=Path, required=True)
     parser.add_argument("--track", type=Path, required=True)
     parser.add_argument("--duration", type=float, default=20.0)
-    parser.add_argument("--method", default="radau-baseline")
+    parser.add_argument("--method", default="radau-baseline",
+                        choices=("radau-baseline", "cosim-radau", "cosim-radau-loose"))
     parser.add_argument("--wall-limit", type=float, default=120.0)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)

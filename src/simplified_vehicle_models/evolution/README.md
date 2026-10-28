@@ -8,5 +8,5 @@ Fixed-rate co-simulation utilities for segment evolution.
 |---|---|
 | `__init__.py` | Package marker. |
 | `cosim.py` | Controller/plant co-simulation API and torque-vectoring plant injection. |
-| `tick_integrators.py` | Per-controller-tick plant integrators (Radau reference implementation). |
+| `tick_integrators.py` | Per-controller-tick Radau, loose Radau and compatibility integrator factories with rollout deadlines. |
 | `tv_controllers.py` | Torque-vectoring controller protocol implementation, including passthrough. |

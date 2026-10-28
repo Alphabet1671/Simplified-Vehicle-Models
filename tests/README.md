@@ -8,7 +8,7 @@ Test modules named `test_<topic>.py` each cover one topic and run under `unittes
 
 `test_evolution_benchmark.py` checks that a short planar rollout reports distance, RHS evaluations, and wall time per simulated second.
 
-`test_evolution_cosim.py` checks fixed-rate controller stepping, state layouts, TV torque injection, deadlines and tick-refinement agreement.
+`test_evolution_cosim.py` checks fixed-rate controller stepping, state layouts, TV torque injection, deadlines and tick-refinement agreement. `test_evolution_integrators.py` compares registered tick integrators against a fine-step Radau reference and checks deadlines.
 
 `test_tire_gui_plotting.py` checks independent model display sweeps across loads and segments, fixed secondary slip, and input immutability.
 

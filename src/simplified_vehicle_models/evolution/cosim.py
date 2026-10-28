@@ -104,7 +104,8 @@ def simulate(plant, driver, tv, initial_state, settings: CosimSettings, *,
         try:
             state = integrate_tick(command, t, state, tick_dt)
         except (TrialStateError, RuntimeError, ValueError) as error:
-            failure = f"{type(error).__name__}: {error}"; break
+            failure = "deadline" if isinstance(error, RuntimeError) and str(error) == "deadline" else f"{type(error).__name__}: {error}"
+            break
         t += tick_dt
         if abs(t - max_time) <= 1e-12:
             t = max_time

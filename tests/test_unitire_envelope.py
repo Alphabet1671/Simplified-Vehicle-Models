@@ -1,4 +1,5 @@
 from pathlib import Path
+from dataclasses import replace
 import unittest
 
 import numpy as np
@@ -77,6 +78,20 @@ class UnitirePeakEnvelopeTests(unittest.TestCase):
         self.assertEqual(float(low[1][0]), 0.0)
         self.assertAlmostEqual(float(high[0][0]), float(edge[0][0]))
         self.assertAlmostEqual(float(high[1][0]), float(edge[1][0]))
+
+    def test_zero_epsilon_envelope_is_finite_at_zero_and_rated_load(self) -> None:
+        # Keep the numerical-limit regression independent of optional user models.
+        tire = replace(self.vehicle.tire, slip_eps=0.0)
+        self.assertEqual(tire.slip_eps, 0.0)
+        grid = np.array([0.0, tire.f_z_rated])
+        envelope = build_unitire_peak_envelope(tire, grid, slip_samples=301)
+        fx, fy = envelope.force_capacities(grid)
+        self.assertTrue(np.all(np.isfinite(fx)))
+        self.assertTrue(np.all(np.isfinite(fy)))
+        self.assertEqual(float(fx[0]), 0.0)
+        self.assertEqual(float(fy[0]), 0.0)
+        self.assertGreater(float(fx[1]), 0.0)
+        self.assertGreater(float(fy[1]), 0.0)
 
     def test_rejects_bad_grid_and_speed(self) -> None:
         with self.assertRaisesRegex(ValueError, "increasing"):

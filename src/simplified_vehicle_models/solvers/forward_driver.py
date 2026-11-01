@@ -418,6 +418,11 @@ class PreviewDriver:
     #: the slew-rate limit. Keeps the pedal rate continuous in the state.
     pedal_time_constant: float = 0.02
     demand_map: LongitudinalDemandMap | None = None
+    #: Optional signed-pedal slew bounds (normalized pedal units per second).
+    throttle_apply_rate: float | None = None
+    throttle_release_rate: float | None = None
+    brake_apply_rate: float | None = None
+    brake_release_rate: float | None = None
 
     def __post_init__(self):
         if self.demand_map is not None:
@@ -430,14 +435,23 @@ class PreviewDriver:
         if (not np.all(np.isfinite(values)) or min(values) <= 0
                 or not np.isfinite(self.preview_seconds) or self.preview_seconds < 0):
             raise ValueError("driver gains and limits must be finite and positive")
+        rates = (self.throttle_apply_rate, self.throttle_release_rate,
+                 self.brake_apply_rate, self.brake_release_rate)
+        configured = tuple(rate is not None for rate in rates)
+        if any(configured) and not all(configured):
+            raise ValueError("all four directional pedal rates must be configured together")
+        if all(configured) and (not np.all(np.isfinite(rates)) or min(rates) <= 0.):
+            raise ValueError("directional pedal rates must be finite and positive")
         if self.pedal_travel_time is not None and (
-                not np.isfinite(self.pedal_travel_time) or self.pedal_travel_time <= 0
-                or not np.isfinite(self.pedal_time_constant) or self.pedal_time_constant <= 0):
-            raise ValueError("pedal travel time and time constant must be finite and positive")
+                not np.isfinite(self.pedal_travel_time) or self.pedal_travel_time <= 0):
+            raise ValueError("pedal travel time must be finite and positive")
+        if (self.pedal_travel_time is not None or all(configured)) and (
+                not np.isfinite(self.pedal_time_constant) or self.pedal_time_constant <= 0):
+            raise ValueError("pedal time constant must be finite and positive")
 
     @property
     def has_pedal_dynamics(self) -> bool:
-        return self.pedal_travel_time is not None
+        return self.pedal_travel_time is not None or self.throttle_apply_rate is not None
 
     def pedal_target(self, command: DriverCommand) -> float:
         """Map a requested command to the signed pedal position."""
@@ -445,8 +459,16 @@ class PreviewDriver:
 
     def pedal_rate(self, position: float, target: float) -> float:
         """Return the slew-limited rate of the signed pedal position."""
-        limit = 1. / self.pedal_travel_time
-        return float(np.clip((target - position) / self.pedal_time_constant, -limit, limit))
+        delta = target - position
+        if self.throttle_apply_rate is None:
+            limit = 1. / self.pedal_travel_time
+        elif position > 0.:
+            limit = self.throttle_release_rate if delta < 0. else self.throttle_apply_rate
+        elif position < 0.:
+            limit = self.brake_release_rate if delta > 0. else self.brake_apply_rate
+        else:
+            limit = self.throttle_apply_rate if delta >= 0. else self.brake_apply_rate
+        return float(np.clip(delta / self.pedal_time_constant, -limit, limit))
 
     def realized_command(self, position: float, requested: DriverCommand) -> DriverCommand:
         """Return the command the plant sees at a pedal position.

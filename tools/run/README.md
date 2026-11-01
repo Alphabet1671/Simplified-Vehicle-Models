@@ -9,7 +9,7 @@ Run scripts for solver attempts and sweeps.
 | `__init__.py` | Package marker. |
 | `compare_continuous_driver_throttle.py` | Prepare a hashed fixed-plan throttle comparison, then run each continuous-driver arm separately under an external timeout. |
 | `run_forward_acceptance_chain.sh` | Shell script. |
-| `run_iem24_forward_driver.py` | Run an isolated forward-driver attempt under a parent wall deadline. |
+| `run_iem24_forward_driver.py` | Run an isolated forward-driver attempt under a parent wall deadline; optional directional normalized pedal-slew flags are validated before spawn. |
 | `run_iem24_point_mass_track_pair.py` | Run the same supported IEM24 energy-coupled point-mass solve on two signed tracks. |
 | `solve_minimum_time_line.py` | Run the stage 1 minimum-time racing-line acceptance pipeline. |
 | `sweep_forward_steering.py` | Bounded steering-gain sweep on the canonical forward lap. |

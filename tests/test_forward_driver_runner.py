@@ -578,6 +578,32 @@ class RunnerTests(unittest.TestCase):
             command = run.call_args.args[0]
             self.assertEqual(command[command.index("--track") + 1], CANONICAL_TRACK)
 
+    def test_asymmetric_slew_flags_validate_forward_and_match_warm_starts(self):
+        flags = ("--throttle-apply-rate", "4", "--throttle-release-rate", "6",
+                 "--brake-apply-rate", "5", "--brake-release-rate", "6")
+        args = parse_args(list(flags))
+        self.assertEqual(args.throttle_apply_rate, 4.)
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            parse_args(["--throttle-apply-rate", "4"])
+        with tempfile.TemporaryDirectory() as temporary:
+            with patch("tools.run.run_iem24_forward_driver.subprocess.run",
+                       return_value=subprocess.CompletedProcess([], 0)) as run:
+                with contextlib.redirect_stdout(io.StringIO()):
+                    main(["--output-root", temporary, *flags])
+            command = run.call_args.args[0]
+            for flag, value in zip(flags[::2], flags[1::2]):
+                self.assertEqual(command[command.index(flag) + 1], value)
+        settings = {"planner": "conservative", "maximum_speed": 8.,
+                    "lateral_acceleration": None, "pedal_travel_time": .175,
+                    "spacing": .5, "preview_seconds": .15, "heading_gain": 1.5,
+                    "lateral_gain": 1.5, "speed_gain": 2., "lateral_margin": None,
+                    "track": str(args.track), "throttle_apply_rate": 4.,
+                    "throttle_release_rate": 6., "brake_apply_rate": 5.,
+                    "brake_release_rate": 6.}
+        previous = {"status": "Completed", "lap_completed": True,
+                    "source_hashes": {"source": "hash"}, "settings": settings}
+        self.assertTrue(warm_start_matches(previous, {"source": "hash"}, args))
+
     def test_driver_settings_are_parsed_recorded_and_match_warm_starts(self):
         args = parse_args(["--preview-seconds", ".25", "--heading-gain", "2.0",
                            "--lateral-gain", ".75", "--track", str(DEFAULT_TRACK)])

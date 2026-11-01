@@ -7,6 +7,9 @@ The unit and regression suite, run with `unittest`.
 | File | Contents |
 |---|---|
 | `test_catalunya_ttc_formulation.py` | Exact TTC artifact preservation, steady/transient parameter partition, and planar 7-DoF assembly selection. |
+| `test_forward_driver.py` | Continuous forward-driver dynamics, directional pedal slew, and speed planning. |
+| `test_forward_command_mapper.py` | Forward command mapping, pedal realization, and integration callback contract. |
+| `test_forward_driver_runner.py` | Runner CLI, warm-start, provenance, and synthetic integration regression coverage. |
 | `test_driver_maps.py` | Immutable pedal map interpolation, validation, shaping, strict JSON configuration, and stable digest.
 | `test_pedal_actuator_calibration.py` | Runtime physical pedal calibration binding, forward evaluator parity, and bounds.
 | `test_continuous_driver_throttle_comparison.py` | Matched throttle-runner plan slicing, duration-weighted metrics, manifest/output contracts and arm isolation. |

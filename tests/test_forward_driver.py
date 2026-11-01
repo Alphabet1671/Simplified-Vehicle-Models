@@ -67,6 +67,40 @@ class DriverTests(unittest.TestCase):
         self.assertLessEqual(abs(command.steering_rate), tuned.maximum_steering_rate)
         self.assertNotEqual(command.steering_rate, legacy.steering_rate)
 
+    def test_directional_mode_works_without_legacy_travel_time(self):
+        driver = PreviewDriver(self.plan, 1.5, .5, 2., 1000., pedal_travel_time=None,
+                               throttle_apply_rate=4., throttle_release_rate=6.,
+                               brake_apply_rate=5., brake_release_rate=6.)
+        self.assertEqual(driver.pedal_rate(0., 1.), 4.)
+
+    def test_omitted_directional_rates_keep_legacy_rate(self):
+        legacy = PreviewDriver(self.plan, 1.5, .5, 2., 1000., pedal_travel_time=.175)
+        self.assertEqual(legacy.pedal_rate(.5, -1.), -1. / .175)
+
+    def test_directional_pedal_slew_rates_and_neutral_crossing(self):
+        driver = PreviewDriver(self.plan, 1.5, 0.5, 2., 1000.,
+                               pedal_time_constant=.02,
+                               throttle_apply_rate=4., throttle_release_rate=6.,
+                               brake_apply_rate=5., brake_release_rate=6.)
+        self.assertEqual(driver.pedal_rate(.5, 1.), 4.)
+        self.assertEqual(driver.pedal_rate(.5, -1.), -6.)
+        self.assertEqual(driver.pedal_rate(-.5, -1.), -5.)
+        self.assertEqual(driver.pedal_rate(-.5, 1.), 6.)
+        self.assertEqual(driver.pedal_rate(0., -1.), -5.)
+        self.assertEqual(driver.pedal_rate(0., 1.), 4.)
+        self.assertTrue(driver.has_pedal_dynamics)
+
+    def test_directional_rates_require_complete_finite_positive_values(self):
+        for settings in (
+            dict(throttle_apply_rate=4.),
+            dict(throttle_apply_rate=4., throttle_release_rate=6.,
+                 brake_apply_rate=5., brake_release_rate=0.),
+            dict(throttle_apply_rate=float("nan"), throttle_release_rate=6.,
+                 brake_apply_rate=5., brake_release_rate=6.),
+        ):
+            with self.subTest(settings=settings), self.assertRaises(ValueError):
+                PreviewDriver(self.plan, 1.5, .5, 2., 1000., **settings)
+
     def test_direct_preview_driver_defaults_remain_legacy_values(self):
         self.assertEqual(self.driver.preview_seconds, .15)
         self.assertEqual(self.driver.heading_gain, 1.5)

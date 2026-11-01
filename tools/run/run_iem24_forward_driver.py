@@ -494,7 +494,9 @@ def warm_start_matches(previous, source_hashes, args, pedal_map_sha256=None):
                      or (pedal_map_sha256 == "no-pedal-map" and "pedal_map" not in previous))
                 and all(settings.get(key, defaults.get(key)) == getattr(args, key)
                         for key in ("planner", "maximum_speed", "lateral_acceleration",
-                                    "pedal_travel_time", "spacing", "preview_seconds",
+                                    "pedal_travel_time", "throttle_apply_rate",
+                                    "throttle_release_rate", "brake_apply_rate",
+                                    "brake_release_rate", "spacing", "preview_seconds",
                                     "heading_gain", "lateral_gain", "speed_gain", "lateral_margin"))
                 and canonical_path(settings.get("track") or LEGACY_TRACK)
                 == canonical_path(args.track))
@@ -515,6 +517,10 @@ def parse_args(argv=None):
                              "live planner default: no cap beyond the vehicle's own limits")
     parser.add_argument("--pedal-travel-time", type=float, default=.175,
                         help="Seconds for a full pedal travel (0-100%% throttle or 0-max brake)")
+    for name in ("throttle-apply-rate", "throttle-release-rate",
+                 "brake-apply-rate", "brake-release-rate"):
+        parser.add_argument(f"--{name}", dest=name.replace("-", "_"), type=float, default=None,
+                            help="Directional normalized signed-pedal slew limit (1/s)")
     parser.add_argument("--preview-seconds", type=float, default=.15,
                          help="Preview horizon used by the shared steering controller")
     parser.add_argument("--lateral-margin", type=float, default=None,
@@ -556,13 +562,19 @@ def parse_args(argv=None):
     args = parser.parse_args(argv)
     import math
     for name in ("timeout_seconds", "duration", "maximum_speed", "lateral_acceleration",
-                 "maximum_step", "rtol", "spacing", "pedal_travel_time", "preview_seconds",
+                 "maximum_step", "rtol", "spacing", "pedal_travel_time",
+                 "throttle_apply_rate", "throttle_release_rate", "brake_apply_rate",
+                 "brake_release_rate", "preview_seconds",
                  "heading_gain", "lateral_gain", "speed_gain", "lateral_margin"):
         value = getattr(args, name)
         if value is None:
             continue
         if not math.isfinite(value) or value <= 0:
             parser.error(f"{name} must be finite and positive")
+    rates = (args.throttle_apply_rate, args.throttle_release_rate,
+             args.brake_apply_rate, args.brake_release_rate)
+    if any(rate is not None for rate in rates) and not all(rate is not None for rate in rates):
+        parser.error("all four directional pedal rates must be supplied together")
     if args.lateral_margin is not None and args.lateral_margin > 1.:
         parser.error("lateral_margin must be at most 1")
     try:
@@ -572,7 +584,8 @@ def parse_args(argv=None):
     args.track = canonical_path(args.track)
     args.pedal_map_config_path = (None if args.pedal_map_config_path is None else
                                   Path(args.pedal_map_config_path).expanduser().resolve())
-    if args.warm_start is not None and args.pedal_travel_time is None:
+    if args.warm_start is not None and args.pedal_travel_time is None and not all(
+            rate is not None for rate in rates):
         parser.error("warm start requires pedal dynamics")
     if args.quasi_static_attitude and not args.record:
         parser.error("--quasi-static-attitude needs --record")
@@ -606,6 +619,17 @@ def load_runner_pedal_map(path):
     payload = json.loads(raw.decode("utf-8"), parse_constant=reject_constant)
     config = parse_pedal_map_config(payload)
     return payload, config, hashlib.sha256(raw).hexdigest()
+
+
+def pedal_slew_provenance(args):
+    """Return directional slew provenance only when explicitly configured."""
+    if args.throttle_apply_rate is None:
+        return None
+    return {"schema_version": 1, "effective_normalized_rates": {
+        "throttle_apply_rate": args.throttle_apply_rate,
+        "throttle_release_rate": args.throttle_release_rate,
+        "brake_apply_rate": args.brake_apply_rate,
+        "brake_release_rate": args.brake_release_rate}}
 
 
 def pedal_map_provenance(args, vehicle=None):
@@ -667,6 +691,7 @@ def write_run_record(sink, args, summary, physical_inputs, spec, result, initial
                     "initial_pedal": initial_pedal},
         "track": {"file": str(args.track)},
         "pedal_map": summary.get("pedal_map"),
+        **({"pedal_slew": summary["pedal_slew"]} if "pedal_slew" in summary else {}),
     }, created_utc=datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
     summary["run_record_file"] = record_path.name
     summary["run_record_rows"] = int(sink.rows)
@@ -785,6 +810,9 @@ def child(args):
                                   "scipy": scipy.__version__, "platform": platform.platform()}
         vehicle = compile_formulation(str(spec.formulation)).model
         summary["pedal_map"], vehicle = pedal_map_provenance(args, vehicle)
+        slew = pedal_slew_provenance(args)
+        if slew is not None:
+            summary["pedal_slew"] = slew
         summary["runtime_model_identity"] = {"formulation": str(spec.formulation),
                                              "model": args.model,
                                              "semantic_pedal_map_sha256": summary["pedal_map"]["semantic_sha256"]}
@@ -844,7 +872,11 @@ def child(args):
                                 lateral_gain=args.lateral_gain,
                                live_limit=live_limit,
                                pedal_travel_time=args.pedal_travel_time,
-                                demand_map=args.pedal_map_config.demand_map)
+                                demand_map=args.pedal_map_config.demand_map,
+                                throttle_apply_rate=args.throttle_apply_rate,
+                                throttle_release_rate=args.throttle_release_rate,
+                                brake_apply_rate=args.brake_apply_rate,
+                                brake_release_rate=args.brake_release_rate)
         initial = plant.initial_state(float(plan.speed[0]))
         # A flying lap starts with the foot where the driver wants it. A standing
         # start begins with the foot off the pedal: the driver then presses the
@@ -1082,6 +1114,8 @@ def main(argv=None):
             status, return_code = "Timed_Out", 124
     runtime = time.perf_counter() - started
     parent = {"status": status, "return_code": return_code,
+              **({"pedal_slew": pedal_slew_provenance(args)}
+                 if pedal_slew_provenance(args) is not None else {}),
               "pedal_map": {"semantic_sha256": (args.pedal_map_config.sha256
                               if args.pedal_map_config.demand_map or args.pedal_map_config.physical_calibration
                               else "no-pedal-map"),

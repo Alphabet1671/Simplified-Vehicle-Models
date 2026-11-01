@@ -7,6 +7,7 @@ Run scripts for solver attempts and sweeps.
 | File | Contents |
 |---|---|
 | `__init__.py` | Package marker. |
+| `compare_continuous_driver_throttle.py` | Prepare a hashed fixed-plan throttle comparison, then run each continuous-driver arm separately under an external timeout. |
 | `run_forward_acceptance_chain.sh` | Shell script. |
 | `run_iem24_forward_driver.py` | Run an isolated forward-driver attempt under a parent wall deadline. |
 | `run_iem24_point_mass_track_pair.py` | Run the same supported IEM24 energy-coupled point-mass solve on two signed tracks. |

@@ -593,6 +593,11 @@ class RunnerTests(unittest.TestCase):
             command = run.call_args.args[0]
             for flag, value in zip(flags[::2], flags[1::2]):
                 self.assertEqual(command[command.index(flag) + 1], value)
+            parent = json.loads(next(Path(temporary).glob("attempt_*/parent.json")).read_text())
+        expected = {"schema_version": 1, "effective_normalized_rates": {
+            "throttle_apply_rate": 4., "throttle_release_rate": 6.,
+            "brake_apply_rate": 5., "brake_release_rate": 6.}}
+        self.assertEqual(parent["pedal_slew"], expected)
         settings = {"planner": "conservative", "maximum_speed": 8.,
                     "lateral_acceleration": None, "pedal_travel_time": .175,
                     "spacing": .5, "preview_seconds": .15, "heading_gain": 1.5,
@@ -603,6 +608,40 @@ class RunnerTests(unittest.TestCase):
         previous = {"status": "Completed", "lap_completed": True,
                     "source_hashes": {"source": "hash"}, "settings": settings}
         self.assertTrue(warm_start_matches(previous, {"source": "hash"}, args))
+        changed = dict(settings, brake_release_rate=7.)
+        self.assertFalse(warm_start_matches(dict(previous, settings=changed),
+                                            {"source": "hash"}, args))
+        omitted = parse_args([])
+        legacy = dict(previous, settings={k: v for k, v in settings.items()
+                                         if not k.endswith("_rate")})
+        self.assertTrue(warm_start_matches(legacy, {"source": "hash"}, omitted))
+
+        root, calls, code = run_fake_child("planar-7dof", FakePlanarPlant,
+                                           extra_args=flags)
+        self.assertEqual(code, 0)
+        self.assertIsNone(calls[0].get("initial_pedal"))
+        summary = json.loads((root / "summary.json").read_text())
+        expected = {"schema_version": 1, "effective_normalized_rates": {
+            "throttle_apply_rate": 4., "throttle_release_rate": 6.,
+            "brake_apply_rate": 5., "brake_release_rate": 6.}}
+        self.assertEqual(summary["pedal_slew"], expected)
+        self.assertEqual({name: summary["settings"][name] for name in
+                          ("throttle_apply_rate", "throttle_release_rate",
+                           "brake_apply_rate", "brake_release_rate")},
+                         expected["effective_normalized_rates"])
+
+        class Sink:
+            rows = 2
+            def close(self, manifest, created_utc):
+                self.manifest = manifest
+                return Path("run_record.npz")
+        sink = Sink()
+        from tools.run.run_iem24_forward_driver import write_run_record
+        args_record = parse_args([*flags, "--record"])
+        write_run_record(sink, args_record, summary, {}, model_spec("planar-7dof"),
+                         SimpleNamespace(time=np.array([0., 1.]), lap_completed=True,
+                                         wall_seconds=1.), 0.)
+        self.assertEqual(sink.manifest["pedal_slew"], expected)
 
     def test_driver_settings_are_parsed_recorded_and_match_warm_starts(self):
         args = parse_args(["--preview-seconds", ".25", "--heading-gain", "2.0",

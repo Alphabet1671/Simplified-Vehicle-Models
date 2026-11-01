@@ -459,6 +459,8 @@ class PreviewDriver:
 
     def pedal_rate(self, position: float, target: float) -> float:
         """Return the slew-limited rate of the signed pedal position."""
+        if not self.has_pedal_dynamics:
+            raise ValueError("pedal dynamics disabled")
         delta = target - position
         if self.throttle_apply_rate is None:
             limit = 1. / self.pedal_travel_time

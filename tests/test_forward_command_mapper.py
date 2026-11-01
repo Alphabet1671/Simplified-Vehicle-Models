@@ -103,6 +103,39 @@ class ForwardCommandMapperTests(unittest.TestCase):
         for sample in samples:
             self.assertEqual(sample.requested_command, sample.mapped_command)
 
+    def test_disabled_pedal_rate_is_explicitly_rejected_and_solver_omits_pedal(self):
+        with self.assertRaisesRegex(ValueError, "pedal dynamics disabled"):
+            self.driver.pedal_rate(0., 1.)
+        plant = LinearPlant()
+        result = self.run_forward(plant)
+        self.assertIsNone(result.pedal)
+
+    def test_explicit_asymmetric_slew_integrates_one_signed_pedal_without_overlap(self):
+        driver = PreviewDriver(self.driver.plan, 1.5, .5, 2., 1000.,
+                               pedal_travel_time=None, pedal_time_constant=.02,
+            throttle_apply_rate=4., throttle_release_rate=6.,
+            brake_apply_rate=5., brake_release_rate=6.)
+        plant = LinearPlant()
+        def mapper(time, state, observation, requested):
+            target = .5 if time < .012 else (-.5 if time < .025 else 0.)
+            return DriverCommand(max(target, 0.), max(-target, 0.) * 1000.,
+                                 requested.steering_rate)
+        samples = []
+        result = solve_forward(plant, driver, self.initial, duration=.04,
+                               maximum_step=.001, method="BDF", initial_pedal=0.,
+                               command_mapper=mapper, step_sink=samples.append)
+        self.assertIsNotNone(result.pedal)
+        self.assertTrue(np.all(np.isfinite(result.pedal)))
+        self.assertTrue(all(not (sample.command.throttle > 0. and sample.command.brake_force > 0.)
+                            for sample in samples))
+        self.assertEqual(driver.pedal_target(DriverCommand(.25, 0., 0.)), .25)
+        self.assertEqual(driver.pedal_target(DriverCommand(0., 250., 0.)), -.25)
+        self.assertEqual(driver.pedal_rate(0., .5), 4.)
+        self.assertEqual(driver.pedal_rate(0., -.5), -5.)
+        self.assertEqual(driver.pedal_rate(.5, -.5), -6.)
+        self.assertEqual(driver.pedal_rate(-.5, .5), 6.)
+        self.assertEqual(len(samples), len(result.time))
+
     def test_pedal_lag_sample_separates_raw_mapped_and_realized(self):
         plant = LinearPlant()
         driver = PreviewDriver(self.driver.plan, 1.5, .5, 2., 1000.,

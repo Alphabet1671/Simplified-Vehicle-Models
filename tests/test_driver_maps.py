@@ -29,6 +29,17 @@ class MonotoneTableTests(unittest.TestCase):
         self.assertEqual(t.inverse(0), 0)
         self.assertEqual(t.inverse(2), 1)
 
+    def test_inverse_plateaus_at_both_ends_and_constant_output(self):
+        terminal = MonotoneTable1D([0, .5, .75, 1], [0, 1, 1, 1], '1', '1')
+        self.assertEqual(terminal.inverse(1), .5)
+        self.assertEqual(terminal.inverse(2), 1)  # strictly out of range clamps
+        initial = MonotoneTable1D([0, .25, .5, 1], [0, 0, 0, 1], '1', '1')
+        self.assertEqual(initial.inverse(0), 0)
+        constant = MonotoneTable1D([0, .5, 1], [2, 2, 2], '1', '1')
+        self.assertEqual(constant.inverse(2), 0)
+        self.assertEqual(constant.inverse(-1), 0)
+        self.assertEqual(constant.inverse(3), 1)
+
     def test_copies_input_and_rejects_bad_inputs_and_queries(self):
         x, y = [0, 1], [0, 1]
         t = MonotoneTable1D(x, y, '1', '1')
@@ -115,7 +126,7 @@ class ConfigurationTests(unittest.TestCase):
     def test_strict_schema_units_and_json_nonfinite(self):
         base = self.payload()
         cases = []
-        for version in (True, 2, 0): cases.append({**base, 'schema_version': version})
+        for version in (True, 1.0, 2, 0): cases.append({**base, 'schema_version': version})
         cases.append({**base, 'extra': 1})
         cases.append({k: v for k, v in base.items() if k != 'schema_version'})
         cases.append({**base, 'demand_map': {**base['demand_map'], 'mystery': 1}})

@@ -64,8 +64,9 @@ class MonotoneTable1D:
 
     def inverse(self, y: float) -> float:
         q = _number(y, "query")
-        if q <= self.value[0]: return self.axis[0]
-        if q >= self.value[-1]: return self.axis[-1]
+        if q < self.value[0]: return self.axis[0]
+        if q > self.value[-1]: return self.axis[-1]
+        if q == self.value[0]: return self.axis[0]
         for i, val in enumerate(self.value):
             if val >= q:
                 if val == q:
@@ -169,7 +170,7 @@ def _parse_table(obj: Any, axis_unit: str, value_unit: str) -> MonotoneTable1D:
 def parse_pedal_map_config(payload: Any) -> PedalMapConfiguration:
     _keys(payload, {"schema_version"}, {"demand_map", "physical_calibration"})
     version = payload["schema_version"]
-    if isinstance(version, bool) or version != 1: raise ValueError("unsupported schema_version")
+    if type(version) is not int or version != 1: raise ValueError("unsupported schema_version")
     demand = physical = None
     if payload.get("demand_map") is not None:
         d = _keys(payload["demand_map"], {"units", "acceleration_to_throttle", "deceleration_to_brake"})

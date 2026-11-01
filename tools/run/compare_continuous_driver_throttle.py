@@ -480,6 +480,7 @@ def _run_arm(run_dir, arm):
     # Persist a starting marker first; interruption/termination cannot masquerade as completion.
     result_path = directory / f"{arm}.json"
     _exclusive_json(directory / f"{arm}.started.json", summary)
+    terminal_error = None
     try:
         result = solve_forward(plant, driver, initial, **kwargs)
         if len(sink.rows) != len(result.time):
@@ -493,22 +494,40 @@ def _run_arm(run_dir, arm):
                 "throttle": [r["pedal_lagged_applied_throttle"] for r in sink.rows],
                 "speed_deficit": [r["target_speed"] - r["current_speed"] for r in sink.rows]})
     except Exception as error:
+        terminal_error = error
         summary.update(status="failed", error=f"{type(error).__name__}: {error}",
             accepted_samples=len(sink.rows), telemetry=sink.rows,
             prefix_kind="accepted step-sink prefix; integration failure does not assert accepted-state validation",
             elapsed_seconds=time.perf_counter() - started)
+
+    # Every post-sink operation is failure-safe: preserve the original solver or
+    # finalization error, and never replace it with a diagnostic snapshot error.
     if mapper is not None:
-        summary["mapper_counters"] = mapper.snapshot_diagnostics()
+        try:
+            summary["mapper_counters"] = mapper.snapshot_diagnostics()
+        except Exception as error:
+            summary["status"] = "failed"
+            summary.setdefault("error", f"{type(error).__name__}: {error}")
+            summary["mapper_diagnostics_error"] = f"{type(error).__name__}: {error}"
+            if terminal_error is None:
+                terminal_error = error
+            summary.update(accepted_samples=len(sink.rows), telemetry=sink.rows,
+                           prefix_kind="accepted step-sink prefix preserved; terminal diagnostics failed",
+                           elapsed_seconds=time.perf_counter() - started)
     try:
         _write_claimed_json(result_path, summary)
     except Exception as error:
-        # Keep all accepted rows even if a terminal metric/trace value is invalid.
-        fallback = {"arm": arm, "status": "failed", "error": f"terminal serialization failed: {type(error).__name__}: {error}",
+        # Keep all accepted rows even if terminal metrics, diagnostics, or
+        # serialization fail. Snapshot diagnostics is not retried here.
+        fallback = {"arm": arm, "status": "failed",
+                    "error": (summary.get("error") or
+                              f"terminal serialization failed: {type(error).__name__}: {error}"),
+                    "terminal_serialization_error": f"{type(error).__name__}: {error}",
                     "accepted_samples": len(sink.rows), "telemetry": sink.rows,
                     "prefix_kind": "accepted step-sink prefix preserved; nonfinite values normalized to null",
                     "elapsed_seconds": time.perf_counter() - started}
-        if mapper is not None:
-            fallback["mapper_counters"] = mapper.snapshot_diagnostics()
+        if "mapper_diagnostics_error" in summary:
+            fallback["mapper_diagnostics_error"] = summary["mapper_diagnostics_error"]
         _write_claimed_json(result_path, fallback)
         return fallback
     return summary

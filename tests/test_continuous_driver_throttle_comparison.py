@@ -212,6 +212,48 @@ class MatchedArmTests(unittest.TestCase):
                     runner._run_arm(tempdir, "heuristic")
                 solve.assert_not_called()
 
+    def test_mapper_diagnostic_snapshot_failure_preserves_accepted_prefix(self):
+        class Vehicle: wheelbase=1.; steering_maximum_angle=.5; steering_maximum_rate=1.; maximum_pedal_force=100.
+        class Plant:
+            state_size=12
+            state_names=tuple(f"x{i}" for i in range(12))
+            last_evaluation = None
+            last_powertrain = None
+            def __init__(self, vehicle, plan): self.plan=plan
+            def initial_state(self, speed):
+                value=np.zeros(12); value[3]=speed; value[10]=.8; return value
+            def observe(self, state):
+                return SimpleNamespace(distance=0., speed=float(state[3]), lateral_error=0., heading_error=0.)
+        class FailingSnapshotMapper:
+            def __call__(self, time_value, state, observation, requested):
+                return requested
+            def snapshot_diagnostics(self):
+                raise RuntimeError("snapshot boom")
+        def solve(plant, driver, initial, **kwargs):
+            command = SimpleNamespace(throttle=.4, brake_force=0., steering_rate=0.)
+            for index, time_value in enumerate((0., 1.)):
+                kwargs["step_sink"](SimpleNamespace(index=index, time=time_value,
+                    state=initial.copy(), rates=np.zeros(12), command=command,
+                    requested_command=command, mapped_command=command, pedal=0.))
+            return SimpleNamespace(time=np.array([0., 1.]), wall_seconds=.1, diagnostics={})
+        compiled = SimpleNamespace(model=Vehicle(), manifest=SimpleNamespace(as_text=lambda: "compiled identity"))
+        with tempfile.TemporaryDirectory() as tempdir:
+            self._prepared(tempdir)
+            with patch.object(runner, "compile_selected_model", return_value=compiled), \
+                 patch.object(runner, "collect_source_manifest", return_value={"hash": "same"}), \
+                 patch.object(runner, "make_plant_class", return_value=Plant), \
+                 patch.object(runner, "make_driver", return_value=object()), \
+                 patch.object(runner, "make_mapper", return_value=FailingSnapshotMapper()), \
+                 patch.object(runner, "solve_forward", side_effect=solve):
+                result = runner.run_arm(tempdir, "physical_mapper")
+            saved = json.loads((Path(tempdir) / "physical_mapper.json").read_text())
+            self.assertEqual(saved["status"], "failed")
+            self.assertEqual(saved["accepted_samples"], 2)
+            self.assertEqual(len(saved["telemetry"]), 2)
+            self.assertEqual(saved["mapper_diagnostics_error"], "RuntimeError: snapshot boom")
+            self.assertEqual(saved["error"], "RuntimeError: snapshot boom")
+            self.assertEqual(result["telemetry"], saved["telemetry"])
+
     def test_setup_failure_persists_valid_json_and_claim_blocks_retry(self):
         with tempfile.TemporaryDirectory() as tempdir:
             self._prepared(tempdir)

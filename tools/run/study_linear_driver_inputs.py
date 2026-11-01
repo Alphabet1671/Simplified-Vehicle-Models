@@ -131,24 +131,40 @@ def _validate(run_dir):
     return prepared, plan, compiled
 
 
-def _metrics(rows):
-    t = np.asarray([r["time"] for r in rows], float)
-    dt = np.diff(t); duration = float(dt.sum())
-    if len(rows) < 2 or duration <= 0: raise ValueError("at least two accepted samples required")
+def _metrics(rows, maximum_brake_force):
+    required = ("time", "current_speed", "target_speed", "pedal_lagged_applied_throttle",
+                "pedal_lagged_applied_brake_force", "pedal", "distance")
+    if len(rows) < 2 or any(any(key not in row for key in required) for row in rows):
+        raise ValueError("accepted trace lacks required finite metric channels")
+    if not np.isfinite(maximum_brake_force) or maximum_brake_force <= 0:
+        raise ValueError("maximum brake force must be finite and positive")
     get = lambda key: np.asarray([r[key] for r in rows], float)
+    t = get("time"); dt = np.diff(t); duration = float(dt.sum())
+    distance = get("distance"); ds = np.diff(distance); station = float(ds.sum())
+    if (not np.all(np.isfinite(t)) or not np.all(np.isfinite(distance)) or
+        not all(np.all(np.isfinite(get(key))) for key in required[1:-1]) or
+        np.any(dt <= 0) or np.any(ds < 0) or duration <= 0 or station <= 0):
+        raise ValueError("metric channels require finite samples, increasing time, and nondecreasing station")
     speed, target = get("current_speed"), get("target_speed")
     throttle, brake, pedal = get("pedal_lagged_applied_throttle"), get("pedal_lagged_applied_brake_force"), get("pedal")
     deficit = target - speed
     variations = np.abs(np.diff(pedal))
     return {"weighting": "left interval; terminal sample has zero duration", "duration_s": duration,
+        "station_m": station,
         "speed_error_mae_mps": float(np.sum(dt * np.abs(deficit[:-1])) / duration),
         "speed_error_rmse_mps": float(np.sqrt(np.sum(dt * deficit[:-1] ** 2) / duration)),
+        "speed_error_mae_per_station_m": float(np.sum(ds * np.abs(deficit[:-1])) / station),
+        "speed_error_rmse_per_station_m": float(np.sqrt(np.sum(ds * deficit[:-1] ** 2) / station)),
         "positive_deficit_fraction": float(np.sum(dt * (deficit[:-1] > 0)) / duration),
+        "positive_deficit_per_station_fraction": float(np.sum(ds * (deficit[:-1] > 0)) / station),
+        "mean_positive_deficit_mps": float(np.sum(dt * np.maximum(deficit[:-1], 0.)) / duration),
+        "maximum_overspeed_mps": float(np.max(np.maximum(-deficit, 0.))),
         "overspeed_over_0_5mps_fraction": float(np.sum(dt * (deficit[:-1] < -.5)) / duration),
-        "partial_throttle_below_target_fraction": float(np.sum(dt * ((deficit[:-1] > 1.) & (throttle[:-1] < .9) & (brake[:-1] < .01))) / duration),
+        "partial_throttle_below_target_fraction": float(np.sum(dt * ((deficit[:-1] > 1.) & (throttle[:-1] < .9) & (brake[:-1] < .01 * maximum_brake_force))) / duration),
         "full_throttle_ge_0_95_fraction": float(np.sum(dt * (throttle[:-1] >= .95)) / duration),
         "pedal_total_variation": float(variations.sum()), "variation_per_simulated_second": float(variations.sum()/duration),
-        "variation_per_station_m": float(variations.sum()/max(1e-12, float(np.diff(get("distance")).sum()))),
+        "variation_per_station_m": float(variations.sum()/station),
+        "station_weighted_variation_per_station_m": float(np.sum(ds * np.abs(np.diff(pedal)) / np.maximum(dt, 1e-12)) / station),
         "threshold_transition_definition": "signed pedal transitions at +/-0.05; 0.10 s dwell; 0.05 hysteresis",
         "thresholded_transitions": _transitions(t, pedal),
         "peak_applied_pedal_rate_per_s": float(np.max(variations / dt)),
@@ -191,22 +207,29 @@ def run_arm(run_dir, name):
         sink = fixed.TraceSink(plant, mapping_configured=False)
         rows = sink.rows
         _exclusive(d / f"{name}.started.json", {"arm": name, "status": "starting", "plan_hash": frozen.digest})
-        result = fixed.solve_forward(plant, driver, initial, duration=prepared["shared"]["solver"]["duration_s"],
+        diagnostics = {}
+        def diagnostics_sink(snapshot): diagnostics.update(snapshot)
+        solve_parameters = dict(duration=prepared["shared"]["solver"]["duration_s"],
             wall_seconds=prepared["shared"]["solver"]["wall_seconds"], maximum_wall_seconds=300.,
             maximum_step=prepared["shared"]["solver"]["maximum_step"], rtol=prepared["shared"]["solver"]["rtol"],
             atol=prepared["shared"]["solver"]["atol"], method=prepared["shared"]["solver"]["method"],
-            initial_pedal=0., step_sink=sink, command_mapper=None)
+            initial_pedal=0., step_sink=sink, command_mapper=None, diagnostics_sink=diagnostics_sink)
+        result = fixed.solve_forward(plant, driver, initial, **solve_parameters)
         if len(sink.rows) != len(result.time): raise RuntimeError("accepted telemetry/sample count mismatch")
         for row in sink.rows:
             row["configured_slew_rates"] = candidate["slew_rates"]
-            row["requested_pedal"] = row.get("requested_throttle")
-            row["mapped_pedal"] = row.get("mapped_throttle")
-            row["applied_pedal"] = row.get("pedal_lagged_applied_throttle")
+            row["requested_pedal"] = row["requested_throttle"] - row["requested_brake_force"] / driver.maximum_brake_force
+            row["mapped_pedal"] = row["mapped_throttle"] - row["mapped_brake_force"] / driver.maximum_brake_force
+            row["applied_pedal"] = row["pedal_lagged_applied_throttle"] - row["pedal_lagged_applied_brake_force"] / driver.maximum_brake_force
+            row["signed_pedal_units"] = "normalized signed command (+throttle, -brake); brake force divided by maximum_brake_force"
+            row["maximum_brake_force_n"] = float(driver.maximum_brake_force)
+            row["a_req_mps2"] = row["feedforward_acceleration"] + prepared["shared"]["driver"]["speed_gain"] * (row["target_speed"] - row["current_speed"])
+            row["speed_gain_mps2_per_mps"] = prepared["shared"]["driver"]["speed_gain"]
             row["mapped_stage"] = "identity_no_external_mapper"
         summary = {"arm": name, "status": "completed", "plan_hash": frozen.digest,
             "manifest": prepared["sources"], "candidate": candidate, "initial_state": initial.tolist(),
             "accepted_samples": len(sink.rows), "telemetry": sink.rows,
-            "diagnostics": result.diagnostics, "wall_seconds": float(result.wall_seconds), "metrics": _metrics(sink.rows),
+            "diagnostics": diagnostics, "wall_seconds": float(result.wall_seconds), "metrics": _metrics(sink.rows, driver.maximum_brake_force),
             "mapper": "None; identity stage", "counter_scope": "solver diagnostics from accepted integration; no external mapper counters"}
     except Exception as exc:
         summary = {"arm": name, "status": "failed", "error": f"{type(exc).__name__}: {exc}",

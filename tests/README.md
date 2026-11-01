@@ -13,6 +13,7 @@ The unit and regression suite, run with `unittest`.
 | `test_driver_maps.py` | Immutable pedal map interpolation, validation, shaping, strict JSON configuration, and stable digest.
 | `test_pedal_actuator_calibration.py` | Runtime physical pedal calibration binding, forward evaluator parity, and bounds.
 | `test_continuous_driver_throttle_comparison.py` | Matched throttle-runner plan slicing, duration-weighted metrics, manifest/output contracts and arm isolation. |
+| `test_linear_driver_input_study.py` | Dedicated fixed-plan linear driver demand/slew candidate matrix, provenance, and accepted-trace metric contracts. |
 
 Test modules named `test_<topic>.py` each cover one topic and run under `unittest`. `test_gui_launchers.py` exercises direct venv launch from unrelated working directories. Maneuver result tests verify canonical RunRecord handoff to animator readers; video encoding is not a maneuver responsibility.
 

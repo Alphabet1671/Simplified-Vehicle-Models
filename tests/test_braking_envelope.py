@@ -82,6 +82,13 @@ class PropagationTests(unittest.TestCase):
         self.assertAlmostEqual(oracle.call_args_list[0].args[1], .5/.2)
         self.assertAlmostEqual(env.corner_speed[0], 6.25)
 
+    def test_builder_rejects_margins_above_one_and_invalid_types(self):
+        vehicle = PointMassVehicleParameters.__new__(PointMassVehicleParameters)
+        with patch("simplified_vehicle_models.formulations.point_mass.maximum_corner_speed", return_value=10.), patch("simplified_vehicle_models.formulations.point_mass.maximum_deceleration_limit", return_value=2.):
+            for kwargs in ({"lateral_margin":1.01}, {"deceleration_margin":1.01}, {"lateral_margin":True}, {"deceleration_margin":None}, {"lateral_margin":float("nan")}):
+                with self.subTest(kwargs=kwargs), self.assertRaises((TypeError, ValueError)):
+                    build_braking_envelope([0.,1.],[0.,0.],vehicle,is_closed=False,**kwargs)
+
     def test_builder_bounds_queries_and_invalid_authority_fails(self):
         vehicle = PointMassVehicleParameters.__new__(PointMassVehicleParameters)
         with patch("simplified_vehicle_models.formulations.point_mass.maximum_corner_speed", return_value=10.), \
@@ -116,6 +123,27 @@ class PropagationTests(unittest.TestCase):
                 with self.assertRaises((TypeError, ValueError)):
                     BrakingEnvelope(*arrays, False, 10., {})
 
+    def test_binding_distance_to_next_node_is_not_zero(self):
+        entry, binding, _ = propagate_braking_caps(
+            [0., 10., 20.], [30., 10., 10.], [5., 5.], is_closed=False
+        )
+        self.assertEqual(binding[0], 1)
+        env = BrakingEnvelope(
+            np.array([0., 10., 20.]), np.zeros(3), np.array([30., 10., 10.]),
+            np.array([np.sqrt(300.), 10., 10.]), np.array([1., 1.]),
+            np.array([1, 1, 2]), False, 60., {},
+        )
+        self.assertEqual(env.sample(0.).binding_distance, 10.)
+        self.assertEqual(env.sample(10.).binding_distance, 0.)
+
+    def test_closed_endpoint_consistency_is_enforced(self):
+        x=np.array([0., 2., 5., 10.]); c=np.array([5., 3., 4., 5.]); e=c.copy(); k=np.array([.1,.2,.3,.1])
+        base=[x,k,c,e,np.ones(3),np.array([0,1,2,0])]
+        for index, changed in ((1,np.array([.1,.2,.3,.2])), (2,np.array([5.,3.,4.,4.])), (3,np.array([5.,3.,4.,4.]))):
+            args=list(base); args[index]=changed
+            with self.subTest(index=index), self.assertRaises(ValueError):
+                BrakingEnvelope(*args, True, 10., {})
+
     def test_closed_local_binding_distance_zero_and_local_cap(self):
         env = BrakingEnvelope(
             np.array([0., 2., 7., 10.]), np.zeros(4), np.array([5., 3., 4., 5.]),
@@ -133,6 +161,7 @@ class PropagationTests(unittest.TestCase):
         for args in [
             ([0, 0], [1, 1], [1]), ([0, 1], [1], [1]),
             ([0, 1], [1, 1], [-1]), ([0, float('nan')], [1, 1], [1]),
+            ([0, 1], [1e308, 1e308], [1]),
         ]:
             with self.subTest(args=args):
                 with self.assertRaises((TypeError, ValueError)):

@@ -145,8 +145,9 @@ class BrakingEnvelope:
             raise ValueError("speed/deceleration bounds are inconsistent")
         if np.any(bindings<0) or np.any(bindings>=len(x)):
             raise ValueError("binding indices out of range")
-        if self.is_closed and len(x)<3:
-            raise ValueError("closed envelope needs at least two unique nodes")
+        if self.is_closed:
+            if len(x)<3:
+                raise ValueError("closed envelope needs at least two unique nodes")
             if not math.isclose(c[0],c[-1],rel_tol=0,abs_tol=1e-8) or not math.isclose(k[0],k[-1],rel_tol=0,abs_tol=1e-8) or not math.isclose(e[0],e[-1],rel_tol=0,abs_tol=1e-8):
                 raise ValueError("closed envelope endpoint values must duplicate first node")
         prov = dict(self.provenance)
@@ -173,7 +174,7 @@ class BrakingEnvelope:
         localcap=min(float(self.corner_speed[i]),float(self.corner_speed[i+1]))
         domain=self.provenance.get("segment_speed_domain_max",[localcap]*len(self.deceleration))[i]
         bi=int(self.binding_index[i])
-        if bi == i or (s <= x[i] and bi == i + 1): bd=0.
+        if bi == i: bd=0.
         else:
             target=float(x[bi] % x[-1]) if self.is_closed else float(x[bi])
             bd=(target-s) % x[-1] if self.is_closed else max(0.,target-s)
@@ -192,6 +193,7 @@ def build_braking_envelope(distance, curvature, vehicle, *, maximum_speed=60.0,
     x=_array(distance,"distance",minimum=2); k=_array(curvature,"curvature",minimum=2)
     if len(x)!=len(k) or np.any(np.diff(x)<=0) or x[0]!=0.: raise ValueError("distance/curvature grids mismatch or invalid")
     top=_positive(maximum_speed,"maximum_speed"); lm=_positive(lateral_margin,"lateral_margin"); dm=_positive(deceleration_margin,"deceleration_margin")
+    if lm>1.0 or dm>1.0: raise ValueError("lateral_margin and deceleration_margin must be in (0, 1]")
     if isinstance(speed_query_points,bool) or not isinstance(speed_query_points,int) or speed_query_points<2: raise ValueError("speed_query_points must be integer >=2")
     pm=vehicle if isinstance(vehicle,PointMassVehicleParameters) else point_mass_view_of_planar(vehicle)
     corner=np.array([min(top,maximum_corner_speed(pm,lm/max(abs(v),1e-4),maximum_speed=top,storage_state=storage_state,tolerance=tolerance)) for v in k])

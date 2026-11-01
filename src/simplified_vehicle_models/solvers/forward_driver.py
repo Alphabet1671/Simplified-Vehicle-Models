@@ -535,6 +535,8 @@ class StepSample:
     rates: np.ndarray
     command: DriverCommand
     pedal: float | None
+    requested_command: DriverCommand | None = None
+    mapped_command: DriverCommand | None = None
 
 
 def _map_driver_command(command_mapper, time, plant_state, observation, requested, driver):
@@ -623,24 +625,27 @@ def solve_forward(plant: ForwardPlant, driver: PreviewDriver, initial_state,
     rejected_domain_trials = 0
     last_domain_rejection = [None]
 
-    #: The command of the latest ``state_rates`` call, read only by ``step_sink``.
+    #: Commands from the latest ``state_rates`` call, read only by ``step_sink``.
     applied = [None]
+    command_stages = [None]
 
     def raw_state_rates(time, state):
         plant_state = state[:plant_size]
         observation = plant.observe(plant_state)
         requested = driver.command(observation)
+        mapped = requested
         if command_mapper is not None:
-            requested = _map_driver_command(command_mapper, float(time), plant_state,
-                                            observation, requested, driver)
+            mapped = _map_driver_command(command_mapper, float(time), plant_state,
+                                         observation, requested, driver)
+        command_stages[0] = (requested, mapped)
         if not pedal_dynamics:
-            applied[0] = requested
-            return plant.evaluate(time, plant_state, requested).solve()
+            applied[0] = mapped
+            return plant.evaluate(time, plant_state, mapped).solve()
         position = float(state[plant_size])
-        realized = driver.realized_command(position, requested)
+        realized = driver.realized_command(position, mapped)
         applied[0] = realized
         rates = plant.evaluate(time, plant_state, realized).solve()
-        return np.r_[rates, driver.pedal_rate(position, driver.pedal_target(requested))]
+        return np.r_[rates, driver.pedal_rate(position, driver.pedal_target(mapped))]
 
     def state_rates(time, state):
         try:
@@ -757,7 +762,8 @@ def solve_forward(plant: ForwardPlant, driver: PreviewDriver, initial_state,
             step_sink(StepSample(
                 step_number, float(time_value), np.array(state[:plant_size], dtype=float),
                 np.array(accepted_rates[:plant_size], dtype=float), applied[0],
-                float(np.clip(state[plant_size], -1., 1.)) if pedal_dynamics else None))
+                float(np.clip(state[plant_size], -1., 1.)) if pedal_dynamics else None,
+                command_stages[0][0], command_stages[0][1]))
             timings["record_writing_seconds"] += perf_counter() - record_started
             counts["records_written"] += 1
     # Endpoints are not enough: reconstruct each interval's interior state

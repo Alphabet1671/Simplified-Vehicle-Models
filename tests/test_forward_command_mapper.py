@@ -62,6 +62,62 @@ class ForwardCommandMapperTests(unittest.TestCase):
         self.assertEqual(received[0][3], self.driver.command(received[0][2]))
         self.assertTrue(np.all(np.isfinite(result.state)))
 
+    def test_accepted_sample_preserves_raw_mapped_and_realized_commands(self):
+        plant = LinearPlant()
+        samples = []
+        def mapper(time, state, observation, requested):
+            return DriverCommand(.25, 0., requested.steering_rate)
+        self.run_forward(plant, command_mapper=mapper, step_sink=samples.append)
+        self.assertTrue(samples)
+        for sample in samples:
+            raw = self.driver.command(plant.observe(sample.state))
+            self.assertEqual(sample.requested_command, raw)
+            self.assertEqual(sample.mapped_command,
+                             DriverCommand(.25, 0., raw.steering_rate))
+            self.assertEqual(sample.command, sample.mapped_command)
+
+    def test_sink_preserves_solver_and_mapper_call_parity(self):
+        without_plant, with_plant = LinearPlant(), LinearPlant()
+        without_calls, with_calls = [], []
+        def mapper(calls):
+            def apply(time, state, observation, requested):
+                calls.append((time, requested))
+                return DriverCommand(.25, 0., requested.steering_rate)
+            return apply
+        without = self.run_forward(without_plant, command_mapper=mapper(without_calls))
+        samples = []
+        with_sink = self.run_forward(with_plant, command_mapper=mapper(with_calls),
+                                     step_sink=samples.append)
+        np.testing.assert_array_equal(without.time, with_sink.time)
+        np.testing.assert_array_equal(without.state, with_sink.state)
+        self.assertEqual(without.pedal, with_sink.pedal)
+        self.assertEqual(without.evaluations, with_sink.evaluations)
+        self.assertEqual(without_calls, with_calls)
+        self.assertEqual(without_plant.commands, with_plant.commands)
+        self.assertEqual(len(samples), len(with_sink.time))
+
+    def test_accepted_sample_preserves_unmapped_command(self):
+        samples = []
+        self.run_forward(LinearPlant(), step_sink=samples.append)
+        self.assertTrue(samples)
+        for sample in samples:
+            self.assertEqual(sample.requested_command, sample.mapped_command)
+
+    def test_pedal_lag_sample_separates_raw_mapped_and_realized(self):
+        plant = LinearPlant()
+        driver = PreviewDriver(self.driver.plan, 1.5, .5, 2., 1000.,
+                               pedal_travel_time=.2)
+        samples = []
+        def mapper(time, state, observation, requested):
+            return DriverCommand(.4, 0., requested.steering_rate)
+        solve_forward(plant, driver, self.initial, duration=.01, maximum_step=.005,
+                      initial_pedal=0., command_mapper=mapper, step_sink=samples.append)
+        first = samples[0]
+        raw = driver.command(plant.observe(first.state))
+        self.assertEqual(first.requested_command, raw)
+        self.assertEqual(first.mapped_command.throttle, .4)
+        self.assertEqual(first.command.throttle, 0.)
+
     def test_noncallable_mapper_rejected(self):
         with self.assertRaises(ValueError):
             self.run_forward(LinearPlant(), command_mapper=3)

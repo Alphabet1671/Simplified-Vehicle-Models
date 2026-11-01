@@ -25,6 +25,7 @@ Lap, line, forward-driver and maneuver solvers, with their certificates and evid
 | `fixed_path_energy_nlp.py` | Independent fixed-path energy NLP reference using a signed capability chart. |
 | `forward_backward.py` | Python module `forward_backward`. |
 | `forward_driver.py` | Drive a complete vehicle state forward along a prescribed path with optional signed-pedal dynamics. |
+| `envelope_driver.py` | Pure actual-speed and pedal-aware longitudinal control against a sampled braking envelope. |
 | `driver_maps.py` | Immutable, validated longitudinal demand and physical pedal calibration maps with strict versioned JSON configuration.
 | `forward_powertrain.py` | Shared forward-driver powertrain closure. |
 | `input_preflight.py` | Bounded filesystem admission checks for worker-owned model inputs. |

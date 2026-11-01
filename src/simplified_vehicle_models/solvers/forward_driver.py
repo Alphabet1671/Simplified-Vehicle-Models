@@ -423,8 +423,19 @@ class PreviewDriver:
     throttle_release_rate: float | None = None
     brake_apply_rate: float | None = None
     brake_release_rate: float | None = None
+    envelope_policy: object | None = None
 
     def __post_init__(self):
+        if self.envelope_policy is not None:
+            from simplified_vehicle_models.solvers.envelope_driver import EnvelopePolicy
+            if not isinstance(self.envelope_policy, EnvelopePolicy):
+                raise TypeError("envelope_policy must be EnvelopePolicy or None")
+            if self.demand_map is not None:
+                raise ValueError("envelope_policy cannot be combined with demand_map")
+            envelope = self.envelope_policy.envelope
+            if (bool(envelope.is_closed) != bool(self.plan.is_closed)
+                    or not np.isclose(envelope.distance[-1], self.plan.distance[-1])):
+                raise ValueError("envelope and speed plan path topology/length must match")
         if self.demand_map is not None:
             from simplified_vehicle_models.solvers.driver_maps import LongitudinalDemandMap
             if not isinstance(self.demand_map, LongitudinalDemandMap):
@@ -482,14 +493,8 @@ class PreviewDriver:
         return DriverCommand(max(position, 0.), max(-position, 0.) * self.maximum_brake_force,
                              requested.steering_rate)
 
-    def command(self, observation: DriverObservation) -> DriverCommand:
-        observed = vars(observation)
-        if not all(np.isfinite(value) or name == "wheel_speed_margin"
-                  for name, value in observed.items()):
-            raise ValueError("driver observations must be finite")
-        if np.isnan(observation.wheel_speed_margin):
-            raise ValueError("driver observations must be finite")
-        target, curvature, feedforward = self.plan.sample(observation.distance)
+    def _steering_command(self, observation: DriverObservation) -> float:
+        _, curvature, _ = self.plan.sample(observation.distance)
         _, preview_curvature, _ = self.plan.sample(
             observation.distance + max(observation.speed, 0.) * self.preview_seconds)
         course_error = observation.heading_error + np.arctan2(
@@ -500,11 +505,43 @@ class PreviewDriver:
             - np.arctan2(self.lateral_gain * observation.lateral_error,
                          max(observation.speed, 1.))
             - 0.1 * (observation.yaw_rate - observation.speed * curvature))
-        desired_steering = float(np.clip(desired_steering,
-                                         -self.maximum_steering, self.maximum_steering))
-        steering_rate = float(np.clip(
-            (desired_steering - observation.steering) / self.steering_time_constant,
-            -self.maximum_steering_rate, self.maximum_steering_rate))
+        desired_steering = float(np.clip(desired_steering, -self.maximum_steering, self.maximum_steering))
+        return float(np.clip((desired_steering-observation.steering)/self.steering_time_constant,
+                             -self.maximum_steering_rate,self.maximum_steering_rate))
+
+    def command_with_context(self, observation, pedal_position=None):
+        if self.envelope_policy is None:
+            return self.command(observation), None
+        from simplified_vehicle_models.solvers.envelope_driver import PedalPolicyContext
+        context = None
+        if self.has_pedal_dynamics:
+            release = self.throttle_release_rate if self.throttle_release_rate is not None else 1./self.pedal_travel_time
+            apply = self.brake_apply_rate if self.brake_apply_rate is not None else 1./self.pedal_travel_time
+            context = PedalPolicyContext(release, apply, self.pedal_time_constant,
+                                         self.maximum_brake_force,self.brake_governor_margin)
+        decision = self.envelope_policy.decide(observation,pedal_position,context)
+        if context is None:
+            from dataclasses import replace
+            governor = float(np.clip(observation.wheel_speed_margin / self.brake_governor_margin, 0., 1.))
+            decision = replace(decision,
+                ungoverned_brake_force=decision.ungoverned_brake_force*self.maximum_brake_force,
+                governor_factor=governor,
+                governed_brake_force=decision.ungoverned_brake_force*self.maximum_brake_force*governor,
+                governor_shortfall=decision.ungoverned_brake_force*self.maximum_brake_force > decision.ungoverned_brake_force*self.maximum_brake_force*governor+1e-12)
+        return DriverCommand(decision.requested_throttle,decision.governed_brake_force,
+                             self._steering_command(observation)), decision
+
+    def command(self, observation: DriverObservation) -> DriverCommand:
+        if self.envelope_policy is not None:
+            return self.command_with_context(observation,None)[0]
+        observed = vars(observation)
+        if not all(np.isfinite(value) or name == "wheel_speed_margin"
+                  for name, value in observed.items()):
+            raise ValueError("driver observations must be finite")
+        if np.isnan(observation.wheel_speed_margin):
+            raise ValueError("driver observations must be finite")
+        target, curvature, feedforward = self.plan.sample(observation.distance)
+        steering_rate = self._steering_command(observation)
         acceleration = feedforward + self.speed_gain * (target - observation.speed)
         if self.demand_map is None:
             throttle = float(np.clip(acceleration / 6., 0., 1.))
@@ -572,6 +609,7 @@ class StepSample:
     pedal: float | None
     requested_command: DriverCommand | None = None
     mapped_command: DriverCommand | None = None
+    policy_diagnostics: object | None = None
 
 
 def _map_driver_command(command_mapper, time, plant_state, observation, requested, driver):
@@ -624,6 +662,11 @@ def solve_forward(plant: ForwardPlant, driver: PreviewDriver, initial_state,
 
     if command_mapper is not None and not callable(command_mapper):
         raise ValueError("command_mapper must be callable or None")
+    policy_enabled = getattr(driver, "envelope_policy", None) is not None
+    if policy_enabled and getattr(driver, "demand_map", None) is not None:
+        raise ValueError("envelope_policy cannot be combined with demand_map")
+    if policy_enabled and command_mapper is not None:
+        raise ValueError("envelope_policy cannot be combined with command_mapper")
     if getattr(driver, "demand_map", None) is not None and command_mapper is not None:
         raise ValueError("driver demand_map cannot be combined with command_mapper")
     limits = np.asarray([duration, wall_seconds, maximum_step, rtol, atol,
@@ -646,7 +689,10 @@ def solve_forward(plant: ForwardPlant, driver: PreviewDriver, initial_state,
         # The foot starts where the driver wants it, so the run does not open
         # with a pedal transient.
         observation = plant.observe(plant_initial)
-        requested = driver.command(observation)
+        if policy_enabled:
+            requested, _ = driver.command_with_context(observation, initial_pedal)
+        else:
+            requested = driver.command(observation)
         if command_mapper is not None:
             try:
                 requested = _map_driver_command(command_mapper, 0., plant_initial,
@@ -665,11 +711,18 @@ def solve_forward(plant: ForwardPlant, driver: PreviewDriver, initial_state,
     #: Commands from the latest ``state_rates`` call, read only by ``step_sink``.
     applied = [None]
     command_stages = [None]
+    policy_stage = [None]
 
     def raw_state_rates(time, state):
         plant_state = state[:plant_size]
         observation = plant.observe(plant_state)
-        requested = driver.command(observation)
+        if policy_enabled:
+            requested, decision = driver.command_with_context(
+                observation, float(state[plant_size]) if pedal_dynamics else None)
+            policy_stage[0] = decision
+        else:
+            requested = driver.command(observation)
+            policy_stage[0] = None
         mapped = requested
         if command_mapper is not None:
             mapped = _map_driver_command(command_mapper, float(time), plant_state,
@@ -800,7 +853,7 @@ def solve_forward(plant: ForwardPlant, driver: PreviewDriver, initial_state,
                 step_number, float(time_value), np.array(state[:plant_size], dtype=float),
                 np.array(accepted_rates[:plant_size], dtype=float), applied[0],
                 float(np.clip(state[plant_size], -1., 1.)) if pedal_dynamics else None,
-                command_stages[0][0], command_stages[0][1]))
+                command_stages[0][0], command_stages[0][1], policy_stage[0]))
             timings["record_writing_seconds"] += perf_counter() - record_started
             counts["records_written"] += 1
     # Endpoints are not enough: reconstruct each interval's interior state

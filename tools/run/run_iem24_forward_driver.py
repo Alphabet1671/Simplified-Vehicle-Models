@@ -593,14 +593,17 @@ def parse_args(argv=None):
 
 
 def load_runner_pedal_map(path):
-    from simplified_vehicle_models.solvers.driver_maps import PedalMapConfiguration, load_pedal_map_config
+    from simplified_vehicle_models.solvers.driver_maps import PedalMapConfiguration, parse_pedal_map_config
     if path is None:
         config = PedalMapConfiguration()
         return None, config, None
     raw = Path(path).read_bytes()
-    import json as _json
-    payload = _json.loads(raw.decode("utf-8"))
-    config = load_pedal_map_config(path)
+
+    def reject_constant(value):
+        raise ValueError(f"nonfinite JSON constant {value} is not allowed")
+
+    payload = json.loads(raw.decode("utf-8"), parse_constant=reject_constant)
+    config = parse_pedal_map_config(payload)
     return payload, config, hashlib.sha256(raw).hexdigest()
 
 
@@ -615,8 +618,10 @@ def pedal_map_provenance(args, vehicle=None):
             "original_json": args.pedal_map_config_payload, "file_sha256": args.pedal_map_file_sha256,
             "normalized": config.to_dict() if config is not None else None,
             "semantic_sha256": identity,
-            "demand_map": config.demand_map is not None if config else False,
-            "physical_calibration": config.physical_calibration is not None if config else False}, bound
+            "demand_map": (config.to_dict()["demand_map"] if config else None),
+            "physical_calibration": (config.to_dict()["physical_calibration"] if config else None),
+            "has_demand_map": bool(config and config.demand_map is not None),
+            "has_physical_calibration": bool(config and config.physical_calibration is not None)}, bound
 
 
 #: File name of the optional run record inside an attempt directory.

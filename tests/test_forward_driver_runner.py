@@ -17,6 +17,9 @@ from simplified_vehicle_models.compiler.capabilities import (
     SUSPENSION_FORCES, TRANSIENT_COMBINED_SLIP,
 )
 from simplified_vehicle_models.compiler.compile import compile_formulation
+from simplified_vehicle_models.solvers.driver_maps import (
+    LongitudinalDemandMap, MonotoneTable1D, PedalActuatorCalibration,
+)
 from simplified_vehicle_models.solvers.forward_driver import (
     DriverObservation, ForwardResult, PreviewDriver, RateSystem, SpeedPlan, solve_forward,
 )
@@ -331,6 +334,226 @@ class RunnerTests(unittest.TestCase):
             command = run.call_args.args[0]
             self.assertEqual(command[command.index("--pedal-map-config") + 1], str(path))
             self.assertIn("--expected-pedal-map-sha256", command)
+
+    def test_child_rejects_mutated_config_before_solver_or_state_reads(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            config_path = Path(temporary) / "map.json"
+            config_path.write_text(json.dumps({"schema_version": 1}))
+            parent_args = parse_args(["--pedal-map-config", str(config_path)])
+            config_path.write_text(json.dumps({"schema_version": 1, "demand_map": self._demand_payload()}))
+            child_args = ["--pedal-map-config", str(config_path), "--child-attempt", temporary,
+                          "--expected-pedal-map-sha256", parent_args.pedal_map_file_sha256]
+            with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                parse_args(child_args)
+            with patch("tools.run.run_iem24_forward_driver.subprocess.run") as spawn:
+                with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                    main(child_args)
+                spawn.assert_not_called()
+
+    def test_warm_start_mismatch_rejected_before_saved_arrays_read(self):
+        hashes = {"track.xml": "a"}
+        args = parse_args([])
+        settings = {"planner": "conservative", "maximum_speed": 8., "lateral_acceleration": None,
+                    "pedal_travel_time": .175, "spacing": .5, "preview_seconds": .15,
+                    "heading_gain": 1.5, "lateral_gain": 1.5, "speed_gain": 2.,
+                    "lateral_margin": None, "track": str(args.track)}
+        previous = {"status": "Completed", "lap_completed": True, "source_hashes": hashes,
+                    "settings": settings, "pedal_map": {"semantic_sha256": "different"}}
+        self.assertFalse(warm_start_matches(previous, hashes, args, "current"))
+
+    def test_runner_parses_and_hashes_same_config_bytes(self):
+        from tools.run.run_iem24_forward_driver import load_runner_pedal_map
+        payload = {"schema_version": 1, "demand_map": {
+            "units": {"acceleration_axis": "m/s^2", "deceleration_axis": "m/s^2", "pedal_output": "1"},
+            "acceleration_to_throttle": {"axis": [0, 2, 5], "value": [0, .2, 1]},
+            "deceleration_to_brake": {"axis": [0, 3, 6], "value": [0, .3, 1]}}, "physical_calibration": None}
+        original = json.dumps(payload).encode()
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "map.json"
+            path.write_bytes(original)
+            real_read = Path.read_bytes
+            reads = []
+            def replacing_read(target):
+                data = real_read(target)
+                reads.append(target)
+                if target == path:
+                    path.write_text('{"schema_version": 2}')
+                return data
+            with patch.object(Path, "read_bytes", replacing_read):
+                original_json, config, digest = load_runner_pedal_map(path)
+            self.assertEqual(reads.count(path), 1)
+            self.assertEqual(original_json, payload)
+            self.assertEqual(digest, hashlib.sha256(original).hexdigest())
+            self.assertEqual(config.demand_map.command(2), (.2, 0.0))
+
+    def test_parent_and_run_record_metadata_keep_map_identity(self):
+        from tools.run.run_iem24_forward_driver import write_run_record
+        payload = {"schema_version": 1, "demand_map": self._demand_payload(),
+                   "physical_calibration": self._physical_payload()}
+        with tempfile.TemporaryDirectory() as temporary:
+            config_path = Path(temporary) / "map.json"
+            config_path.write_text(json.dumps(payload))
+            with patch("tools.run.run_iem24_forward_driver.subprocess.run",
+                       return_value=subprocess.CompletedProcess([], 0)) as run:
+                with contextlib.redirect_stdout(io.StringIO()):
+                    main(["--output-root", temporary, "--pedal-map-config", str(config_path)])
+            attempt = next(Path(temporary).glob("attempt_*"))
+            parent = json.loads((attempt / "parent.json").read_text())
+            self.assertEqual(parent["pedal_map"]["file_sha256"], hashlib.sha256(config_path.read_bytes()).hexdigest())
+            self.assertTrue(parent["pedal_map"]["semantic_sha256"])
+            self.assertIn("--expected-pedal-map-sha256", run.call_args.args[0])
+
+        class Sink:
+            rows = 3
+            def close(self, manifest, created_utc):
+                self.manifest, self.created_utc = manifest, created_utc
+                return Path("run_record.npz")
+        with tempfile.TemporaryDirectory() as metadata_temp:
+            metadata_path = Path(metadata_temp) / "map.json"
+            metadata_path.write_text(json.dumps(payload))
+            args = parse_args(["--pedal-map-config", str(metadata_path)])
+            provenance = {"schema_version": 1, "source_path": str(metadata_path),
+                          "original_json": payload,
+                          "file_sha256": hashlib.sha256(metadata_path.read_bytes()).hexdigest(),
+                          "semantic_sha256": args.pedal_map_config.sha256,
+                          "normalized": args.pedal_map_config.to_dict(),
+                          "demand_map": args.pedal_map_config.to_dict()["demand_map"],
+                          "physical_calibration": args.pedal_map_config.to_dict()["physical_calibration"],
+                          "has_demand_map": True, "has_physical_calibration": True}
+        summary = {"pedal_map": provenance}
+        sink = Sink()
+        spec = model_spec("planar-7dof")
+        class Result:
+            time = np.array([0., 1.])
+            lap_completed = True
+            wall_seconds = 1.
+        with patch("scipy.__version__", "test-version"):
+            write_run_record(sink, args, summary, {}, spec, Result(), None)
+        self.assertEqual(sink.manifest["pedal_map"], provenance)
+
+    def test_no_map_child_keeps_legacy_default_and_explicit_null_layers(self):
+        root, _, code = run_fake_child("planar-7dof", FakePlanarPlant)
+        self.assertEqual(code, 0)
+        summary = json.loads((root / "summary.json").read_text())
+        self.assertIsNone(summary["pedal_map"]["demand_map"])
+        self.assertIsNone(summary["pedal_map"]["physical_calibration"])
+        self.assertEqual(summary["pedal_map"]["semantic_sha256"], "no-pedal-map")
+        self.assertFalse(summary["pedal_map"]["has_physical_calibration"])
+
+    def test_child_summary_records_full_map_identity_and_layers(self):
+        from tools.run.run_iem24_forward_driver import pedal_map_provenance
+        payload = {"schema_version": 1, "demand_map": self._demand_payload(),
+                   "physical_calibration": self._physical_payload()}
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "both.json"
+            path.write_text(json.dumps(payload))
+            root, calls, code = run_fake_child("planar-7dof", FakePlanarPlant,
+                extra_args=("--pedal-map-config", str(path),))
+            self.assertEqual(code, 0)
+            summary = json.loads((root / "summary.json").read_text())
+            self.assertEqual(summary["pedal_map"]["original_json"], payload)
+            self.assertEqual(summary["pedal_map"]["file_sha256"], hashlib.sha256(path.read_bytes()).hexdigest())
+            self.assertEqual(summary["pedal_map"]["normalized"]["physical_calibration"], payload["physical_calibration"])
+            self.assertEqual(summary["runtime_model_identity"]["semantic_pedal_map_sha256"],
+                             summary["pedal_map"]["semantic_sha256"])
+            self.assertTrue(summary["pedal_map"]["has_demand_map"])
+            self.assertEqual(len(calls), 1)
+
+    def test_runner_captures_each_layer_and_both_in_mocks(self):
+        from dataclasses import dataclass
+        from tools.run.run_iem24_forward_driver import pedal_map_provenance
+        from simplified_vehicle_models.solvers.forward_driver import PreviewDriver
+        from types import SimpleNamespace
+        controller = SimpleNamespace(actuator_calibration=None)
+        assembly = SimpleNamespace(controller=controller)
+        vehicle = SimpleNamespace(controller=controller,
+                                  drivetrain=SimpleNamespace(drivetrain=assembly),
+                                  wheelbase=1.5, steering_maximum_angle=.5,
+                                  steering_maximum_rate=2., maximum_pedal_force=1000.)
+        @dataclass(frozen=True)
+        class Replaceable:
+            controller: object
+            actuator_calibration: object = None
+        @dataclass(frozen=True)
+        class Assembly:
+            controller: object
+        @dataclass(frozen=True)
+        class Runtime:
+            drivetrain: object
+        @dataclass(frozen=True)
+        class Vehicle:
+            controller: object
+            drivetrain: object
+        original_controller = Replaceable(None)
+        compiled = Vehicle(original_controller, Runtime(Assembly(original_controller)))
+        demand = LongitudinalDemandMap(MonotoneTable1D([0, 2, 5], [0, .2, 1], "m/s^2", "1"),
+                                       MonotoneTable1D([0, 3, 6], [0, .3, 1], "m/s^2", "1"))
+        physical = PedalActuatorCalibration(MonotoneTable1D([0, .2, 1], [0, .1, 1], "1", "1"),
+                                            MonotoneTable1D([0, .25, 1], [0, .1, 1], "1", "1"))
+        for use_demand, use_physical in ((False, False), (True, False), (False, True), (True, True)):
+            config_payload = {"schema_version": 1,
+                "demand_map": self._demand_payload() if use_demand else None,
+                "physical_calibration": self._physical_payload() if use_physical else None}
+            with tempfile.TemporaryDirectory() as temporary:
+                path = Path(temporary) / "map.json"
+                path.write_text(json.dumps(config_payload))
+                args = parse_args(["--pedal-map-config", str(path)])
+                provenance, bound = pedal_map_provenance(args, compiled)
+                self.assertEqual(bound.controller.actuator_calibration is not None, use_physical)
+                self.assertEqual(bound.controller, bound.drivetrain.drivetrain.controller)
+                self.assertEqual(args.pedal_map_config.demand_map is not None, use_demand)
+                self.assertEqual(provenance["has_demand_map"], use_demand)
+                self.assertEqual(provenance["has_physical_calibration"], use_physical)
+                self.assertEqual(PreviewDriver.__dataclass_fields__["demand_map"].default, None)
+                driver = PreviewDriver(SpeedPlan(np.array([0., 1.]), np.array([1., 1.]),
+                    np.array([0., 0.]), is_closed=False), 1.5, .5, 2., 1000.,
+                    demand_map=args.pedal_map_config.demand_map)
+                self.assertEqual(driver.demand_map is not None, use_demand)
+
+    def _demand_payload(self):
+        return {"units": {"acceleration_axis": "m/s^2", "deceleration_axis": "m/s^2", "pedal_output": "1"},
+                "acceleration_to_throttle": {"axis": [0, 2, 5], "value": [0, .2, 1]},
+                "deceleration_to_brake": {"axis": [0, 3, 6], "value": [0, .3, 1]}}
+
+    def _physical_payload(self):
+        return {"units": {"throttle_input": "1", "throttle_effective_request": "1", "brake_input": "1", "brake_effective_request": "1"},
+                "throttle_fraction": {"axis": [0, .2, 1], "value": [0, .1, 1]},
+                "brake_force_fraction": {"axis": [0, .25, 1], "value": [0, .1, 1]}}
+
+    def test_invalid_map_variants_fail_before_attempt_or_spawn(self):
+        from tools.run.run_iem24_forward_driver import load_runner_pedal_map
+        cases = [b'{"schema_version": 1, "bad": NaN}',
+                 b'{"schema_version": 2}',
+                 json.dumps({"schema_version": 1, "demand_map": {
+                     "units": {"acceleration_axis": "m/s^2", "deceleration_axis": "m/s^2", "pedal_output": "%"},
+                     "acceleration_to_throttle": {"axis": [0, 1], "value": [0, 1]},
+                     "deceleration_to_brake": {"axis": [0, 1], "value": [0, 1]}}}).encode(),
+                 b'{"schema_version": 1, "mystery": 1}']
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "bad.json"
+            for payload in cases:
+                path.write_bytes(payload)
+                with self.subTest(payload=payload), contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                    parse_args(["--pedal-map-config", str(path)])
+            with patch("tools.run.run_iem24_forward_driver.subprocess.run") as spawn:
+                path.write_bytes(cases[-1])
+                with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                    main(["--output-root", temporary, "--pedal-map-config", str(path)])
+                spawn.assert_not_called()
+
+    def test_warm_start_requires_semantic_map_and_legacy_only_no_map(self):
+        args = parse_args([])
+        hashes = {"track.xml": "a"}
+        settings = {"planner": "conservative", "maximum_speed": 8., "lateral_acceleration": None,
+                    "pedal_travel_time": .175, "spacing": .5, "preview_seconds": .15,
+                    "heading_gain": 1.5, "lateral_gain": 1.5, "speed_gain": 2.,
+                    "lateral_margin": None, "track": str(args.track)}
+        legacy = {"status": "Completed", "lap_completed": True, "source_hashes": hashes, "settings": settings}
+        self.assertTrue(warm_start_matches(legacy, hashes, args, "no-pedal-map"))
+        self.assertFalse(warm_start_matches(legacy, hashes, args, "custom-map"))
+        mapped = dict(legacy, pedal_map={"semantic_sha256": "custom-map"})
+        self.assertTrue(warm_start_matches(mapped, hashes, args, "custom-map"))
+        self.assertFalse(warm_start_matches(mapped, hashes, args, "different-map"))
 
     def test_no_map_default_and_mutated_config_rejected_before_attempt(self):
         from tools.run.run_iem24_forward_driver import pedal_map_provenance

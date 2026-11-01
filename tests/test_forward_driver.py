@@ -7,6 +7,7 @@ from simplified_vehicle_models.compiler.compile import compile_formulation
 from simplified_vehicle_models.solvers.forward_driver import (
     RateSystem, DriverObservation, PreviewDriver, build_speed_plan, solve_forward,
 )
+from simplified_vehicle_models.solvers.driver_maps import LongitudinalDemandMap, MonotoneTable1D
 
 
 class RateSystemTests(unittest.TestCase):
@@ -70,6 +71,29 @@ class DriverTests(unittest.TestCase):
         self.assertEqual(self.driver.preview_seconds, .15)
         self.assertEqual(self.driver.heading_gain, 1.5)
         self.assertEqual(self.driver.lateral_gain, 1.5)
+
+    def test_custom_demand_map_replaces_only_longitudinal_arithmetic(self):
+        demand = LongitudinalDemandMap(
+            MonotoneTable1D((0., 2., 4.), (0., .8, 1.), "m/s^2", "1"),
+            MonotoneTable1D((0., 4., 8.), (0., .6, 1.), "m/s^2", "1"),
+        )
+        flat_plan = build_speed_plan(np.array([0., 100.]), np.zeros(2), 10.,
+                                     3., 2., 3.)
+        legacy = PreviewDriver(flat_plan, 1.5, .5, 2., 1000.)
+        configured = PreviewDriver(flat_plan, 1.5, .5, 2., 1000., demand_map=demand)
+        positive = DriverObservation(20., .02, .01, 9., .1, .03)
+        mapped = configured.command(positive)
+        self.assertAlmostEqual(mapped.throttle, .8)
+        self.assertEqual(mapped.brake_force, 0.)
+        self.assertAlmostEqual(mapped.steering_rate, legacy.command(positive).steering_rate)
+        negative = DriverObservation(50., .02, .01, 12., .1, .03,
+                                    wheel_speed_margin=.425)
+        mapped_brake = configured.command(negative)
+        self.assertAlmostEqual(mapped_brake.brake_force, 300.)
+        self.assertEqual(mapped_brake.throttle, 0.)
+        self.assertAlmostEqual(mapped_brake.steering_rate, legacy.command(negative).steering_rate)
+        coast = configured.command(DriverObservation(30., 0., 0., 10., 0., 0.))
+        self.assertEqual((coast.throttle, coast.brake_force), (0., 0.))
 
     def test_driver_sign_limits_and_overlap(self):
         command = self.driver.command(DriverObservation(50., 0., 0., 15., 0., 0.))

@@ -118,6 +118,25 @@ class ForwardCommandMapperTests(unittest.TestCase):
         self.assertEqual(first.mapped_command.throttle, .4)
         self.assertEqual(first.command.throttle, 0.)
 
+    def test_demand_map_and_external_mapper_rejected_before_plant_or_mapper(self):
+        from simplified_vehicle_models.solvers.driver_maps import LongitudinalDemandMap, MonotoneTable1D
+        demand = LongitudinalDemandMap(
+            MonotoneTable1D((0., 2.), (0., 1.), "m/s^2", "1"),
+            MonotoneTable1D((0., 2.), (0., 1.), "m/s^2", "1"),
+        )
+        driver = PreviewDriver(self.driver.plan, 1.5, .5, 2., 1000., demand_map=demand)
+        class ForbiddenPlant:
+            state_size = 2
+            def observe(self, state): raise AssertionError("observe reached")
+            def evaluate(self, time, state, command): raise AssertionError("evaluate reached")
+        calls = []
+        def mapper(*args):
+            calls.append(args)
+            return args[3]
+        with self.assertRaisesRegex(ValueError, "demand_map.*command_mapper"):
+            solve_forward(ForbiddenPlant(), driver, self.initial, command_mapper=mapper)
+        self.assertEqual(calls, [])
+
     def test_noncallable_mapper_rejected(self):
         with self.assertRaises(ValueError):
             self.run_forward(LinearPlant(), command_mapper=3)

@@ -7,10 +7,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from numbers import Real
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 from time import perf_counter
 
 import numpy as np
+
+if TYPE_CHECKING:
+    from simplified_vehicle_models.solvers.driver_maps import LongitudinalDemandMap
 
 
 class TrialStateError(ValueError):
@@ -414,8 +417,13 @@ class PreviewDriver:
     #: First-order time constant of the foot tracking its pedal target inside
     #: the slew-rate limit. Keeps the pedal rate continuous in the state.
     pedal_time_constant: float = 0.02
+    demand_map: LongitudinalDemandMap | None = None
 
     def __post_init__(self):
+        if self.demand_map is not None:
+            from simplified_vehicle_models.solvers.driver_maps import LongitudinalDemandMap
+            if not isinstance(self.demand_map, LongitudinalDemandMap):
+                raise TypeError("demand_map must be LongitudinalDemandMap or None")
         values = [self.wheelbase, self.maximum_steering, self.maximum_steering_rate,
                   self.maximum_brake_force, self.speed_gain, self.heading_gain,
                   self.lateral_gain, self.steering_time_constant, self.brake_governor_margin]
@@ -474,8 +482,11 @@ class PreviewDriver:
             (desired_steering - observation.steering) / self.steering_time_constant,
             -self.maximum_steering_rate, self.maximum_steering_rate))
         acceleration = feedforward + self.speed_gain * (target - observation.speed)
-        throttle = float(np.clip(acceleration / 6., 0., 1.))
-        brake_request = float(np.clip(-acceleration / 6., 0., 1.))
+        if self.demand_map is None:
+            throttle = float(np.clip(acceleration / 6., 0., 1.))
+            brake_request = float(np.clip(-acceleration / 6., 0., 1.))
+        else:
+            throttle, brake_request = self.demand_map.command(acceleration)
         # Govern the brake request against how close the most-locked wheel's
         # slip ratio is to full lock. A point-mass-style plant reports +inf
         # here, so clip(..., 1) below saturates at 1 (a no-op) for it; the
@@ -589,6 +600,8 @@ def solve_forward(plant: ForwardPlant, driver: PreviewDriver, initial_state,
 
     if command_mapper is not None and not callable(command_mapper):
         raise ValueError("command_mapper must be callable or None")
+    if getattr(driver, "demand_map", None) is not None and command_mapper is not None:
+        raise ValueError("driver demand_map cannot be combined with command_mapper")
     limits = np.asarray([duration, wall_seconds, maximum_step, rtol, atol,
                          maximum_wall_seconds], dtype=float)
     if not np.all(np.isfinite(limits)) or np.any(limits <= 0):

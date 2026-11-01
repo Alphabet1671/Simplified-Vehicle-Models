@@ -76,17 +76,23 @@ class EnvelopePolicy:
             raise TypeError('envelope must provide sample(station)')
         if not isinstance(self.settings,EnvelopeDriverSettings):
             raise TypeError('settings must be EnvelopeDriverSettings')
+    @staticmethod
+    def _derived(value, name):
+        value=float(value)
+        if not math.isfinite(value):
+            raise ValueError(f"nonfinite derived {name} in envelope policy")
+        return value
+
     def decide(self, observation, pedal_position=None, context=None):
-        for name in ('distance','lateral_error','heading_error','speed','yaw_rate','steering','lateral_speed'):
-            value=getattr(observation,name)
-            _finite(value,f'observation.{name}',positive=False)
+        for name in ('distance','lateral_error','heading_error','yaw_rate','steering','lateral_speed'):
+            _finite(getattr(observation,name),f'observation.{name}',positive=False)
+        v=_finite(observation.speed,'observation.speed',positive=False)
         margin=getattr(observation,'wheel_speed_margin',float('inf'))
         if isinstance(margin,bool) or not isinstance(margin,Real) or math.isnan(float(margin)):
             raise ValueError('observation.wheel_speed_margin must be numeric and not NaN')
         if margin < 0:
             raise ValueError('observation.wheel_speed_margin must be nonnegative')
         s=float(observation.distance)
-        v=float(observation.speed)
         if pedal_position is not None:
             if isinstance(pedal_position,bool) or not isinstance(pedal_position,Real): raise TypeError('pedal_position must be real')
             p=float(pedal_position)
@@ -101,20 +107,30 @@ class EnvelopePolicy:
             p_for_time=1. if p is None else p
             T=max(p_for_time,0.)/context.throttle_release_rate+(1.-max(-p_for_time,0.))/context.brake_apply_rate+self.settings.response_allowance_s+3.*context.pedal_time_constant
             maxbrake=context.maximum_brake_force; governor_margin=context.governor_margin
-        reserve=v*T+.5*self.settings.positive_acceleration_reserve_mps2*T*T
-        current=self.envelope.sample(s); preview=self.envelope.sample(s+reserve)
-        qpreview=preview.squared_speed
-        qcorner=current.corner_speed**2
-        qglobal=self.envelope.maximum_speed**2
+        T=self._derived(T,'transition time')
+        reserve=self._derived(v*T+.5*self.settings.positive_acceleration_reserve_mps2*T*T,'reserve distance')
+        preview_station=self._derived(s+reserve,'preview station')
+        current=self.envelope.sample(s); preview=self.envelope.sample(preview_station)
+        qpreview=self._derived(preview.squared_speed,'preview squared speed')
+        qcorner=self._derived(current.corner_speed**2,'local corner cap squared')
+        qglobal=self._derived(self.envelope.maximum_speed**2,'global cap squared')
         qref=min(qpreview,qcorner,qglobal)
         binds_local=qcorner<=qpreview and qcorner<=qglobal
         binds_global=qglobal<=qpreview and qglobal<=qcorner
         slope=0. if binds_local or binds_global else preview.squared_speed_slope
         reference=math.sqrt(max(0.,qref))
-        raw=.5*slope+self.settings.speed_gain*(reference-v)
+        reference=self._derived(reference,'reference speed')
+        slope=self._derived(slope,'selected squared-speed slope')
+        raw=self._derived(.5*slope+self.settings.speed_gain*(reference-v),'acceleration request')
         throttle=0. if v>=self.envelope.maximum_speed or raw<=0 else min(1.,raw/self.settings.throttle_acceleration_scale)
-        brake=min(1.,max(0.,-raw/self.settings.brake_acceleration_scale))*maxbrake
+        brake=self._derived(min(1.,max(0.,-raw/self.settings.brake_acceleration_scale))*maxbrake,'ungoverned brake force')
         margin=getattr(observation,'wheel_speed_margin',float('inf'))
         governor=min(1.,max(0.,margin/governor_margin))
-        governed=brake*governor
-        return EnvelopeDecision(s,v,p,current.corner_speed,s+reserve,preview.entry_speed,reference,qref,slope,preview.deceleration,preview.binding_index,preview.binding_station,preview.binding_distance,preview.speed_domain_max,T,reserve,qref-v*v,raw,throttle,brake,governor,governed,(v>current.speed_domain_max or v>preview.speed_domain_max),brake>governed+1e-12)
+        governed=self._derived(brake*governor,'governed brake force')
+        slack=self._derived(qref-v*v,'squared-speed slack')
+        diagnostics=(s,v,p,current.corner_speed,preview_station,preview.entry_speed,reference,qref,slope,
+                     preview.deceleration,preview.binding_index,preview.binding_station,preview.binding_distance,
+                     preview.speed_domain_max,T,reserve,slack,raw,throttle,brake,governor,governed)
+        if any(isinstance(value,float) and not math.isfinite(value) for value in diagnostics):
+            raise ValueError('nonfinite envelope policy diagnostic')
+        return EnvelopeDecision(s,v,p,current.corner_speed,preview_station,preview.entry_speed,reference,qref,slope,preview.deceleration,preview.binding_index,preview.binding_station,preview.binding_distance,preview.speed_domain_max,T,reserve,slack,raw,throttle,brake,governor,governed,(v>current.speed_domain_max or v>preview.speed_domain_max),brake>governed+1e-12)

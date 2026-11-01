@@ -485,7 +485,34 @@ def tire_xml_path(vehicle_xml=VEHICLE, role="tire"):
     return component_xml(vehicle_xml, role)
 
 
-def warm_start_matches(previous, source_hashes, args, pedal_map_sha256=None):
+def command_dict(command):
+    if command is None:
+        return None
+    return {"throttle": float(command.throttle), "brake_force": float(command.brake_force),
+            "steering_rate": float(command.steering_rate)}
+
+
+def canonical_json(value):
+    """Serialize JSON identity records without lossy coercion or NaN."""
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
+
+
+def policy_identity_settings(args):
+    """Settings and deterministic envelope-builder inputs that define policy identity."""
+    from dataclasses import asdict
+    from simplified_vehicle_models.solvers.envelope_driver import EnvelopeDriverSettings
+    return {"policy": args.longitudinal_policy,
+            "settings": asdict(EnvelopeDriverSettings(speed_gain=args.speed_gain)),
+            "builder": {"deceleration_margin": args.envelope_deceleration_margin,
+                        "speed_query_points": args.envelope_speed_points,
+                        "maximum_speed": args.maximum_speed,
+                        "lateral_margin": args.lateral_margin,
+                        "storage_state_of_charge": getattr(args, "initial_storage_soc", None),
+                        "is_closed": getattr(args, "track_is_closed", None),
+                        "builder_parameters": getattr(args, "builder_parameters", None)}}
+
+
+def warm_start_matches(previous, source_hashes, args, pedal_map_sha256=None, policy_settings_identity=None):
     """True when a previous attempt may seed this run (same plan, track and sources).
 
     Source hashes include the track XML/CSV, tire XML and formulation, so a
@@ -497,12 +524,16 @@ def warm_start_matches(previous, source_hashes, args, pedal_map_sha256=None):
     previous_policy = previous.get("longitudinal_policy", {"policy": "schedule"})
     if not isinstance(previous_policy, dict):
         previous_policy = {"policy": "schedule"}
+    current_policy_settings = policy_settings_identity or policy_identity_settings(args)
     policy_matches = (previous_policy.get("policy", "schedule") == args.longitudinal_policy
                       and settings.get("longitudinal_policy", "schedule") == args.longitudinal_policy
                       and settings.get("envelope_deceleration_margin", .6) == args.envelope_deceleration_margin
                       and settings.get("envelope_speed_points", 9) == args.envelope_speed_points
                       and previous_policy.get("deceleration_margin", .6) == args.envelope_deceleration_margin
-                      and previous_policy.get("speed_query_points", 9) == args.envelope_speed_points)
+                      and previous_policy.get("speed_query_points", 9) == args.envelope_speed_points
+                      and (args.longitudinal_policy == "schedule"
+                           or previous_policy.get("settings_identity_sha256") ==
+                              hashlib.sha256(canonical_json(current_policy_settings).encode()).hexdigest()))
     return bool(policy_matches
                 and previous.get("status") == "Completed" and previous.get("lap_completed")
                 and previous.get("source_hashes") == source_hashes
@@ -822,9 +853,12 @@ def child(args):
                             for k, v in vars(args).items() if k not in {"pedal_map_config_payload", "pedal_map_config", "pedal_map_file_sha256"}},
                 **({"longitudinal_policy": {"policy": args.longitudinal_policy,
                     "deceleration_margin": args.envelope_deceleration_margin,
-                    "speed_query_points": args.envelope_speed_points}}
+                    "speed_query_points": args.envelope_speed_points,
+                    "settings_identity_sha256": None}}
                    if args.longitudinal_policy == "braking-envelope" else {})}
     plant = None
+    policy_decisions = []
+    policy_solve_completed = False
     try:
         import numpy as np
         from simplified_vehicle_models.compiler.compile import compile_formulation
@@ -920,8 +954,28 @@ def child(args):
                 "array_sha256": array_hashes, "arrays_file": "envelope_arrays.npz",
                 "builder_source_sha256": {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in _ENVELOPE_SOURCES},
                 "caveat": "Sampled quasi-static authority may be optimistic; not a physical feasibility guarantee."}
-            summary["longitudinal_policy"]["settings_hash"] = hashlib.sha256(
-                json.dumps(summary["longitudinal_policy"], sort_keys=True, default=str).encode()).hexdigest()
+            identity_settings = {"policy": "braking-envelope", "settings": settings,
+                "builder": {"deceleration_margin": float(args.envelope_deceleration_margin),
+                    "speed_query_points": int(args.envelope_speed_points),
+                    "maximum_speed": float(args.maximum_speed), "lateral_margin": float(lateral_margin),
+                    "storage_state_of_charge": float(storage.state_of_charge),
+                    "is_closed": bool(track.is_closed)}}
+            args.builder_parameters = {"method": "sampled-quasi-static-v1",
+                "deceleration_margin": float(args.envelope_deceleration_margin),
+                "speed_query_points": int(args.envelope_speed_points),
+                "maximum_speed": float(args.maximum_speed),
+                "lateral_margin": float(lateral_margin),
+                "storage_state_of_charge": float(storage.state_of_charge),
+                "is_closed": bool(track.is_closed)}
+            identity_settings["builder"]["builder_parameters"] = args.builder_parameters
+            summary["longitudinal_policy"]["settings_identity"] = identity_settings
+            summary["longitudinal_policy"]["settings_identity_sha256"] = hashlib.sha256(
+                canonical_json(identity_settings).encode()).hexdigest()
+            summary["settings"].update(longitudinal_policy_settings_identity_sha256=
+                summary["longitudinal_policy"]["settings_identity_sha256"],
+                longitudinal_policy_settings_identity=identity_settings)
+            summary["longitudinal_policy"]["artifact_sha256"] = hashlib.sha256(
+                canonical_json({"builder": dict(envelope.provenance), "array_sha256": array_hashes}).encode()).hexdigest()
         plant_class = plant_class_for(spec, vehicle)
         # The plant publishes its layout; every column index below is derived
         # from it instead of being repeated as a literal.
@@ -966,8 +1020,11 @@ def child(args):
         if args.warm_start is not None:
             previous = json.loads((args.warm_start / "summary.json").read_text())
             previous_settings = previous.get("settings", {})
+            current_policy_identity = summary.get("longitudinal_policy", {}).get("settings_identity")
+            if current_policy_identity is not None:
+                current_policy_identity["builder"]["builder_parameters"] = args.builder_parameters
             if not warm_start_matches(previous, summary["source_hashes"], args,
-                                      summary["pedal_map"]["semantic_sha256"]):
+                                      summary["pedal_map"]["semantic_sha256"], current_policy_identity):
                 raise ValueError("warm start requires a completed lap with matching planner, speed cap, track, source hashes and pedal-map identity")
             trace = np.loadtxt(args.warm_start / "trace.csv", delimiter=",", skiprows=1)
             pedals = np.loadtxt(args.warm_start / "pedal.csv", delimiter=",", skiprows=1)
@@ -1002,8 +1059,24 @@ def child(args):
                                  precision=args.record_precision,
                                  quasi_static_attitude=args.quasi_static_attitude)
             recording["step_sink"] = sink
-        policy_decisions = []
+        policy_sidecar = root / "accepted_policy.json"
+        decision_handle = None
+        def persist_policy_prefix(status):
+            if args.longitudinal_policy != "braking-envelope":
+                return
+            payload = {"schema_version": 1, "policy": "braking-envelope", "status": status,
+                       "accepted_decision_count": len(policy_decisions),
+                       "decisions_file": "accepted_policy.jsonl"}
+            temporary_path = policy_sidecar.with_suffix(".json.tmp")
+            with temporary_path.open("w") as handle:
+                json.dump(payload, handle, indent=2, allow_nan=False)
+                handle.write("\n")
+                handle.flush()
+            temporary_path.replace(policy_sidecar)
         if args.longitudinal_policy == "braking-envelope":
+            decision_path = root / "accepted_policy.jsonl"
+            decision_handle = decision_path.open("w")
+            persist_policy_prefix("in_progress")
             ordinary_sink = recording.get("step_sink")
             def accepted_policy_sink(sample):
                 if ordinary_sink is not None:
@@ -1011,22 +1084,30 @@ def child(args):
                 if sample.policy_diagnostics is None:
                     raise RuntimeError("accepted envelope-policy sample lacks cached decision")
                 applied = sample.command
-                policy_decisions.append({"time": float(sample.time), "step_index": int(sample.index),
+                decision = {"time": float(sample.time), "step_index": int(sample.index),
                     "decision": sample.policy_diagnostics.to_dict(),
-                    "applied_command": {"throttle": float(applied.throttle), "brake_force": float(applied.brake_force),
-                                        "steering_rate": float(applied.steering_rate)},
-                    "pedal": None if sample.pedal is None else float(sample.pedal)})
+                    "requested_command": command_dict(sample.requested_command),
+                    "mapped_command": command_dict(sample.mapped_command),
+                    "applied_command": command_dict(sample.command),
+                    "pedal": None if sample.pedal is None else float(sample.pedal)}
+                decision_handle.write(json.dumps(decision, separators=(",", ":"), allow_nan=False) + "\n")
+                decision_handle.flush()
+                policy_decisions.append(decision)
             recording["step_sink"] = accepted_policy_sink
-        result = solve_forward(plant, driver, initial, duration=args.duration,
-                               wall_seconds=remaining,
-                               maximum_wall_seconds=args.timeout_seconds,
-                               maximum_step=args.maximum_step,
-                               rtol=args.rtol, atol=args.rtol * .01, method=args.method,
-                                initial_pedal=initial_pedal, **recording)
+        try:
+            result = solve_forward(plant, driver, initial, duration=args.duration,
+                                   wall_seconds=remaining,
+                                   maximum_wall_seconds=args.timeout_seconds,
+                                   maximum_step=args.maximum_step,
+                                   rtol=args.rtol, atol=args.rtol * .01, method=args.method,
+                                   initial_pedal=initial_pedal, **recording)
+            policy_solve_completed = True
+        finally:
+            if decision_handle is not None:
+                decision_handle.close()
+            persist_policy_prefix("complete" if policy_solve_completed else "accepted_prefix_incomplete")
         summary["solver_elapsed_seconds"] = float(result.wall_seconds)
         if args.longitudinal_policy == "braking-envelope":
-            (root / "accepted_policy.json").write_text(json.dumps({"schema_version": 1,
-                "policy": "braking-envelope", "decisions": policy_decisions}, indent=2, allow_nan=False) + "\n")
             summary["accepted_policy_file"] = "accepted_policy.json"
             summary["accepted_policy_decisions"] = len(policy_decisions)
         if sink is not None:
@@ -1159,6 +1240,24 @@ def child(args):
         summary.update(status="Timed_Out" if isinstance(error, TimeoutError) else "Rejected",
                        error=f"{type(error).__name__}: {error}")
     finally:
+        if args.longitudinal_policy == "braking-envelope":
+            summary["accepted_policy_file"] = "accepted_policy.json"
+            summary["accepted_policy_decisions"] = len(policy_decisions)
+            summary["accepted_policy_status"] = ("complete" if policy_solve_completed else "accepted_prefix_incomplete")
+            policy_record = summary.get("longitudinal_policy")
+            if not isinstance(policy_record, dict):
+                policy_record = {"policy": "braking-envelope", "settings_identity_status": "unavailable_before_policy_build"}
+                summary["longitudinal_policy"] = policy_record
+            if "settings_identity" in policy_record:
+                policy_record["settings_identity_sha256"] = hashlib.sha256(
+                    canonical_json(policy_record["settings_identity"]).encode()).hexdigest()
+                summary["settings"]["longitudinal_policy_settings_identity_sha256"] = policy_record["settings_identity_sha256"]
+            else:
+                policy_record["settings_identity_status"] = "unavailable_before_policy_build"
+            if "builder" in policy_record or "array_sha256" in policy_record:
+                policy_record["artifact_sha256"] = hashlib.sha256(
+                    canonical_json({"builder": policy_record.get("builder"),
+                                    "array_sha256": policy_record.get("array_sha256")}).encode()).hexdigest()
         if plant is not None:
             summary.update(last_rhs_time=plant.last_time, last_rhs_distance=plant.last_distance,
                            plant_evaluations=plant.evaluations,
@@ -1200,10 +1299,18 @@ def main(argv=None):
         return child(args)
     attempt = args.output_root / f"attempt_{time.time_ns()}"
     attempt.mkdir(parents=True, exist_ok=False)
+    if args.longitudinal_policy == "braking-envelope":
+        (attempt / "accepted_policy.json").write_text(json.dumps({"schema_version": 1,
+            "policy": "braking-envelope", "status": "child_not_started",
+            "accepted_decision_count": 0, "decisions_file": "accepted_policy.jsonl"}, indent=2) + "\n")
+        (attempt / "accepted_policy.jsonl").write_text("")
     command = [sys.executable, "-u", str(Path(__file__).resolve()),
                *(sys.argv[1:] if argv is None else argv), "--child-attempt", str(attempt)]
     command.extend(("--expected-pedal-map-sha256", args.pedal_map_file_sha256 or ""))
     started = time.perf_counter()
+    child_settings_identity = policy_identity_settings(args) if args.longitudinal_policy == "braking-envelope" else None
+    child_settings_identity_hash = (None if child_settings_identity is None else
+        hashlib.sha256(canonical_json(child_settings_identity).encode()).hexdigest())
     with (attempt / "run.log").open("w") as log:
         try:
             result = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT,
@@ -1229,10 +1336,20 @@ def main(argv=None):
               "model": args.model, "command": command,
               **({"longitudinal_policy": {"policy": args.longitudinal_policy,
                   "deceleration_margin": args.envelope_deceleration_margin,
-                  "speed_query_points": args.envelope_speed_points}}
+                  "speed_query_points": args.envelope_speed_points,
+                  "settings_identity_sha256": child_settings_identity_hash}}
                  if args.longitudinal_policy == "braking-envelope" else {}),
               "attempt": str(attempt)}
     (attempt / "parent.json").write_text(json.dumps(parent, indent=2) + "\n")
+    if args.longitudinal_policy == "braking-envelope":
+        sidecar_path = attempt / "accepted_policy.json"
+        if sidecar_path.exists():
+            sidecar = json.loads(sidecar_path.read_text())
+            sidecar["parent_status"] = status
+            sidecar["parent_return_code"] = return_code
+            if status == "Timed_Out" and sidecar.get("status") in ("in_progress", "child_not_started"):
+                sidecar["status"] = "timed_out_prefix_may_be_incomplete"
+            sidecar_path.write_text(json.dumps(sidecar, indent=2) + "\n")
     print(json.dumps(parent), flush=True)
     return return_code
 

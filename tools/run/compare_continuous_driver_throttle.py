@@ -331,17 +331,17 @@ def make_mapper(vehicle, plan, names):
 
 class TraceSink:
     """Accepted-step telemetry using existing evaluation, without extra RHS physics."""
-    def __init__(self, plant):
+    def __init__(self, plant, *, mapping_configured):
         self.plant, self.rows = plant, []
+        self.mapping_configured = bool(mapping_configured)
 
     def __call__(self, sample):
         observation = self.plant.observe(sample.state)
         requested = sample.requested_command or sample.command
         mapped = sample.mapped_command or requested
         dynamics, power = self.plant.last_evaluation, self.plant.last_powertrain
-        mapped_stage = ("identity_no_mapper" if sample.mapped_command is None
-                        else "physical_mapper")
-        mapped_value = requested if sample.mapped_command is None else sample.mapped_command
+        mapped_stage = "physical_mapper" if self.mapping_configured else "identity_no_mapper"
+        mapped_value = sample.mapped_command or requested
         row = {"index": sample.index, "time": float(sample.time),
             "state": np.asarray(sample.state).tolist(), "rates": np.asarray(sample.rates).tolist(),
             "requested_throttle": float(requested.throttle), "mapped_stage": mapped_stage,
@@ -465,7 +465,7 @@ def _run_arm(run_dir, arm):
     driver = make_driver(plan, control, prepared["driver"])
     initial = plant.initial_state(INITIAL_SPEED_MPS)
     mapper = None if arm == "heuristic" else make_mapper(vehicle, plan, plant.state_names)
-    sink = TraceSink(plant)
+    sink = TraceSink(plant, mapping_configured=mapper is not None)
     settings = prepared["solver"]
     kwargs = {"duration": settings["duration_s"], "wall_seconds": settings["wall_seconds"],
         "maximum_wall_seconds": settings["maximum_wall_seconds"], "maximum_step": settings["maximum_step"],

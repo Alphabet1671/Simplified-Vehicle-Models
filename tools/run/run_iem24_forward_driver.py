@@ -52,6 +52,7 @@ SIGNED_TRACK_SUBTYPES = ("closed-xy-profile", "open-xy-profile")
 #: ``forward_powertrain.py`` in Task 7 and both plants call it, so both hash it:
 #: for the planar rung that changes recorded provenance, not any value.
 _SOLVER_SOURCES = (
+    Path("src/simplified_vehicle_models/drivetrain/controller.py"),
     Path("src/simplified_vehicle_models/solvers/driver_maps.py"),
     Path("src/simplified_vehicle_models/solvers/forward_driver.py"),
     Path("src/simplified_vehicle_models/solvers/forward_powertrain.py"),

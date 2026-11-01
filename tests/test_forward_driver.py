@@ -146,6 +146,47 @@ class DriverTests(unittest.TestCase):
             result.time,
         )
 
+    def test_custom_demand_initial_target_lag_and_step_sample_stages(self):
+        from simplified_vehicle_models.solvers.forward_driver import DriverCommand
+        from types import SimpleNamespace
+        demand = LongitudinalDemandMap(
+            MonotoneTable1D([0., 1., 2.], [0., .5, 1.], "m/s^2", "1"),
+            MonotoneTable1D([0., 1., 2.], [0., .5, 1.], "m/s^2", "1"))
+        plan = build_speed_plan(np.array([0., 100.]), np.zeros(2), 10., 3., 2., 3.)
+        from unittest.mock import patch
+        demand = LongitudinalDemandMap(
+            MonotoneTable1D([0., 4., 8.], [0., .5, 1.], "m/s^2", "1"),
+            MonotoneTable1D([0., 4., 8.], [0., .5, 1.], "m/s^2", "1"))
+        base = PreviewDriver(plan, 1.5, .5, 2., 1000., pedal_travel_time=.2,
+                             demand_map=demand)
+        class Plant:
+            state_size = 1
+            seen = []
+            def observe(self, state): return DriverObservation(0., 0., 0., 8., 0., 0.)
+            def evaluate(self, time, state, command):
+                self.seen.append(command)
+                return RateSystem(np.array([0.]))
+        samples = []
+        plant = Plant()
+        with patch.object(LongitudinalDemandMap, "command", return_value=(.5, 0.)):
+            result = solve_forward(plant, base, np.array([0.]), duration=.03,
+                                   maximum_step=.01, step_sink=samples.append)
+        self.assertAlmostEqual(result.pedal[0], .5)
+        self.assertAlmostEqual(result.pedal[-1], .5)
+        samples.clear()
+        with patch.object(LongitudinalDemandMap, "command", return_value=(.5, 0.)):
+            lagged = solve_forward(plant, base, np.array([0.]), duration=.03,
+                                   maximum_step=.01, initial_pedal=0., step_sink=samples.append)
+        self.assertGreater(lagged.pedal[-1], 0.)
+        self.assertLess(lagged.pedal[-1], .5)
+        sample = samples[0]
+        self.assertEqual(sample.requested_command.throttle, .5)
+        self.assertEqual(sample.mapped_command.throttle, .5)
+        self.assertEqual(sample.requested_command.steering_rate, 0.)
+        self.assertEqual(sample.mapped_command.steering_rate, 0.)
+        self.assertAlmostEqual(sample.command.throttle, 0.)
+        self.assertEqual(sample.command.steering_rate, 0.)
+
     def test_initial_pedal_state_is_preserved_for_warm_start(self):
         class Plant:
             state_size = 1

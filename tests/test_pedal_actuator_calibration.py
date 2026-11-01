@@ -101,6 +101,45 @@ class PedalActuatorCalibrationTests(unittest.TestCase):
         np.testing.assert_array_equal(got.wheel_torques, expected.wheel_torques)
         self.assertLess(got.power_residual, 1.e-6)
 
+    def test_shaped_brake_enters_hydraulics_with_deadband_once_for_regen_modes(self):
+        from unittest.mock import patch
+        from simplified_vehicle_models.controls.brakes import brake_torques as canonical_brakes
+        physical = .5 * self.original.maximum_pedal_force
+        shaped = .2 * self.original.maximum_pedal_force
+        for regen_enabled, expected in ((True, max(shaped - 100., 0.)), (False, shaped)):
+            controller = replace(self.calibrated.controller, regen_enabled=regen_enabled,
+                                 regen_pedal_force_limit=100., regen_motor_torque_limit=1.)
+            assembly = replace(self.calibrated.drivetrain.drivetrain, controller=controller)
+            vehicle = replace(self.calibrated, controller=controller,
+                drivetrain=replace(self.calibrated.drivetrain, drivetrain=assembly))
+            captured = []
+            def capture(force, *args, **kwargs):
+                captured.append(float(force))
+                return canonical_brakes(force, *args, **kwargs)
+            with patch("simplified_vehicle_models.solvers.forward_powertrain.brake_torques", side_effect=capture):
+                self.eval(vehicle, brake=physical)
+            self.assertEqual(captured, [expected])
+
+    def test_brake_pressure_cap_still_saturates_high_input(self):
+        from simplified_vehicle_models.controls.brakes import brake_torques
+        vehicle = self.original
+        common = dict(maximum_pedal_force=vehicle.maximum_pedal_force,
+            pedal_curve=vehicle.pedal_curve, hydraulic_ratio_front=vehicle.hydraulic_ratio_front,
+            hydraulic_ratio_rear=vehicle.hydraulic_ratio_rear,
+            maximum_brake_pressure=vehicle.maximum_brake_pressure, caliper_area=vehicle.caliper_area,
+            brake_bias=vehicle.brake_bias, pad_mu_front=vehicle.pad_mu_front,
+            pad_mu_rear=vehicle.pad_mu_rear, effective_radius_front=vehicle.brake_effective_radius_front,
+            effective_radius_rear=vehicle.brake_effective_radius_rear)
+        common["maximum_brake_pressure"] = 1.e5
+        capped = brake_torques(vehicle.maximum_pedal_force, **common)
+        self.assertTrue(capped.is_pressure_limited)
+        above = brake_torques(vehicle.maximum_pedal_force, **{**common,
+            "maximum_brake_pressure": 1.5 * common["maximum_brake_pressure"]})
+        self.assertLess(float(np.max(np.abs(capped.wheel_torques))),
+                        float(np.max(np.abs(above.wheel_torques))))
+        self.assertAlmostEqual(max(capped.front_line_pressure, capped.rear_line_pressure),
+                               common["maximum_brake_pressure"])
+
     def test_inverse_with_nonidentity_re_evaluates_canonical_vehicle(self):
         from simplified_vehicle_models.solvers.longitudinal_actuator import invert_longitudinal_actuators
         desired = self.eval(self.calibrated, .2).wheel_torques

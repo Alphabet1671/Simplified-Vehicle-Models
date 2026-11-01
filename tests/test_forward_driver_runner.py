@@ -871,7 +871,10 @@ class ForwardRunnerModelTests(unittest.TestCase):
         sources = {Path(path).resolve() for path in source_files("14dof-simple", DEFAULT_TRACK)}
         for required in REQUIRED_14DOF_SOURCES:
             self.assertIn(Path(required).resolve(), sources)
+        controller = Path("src/simplified_vehicle_models/drivetrain/controller.py").resolve()
+        self.assertIn(controller, sources)
         planar = {Path(path).resolve() for path in source_files("planar-7dof", DEFAULT_TRACK)}
+        self.assertIn(controller, planar)
         # The shared powertrain closure moved in Task 7, so the planar rung also
         # hashes it; no vertical-only source may enter the planar list.
         self.assertIn(Path("src/simplified_vehicle_models/solvers/forward_powertrain.py").resolve(),

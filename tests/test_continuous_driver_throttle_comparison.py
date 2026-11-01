@@ -88,6 +88,23 @@ class ContractsTests(unittest.TestCase):
 
 
 class MatchedArmTests(unittest.TestCase):
+    def test_trace_sink_uses_explicit_mapping_context_not_sample_identity(self):
+        from simplified_vehicle_models.solvers.forward_driver import DriverCommand, StepSample
+        class Plant:
+            last_evaluation = None
+            last_powertrain = None
+            plan = type("Plan", (), {"sample": staticmethod(lambda distance: (0., 0., 0.))})()
+            def observe(self, state):
+                return SimpleNamespace(distance=0., speed=0., lateral_error=0., heading_error=0.)
+        command = DriverCommand(.4, 0., .1)
+        sample = StepSample(0, 0., np.zeros(11), np.zeros(11), command, None,
+                            command, command)
+        for configured, label in ((False, "identity_no_mapper"), (True, "physical_mapper")):
+            sink = runner.TraceSink(Plant(), mapping_configured=configured)
+            sink(sample)
+            self.assertEqual(sink.rows[0]["mapped_stage"], label)
+            self.assertEqual(sink.rows[0]["mapped_throttle"], .4)
+
     def _prepared(self, tempdir):
         path = Path(tempdir)
         arrays = runner.freeze_plan_arrays([0., 150.], [6., 6.], [0., 0.], [0., 0.])

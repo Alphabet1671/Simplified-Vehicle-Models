@@ -74,7 +74,7 @@ class EnvelopePolicyTests(unittest.TestCase):
         self.assertEqual(d.squared_speed,100.)
         self.assertEqual(d.squared_speed_slope,0.)
         tie=EnvelopePolicy(Fake(Sample(400.,cap=20.),Sample(400.,slope=-9.,cap=20.,station=12.)),settings).decide(obs(v=60.),0.)
-        self.assertEqual(tie.squared_speed_slope,0.)
+        self.assertEqual(tie.squared_speed_slope,-9.)
         self.assertGreater(tie.preview_station,10.)
         # A global cap stricter than both local and preview q is independently binding.
         class LowGlobal(Fake): maximum_speed=5.
@@ -82,6 +82,62 @@ class EnvelopePolicyTests(unittest.TestCase):
         self.assertEqual(gd.squared_speed,25.)
         self.assertEqual(gd.squared_speed_slope,0.)
         self.assertEqual(gd.requested_throttle,0.)
+    def test_descending_preview_slope_survives_exact_local_and_global_cap_ties(self):
+        class Sample:
+            def __init__(self,q,slope,cap):
+                self.squared_speed=q; self.squared_speed_slope=slope
+                self.corner_speed=cap; self.entry_speed=np.sqrt(q)
+                self.deceleration=3.; self.binding_index=1; self.binding_station=10.
+                self.binding_distance=10.; self.speed_domain_max=cap
+        class Fake:
+            is_closed=False; maximum_speed=20.; distance=np.array([0.,10.,20.])
+            def __init__(self,now,future): self.now=now; self.future=future
+            def sample(self,s): return self.now if s==0. else self.future
+        settings=EnvelopeDriverSettings(disabled_transition_time_s=.2,positive_acceleration_reserve_mps2=0.)
+        descending=Sample(100.,-8.,10.)
+        # The local cap equals qpreview exactly; at the boundary retain braking feedforward.
+        local=EnvelopePolicy(Fake(Sample(400.,0.,20.),descending),settings).decide(obs(v=10.),0.)
+        self.assertEqual(local.squared_speed,100.)
+        self.assertEqual(local.squared_speed_slope,-8.)
+        self.assertEqual(local.acceleration_request,-4.)
+        # Global cap is independently tied to qpreview while local cap is nonbinding.
+        global_tie=EnvelopePolicy(type('GlobalFake',(Fake,),{'maximum_speed':10.})(
+            Sample(400.,0.,20.),Sample(100.,-6.,20.)),settings).decide(obs(v=10.),0.)
+        self.assertEqual(global_tie.squared_speed,100.)
+        self.assertEqual(global_tie.squared_speed_slope,-6.)
+        self.assertEqual(global_tie.acceleration_request,-3.)
+
+    def test_nonbinding_rising_preview_keeps_full_slope(self):
+        class Sample:
+            def __init__(self,q,slope,cap):
+                self.squared_speed=q; self.squared_speed_slope=slope
+                self.corner_speed=cap; self.entry_speed=np.sqrt(q)
+                self.deceleration=3.; self.binding_index=1; self.binding_station=10.
+                self.binding_distance=10.; self.speed_domain_max=cap
+        class Fake:
+            is_closed=False; maximum_speed=20.; distance=np.array([0.,10.,20.])
+            def __init__(self): self.now=Sample(400.,0.,20.); self.future=Sample(100.,5.,20.)
+            def sample(self,s): return self.now if s==0. else self.future
+        settings=EnvelopeDriverSettings(disabled_transition_time_s=.2,positive_acceleration_reserve_mps2=0.)
+        d=EnvelopePolicy(Fake(),settings).decide(obs(v=10.),0.)
+        self.assertEqual(d.squared_speed_slope,5.)
+        self.assertEqual(d.acceleration_request,2.5)
+
+    def test_rising_preview_slope_at_cap_tie_stays_zero(self):
+        class Sample:
+            def __init__(self,q,slope,cap):
+                self.squared_speed=q; self.squared_speed_slope=slope
+                self.corner_speed=cap; self.entry_speed=np.sqrt(q)
+                self.deceleration=3.; self.binding_index=1; self.binding_station=10.
+                self.binding_distance=10.; self.speed_domain_max=cap
+        class Fake:
+            is_closed=False; maximum_speed=10.; distance=np.array([0.,10.,20.])
+            def sample(self,s): return Sample(400.,0.,20.) if s==0. else Sample(100.,5.,10.)
+        settings=EnvelopeDriverSettings(disabled_transition_time_s=.2,positive_acceleration_reserve_mps2=0.)
+        d=EnvelopePolicy(Fake(),settings).decide(obs(v=10.),0.)
+        self.assertEqual(d.squared_speed_slope,0.)
+        self.assertEqual(d.acceleration_request,0.)
+
     def test_driver_context_uses_explicit_rates_and_disabled_governor(self):
         from simplified_vehicle_models.solvers.forward_driver import SpeedPlan
         plan=SpeedPlan(np.array([0.,20.]),np.array([10.,10.]),np.zeros(2),False)

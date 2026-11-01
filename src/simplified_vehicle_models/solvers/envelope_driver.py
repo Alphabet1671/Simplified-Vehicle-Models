@@ -126,7 +126,13 @@ class EnvelopePolicy:
         qref=min(qpreview,qcorner,qglobal)
         binds_local=qcorner<=qpreview and qcorner<=qglobal
         binds_global=qglobal<=qpreview and qglobal<=qcorner
-        slope=0. if binds_local or binds_global else preview.squared_speed_slope
+        cap=min(qcorner,qglobal)
+        if qpreview<cap:
+            slope=preview.squared_speed_slope
+        elif qpreview==cap:
+            slope=min(0.,preview.squared_speed_slope)
+        else:
+            slope=0.
         reference=math.sqrt(max(0.,qref))
         reference=self._derived(reference,'reference speed')
         slope=self._derived(slope,'selected squared-speed slope')

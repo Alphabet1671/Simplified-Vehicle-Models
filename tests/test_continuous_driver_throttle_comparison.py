@@ -84,7 +84,7 @@ class ContractsTests(unittest.TestCase):
                 result = runner.collect_source_manifest()
         self.assertEqual(result["revision"], "abc123")
         self.assertFalse(result["dirty"])
-        self.assertEqual(result["hashes"], {})
+        self.assertTrue(result["hashes"])
 
 
 class MatchedArmTests(unittest.TestCase):
@@ -93,8 +93,8 @@ class MatchedArmTests(unittest.TestCase):
         arrays = runner.freeze_plan_arrays([0., 150.], [6., 6.], [0., 0.], [0., 0.])
         for name in ("distance", "speed", "curvature", "acceleration"):
             np.save(path / f"plan_{name}.npy", getattr(arrays, name), allow_pickle=False)
-        for name, values in (("precursor_distance", [0., 250.]), ("precursor_speed", [0., 10.]),
-                             ("precursor_curvature", [0., 0.]), ("precursor_acceleration", [1., 1.])):
+        for name, values in (("precursor_distance", [0., 150., 250.]), ("precursor_speed", [6., 6., 10.]),
+                             ("precursor_curvature", [0., 0., 0.]), ("precursor_acceleration", [0., 0., 1.])):
             np.save(path / f"plan_{name}.npy", np.asarray(values), allow_pickle=False)
         config = runner._canonical_config("compiled identity")
         data = {**config, "config_digest": runner._config_digest(config),
@@ -103,8 +103,16 @@ class MatchedArmTests(unittest.TestCase):
                                         for name in ("distance", "speed", "curvature", "acceleration")},
                 "sources": {"hash": "same"}, "crop_origin_m": 0.,
                 "tire_law": "steady combined-slip UniTire with dynamic wheel/body states; not transient tire relaxation",
-                "archived_ttc_lap_equivalence": False, "setup_seconds": 0.}
-        (path / "manifest.json").write_text(__import__("json").dumps(data))
+                "archived_ttc_lap_equivalence": False, "setup_seconds": 0.,
+                "runtime": {"python": "test", "numpy": np.__version__, "scipy": "test"},
+                "artifact_digest": "placeholder"}
+        manifest_body = dict(data)
+        manifest_body.pop("artifact_digest", None)
+        data["artifact_digest"] = runner._artifact_digest(dict(manifest_body), {
+            **{name: getattr(arrays, name) for name in ("distance", "speed", "curvature", "acceleration")},
+            **{"precursor_" + name: np.load(path / f"plan_precursor_{name}.npy")
+               for name in ("distance", "speed", "curvature", "acceleration")}})
+        (path / "manifest.json").write_text(json.dumps(data))
         return arrays
 
     def test_each_arm_receives_identical_plan_and_solver_settings_mapper_only_differs(self):
@@ -131,7 +139,7 @@ class MatchedArmTests(unittest.TestCase):
                 command = SimpleNamespace(throttle=.5, brake_force=0., steering_rate=0.)
                 kwargs["step_sink"](SimpleNamespace(index=i, time=time_value, state=initial.copy(),
                     rates=np.zeros(12), command=command, requested_command=command,
-                    mapped_command=command, pedal=0.))
+                    mapped_command=(command if kwargs["command_mapper"] is not None else None), pedal=0.))
             return type("Result", (), {"time": np.array([0., 1.]), "wall_seconds": .1,
                                         "diagnostics": {}})()
         with patch.object(runner, "collect_source_manifest", return_value={"hash":"same"}), \
@@ -150,6 +158,9 @@ class MatchedArmTests(unittest.TestCase):
                 self.assertEqual(heuristic_result["accepted_samples"], 2)
                 self.assertEqual(len(heuristic_result["telemetry"]), 2)
                 self.assertEqual(heuristic_result["telemetry"][0]["requested_throttle"], .5)
+                self.assertEqual(heuristic_result["telemetry"][0]["mapped_stage"], "identity_no_mapper")
+                self.assertEqual(heuristic_result["telemetry"][0]["pedal_lagged_applied_throttle"], .5)
+                self.assertEqual(physical_result["telemetry"][0]["mapped_stage"], "physical_mapper")
         self.assertEqual(len(calls), 2)
         first, second = calls
         self.assertIsNone(first[3]["command_mapper"])
@@ -166,6 +177,84 @@ class MatchedArmTests(unittest.TestCase):
         self.assertEqual(len(first[3]["step_sink"].rows), 2)
         self.assertEqual(len(second[3]["step_sink"].rows), 2)
 
+    def test_preexisting_arm_evidence_is_never_overwritten(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            evidence = Path(tempdir) / "heuristic.json"
+            original = '{"status":"preserve"}'
+            evidence.write_text(original)
+            with self.assertRaisesRegex(FileExistsError, "already exists"):
+                runner.run_arm(tempdir, "heuristic")
+            self.assertEqual(evidence.read_text(), original)
+            self.assertFalse((Path(tempdir) / "heuristic.claim.json").exists())
+
+    def test_tampered_precursor_and_crop_metadata_are_rejected_before_solver(self):
+        class Vehicle: wheelbase=1.; steering_maximum_angle=.5; steering_maximum_rate=1.; maximum_pedal_force=100.
+        compiled = SimpleNamespace(model=Vehicle(), manifest=SimpleNamespace(as_text=lambda: "compiled identity"))
+        with tempfile.TemporaryDirectory() as tempdir:
+            self._prepared(tempdir)
+            precursor_path = Path(tempdir) / "plan_precursor_speed.npy"
+            np.save(precursor_path, np.array([6., 7., 10.]), allow_pickle=False)
+            with patch.object(runner, "compile_selected_model", return_value=compiled), \
+                 patch.object(runner, "collect_source_manifest", return_value={"hash": "same"}), \
+                 patch.object(runner, "solve_forward") as solve:
+                with self.assertRaisesRegex(ValueError, "crop|artifact digest"):
+                    runner._run_arm(tempdir, "heuristic")
+                solve.assert_not_called()
+        with tempfile.TemporaryDirectory() as tempdir:
+            self._prepared(tempdir)
+            manifest_path = Path(tempdir) / "manifest.json"
+            data = json.loads(manifest_path.read_text())
+            data["crop_origin_m"] = 2.
+            manifest_path.write_text(json.dumps(data))
+            with patch.object(runner, "compile_selected_model", return_value=compiled), \
+                 patch.object(runner, "solve_forward") as solve:
+                with self.assertRaisesRegex(ValueError, "crop|artifact digest"):
+                    runner._run_arm(tempdir, "heuristic")
+                solve.assert_not_called()
+
+    def test_setup_failure_persists_valid_json_and_claim_blocks_retry(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            self._prepared(tempdir)
+            with patch.object(runner, "compile_selected_model", side_effect=RuntimeError("compile boom")):
+                with self.assertRaisesRegex(RuntimeError, "compile boom"):
+                    runner.run_arm(tempdir, "heuristic")
+            artifact = json.loads((Path(tempdir) / "heuristic.json").read_text())
+            self.assertEqual(artifact["status"], "failed")
+            self.assertEqual(artifact["prefix_kind"], "none; failure before solve sink was established")
+            with self.assertRaises(FileExistsError):
+                runner.run_arm(tempdir, "heuristic")
+
+    def test_nonfinite_terminal_trace_is_serialized_without_losing_prefix(self):
+        class Vehicle: wheelbase=1.; steering_maximum_angle=.5; steering_maximum_rate=1.; maximum_pedal_force=100.
+        class Plant:
+            state_size=12
+            state_names=tuple(f"x{i}" for i in range(12))
+            def __init__(self, vehicle, plan): self.plan=plan
+            def initial_state(self, speed):
+                value=np.zeros(12); value[3]=speed; value[10]=.8; return value
+            def observe(self, state):
+                return SimpleNamespace(distance=0., speed=float(state[3]), lateral_error=0., heading_error=0.)
+            last_evaluation = None
+            last_powertrain = None
+        def solve(plant, driver, initial, **kwargs):
+            command = SimpleNamespace(throttle=float("nan"), brake_force=0., steering_rate=0.)
+            kwargs["step_sink"](SimpleNamespace(index=0, time=0., state=initial.copy(), rates=np.zeros(12),
+                command=command, requested_command=command, mapped_command=command, pedal=0.))
+            return SimpleNamespace(time=np.array([0.]), wall_seconds=.1, diagnostics={})
+        compiled = SimpleNamespace(model=Vehicle(), manifest=SimpleNamespace(as_text=lambda: "compiled identity"))
+        with tempfile.TemporaryDirectory() as tempdir:
+            self._prepared(tempdir)
+            with patch.object(runner, "compile_selected_model", return_value=compiled), \
+                 patch.object(runner, "collect_source_manifest", return_value={"hash": "same"}), \
+                 patch.object(runner, "make_plant_class", return_value=Plant), \
+                 patch.object(runner, "make_driver", return_value=object()), \
+                 patch.object(runner, "solve_forward", side_effect=solve):
+                result = runner.run_arm(tempdir, "heuristic")
+            saved = json.loads((Path(tempdir) / "heuristic.json").read_text())
+            self.assertEqual(result["accepted_samples"], 1)
+            self.assertEqual(saved["accepted_samples"], 1)
+            self.assertEqual(saved["telemetry"][0]["requested_throttle"], None)
+
     def test_tampered_complete_configuration_is_rejected_before_solver(self):
         class Vehicle: wheelbase=1.; steering_maximum_angle=.5; steering_maximum_rate=1.; maximum_pedal_force=100.
         compiled = SimpleNamespace(model=Vehicle(), manifest=SimpleNamespace(as_text=lambda: "compiled identity"))
@@ -174,6 +263,13 @@ class MatchedArmTests(unittest.TestCase):
             manifest_path = Path(tempdir) / "manifest.json"
             data = json.loads(manifest_path.read_text())
             data["solver"]["maximum_step"] = .5
+            body = dict(data)
+            body.pop("artifact_digest", None)
+            arrays = {name: np.load(Path(tempdir) / f"plan_{name}.npy")
+                      for name in ("distance", "speed", "curvature", "acceleration")}
+            arrays.update({"precursor_" + name: np.load(Path(tempdir) / f"plan_precursor_{name}.npy")
+                           for name in ("distance", "speed", "curvature", "acceleration")})
+            data["artifact_digest"] = runner._artifact_digest(body, arrays)
             manifest_path.write_text(json.dumps(data))
             with patch.object(runner, "compile_selected_model", return_value=compiled), \
                  patch.object(runner, "collect_source_manifest", return_value={"hash": "same"}), \

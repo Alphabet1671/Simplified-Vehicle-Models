@@ -9,6 +9,9 @@ No vehicle run occurs during preparation. Each arm is externally timeoutable.
 from __future__ import annotations
 
 import argparse
+import importlib.metadata
+import math
+import os
 from dataclasses import dataclass
 import hashlib
 import json
@@ -140,10 +143,16 @@ def collect_source_manifest(compiled_manifest=None):
                     dirty_paths.append("source " + source_name)
                     candidates.add(source_path)
                 index += 1
+    missing = sorted(str(path) for path in paths if not path.is_file())
+    if missing:
+        raise FileNotFoundError("required provenance inputs missing: " + ", ".join(missing))
     hashes = {str(path): hashlib.sha256(path.read_bytes()).hexdigest()
               for path in candidates if path.is_file()}
     return {"revision": revision, "dirty": bool(dirty_paths), "dirty_paths": dirty_paths,
-            "hashes": hashes, "coverage": "fixed runner dependency graph plus compiler-reported loaded model graph when available"}
+            "hashes": hashes, "coverage": "bounded: declared fixed graph, library Python package, and compiler-reported model graph; external/native dependency closure is not claimed",
+            "runtime": {"python": __import__("platform").python_version(),
+                        "numpy": np.__version__,
+                        "scipy": importlib.metadata.version("scipy")}}
 
 
 def build_speed_plan(*args, **kwargs):
@@ -207,6 +216,35 @@ def make_plan(vehicle):
                       precursor_curvature, precursor_acceleration)
 
 
+def _reconstruct_crop(precursor_arrays, crop_origin):
+    distance = precursor_arrays["precursor_distance"]
+    speed = precursor_arrays["precursor_speed"]
+    curvature = precursor_arrays["precursor_curvature"]
+    if (not np.all(np.isfinite(crop_origin)) or crop_origin < 0 or
+            np.any(np.diff(distance) <= 0) or np.any(speed < 0) or
+            np.any(np.abs(curvature) > 1.e-14)):
+        raise ValueError("invalid precursor/crop metadata")
+    if speed[0] == INITIAL_SPEED_MPS:
+        expected_origin = 0.
+    else:
+        crossings = np.flatnonzero((speed[:-1] < INITIAL_SPEED_MPS) & (speed[1:] >= INITIAL_SPEED_MPS))
+        if not crossings.size:
+            raise ValueError("frozen precursor has no 6 m/s crop crossing")
+        i = int(crossings[0])
+        fraction = (INITIAL_SPEED_MPS - speed[i]) / (speed[i + 1] - speed[i])
+        expected_origin = float(distance[i] + fraction * (distance[i + 1] - distance[i]))
+    if crop_origin != expected_origin or crop_origin + DISTANCE_M > distance[-1]:
+        raise ValueError("crop origin/extent does not match frozen precursor")
+    end = crop_origin + DISTANCE_M
+    stations = np.r_[crop_origin, distance[(distance > crop_origin) & (distance < end)], end]
+    speeds = np.interp(stations, distance, speed)
+    speeds[0] = INITIAL_SPEED_MPS
+    curvatures = np.interp(stations, distance, curvature)
+    from simplified_vehicle_models.solvers.forward_driver import SpeedPlan
+    cropped = SpeedPlan(stations - crop_origin, speeds, curvatures, is_closed=False)
+    return freeze_plan_arrays(cropped.distance, cropped.speed, cropped.curvature, cropped.acceleration)
+
+
 def _speed_plan(frozen):
     from simplified_vehicle_models.solvers.forward_driver import SpeedPlan
     plan = SpeedPlan(frozen.distance, frozen.speed, frozen.curvature, is_closed=False)
@@ -231,6 +269,45 @@ def _canonical_config(compiled_manifest_text=""):
 def _config_digest(config):
     encoded = json.dumps(config, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _json_digest(value):
+    return _config_digest(value)
+
+
+def _array_digest(array):
+    contiguous = np.ascontiguousarray(np.asarray(array, dtype="<f8"))
+    return hashlib.sha256(contiguous.tobytes()).hexdigest()
+
+
+def _artifact_digest(manifest, arrays):
+    return _json_digest({"manifest": manifest, "array_hashes": {
+        name: _array_digest(value) for name, value in sorted(arrays.items())}})
+
+
+def _sanitize_json(value):
+    if isinstance(value, dict):
+        return {key: _sanitize_json(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_sanitize_json(item) for item in value]
+    if isinstance(value, (float, np.floating)) and not math.isfinite(float(value)):
+        return None
+    if isinstance(value, np.integer):
+        return int(value)
+    return value
+
+
+def _exclusive_json(path, value):
+    payload = (json.dumps(_sanitize_json(value), indent=2, allow_nan=False) + "\n").encode()
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+    with os.fdopen(fd, "wb") as stream:
+        stream.write(payload)
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
+def _write_claimed_json(path, value):
+    _exclusive_json(path, value)
 
 
 def make_plant_class(vehicle):
@@ -262,13 +339,17 @@ class TraceSink:
         requested = sample.requested_command or sample.command
         mapped = sample.mapped_command or requested
         dynamics, power = self.plant.last_evaluation, self.plant.last_powertrain
+        mapped_stage = ("identity_no_mapper" if sample.mapped_command is None
+                        else "physical_mapper")
+        mapped_value = requested if sample.mapped_command is None else sample.mapped_command
         row = {"index": sample.index, "time": float(sample.time),
             "state": np.asarray(sample.state).tolist(), "rates": np.asarray(sample.rates).tolist(),
-            "requested_throttle": float(requested.throttle), "mapped_throttle": float(mapped.throttle),
-            "realized_throttle": float(sample.command.throttle),
+            "requested_throttle": float(requested.throttle), "mapped_stage": mapped_stage,
+            "mapped_throttle": float(mapped_value.throttle),
+            "pedal_lagged_applied_throttle": float(sample.command.throttle),
             "requested_brake_force": float(requested.brake_force),
-            "mapped_brake_force": float(mapped.brake_force),
-            "realized_brake_force": float(sample.command.brake_force),
+            "mapped_brake_force": float(mapped_value.brake_force),
+            "pedal_lagged_applied_brake_force": float(sample.command.brake_force),
             "steering_rate": float(sample.command.steering_rate),
             "target_speed": float(self.plant.plan.sample(observation.distance)[0]),
             "feedforward_acceleration": float(self.plant.plan.sample(observation.distance)[2]),
@@ -316,8 +397,13 @@ def prepare_comparison(output_dir, configuration=None):
         "crop_origin_m": plan_data.crop_origin_m,
         "tire_law": "steady combined-slip UniTire with dynamic wheel/body states; not transient tire relaxation",
         "archived_ttc_lap_equivalence": False,
-        "setup_seconds": time.perf_counter() - started}
-    (directory / "manifest.json").write_text(json.dumps(data, indent=2) + "\n")
+        "setup_seconds": time.perf_counter() - started,
+        "runtime": manifest["runtime"]}
+    data["artifact_digest"] = _artifact_digest(dict(data), {
+        **{name: getattr(plan_data, name) for name in ("distance", "speed", "curvature", "acceleration")},
+        **{"precursor_" + name: getattr(plan_data, "precursor_" + name)
+           for name in ("distance", "speed", "curvature", "acceleration")}})
+    _exclusive_json(directory / "manifest.json", data)
     return directory
 
 
@@ -342,6 +428,16 @@ def _run_arm(run_dir, arm):
     if (len({value.shape for value in precursor_arrays.values()}) != 1 or
             np.any(np.diff(precursor_arrays["precursor_distance"]) <= 0)):
         raise ValueError("frozen precursor arrays do not have valid matching shapes/order")
+    recomputed_crop = _reconstruct_crop(precursor_arrays, prepared.get("crop_origin_m", float("nan")))
+    if recomputed_crop.digest != plan_data.digest:
+        raise ValueError("frozen selected plan is not the recorded precursor crop")
+    complete_arrays = {name: getattr(plan_data, name) for name in ("distance", "speed", "curvature", "acceleration")}
+    complete_arrays.update({name: precursor_arrays[name]
+                            for name in ("precursor_distance", "precursor_speed", "precursor_curvature", "precursor_acceleration")})
+    artifact_body = dict(prepared)
+    supplied_artifact_digest = artifact_body.pop("artifact_digest", None)
+    if supplied_artifact_digest != _artifact_digest(artifact_body, complete_arrays):
+        raise ValueError("prepared artifact digest mismatch")
     if plan_data.digest != prepared["plan_hash"]:
         raise ValueError("plan hash does not match prepared manifest")
     expected_hashes = prepared.get("plan_arrays_hashes", {})
@@ -352,7 +448,8 @@ def _run_arm(run_dir, arm):
     compiled = compile_selected_model()
     expected_config = _canonical_config(compiled.manifest.as_text())
     allowed_keys = set(expected_config) | {"config_digest", "sources", "plan_hash", "plan_arrays_hashes",
-        "crop_origin_m", "tire_law", "archived_ttc_lap_equivalence", "setup_seconds"}
+        "crop_origin_m", "tire_law", "archived_ttc_lap_equivalence", "setup_seconds", "runtime",
+        "artifact_digest"}
     if (set(prepared) != allowed_keys or
             any(prepared.get(key) != value for key, value in expected_config.items()) or
             prepared.get("config_digest") != _config_digest(expected_config)):
@@ -382,7 +479,7 @@ def _run_arm(run_dir, arm):
             "physical quasi-steady mapper; aggregate counters include trial/validation callbacks"}
     # Persist a starting marker first; interruption/termination cannot masquerade as completion.
     result_path = directory / f"{arm}.json"
-    result_path.write_text(json.dumps(summary, indent=2) + "\n")
+    _exclusive_json(directory / f"{arm}.started.json", summary)
     try:
         result = solve_forward(plant, driver, initial, **kwargs)
         if len(sink.rows) != len(result.time):
@@ -393,7 +490,7 @@ def _run_arm(run_dir, arm):
         if len(sink.rows) > 1:
             summary["metrics"] = interval_weighted_metrics({
                 "time": [r["time"] for r in sink.rows],
-                "throttle": [r["realized_throttle"] for r in sink.rows],
+                "throttle": [r["pedal_lagged_applied_throttle"] for r in sink.rows],
                 "speed_deficit": [r["target_speed"] - r["current_speed"] for r in sink.rows]})
     except Exception as error:
         summary.update(status="failed", error=f"{type(error).__name__}: {error}",
@@ -402,23 +499,43 @@ def _run_arm(run_dir, arm):
             elapsed_seconds=time.perf_counter() - started)
     if mapper is not None:
         summary["mapper_counters"] = mapper.snapshot_diagnostics()
-    result_path.write_text(json.dumps(summary, indent=2, allow_nan=False) + "\n")
+    try:
+        _write_claimed_json(result_path, summary)
+    except Exception as error:
+        # Keep all accepted rows even if a terminal metric/trace value is invalid.
+        fallback = {"arm": arm, "status": "failed", "error": f"terminal serialization failed: {type(error).__name__}: {error}",
+                    "accepted_samples": len(sink.rows), "telemetry": sink.rows,
+                    "prefix_kind": "accepted step-sink prefix preserved; nonfinite values normalized to null",
+                    "elapsed_seconds": time.perf_counter() - started}
+        if mapper is not None:
+            fallback["mapper_counters"] = mapper.snapshot_diagnostics()
+        _write_claimed_json(result_path, fallback)
+        return fallback
     return summary
 
 
 def run_arm(run_dir, arm):
     """Run one arm and persist a structured failure even for setup exceptions."""
+    if arm not in ("heuristic", "physical_mapper"):
+        raise ValueError("arm must be heuristic or physical_mapper")
     directory = Path(run_dir)
+    if not directory.is_dir():
+        raise FileNotFoundError(f"prepared run directory does not exist: {directory}")
+    claim = directory / f"{arm}.claim.json"
     path = directory / f"{arm}.json"
-    if path.exists():
-        raise FileExistsError(f"arm result already exists: {arm}")
+    if any(candidate.exists() for candidate in (path, claim, directory / f"{arm}.started.json")):
+        raise FileExistsError(f"arm evidence already exists: {arm}")
+    _exclusive_json(claim, {"arm": arm, "status": "claimed", "started_at": time.time()})
     try:
         return _run_arm(run_dir, arm)
     except Exception as error:
         failure = {"arm": arm, "status": "failed", "error": f"{type(error).__name__}: {error}",
                    "accepted_samples": 0, "telemetry": [],
                    "prefix_kind": "none; failure before solve sink was established"}
-        path.write_text(json.dumps(failure, indent=2) + "\n")
+        try:
+            _write_claimed_json(path, failure)
+        except FileExistsError:
+            raise
         raise
 
 

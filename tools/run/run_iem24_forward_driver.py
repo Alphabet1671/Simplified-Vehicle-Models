@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 import hashlib
 import importlib
 import json
@@ -51,6 +51,10 @@ SIGNED_TRACK_SUBTYPES = ("closed-xy-profile", "open-xy-profile")
 #: Sources every model depends on. The powertrain closure moved to
 #: ``forward_powertrain.py`` in Task 7 and both plants call it, so both hash it:
 #: for the planar rung that changes recorded provenance, not any value.
+_ENVELOPE_SOURCES = (
+    Path("src/simplified_vehicle_models/solvers/braking_envelope.py"),
+    Path("src/simplified_vehicle_models/solvers/envelope_driver.py"),
+)
 _SOLVER_SOURCES = (
     Path("src/simplified_vehicle_models/drivetrain/controller.py"),
     Path("src/simplified_vehicle_models/solvers/driver_maps.py"),
@@ -276,14 +280,16 @@ def _record_component(inputs, key, xml):
                           canonical_path(Path(xml).parent / child.get("ref")))
 
 
-def source_files(model: str, track_xml):
+def source_files(model: str, track_xml, longitudinal_policy="schedule"):
     """Return every file hashed and snapshotted for one run, in order.
 
     The file names must stay unique because the attempt's ``source_snapshot``
     copies each source by base name.
     """
     spec = model_spec(model)
-    sources = [Path(__file__), *spec.solver_sources, *model_inputs(model, track_xml).values()]
+    sources = [Path(__file__), *spec.solver_sources,
+               *(_ENVELOPE_SOURCES if longitudinal_policy == "braking-envelope" else ()),
+               *model_inputs(model, track_xml).values()]
     unique = []
     for path in sources:
         if path not in unique:
@@ -488,7 +494,17 @@ def warm_start_matches(previous, source_hashes, args, pedal_map_sha256=None):
     settings = previous.get("settings", {})
     defaults = {"preview_seconds": .15, "heading_gain": 1.5, "lateral_gain": 1.5, "speed_gain": 2.,
                 "lateral_margin": None}
-    return bool(previous.get("status") == "Completed" and previous.get("lap_completed")
+    previous_policy = previous.get("longitudinal_policy", {"policy": "schedule"})
+    if not isinstance(previous_policy, dict):
+        previous_policy = {"policy": "schedule"}
+    policy_matches = (previous_policy.get("policy", "schedule") == args.longitudinal_policy
+                      and settings.get("longitudinal_policy", "schedule") == args.longitudinal_policy
+                      and settings.get("envelope_deceleration_margin", .6) == args.envelope_deceleration_margin
+                      and settings.get("envelope_speed_points", 9) == args.envelope_speed_points
+                      and previous_policy.get("deceleration_margin", .6) == args.envelope_deceleration_margin
+                      and previous_policy.get("speed_query_points", 9) == args.envelope_speed_points)
+    return bool(policy_matches
+                and previous.get("status") == "Completed" and previous.get("lap_completed")
                 and previous.get("source_hashes") == source_hashes
                 and (previous.get("pedal_map", {}).get("semantic_sha256", None) == pedal_map_sha256
                      or (pedal_map_sha256 == "no-pedal-map" and "pedal_map" not in previous))
@@ -500,6 +516,16 @@ def warm_start_matches(previous, source_hashes, args, pedal_map_sha256=None):
                                     "heading_gain", "lateral_gain", "speed_gain", "lateral_margin"))
                 and canonical_path(settings.get("track") or LEGACY_TRACK)
                 == canonical_path(args.track))
+
+
+def _positive_integer(value):
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        raise argparse.ArgumentTypeError("must be an integer >= 2") from None
+    if str(parsed) != str(value).strip() or parsed < 2:
+        raise argparse.ArgumentTypeError("must be an integer >= 2")
+    return parsed
 
 
 def parse_args(argv=None):
@@ -539,6 +565,9 @@ def parse_args(argv=None):
     parser.add_argument("--rtol", type=float, default=1.e-6)
     parser.add_argument("--method", choices=("Radau", "BDF"), default="Radau")
     parser.add_argument("--spacing", type=float, default=.5)
+    parser.add_argument("--longitudinal-policy", choices=("schedule", "braking-envelope"), default="schedule")
+    parser.add_argument("--envelope-deceleration-margin", type=float, default=.6)
+    parser.add_argument("--envelope-speed-points", type=_positive_integer, default=9)
     parser.add_argument("--planner", choices=("conservative", "live"), default="conservative",
                         help="Speed planner: conservative (constant limits) or live (point-mass)")
     parser.add_argument("--track", type=Path, default=DEFAULT_TRACK,
@@ -577,6 +606,20 @@ def parse_args(argv=None):
         parser.error("all four directional pedal rates must be supplied together")
     if args.lateral_margin is not None and args.lateral_margin > 1.:
         parser.error("lateral_margin must be at most 1")
+    if not math.isfinite(args.envelope_deceleration_margin) or not 0. < args.envelope_deceleration_margin <= 1.:
+        parser.error("envelope-deceleration-margin must be finite and in (0, 1]")
+    if args.envelope_speed_points < 2:
+        parser.error("envelope-speed-points must be an integer >= 2")
+    if args.longitudinal_policy == "braking-envelope":
+        if args.planner != "live":
+            parser.error("braking-envelope requires --planner live")
+        if args.pedal_map_config_path is not None:
+            try:
+                _, pre_config, _ = load_runner_pedal_map(args.pedal_map_config_path)
+            except (OSError, ValueError, TypeError) as error:
+                parser.error(f"--pedal-map-config: {error}")
+            if pre_config.demand_map is not None:
+                parser.error("braking-envelope cannot be combined with a demand map")
     try:
         track_files(args.track)
     except ValueError as error:
@@ -691,6 +734,7 @@ def write_run_record(sink, args, summary, physical_inputs, spec, result, initial
                     "initial_pedal": initial_pedal},
         "track": {"file": str(args.track)},
         "pedal_map": summary.get("pedal_map"),
+        **({"longitudinal_policy": summary["longitudinal_policy"]} if "longitudinal_policy" in summary else {}),
         **({"pedal_slew": summary["pedal_slew"]} if "pedal_slew" in summary else {}),
     }, created_utc=datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
     summary["run_record_file"] = record_path.name
@@ -775,7 +819,11 @@ def child(args):
                "model": args.model, "requested_wall_seconds": args.timeout_seconds,
                "planner": f"{args.planner}_{'live' if args.planner == 'live' else 'conservative'}_acceleration_envelope",
                "settings": {k: str(v) if isinstance(v, Path) else v
-                            for k, v in vars(args).items() if k not in {"pedal_map_config_payload", "pedal_map_config", "pedal_map_file_sha256"}}}
+                            for k, v in vars(args).items() if k not in {"pedal_map_config_payload", "pedal_map_config", "pedal_map_file_sha256"}},
+                **({"longitudinal_policy": {"policy": args.longitudinal_policy,
+                    "deceleration_margin": args.envelope_deceleration_margin,
+                    "speed_query_points": args.envelope_speed_points}}
+                   if args.longitudinal_policy == "braking-envelope" else {})}
     plant = None
     try:
         import numpy as np
@@ -792,7 +840,7 @@ def child(args):
         # Track, referenced CSV, tire XMLs, component tables and formulation
         # define the run's physical inputs; they are hashed and snapshotted with
         # the code that this model depends on.
-        sources = source_files(args.model, args.track)
+        sources = source_files(args.model, args.track, args.longitudinal_policy)
         physical_inputs = model_inputs(args.model, args.track)
         summary["source_hashes"] = {str(path): hashlib.sha256(path.read_bytes()).hexdigest()
                                     for path in sources}
@@ -843,6 +891,37 @@ def child(args):
                                 vehicle=control if live_limit else None,
                                 live_limit=live_limit, open_course=open_course,
                                 lateral_margin=lateral_margin)
+        envelope = None
+        if args.longitudinal_policy == "braking-envelope":
+            from simplified_vehicle_models.solvers.braking_envelope import build_braking_envelope
+            from simplified_vehicle_models.solvers.envelope_driver import EnvelopePolicy, EnvelopeDriverSettings
+            from simplified_vehicle_models.powertrain.energy_storage import StorageState
+            storage = StorageState(control.drivetrain.powertrain.energy_storage.initial_state_of_charge)
+            envelope = build_braking_envelope(distance, curvature, control,
+                maximum_speed=args.maximum_speed, lateral_margin=lateral_margin,
+                deceleration_margin=args.envelope_deceleration_margin,
+                speed_query_points=args.envelope_speed_points, storage_state=storage,
+                is_closed=bool(track.is_closed))
+            array_names = ("distance", "curvature", "corner_speed", "entry_speed", "deceleration", "binding_index")
+            arrays = {name: getattr(envelope, name) for name in array_names}
+            arrays["segment_speed_domain_max"] = np.asarray(envelope.provenance["segment_speed_domain_max"], dtype=float)
+            array_hashes = {name: hashlib.sha256(np.ascontiguousarray(value).tobytes()).hexdigest()
+                            for name, value in arrays.items()}
+            np.savez_compressed(root / "envelope_arrays.npz", **arrays)
+            envelope_settings = EnvelopeDriverSettings(speed_gain=args.speed_gain)
+            settings = asdict(envelope_settings)
+            summary["longitudinal_policy"] = {
+                "policy": "braking-envelope", "settings": settings,
+                "maximum_speed": float(args.maximum_speed), "lateral_margin": float(lateral_margin),
+                "deceleration_margin": float(args.envelope_deceleration_margin),
+                "speed_query_points": int(args.envelope_speed_points),
+                "storage_state": {"state_of_charge": float(storage.state_of_charge)},
+                "is_closed": bool(track.is_closed), "builder": dict(envelope.provenance),
+                "array_sha256": array_hashes, "arrays_file": "envelope_arrays.npz",
+                "builder_source_sha256": {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in _ENVELOPE_SOURCES},
+                "caveat": "Sampled quasi-static authority may be optimistic; not a physical feasibility guarantee."}
+            summary["longitudinal_policy"]["settings_hash"] = hashlib.sha256(
+                json.dumps(summary["longitudinal_policy"], sort_keys=True, default=str).encode()).hexdigest()
         plant_class = plant_class_for(spec, vehicle)
         # The plant publishes its layout; every column index below is derived
         # from it instead of being repeated as a literal.
@@ -876,7 +955,8 @@ def child(args):
                                 throttle_apply_rate=args.throttle_apply_rate,
                                 throttle_release_rate=args.throttle_release_rate,
                                 brake_apply_rate=args.brake_apply_rate,
-                                brake_release_rate=args.brake_release_rate)
+                                brake_release_rate=args.brake_release_rate,
+                                envelope_policy=(None if envelope is None else EnvelopePolicy(envelope, envelope_settings)))
         initial = plant.initial_state(float(plan.speed[0]))
         # A flying lap starts with the foot where the driver wants it. A standing
         # start begins with the foot off the pedal: the driver then presses the
@@ -922,6 +1002,21 @@ def child(args):
                                  precision=args.record_precision,
                                  quasi_static_attitude=args.quasi_static_attitude)
             recording["step_sink"] = sink
+        policy_decisions = []
+        if args.longitudinal_policy == "braking-envelope":
+            ordinary_sink = recording.get("step_sink")
+            def accepted_policy_sink(sample):
+                if ordinary_sink is not None:
+                    ordinary_sink(sample)
+                if sample.policy_diagnostics is None:
+                    raise RuntimeError("accepted envelope-policy sample lacks cached decision")
+                applied = sample.command
+                policy_decisions.append({"time": float(sample.time), "step_index": int(sample.index),
+                    "decision": sample.policy_diagnostics.to_dict(),
+                    "applied_command": {"throttle": float(applied.throttle), "brake_force": float(applied.brake_force),
+                                        "steering_rate": float(applied.steering_rate)},
+                    "pedal": None if sample.pedal is None else float(sample.pedal)})
+            recording["step_sink"] = accepted_policy_sink
         result = solve_forward(plant, driver, initial, duration=args.duration,
                                wall_seconds=remaining,
                                maximum_wall_seconds=args.timeout_seconds,
@@ -929,6 +1024,11 @@ def child(args):
                                rtol=args.rtol, atol=args.rtol * .01, method=args.method,
                                 initial_pedal=initial_pedal, **recording)
         summary["solver_elapsed_seconds"] = float(result.wall_seconds)
+        if args.longitudinal_policy == "braking-envelope":
+            (root / "accepted_policy.json").write_text(json.dumps({"schema_version": 1,
+                "policy": "braking-envelope", "decisions": policy_decisions}, indent=2, allow_nan=False) + "\n")
+            summary["accepted_policy_file"] = "accepted_policy.json"
+            summary["accepted_policy_decisions"] = len(policy_decisions)
         if sink is not None:
             write_run_record(sink, args, summary, physical_inputs, spec, result, initial_pedal)
         np.savetxt(root / "trace.csv", np.column_stack((result.time, result.state.T)),
@@ -1127,6 +1227,10 @@ def main(argv=None):
               "elapsed_wall_seconds": runtime,
               "solver_wall_budget_seconds": solver_wall_budget(args.timeout_seconds, args.model),
               "model": args.model, "command": command,
+              **({"longitudinal_policy": {"policy": args.longitudinal_policy,
+                  "deceleration_margin": args.envelope_deceleration_margin,
+                  "speed_query_points": args.envelope_speed_points}}
+                 if args.longitudinal_policy == "braking-envelope" else {}),
               "attempt": str(attempt)}
     (attempt / "parent.json").write_text(json.dumps(parent, indent=2) + "\n")
     print(json.dumps(parent), flush=True)

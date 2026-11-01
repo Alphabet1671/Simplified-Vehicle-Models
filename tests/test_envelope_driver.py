@@ -36,6 +36,20 @@ class EnvelopePolicyTests(unittest.TestCase):
         self.assertGreater(d.reserve_distance_m,5.)
         self.assertEqual(d.governor_factor,.5)
         self.assertEqual(d.governor_shortfall, d.ungoverned_brake_force>d.governed_brake_force+1e-12)
+    def test_signed_observations_and_closed_station_wrap(self):
+        x=np.array([0.,10.,20.]); caps=np.array([30.,30.,30.])
+        env=BrakingEnvelope(x,np.zeros(3),caps,caps,np.array([5.,5.]),np.array([0,1,2]),True,60.,{})
+        policy=EnvelopePolicy(env)
+        base=DriverObservation(2.,0.,0.,8.,0.,0.,0.)
+        for sign in (-1.,1.):
+            o=DriverObservation(2.,sign*.03,sign*.04,8.,sign*.2,sign*.06,sign*.1)
+            self.assertEqual(policy.decide(o,0.),policy.decide(o,0.))
+        o=DriverObservation(-18.,-.03,-.04,8.,-.2,-.06,-.1)
+        self.assertEqual(policy.decide(o,0.),policy.decide(o,0.))
+        self.assertAlmostEqual(policy.decide(o,0.).preview_entry_speed,policy.decide(DriverObservation(2.,-.03,-.04,8.,-.2,-.06,-.1),0.).preview_entry_speed)
+        with self.assertRaises((TypeError,ValueError)):
+            policy.decide(DriverObservation(0.,float('nan'),0.,8.,0.,0.),0.)
+
     def test_negative_actual_speed_rejected_and_derived_overflow_is_clear(self):
         env=envelope([30,30,30],[30,30,30]); policy=EnvelopePolicy(env)
         with self.assertRaisesRegex(ValueError,'speed'):
@@ -130,6 +144,16 @@ class EnvelopePolicyTests(unittest.TestCase):
         self.assertGreater(with_sink[3],0)
         self.assertGreater(no_sink[2],0.)
         self.assertLessEqual(with_sink[2],no_sink[2])
+    def test_signed_synthetic_solver_observation_keeps_steering_finite(self):
+        from simplified_vehicle_models.solvers.forward_driver import SpeedPlan
+        plan=SpeedPlan(np.array([0.,20.]),np.array([10.,10.]),np.array([0.,.1]),False)
+        env=envelope([30,30,30],[30,30,30])
+        driver=PreviewDriver(plan,1.5,.5,2.,1000.,envelope_policy=EnvelopePolicy(env))
+        o=DriverObservation(2.,-.03,-.04,8.,-.2,-.06,-.1)
+        command,decision=driver.command_with_context(o,0.)
+        self.assertTrue(np.isfinite(command.steering_rate))
+        self.assertEqual(decision,driver.envelope_policy.decide(o,0.))
+
     def test_solver_accepted_step_carries_cached_policy_diagnostics(self):
         env=envelope([30,30,30],[30,30,30])
         from simplified_vehicle_models.solvers.forward_driver import SpeedPlan

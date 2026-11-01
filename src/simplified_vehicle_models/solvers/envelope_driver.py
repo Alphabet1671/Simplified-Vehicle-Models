@@ -84,15 +84,24 @@ class EnvelopePolicy:
         return value
 
     def decide(self, observation, pedal_position=None, context=None):
-        for name in ('distance','lateral_error','heading_error','yaw_rate','steering','lateral_speed'):
-            _finite(getattr(observation,name),f'observation.{name}',positive=False)
+        raw_station=observation.distance
+        if isinstance(raw_station,bool) or not isinstance(raw_station,Real) or not math.isfinite(float(raw_station)):
+            raise ValueError('observation.distance must be finite numeric')
+        s=float(raw_station)
+        if s<0. and not self.envelope.is_closed:
+            raise ValueError('observation.distance must be nonnegative for an open envelope')
         v=_finite(observation.speed,'observation.speed',positive=False)
+        for name in ('lateral_error','heading_error','yaw_rate','steering','lateral_speed'):
+            value=getattr(observation,name)
+            if isinstance(value,bool) or not isinstance(value,Real):
+                raise TypeError(f'observation.{name} must be a real number')
+            if not math.isfinite(float(value)):
+                raise ValueError(f'observation.{name} must be finite')
         margin=getattr(observation,'wheel_speed_margin',float('inf'))
         if isinstance(margin,bool) or not isinstance(margin,Real) or math.isnan(float(margin)):
             raise ValueError('observation.wheel_speed_margin must be numeric and not NaN')
         if margin < 0:
             raise ValueError('observation.wheel_speed_margin must be nonnegative')
-        s=float(observation.distance)
         if pedal_position is not None:
             if isinstance(pedal_position,bool) or not isinstance(pedal_position,Real): raise TypeError('pedal_position must be real')
             p=float(pedal_position)

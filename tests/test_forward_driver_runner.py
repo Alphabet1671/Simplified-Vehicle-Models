@@ -52,7 +52,7 @@ VOLATILE_SUMMARY_KEYS = (
     "setup_seconds", "child_wall_seconds", "source_hashes", "model_inputs", "environment",
     "settings", "error", "warm_start_source", "model", "requested_wall_seconds",
     "solver_wall_budget_seconds", "solver_elapsed_seconds", "elapsed_wall_seconds",
-    "peak_memory_bytes", "peak_memory_source",
+    "peak_memory_bytes", "peak_memory_source", "pedal_map", "runtime_model_identity",
 )
 
 REQUIRED_14DOF_SOURCES = (
@@ -309,6 +309,42 @@ class RunnerTests(unittest.TestCase):
         xml, csv = track_files(CANONICAL_TRACK)
         self.assertEqual(csv, Path("models/tracks/2024_michigan_endurance_multilap_closed.csv"))
         self.assertEqual(tire_xml_path(), Path("models/tires/iem24_murphy_real_unitire.xml"))
+
+    def test_pedal_map_cli_provenance_and_parent_handoff(self):
+        from simplified_vehicle_models.solvers.driver_maps import load_pedal_map_config
+        payload = {"schema_version": 1, "demand_map": {
+            "units": {"acceleration_axis": "m/s^2", "deceleration_axis": "m/s^2", "pedal_output": "1"},
+            "acceleration_to_throttle": {"axis": [0, 2, 5], "value": [0, .2, 1]},
+            "deceleration_to_brake": {"axis": [0, 3, 6], "value": [0, .3, 1]}},
+            "physical_calibration": None}
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "map.json"
+            path.write_text(json.dumps(payload))
+            args = parse_args(["--pedal-map-config", str(path)])
+            config = load_pedal_map_config(path)
+            self.assertEqual(args.pedal_map_config_path, path.resolve())
+            self.assertEqual(config.demand_map.command(2), (.2, 0.0))
+            with patch("tools.run.run_iem24_forward_driver.subprocess.run",
+                       return_value=subprocess.CompletedProcess([], 0)) as run:
+                with contextlib.redirect_stdout(io.StringIO()):
+                    main(["--output-root", temporary, "--pedal-map-config", str(path)])
+            command = run.call_args.args[0]
+            self.assertEqual(command[command.index("--pedal-map-config") + 1], str(path))
+            self.assertIn("--expected-pedal-map-sha256", command)
+
+    def test_no_map_default_and_mutated_config_rejected_before_attempt(self):
+        from tools.run.run_iem24_forward_driver import pedal_map_provenance
+        args = parse_args([])
+        provenance, _ = pedal_map_provenance(args)
+        self.assertEqual(provenance["semantic_sha256"], "no-pedal-map")
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "map.json"
+            path.write_text(json.dumps({"schema_version": 1}))
+            args = parse_args(["--pedal-map-config", str(path)])
+            path.write_text(json.dumps({"schema_version": 1, "demand_map": None}))
+            with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                parse_args(["--pedal-map-config", str(path), "--expected-pedal-map-sha256",
+                            args.pedal_map_file_sha256])
 
     def test_track_is_forwarded_to_child_command(self):
         with tempfile.TemporaryDirectory() as temporary:

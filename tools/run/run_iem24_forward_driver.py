@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
+import hashlib
 import importlib
 import json
 import math
@@ -51,6 +52,7 @@ SIGNED_TRACK_SUBTYPES = ("closed-xy-profile", "open-xy-profile")
 #: ``forward_powertrain.py`` in Task 7 and both plants call it, so both hash it:
 #: for the planar rung that changes recorded provenance, not any value.
 _SOLVER_SOURCES = (
+    Path("src/simplified_vehicle_models/solvers/driver_maps.py"),
     Path("src/simplified_vehicle_models/solvers/forward_driver.py"),
     Path("src/simplified_vehicle_models/solvers/forward_powertrain.py"),
 )
@@ -476,7 +478,7 @@ def tire_xml_path(vehicle_xml=VEHICLE, role="tire"):
     return component_xml(vehicle_xml, role)
 
 
-def warm_start_matches(previous, source_hashes, args):
+def warm_start_matches(previous, source_hashes, args, pedal_map_sha256=None):
     """True when a previous attempt may seed this run (same plan, track and sources).
 
     Source hashes include the track XML/CSV, tire XML and formulation, so a
@@ -487,6 +489,8 @@ def warm_start_matches(previous, source_hashes, args):
                 "lateral_margin": None}
     return bool(previous.get("status") == "Completed" and previous.get("lap_completed")
                 and previous.get("source_hashes") == source_hashes
+                and (previous.get("pedal_map", {}).get("semantic_sha256", None) == pedal_map_sha256
+                     or (pedal_map_sha256 == "no-pedal-map" and "pedal_map" not in previous))
                 and all(settings.get(key, defaults.get(key)) == getattr(args, key)
                         for key in ("planner", "maximum_speed", "lateral_acceleration",
                                     "pedal_travel_time", "spacing", "preview_seconds",
@@ -545,6 +549,8 @@ def parse_args(argv=None):
     parser.add_argument("--quasi-static-attitude", action="store_true",
                         help="with --record on a planar model, also store the labelled "
                              "APPROXIMATE roll/pitch estimates (never simulated states)")
+    parser.add_argument("--pedal-map-config", dest="pedal_map_config_path", type=Path, help="strict schema-versioned demand and/or physical pedal calibration JSON")
+    parser.add_argument("--expected-pedal-map-sha256", help=argparse.SUPPRESS)
     parser.add_argument("--child-attempt", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     import math
@@ -563,6 +569,8 @@ def parse_args(argv=None):
     except ValueError as error:
         parser.error(f"--track: {error}")
     args.track = canonical_path(args.track)
+    args.pedal_map_config_path = (None if args.pedal_map_config_path is None else
+                                  Path(args.pedal_map_config_path).expanduser().resolve())
     if args.warm_start is not None and args.pedal_travel_time is None:
         parser.error("warm start requires pedal dynamics")
     if args.quasi_static_attitude and not args.record:
@@ -572,7 +580,43 @@ def parse_args(argv=None):
     if args.timeout_seconds > PLANAR_MAXIMUM_WALL_SECONDS and args.model == "planar-7dof":
         parser.error(f"the planar-7dof wall limit must be <= {PLANAR_MAXIMUM_WALL_SECONDS:g} s; "
                      "use --model 14dof-simple for a longer, user-selected wall limit")
+    try:
+        (args.pedal_map_config_payload, args.pedal_map_config,
+         args.pedal_map_file_sha256) = load_runner_pedal_map(args.pedal_map_config_path)
+    except (OSError, ValueError, TypeError) as error:
+        parser.error(f"--pedal-map-config: {error}")
+    if args.expected_pedal_map_sha256 is not None and args.child_attempt is None:
+        parser.error("--expected-pedal-map-sha256 is reserved for runner children")
+    if args.expected_pedal_map_sha256 is not None and args.expected_pedal_map_sha256 != (args.pedal_map_file_sha256 or ""):
+        parser.error("--pedal-map-config changed after parent validation")
     return args
+
+
+def load_runner_pedal_map(path):
+    from simplified_vehicle_models.solvers.driver_maps import PedalMapConfiguration, load_pedal_map_config
+    if path is None:
+        config = PedalMapConfiguration()
+        return None, config, None
+    raw = Path(path).read_bytes()
+    import json as _json
+    payload = _json.loads(raw.decode("utf-8"))
+    config = load_pedal_map_config(path)
+    return payload, config, hashlib.sha256(raw).hexdigest()
+
+
+def pedal_map_provenance(args, vehicle=None):
+    config = args.pedal_map_config
+    identity = config.sha256 if config is not None and (config.demand_map or config.physical_calibration) else "no-pedal-map"
+    bound = vehicle
+    if vehicle is not None:
+        from simplified_vehicle_models.solvers.driver_maps import bind_pedal_calibration
+        bound = bind_pedal_calibration(vehicle, config.physical_calibration)
+    return {"schema_version": 1, "source_path": None if args.pedal_map_config is None else str(args.pedal_map_config),
+            "original_json": args.pedal_map_config_payload, "file_sha256": args.pedal_map_file_sha256,
+            "normalized": config.to_dict() if config is not None else None,
+            "semantic_sha256": identity,
+            "demand_map": config.demand_map is not None if config else False,
+            "physical_calibration": config.physical_calibration is not None if config else False}, bound
 
 
 #: File name of the optional run record inside an attempt directory.
@@ -616,6 +660,7 @@ def write_run_record(sink, args, summary, physical_inputs, spec, result, initial
                     "warm_started": args.warm_start is not None,
                     "initial_pedal": initial_pedal},
         "track": {"file": str(args.track)},
+        "pedal_map": summary.get("pedal_map"),
     }, created_utc=datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
     summary["run_record_file"] = record_path.name
     summary["run_record_rows"] = int(sink.rows)
@@ -699,7 +744,7 @@ def child(args):
                "model": args.model, "requested_wall_seconds": args.timeout_seconds,
                "planner": f"{args.planner}_{'live' if args.planner == 'live' else 'conservative'}_acceleration_envelope",
                "settings": {k: str(v) if isinstance(v, Path) else v
-                            for k, v in vars(args).items()}}
+                            for k, v in vars(args).items() if k not in {"pedal_map_config_payload", "pedal_map_config", "pedal_map_file_sha256"}}}
     plant = None
     try:
         import numpy as np
@@ -733,6 +778,10 @@ def child(args):
         summary["environment"] = {"python": sys.version, "numpy": np.__version__,
                                   "scipy": scipy.__version__, "platform": platform.platform()}
         vehicle = compile_formulation(str(spec.formulation)).model
+        summary["pedal_map"], vehicle = pedal_map_provenance(args, vehicle)
+        summary["runtime_model_identity"] = {"formulation": str(spec.formulation),
+                                             "model": args.model,
+                                             "semantic_pedal_map_sha256": summary["pedal_map"]["semantic_sha256"]}
         # The vertical 14DoF model composes the planar parameters; the driver and
         # the live planner read the shared planar layer.
         control = getattr(vehicle, "planar", vehicle)
@@ -788,7 +837,8 @@ def child(args):
                                 heading_gain=args.heading_gain,
                                 lateral_gain=args.lateral_gain,
                                live_limit=live_limit,
-                               pedal_travel_time=args.pedal_travel_time)
+                               pedal_travel_time=args.pedal_travel_time,
+                                demand_map=args.pedal_map_config.demand_map)
         initial = plant.initial_state(float(plan.speed[0]))
         # A flying lap starts with the foot where the driver wants it. A standing
         # start begins with the foot off the pedal: the driver then presses the
@@ -798,8 +848,9 @@ def child(args):
         if args.warm_start is not None:
             previous = json.loads((args.warm_start / "summary.json").read_text())
             previous_settings = previous.get("settings", {})
-            if not warm_start_matches(previous, summary["source_hashes"], args):
-                raise ValueError("warm start requires a completed lap with matching planner, speed cap, track and source hashes")
+            if not warm_start_matches(previous, summary["source_hashes"], args,
+                                      summary["pedal_map"]["semantic_sha256"]):
+                raise ValueError("warm start requires a completed lap with matching planner, speed cap, track, source hashes and pedal-map identity")
             trace = np.loadtxt(args.warm_start / "trace.csv", delimiter=",", skiprows=1)
             pedals = np.loadtxt(args.warm_start / "pedal.csv", delimiter=",", skiprows=1)
             if (trace.ndim != 2 or trace.shape[1] != 1 + plant.state_size
@@ -1013,6 +1064,7 @@ def main(argv=None):
     attempt.mkdir(parents=True, exist_ok=False)
     command = [sys.executable, "-u", str(Path(__file__).resolve()),
                *(sys.argv[1:] if argv is None else argv), "--child-attempt", str(attempt)]
+    command.extend(("--expected-pedal-map-sha256", args.pedal_map_file_sha256 or ""))
     started = time.perf_counter()
     with (attempt / "run.log").open("w") as log:
         try:
@@ -1024,6 +1076,11 @@ def main(argv=None):
             status, return_code = "Timed_Out", 124
     runtime = time.perf_counter() - started
     parent = {"status": status, "return_code": return_code,
+              "pedal_map": {"semantic_sha256": (args.pedal_map_config.sha256
+                              if args.pedal_map_config.demand_map or args.pedal_map_config.physical_calibration
+                              else "no-pedal-map"),
+                            "source_path": None if args.pedal_map_config_path is None else str(args.pedal_map_config_path),
+                            "file_sha256": args.pedal_map_file_sha256},
               "total_wall_seconds": runtime, "within_wall_limit": runtime <= args.timeout_seconds,
               "timeout_seconds": args.timeout_seconds,
               "requested_wall_seconds": args.timeout_seconds,

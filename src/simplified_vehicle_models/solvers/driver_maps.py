@@ -1,7 +1,7 @@
 """Immutable, unit-tagged pedal demand and actuator calibration maps."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import hashlib
 import json
 import math
@@ -150,6 +150,27 @@ class PedalMapConfiguration:
     def sha256(self) -> str:
         data = json.dumps(self.to_dict(), sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
         return hashlib.sha256(data).hexdigest()
+
+
+def bind_pedal_calibration(vehicle: Any, calibration: PedalActuatorCalibration | None) -> Any:
+    """Return an immutable runtime vehicle using a shared physical calibration."""
+    if calibration is None:
+        return vehicle
+    if not isinstance(calibration, PedalActuatorCalibration):
+        raise TypeError("calibration must be PedalActuatorCalibration or None")
+    try:
+        controller = vehicle.controller
+        runtime = vehicle.drivetrain
+        assembly = runtime.drivetrain
+        nested_controller = assembly.controller
+    except AttributeError as exc:
+        raise TypeError("vehicle does not have the compiled planar controller graph") from exc
+    if controller is not nested_controller:
+        raise ValueError("vehicle controller references differ; refusing ambiguous calibration binding")
+    bound_controller = replace(controller, actuator_calibration=calibration)
+    bound_assembly = replace(assembly, controller=bound_controller)
+    bound_runtime = replace(runtime, drivetrain=bound_assembly)
+    return replace(vehicle, controller=bound_controller, drivetrain=bound_runtime)
 
 
 def _table_dict(table: MonotoneTable1D) -> dict[str, Any]:

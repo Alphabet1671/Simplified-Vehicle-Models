@@ -11,6 +11,7 @@ Lap, line, forward-driver and maneuver solvers, with their certificates and evid
 | `artifact_chart_audit.py` | Bounded whole-artifact aggregation for the cached-polynomial chart check. |
 | `artifact_chart_check.py` | Bind a loaded energy-Hermite artifact to the explicit 3h chart checker. |
 | `bounded_attempts.py` | Pure parent-deadline controller for bounded synchronous attempts. |
+| `braking_envelope.py` | Offline sampled quasi-static corner/braking envelope and pure backward-cap propagation. |
 | `capability_exchange.py` | Bounded empirical physical-residual localization and fixed-mesh exchange. |
 | `capability_profile.py` | Independent fixed-path capability-profile reference (no torque vectoring). |
 | `chart_element_certificate.py` | Bound explicit rational energy/control polynomials against a stored signed chart. |

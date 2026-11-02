@@ -7,6 +7,8 @@ from simplified_vehicle_models.solvers.forward_driver import (
     DriverObservation, ForwardIntegrationError, PreviewDriver, RateSystem,
     SpeedPlan, solve_forward,
 )
+from simplified_vehicle_models.solvers.braking_envelope import BrakingEnvelope
+from simplified_vehicle_models.solvers.envelope_driver import EnvelopePolicy
 
 
 class Plant:
@@ -18,7 +20,9 @@ class Plant:
 class ForwardFailureDiagnosticsTests(unittest.TestCase):
     def setUp(self):
         plan=SpeedPlan(np.array([0.,10.]),np.array([5.,5.]),np.zeros(2))
-        self.driver=PreviewDriver(plan,1.,1.,1.,100.)
+        envelope=BrakingEnvelope(np.array([0.,5.,10.]),np.zeros(3),np.full(3,5.),
+            np.full(3,5.),np.full(2,5.),np.zeros(3,dtype=int),True,5.,{"fixture":True})
+        self.driver=PreviewDriver(plan,1.,1.,1.,100.,envelope_policy=EnvelopePolicy(envelope))
 
     def test_unsuccessful_solver_has_typed_readonly_accepted_snapshot(self):
         fake=SimpleNamespace(success=False,message="step size failure",t=np.array([0.,.3]),

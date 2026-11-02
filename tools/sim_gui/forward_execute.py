@@ -140,7 +140,7 @@ def _run_impl(case: dict, attempt: Path, settings: RunSettings, case_dir: Path) 
     plant = PlanarForwardPlant(control, plan)
     driver = PreviewDriver(plan, control.wheelbase, control.steering_maximum_angle,
         control.steering_maximum_rate, control.maximum_pedal_force, preview_seconds=config["preview_seconds"],
-        speed_gain=config["speed_gain"], heading_gain=config["heading_gain"], lateral_gain=config["lateral_gain"], live_limit=True,
+        speed_gain=config["speed_gain"], heading_gain=config["heading_gain"], lateral_gain=config["lateral_gain"],
         pedal_time_constant=config["pedal_time_constant_s"], throttle_apply_rate=config["throttle_apply_rate"],
         throttle_release_rate=config["throttle_release_rate"], brake_apply_rate=config["brake_apply_rate"],
         brake_release_rate=config["brake_release_rate"], steering_time_constant=config["steering_time_constant_s"],

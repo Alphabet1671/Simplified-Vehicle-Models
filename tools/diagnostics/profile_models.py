@@ -120,6 +120,9 @@ def main() -> None:
     else:
         from simplified_vehicle_models.solvers.forward_driver import (
             PreviewDriver, build_speed_plan, solve_forward)
+        from simplified_vehicle_models.solvers.braking_envelope import build_braking_envelope
+        from simplified_vehicle_models.solvers.envelope_driver import EnvelopeDriverSettings, EnvelopePolicy
+        from simplified_vehicle_models.powertrain.energy_storage import StorageState
         from simplified_vehicle_models.tracks.path_coordinates import evaluate_path
         from tools.run.run_iem24_forward_driver import MODELS, plant_class_for
 
@@ -133,10 +136,22 @@ def main() -> None:
         _, _, _, curvature = evaluate_path(track.path_coordinates, distance)
         plan = phase("build_speed_plan_live", build_speed_plan, distance, curvature, 60.,
                      None, 1., 2., vehicle=control, live_limit=True)
+        envelope = phase("build_braking_envelope", build_braking_envelope, distance, curvature,
+                         control, maximum_speed=60., lateral_margin=.9, deceleration_margin=.6,
+                         speed_query_points=9, storage_state=StorageState(
+                             control.drivetrain.powertrain.energy_storage.initial_state_of_charge),
+                         is_closed=bool(track.is_closed))
         plant = phase("construct_plant", plant_class_for(spec, vehicle), vehicle, plan)
         driver = PreviewDriver(plan, control.wheelbase, control.steering_maximum_angle,
                                control.steering_maximum_rate, control.maximum_pedal_force,
-                               live_limit=True, pedal_travel_time=.175)
+                               preview_seconds=.15, speed_gain=2., heading_gain=1.5, lateral_gain=1.5,
+                               pedal_time_constant=.02, throttle_apply_rate=4., throttle_release_rate=6.,
+                               brake_apply_rate=5., brake_release_rate=6., steering_time_constant=.08,
+                               envelope_policy=EnvelopePolicy(envelope, EnvelopeDriverSettings(
+                                   speed_gain=2., throttle_acceleration_scale=2.5,
+                                   brake_acceleration_scale=6., response_allowance_s=.06,
+                                   positive_acceleration_reserve_mps2=4., feedforward_distance_m=2.)),
+                               pedal_travel_time=.175)
         initial = phase("initial_state", plant.initial_state, float(plan.speed[0]))
         result = phase("solve_forward", solve_forward, plant, driver, initial,
                        duration=300., wall_seconds=3500., maximum_wall_seconds=3600.,

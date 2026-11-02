@@ -62,28 +62,6 @@ class DefaultTrackTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             endurance_plot.check_export_track({"track": ORIGINAL}, endurance_plot.DEFAULT_TRACK)
 
-    def test_attempt_consumers_use_recorded_track_with_original_fallback(self):
-        for name in ("recompute_forward_driver_accelerations.py",
-                     "plot_iem24_forward_driver_comparison.py"):
-            text = source(name)
-            self.assertIn(f'LEGACY_TRACK = "{ORIGINAL}"', text, name)
-            self.assertIn('load_track(settings.get("track") or LEGACY_TRACK)', text, name)
-            self.assertNotIn(CANONICAL, text, name)
-
-    def test_trace_analysis_follows_attempt_track(self):
-        from tools.diagnostics.analyze_trace_commands import LEGACY_TRACK as legacy, attempt_track
-        import json, tempfile
-        self.assertEqual(legacy, ORIGINAL)
-        with tempfile.TemporaryDirectory() as directory:
-            trace = Path(directory) / "trace.csv"
-            self.assertEqual(attempt_track(trace), ORIGINAL)  # no summary: historical
-            (Path(directory) / "summary.json").write_text(json.dumps({"settings": {}}))
-            self.assertEqual(attempt_track(trace), ORIGINAL)
-            (Path(directory) / "summary.json").write_text(
-                json.dumps({"settings": {"track": CANONICAL}}))
-            self.assertEqual(attempt_track(trace), CANONICAL)
-            self.assertEqual(attempt_track(trace, ORIGINAL), ORIGINAL)
-
 
 if __name__ == "__main__":
     unittest.main()

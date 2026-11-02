@@ -78,26 +78,6 @@ class MonotoneTable1D:
 
 
 @dataclass(frozen=True, slots=True)
-class LongitudinalDemandMap:
-    acceleration_to_throttle: MonotoneTable1D
-    deceleration_to_brake: MonotoneTable1D
-
-    def __post_init__(self) -> None:
-        for table in (self.acceleration_to_throttle, self.deceleration_to_brake):
-            if not isinstance(table, MonotoneTable1D): raise TypeError("demand channels must be MonotoneTable1D")
-            if table.axis_unit != "m/s^2" or table.value_unit != "1": raise ValueError("demand units must be m/s^2 to 1")
-            if table.axis[0] != 0 or table.value[0] != 0 or table.value[-1] != 1 or table.axis[-1] <= 0:
-                raise ValueError("demand channel must start at (0,0) and end at normalized output 1")
-            if any(v < 0 or v > 1 for v in table.value): raise ValueError("pedal outputs must be in [0,1]")
-
-    def command(self, acceleration_request_mps2: float) -> tuple[float, float]:
-        a = _number(acceleration_request_mps2, "acceleration request")
-        if a > 0: return (self.acceleration_to_throttle.evaluate(a), 0.0)
-        if a < 0: return (0.0, self.deceleration_to_brake.evaluate(-a))
-        return (0.0, 0.0)
-
-
-@dataclass(frozen=True, slots=True)
 class PedalActuatorCalibration:
     throttle_fraction: MonotoneTable1D
     brake_force_fraction: MonotoneTable1D
@@ -125,21 +105,14 @@ class PedalActuatorCalibration:
 
 @dataclass(frozen=True, slots=True)
 class PedalMapConfiguration:
-    demand_map: LongitudinalDemandMap | None = None
     physical_calibration: PedalActuatorCalibration | None = None
 
     def __post_init__(self) -> None:
-        if self.demand_map is not None and not isinstance(self.demand_map, LongitudinalDemandMap):
-            raise TypeError("demand_map must be LongitudinalDemandMap or None")
         if self.physical_calibration is not None and not isinstance(self.physical_calibration, PedalActuatorCalibration):
             raise TypeError("physical_calibration must be PedalActuatorCalibration or None")
 
     def to_dict(self) -> dict[str, Any]:
-        root: dict[str, Any] = {"schema_version": 1, "demand_map": None, "physical_calibration": None}
-        if self.demand_map is not None:
-            d = self.demand_map
-            root["demand_map"] = {"units": {"acceleration_axis": "m/s^2", "deceleration_axis": "m/s^2", "pedal_output": "1"},
-                "acceleration_to_throttle": _table_dict(d.acceleration_to_throttle), "deceleration_to_brake": _table_dict(d.deceleration_to_brake)}
+        root: dict[str, Any] = {"schema_version": 1, "physical_calibration": None}
         if self.physical_calibration is not None:
             p = self.physical_calibration
             root["physical_calibration"] = {"units": {"throttle_input": "1", "throttle_effective_request": "1", "brake_input": "1", "brake_effective_request": "1"},
@@ -189,21 +162,18 @@ def _parse_table(obj: Any, axis_unit: str, value_unit: str) -> MonotoneTable1D:
 
 
 def parse_pedal_map_config(payload: Any) -> PedalMapConfiguration:
-    _keys(payload, {"schema_version"}, {"demand_map", "physical_calibration"})
+    if isinstance(payload, dict) and "demand_map" in payload:
+        raise ValueError("demand_map is retired; use the braking-envelope driver policy")
+    _keys(payload, {"schema_version"}, {"physical_calibration"})
     version = payload["schema_version"]
     if type(version) is not int or version != 1: raise ValueError("unsupported schema_version")
-    demand = physical = None
-    if payload.get("demand_map") is not None:
-        d = _keys(payload["demand_map"], {"units", "acceleration_to_throttle", "deceleration_to_brake"})
-        units = _keys(d["units"], {"acceleration_axis", "deceleration_axis", "pedal_output"})
-        if units != {"acceleration_axis": "m/s^2", "deceleration_axis": "m/s^2", "pedal_output": "1"}: raise ValueError("unsupported demand units")
-        demand = LongitudinalDemandMap(_parse_table(d["acceleration_to_throttle"], "m/s^2", "1"), _parse_table(d["deceleration_to_brake"], "m/s^2", "1"))
+    physical = None
     if payload.get("physical_calibration") is not None:
         p = _keys(payload["physical_calibration"], {"units", "throttle_fraction", "brake_force_fraction"})
         expected = {"throttle_input": "1", "throttle_effective_request": "1", "brake_input": "1", "brake_effective_request": "1"}
         if _keys(p["units"], set(expected)) != expected: raise ValueError("unsupported physical calibration units")
         physical = PedalActuatorCalibration(_parse_table(p["throttle_fraction"], "1", "1"), _parse_table(p["brake_force_fraction"], "1", "1"))
-    return PedalMapConfiguration(demand, physical)
+    return PedalMapConfiguration(physical)
 
 
 def _reject_constant(value: str) -> None:

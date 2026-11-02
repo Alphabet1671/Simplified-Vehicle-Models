@@ -87,10 +87,16 @@ class SettingsTab(QWidget):
 
     def set_settings(self, settings: RunSettings):
         self._settings = settings
-        self.solver_kind.setCurrentIndex(self.solver_kind.findData(settings.solver_kind))
-        for name, widget in self._widgets.items():
-            widget.setValue(getattr(settings, name))
-        self._sync_visibility()
+        widgets = (self.solver_kind, *self._widgets.values())
+        previous = tuple(widget.blockSignals(True) for widget in widgets)
+        try:
+            self.solver_kind.setCurrentIndex(self.solver_kind.findData(settings.solver_kind))
+            for name, widget in self._widgets.items():
+                widget.setValue(getattr(settings, name))
+            self._sync_visibility()
+        finally:
+            for widget, was_blocked in zip(widgets, previous):
+                widget.blockSignals(was_blocked)
         self.settingsChanged.emit(settings)
 
     def set_model(self, name: str):

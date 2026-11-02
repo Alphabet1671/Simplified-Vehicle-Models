@@ -154,9 +154,8 @@ class PedalActuatorCalibrationTests(unittest.TestCase):
         assembly = replace(self.calibrated.drivetrain.drivetrain, controller=controller)
         regen = replace(self.calibrated, controller=controller,
                         drivetrain=replace(self.calibrated.drivetrain, drivetrain=assembly))
-        with self.assertRaises(NotImplementedError):
-            from simplified_vehicle_models.solvers.physical_longitudinal_mapper import PhysicalLongitudinalMapper
-            PhysicalLongitudinalMapper(regen, object(), state_names=('x',))
+        self.assertTrue(regen.controller.regen_enabled)
+        self.assertEqual(regen.controller.regen_pedal_force_limit, 30.)
 
 
 if __name__ == '__main__': unittest.main()

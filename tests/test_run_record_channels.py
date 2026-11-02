@@ -12,6 +12,8 @@ from simplified_vehicle_models.results.run_record import load_run_record
 from simplified_vehicle_models.solvers.forward_driver import (
     DriverCommand, PreviewDriver, SpeedPlan, StepSample, solve_forward,
 )
+from simplified_vehicle_models.solvers.braking_envelope import BrakingEnvelope
+from simplified_vehicle_models.solvers.envelope_driver import EnvelopePolicy
 from simplified_vehicle_models.solvers.planar_forward import PlanarForwardPlant
 from simplified_vehicle_models.solvers.vertical_forward import VerticalForwardPlant
 from simplified_vehicle_models.tracks.path_coordinates import evaluate_path
@@ -28,8 +30,11 @@ def build(plant_class, xml):
     control = getattr(vehicle, "planar", vehicle)
     plan = SpeedPlan(np.array([0., 2000.]), np.array([8., 8.]), np.zeros(2))
     plant = plant_class(vehicle, plan)
+    envelope = BrakingEnvelope(np.array([0., 1000., 2000.]), np.zeros(3), np.full(3, 8.),
+        np.full(3, 8.), np.full(2, 5.), np.zeros(3, dtype=int), True, 8., {"fixture": True})
     driver = PreviewDriver(plan, control.wheelbase, control.steering_maximum_angle,
-                           control.steering_maximum_rate, control.maximum_pedal_force)
+                           control.steering_maximum_rate, control.maximum_pedal_force,
+                           envelope_policy=EnvelopePolicy(envelope))
     return plant, driver
 
 

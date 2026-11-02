@@ -2,6 +2,7 @@ import hashlib
 import json
 import os
 import tempfile
+import inspect
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -10,6 +11,83 @@ from tools.sim_gui.settings import RunSettings, solution_model_for, validate
 
 
 class ForwardSettingsTests(unittest.TestCase):
+    def test_gui_constructor_matches_current_preview_driver_api(self):
+        from simplified_vehicle_models.solvers.forward_driver import PreviewDriver
+        from tools.sim_gui import forward_execute
+        signature = inspect.signature(PreviewDriver)
+        self.assertNotIn("live_limit", signature.parameters)
+        source = Path(forward_execute.__file__).read_text()
+        driver_call = source.split("driver = PreviewDriver(", 1)[1].split("\n    initial =", 1)[0]
+        self.assertNotIn("live_limit", driver_call)
+        self.assertIn("live_limit=True", source.split("plan = build_speed_plan(", 1)[1].split("\n    if time.perf_counter", 1)[0])
+
+    def test_gui_backend_runs_actual_policy_driver_and_solver(self):
+        import numpy as np
+        from types import SimpleNamespace
+        from simplified_vehicle_models.parameters.vehicle import PlanarVehicleParameters
+        from simplified_vehicle_models.solvers.forward_driver import ForwardResult
+        from tools.sim_gui.settings import forward_driver_config
+        from tools.sim_gui import forward_execute
+        settings = RunSettings(solver_kind="forward-driver")
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            formulation, track_path = root / "formulation.xml", root / "track.xml"
+            formulation.write_text("formulation")
+            track_path.write_text("track")
+            component = root / "component.xml"
+            component.write_text("component")
+            frozen = {str(formulation.resolve()): "sha256:" + hashlib.sha256(formulation.read_bytes()).hexdigest(),
+                str(track_path.resolve()): "sha256:" + hashlib.sha256(track_path.read_bytes()).hexdigest(),
+                str(component.resolve()): "sha256:" + hashlib.sha256(component.read_bytes()).hexdigest()}
+            identity = {"solver_kind":"forward-driver", "source_model":"planar-7dof",
+                "solution_model":"planar-7dof", "formulation":str(formulation.resolve()),
+                "formulation_sha256":hashlib.sha256(formulation.read_bytes()).hexdigest(),
+                "track":str(track_path.resolve()), "track_sha256":hashlib.sha256(track_path.read_bytes()).hexdigest(),
+                "settings":settings.to_json(), "settings_sha256":hashlib.sha256(json.dumps(settings.to_json(),sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest(),
+                "driver_config":forward_driver_config(settings), "component_source_hashes":frozen}
+            case={"solver_kind":"forward-driver","model":"planar-7dof","formulation":str(formulation),"track":str(track_path),"argv":[],"input_identity":identity}
+            attempt=root/"attempt"; attempt.mkdir()
+            control=object.__new__(PlanarVehicleParameters)
+            for key,value in {"wheelbase":1.5,"steering_maximum_angle":.5,"steering_maximum_rate":2.,"maximum_pedal_force":1000.,
+                "drivetrain":SimpleNamespace(powertrain=SimpleNamespace(energy_storage=SimpleNamespace(initial_state_of_charge=.5)))}.items():
+                object.__setattr__(control,key,value)
+            manifest=SimpleNamespace(assembly=SimpleNamespace(path=component,model_id="assembly",model_type="vehicle",subtype="test"),
+                formulation=SimpleNamespace(model_id="form",model_type="formulation",subtype="test",path=formulation),
+                loaded_components=[SimpleNamespace(path=component,role="vehicle",model_id="vehicle",subtype="test")],
+                capabilities=[], unused_roles=lambda: [])
+            compiled=SimpleNamespace(model=control,manifest=manifest)
+            track=SimpleNamespace(lap_length=1.,is_closed=False,path_coordinates=object())
+            plan=SimpleNamespace(distance=np.array([0.,1.]),speed=np.array([0.,1.]),curvature=np.zeros(2),is_closed=False)
+            envelope=SimpleNamespace(distance=np.array([0.,1.]),curvature=np.zeros(2),corner_speed=np.ones(2),entry_speed=np.ones(2),deceleration=np.ones(1),binding_index=np.zeros(2),is_closed=False,sample=lambda station:None)
+            class Plant:
+                state_names=("n",)
+                def __init__(self,*args): pass
+                def initial_state(self, speed): return np.array([0.])
+            record_path=root/"record.npz"
+            def close_sink(_metadata):
+                record_path.write_bytes(b"synthetic run record")
+                return record_path
+            sink=SimpleNamespace(rows=0, close=close_sink)
+            result=SimpleNamespace(time=np.array([0.,1.]),state=np.array([[0.,0.]]),dense_sample_state=np.zeros((1,1)),dense_samples=1,
+                lap_completed=True,wall_seconds=.01,accepted_steps=1,midpoint_sample_validation_complete=True)
+            with mock.patch.object(forward_execute,"compile_formulation",return_value=compiled), \
+                 mock.patch.object(forward_execute,"load_track",return_value=track), \
+                 mock.patch.object(forward_execute,"evaluate_path",return_value=(None,None,None,np.zeros(2))), \
+                 mock.patch.object(forward_execute,"build_speed_plan",return_value=plan) as build_plan, \
+                 mock.patch.object(forward_execute,"build_braking_envelope",return_value=envelope), \
+                 mock.patch.object(forward_execute,"PlanarForwardPlant",Plant), \
+                 mock.patch.object(forward_execute,"RunRecordSink",return_value=sink), \
+                 mock.patch.object(forward_execute,"solve_forward",return_value=result) as solve, \
+                 mock.patch("numpy.savez_compressed", side_effect=lambda path, **kwargs: Path(path).write_bytes(b"synthetic envelope")), mock.patch.object(forward_execute,"source_hashes",return_value=frozen), \
+                 mock.patch.object(forward_execute,"vehicle_geometry",return_value={}):
+                self.assertEqual(forward_execute._run_impl(case,attempt,settings,root),0)
+            build_plan.assert_called_once()
+            self.assertTrue(build_plan.call_args.kwargs["live_limit"])
+            actual_driver=solve.call_args.args[1]
+            self.assertIsInstance(actual_driver, __import__("simplified_vehicle_models.solvers.forward_driver",fromlist=["PreviewDriver"]).PreviewDriver)
+            self.assertIsNotNone(actual_driver.envelope_policy)
+            solve.assert_called_once()
+
     def test_defaults_roundtrip_and_legacy_default_preserved(self):
         self.assertEqual(RunSettings().solver_kind, "forward-driver")
         settings = RunSettings(solver_kind="forward-driver")

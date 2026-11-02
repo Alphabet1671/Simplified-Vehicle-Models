@@ -26,9 +26,15 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(RunSettings.for_model("point-mass").solver_kind, "point-mass")
         self.assertEqual({"forward-driver", "point-mass"},
                          {RunSettings().solver_kind, RunSettings(solver_kind="point-mass").solver_kind})
-        for field in ("yaw_map", "mode", "plan", "controller"):
+        retired_fields = ("profile_seconds", "profile_rounds", "spacing", "control_spacing",
+                          "line_seconds", "line_evaluations", "line_outer_passes",
+                          "line_optimizer_iterations", "duration", "replay_seconds",
+                          "maximum_step", "controller", "yaw_map", "mode", "plan")
+        for field in retired_fields:
             with self.subTest(field=field), self.assertRaisesRegex(ValueError, "retired yaw"):
                 RunSettings.from_json({field: "old-value"})
+        with self.assertRaisesRegex(ValueError, "retired yaw"):
+            RunSettings.from_json({"solver_kind": "yaw-aware"})
         point = RunSettings(solver_kind="point-mass")
         validate(point, "14dof-simple", Path("track.xml"))
         self.assertEqual(solution_model_for(point, "14dof-simple"), "point-mass")

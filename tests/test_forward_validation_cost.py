@@ -4,6 +4,8 @@ from types import SimpleNamespace
 from unittest.mock import patch
 import numpy as np
 
+from simplified_vehicle_models.solvers.braking_envelope import BrakingEnvelope
+from simplified_vehicle_models.solvers.envelope_driver import EnvelopePolicy
 from simplified_vehicle_models.solvers.forward_driver import (
     DriverObservation, ForwardIntegrationError, PreviewDriver, RateSystem,
     SpeedPlan, TrialStateError, solve_forward,
@@ -21,7 +23,11 @@ class Plant:
 
 class ReplayValidationCostTests(unittest.TestCase):
     def setUp(self):
-        self.driver = PreviewDriver(SpeedPlan(np.array([0., 10.]), np.array([5., 5.]), np.zeros(2)), 1., 1., 1., 100.)
+        plan = SpeedPlan(np.array([0., 10.]), np.array([5., 5.]), np.zeros(2), is_closed=False)
+        envelope = BrakingEnvelope(np.array([0., 10.]), np.zeros(2), np.full(2, 5.),
+                                   np.full(2, 5.), np.array([5.]), np.zeros(2, dtype=int),
+                                   False, 5., {"fixture": True})
+        self.driver = PreviewDriver(plan, 1., 1., 1., 100., envelope_policy=EnvelopePolicy(envelope))
 
     def fake_result(self, states=None, dense=None):
         states = np.array([[0., 1., 2.]]) if states is None else np.asarray(states, dtype=float)

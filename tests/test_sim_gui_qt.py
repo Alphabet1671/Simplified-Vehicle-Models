@@ -320,6 +320,23 @@ class SettingsTabTests(unittest.TestCase):
         self.assertTrue(self.tab.point_mass_duration.isVisible())
         self.assertFalse(self.tab.forward_duration.isVisible())
 
+    def test_set_settings_is_atomic_single_emission_and_round_trips_workflows(self):
+        emitted = []
+        self.tab.settingsChanged.connect(emitted.append)
+        point = RunSettings(solver_kind="point-mass", point_mass_duration=42.,
+                            point_mass_spacing=1.25, point_mass_lateral_acceleration=3.5,
+                            forward_feedforward_distance=7.)
+        self.tab.set_settings(point)
+        self.assertEqual(emitted, [point])
+        self.assertEqual(self.tab.settings(), point)
+        forward = RunSettings(solver_kind="forward-driver", forward_duration=23.,
+                              forward_spacing=.25, forward_feedforward_distance=4.5)
+        self.tab.set_settings(forward)
+        self.assertEqual(emitted, [point, forward])
+        self.assertEqual(self.tab.settings(), forward)
+        self.assertEqual(self.tab.forward_feedforward_distance.value(), 4.5)
+        self.assertEqual(self.tab.point_mass_duration.value(), forward.point_mass_duration)
+
 
 @unittest.skipIf(QApplication is None, "PyQt6 is not installed")
 class StudyTabTests(unittest.TestCase):

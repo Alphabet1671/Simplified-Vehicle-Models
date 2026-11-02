@@ -26,7 +26,7 @@ Lap, line, forward-driver and maneuver solvers, with their certificates and evid
 | `forward_backward.py` | Python module `forward_backward`. |
 | `forward_driver.py` | Drive a complete vehicle state forward along a prescribed path with optional signed-pedal dynamics. |
 | `envelope_driver.py` | Pure actual-speed and pedal-aware longitudinal control against a sampled braking envelope. |
-| `driver_maps.py` | Immutable, validated longitudinal demand and physical pedal calibration maps with strict versioned JSON configuration.
+| `driver_maps.py` | Immutable physical pedal calibration and strict versioned JSON configuration.
 | `forward_powertrain.py` | Shared forward-driver powertrain closure. |
 | `input_preflight.py` | Bounded filesystem admission checks for worker-owned model inputs. |
 | `joint_event_contract.py` | Analytic helper for constant-acceleration motion from rest. |
@@ -42,7 +42,6 @@ Lap, line, forward-driver and maneuver solvers, with their certificates and evid
 | `maneuver_vertical.py` | Cartesian open-loop maneuver adapter for the vertical 14-DoF plant. |
 | `minimum_time_run.py` | Spawned, deadline-owning supervisor for minimum-time harness attempts. |
 | `offset_geometry_bounds.py` | Exact-rational enclosures for the stored analytic offset path geometry. |
-| `physical_longitudinal_mapper.py` | Opt-in quasi-steady force-to-actuator command mapping. |
 | `planar_dense_certificate.py` | Certify the planar plant's explicit state domain over BDF dense intervals. |
 | `planar_forward.py` | Adapt the transient planar vehicle to the shared forward driver. |
 | `profile_line_seed.py` | Optional exact-centreline fixed-path energy-profile seed for spline OCPs. |
@@ -59,7 +58,6 @@ Lap, line, forward-driver and maneuver solvers, with their certificates and evid
 | `standing_straight_ocp.py` | Actual fixed-straight, nonnegative-acceleration standing-start OCP. |
 | `track_problem_contract.py` | Pure structural preflight for the versioned track-problem request contract. |
 | `trajectory_artifact.py` | Strict reader and exact reference bridge for analytic trajectory artifacts. |
-| `trajectory_forward_replay.py` | Diagnostic exact-reference trials for serialized trajectories. |
 | `vertical_between_step.py` | Between-step evaluation-domain certificate for the vertical 14-DoF plant. |
 | `vertical_dense_certificate.py` | Conservative state-domain certificate for vertical 14-DoF dense output. |
 | `vertical_equilibrium.py` | Static and steady-corner vertical equilibrium for the 14-DoF vehicle model. |

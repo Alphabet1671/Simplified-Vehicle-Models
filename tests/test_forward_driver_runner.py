@@ -18,7 +18,7 @@ from simplified_vehicle_models.compiler.capabilities import (
 )
 from simplified_vehicle_models.compiler.compile import compile_formulation
 from simplified_vehicle_models.solvers.driver_maps import (
-    LongitudinalDemandMap, MonotoneTable1D, PedalActuatorCalibration,
+    PedalActuatorCalibration,
 )
 from simplified_vehicle_models.solvers.forward_driver import (
     DriverObservation, ForwardResult, PreviewDriver, RateSystem, SpeedPlan, solve_forward,
@@ -185,6 +185,25 @@ def vertical_fake(**overrides):
     return type("FakeVerticalPlantVariant", (FakeVerticalPlant,), {"__init__": __init__})
 
 
+def current_policy_warm_start(settings, args):
+    """Add mandatory current-envelope identity to synthetic prior summaries."""
+    from tools.run.run_iem24_forward_driver import policy_identity_settings
+    identity = policy_identity_settings(args)
+    settings = dict(settings, longitudinal_policy="braking-envelope",
+                    envelope_deceleration_margin=args.envelope_deceleration_margin,
+                    envelope_speed_points=args.envelope_speed_points,
+                    longitudinal_policy_settings_identity=identity,
+                    longitudinal_policy_settings_identity_sha256=hashlib.sha256(
+                        canonical_json(identity).encode()).hexdigest())
+    policy = {"policy": "braking-envelope",
+        "deceleration_margin": args.envelope_deceleration_margin,
+        "speed_query_points": args.envelope_speed_points,
+        "settings_identity": identity,
+        "settings_identity_sha256": hashlib.sha256(canonical_json(identity).encode()).hexdigest()}
+    return {"status": "Completed", "lap_completed": True,
+        "settings": settings, "longitudinal_policy": policy}
+
+
 def run_fake_child(model, plant_class, lap_completed=True, dense_bounds=None, extra_args=()):
     """Run one child attempt with a fake plant and a stubbed solver.
 
@@ -313,47 +332,10 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(csv, Path("models/tracks/2024_michigan_endurance_multilap_closed.csv"))
         self.assertEqual(tire_xml_path(), Path("models/tires/iem24_murphy_real_unitire.xml"))
 
-    def test_pedal_map_cli_provenance_and_parent_handoff(self):
-        from simplified_vehicle_models.solvers.driver_maps import load_pedal_map_config
-        payload = {"schema_version": 1, "demand_map": {
-            "units": {"acceleration_axis": "m/s^2", "deceleration_axis": "m/s^2", "pedal_output": "1"},
-            "acceleration_to_throttle": {"axis": [0, 2, 5], "value": [0, .2, 1]},
-            "deceleration_to_brake": {"axis": [0, 3, 6], "value": [0, .3, 1]}},
-            "physical_calibration": None}
-        with tempfile.TemporaryDirectory() as temporary:
-            path = Path(temporary) / "map.json"
-            path.write_text(json.dumps(payload))
-            args = parse_args(["--pedal-map-config", str(path)])
-            config = load_pedal_map_config(path)
-            self.assertEqual(args.pedal_map_config_path, path.resolve())
-            self.assertEqual(config.demand_map.command(2), (.2, 0.0))
-            with patch("tools.run.run_iem24_forward_driver.subprocess.run",
-                       return_value=subprocess.CompletedProcess([], 0)) as run:
-                with contextlib.redirect_stdout(io.StringIO()):
-                    main(["--output-root", temporary, "--pedal-map-config", str(path)])
-            command = run.call_args.args[0]
-            self.assertEqual(command[command.index("--pedal-map-config") + 1], str(path))
-            self.assertIn("--expected-pedal-map-sha256", command)
-
-    def test_child_rejects_mutated_config_before_solver_or_state_reads(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            config_path = Path(temporary) / "map.json"
-            config_path.write_text(json.dumps({"schema_version": 1}))
-            parent_args = parse_args(["--pedal-map-config", str(config_path)])
-            config_path.write_text(json.dumps({"schema_version": 1, "demand_map": self._demand_payload()}))
-            child_args = ["--pedal-map-config", str(config_path), "--child-attempt", temporary,
-                          "--expected-pedal-map-sha256", parent_args.pedal_map_file_sha256]
-            with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
-                parse_args(child_args)
-            with patch("tools.run.run_iem24_forward_driver.subprocess.run") as spawn:
-                with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
-                    main(child_args)
-                spawn.assert_not_called()
-
     def test_warm_start_mismatch_rejected_before_saved_arrays_read(self):
         hashes = {"track.xml": "a"}
         args = parse_args([])
-        settings = {"planner": "conservative", "maximum_speed": 8., "lateral_acceleration": None,
+        settings = {"maximum_speed": 8., "lateral_acceleration": None,
                     "pedal_travel_time": .175, "spacing": .5, "preview_seconds": .15,
                     "heading_gain": 1.5, "lateral_gain": 1.5, "speed_gain": 2.,
                     "lateral_margin": None, "track": str(args.track)}
@@ -361,173 +343,15 @@ class RunnerTests(unittest.TestCase):
                     "settings": settings, "pedal_map": {"semantic_sha256": "different"}}
         self.assertFalse(warm_start_matches(previous, hashes, args, "current"))
 
-    def test_runner_parses_and_hashes_same_config_bytes(self):
-        from tools.run.run_iem24_forward_driver import load_runner_pedal_map
-        payload = {"schema_version": 1, "demand_map": {
-            "units": {"acceleration_axis": "m/s^2", "deceleration_axis": "m/s^2", "pedal_output": "1"},
-            "acceleration_to_throttle": {"axis": [0, 2, 5], "value": [0, .2, 1]},
-            "deceleration_to_brake": {"axis": [0, 3, 6], "value": [0, .3, 1]}}, "physical_calibration": None}
-        original = json.dumps(payload).encode()
-        with tempfile.TemporaryDirectory() as temporary:
-            path = Path(temporary) / "map.json"
-            path.write_bytes(original)
-            real_read = Path.read_bytes
-            reads = []
-            def replacing_read(target):
-                data = real_read(target)
-                reads.append(target)
-                if target == path:
-                    path.write_text('{"schema_version": 2}')
-                return data
-            with patch.object(Path, "read_bytes", replacing_read):
-                original_json, config, digest = load_runner_pedal_map(path)
-            self.assertEqual(reads.count(path), 1)
-            self.assertEqual(original_json, payload)
-            self.assertEqual(digest, hashlib.sha256(original).hexdigest())
-            self.assertEqual(config.demand_map.command(2), (.2, 0.0))
-
-    def test_parent_and_run_record_metadata_keep_map_identity(self):
-        from tools.run.run_iem24_forward_driver import write_run_record
-        payload = {"schema_version": 1, "demand_map": self._demand_payload(),
-                   "physical_calibration": self._physical_payload()}
-        with tempfile.TemporaryDirectory() as temporary:
-            config_path = Path(temporary) / "map.json"
-            config_path.write_text(json.dumps(payload))
-            with patch("tools.run.run_iem24_forward_driver.subprocess.run",
-                       return_value=subprocess.CompletedProcess([], 0)) as run:
-                with contextlib.redirect_stdout(io.StringIO()):
-                    main(["--output-root", temporary, "--pedal-map-config", str(config_path)])
-            attempt = next(Path(temporary).glob("attempt_*"))
-            parent = json.loads((attempt / "parent.json").read_text())
-            self.assertEqual(parent["pedal_map"]["file_sha256"], hashlib.sha256(config_path.read_bytes()).hexdigest())
-            self.assertTrue(parent["pedal_map"]["semantic_sha256"])
-            self.assertIn("--expected-pedal-map-sha256", run.call_args.args[0])
-
-        class Sink:
-            rows = 3
-            def close(self, manifest, created_utc):
-                self.manifest, self.created_utc = manifest, created_utc
-                return Path("run_record.npz")
-        with tempfile.TemporaryDirectory() as metadata_temp:
-            metadata_path = Path(metadata_temp) / "map.json"
-            metadata_path.write_text(json.dumps(payload))
-            args = parse_args(["--pedal-map-config", str(metadata_path)])
-            provenance = {"schema_version": 1, "source_path": str(metadata_path),
-                          "original_json": payload,
-                          "file_sha256": hashlib.sha256(metadata_path.read_bytes()).hexdigest(),
-                          "semantic_sha256": args.pedal_map_config.sha256,
-                          "normalized": args.pedal_map_config.to_dict(),
-                          "demand_map": args.pedal_map_config.to_dict()["demand_map"],
-                          "physical_calibration": args.pedal_map_config.to_dict()["physical_calibration"],
-                          "has_demand_map": True, "has_physical_calibration": True}
-        summary = {"pedal_map": provenance}
-        sink = Sink()
-        spec = model_spec("planar-7dof")
-        class Result:
-            time = np.array([0., 1.])
-            lap_completed = True
-            wall_seconds = 1.
-        with patch("scipy.__version__", "test-version"):
-            write_run_record(sink, args, summary, {}, spec, Result(), None)
-        self.assertEqual(sink.manifest["pedal_map"], provenance)
-
-    def test_no_map_child_keeps_legacy_default_and_explicit_null_layers(self):
-        root, _, code = run_fake_child("planar-7dof", FakePlanarPlant)
-        self.assertEqual(code, 0)
-        summary = json.loads((root / "summary.json").read_text())
-        self.assertIsNone(summary["pedal_map"]["demand_map"])
-        self.assertIsNone(summary["pedal_map"]["physical_calibration"])
-        self.assertEqual(summary["pedal_map"]["semantic_sha256"], "no-pedal-map")
-        self.assertFalse(summary["pedal_map"]["has_physical_calibration"])
-
-    def test_child_summary_records_full_map_identity_and_layers(self):
-        from tools.run.run_iem24_forward_driver import pedal_map_provenance
-        payload = {"schema_version": 1, "demand_map": self._demand_payload(),
-                   "physical_calibration": self._physical_payload()}
-        with tempfile.TemporaryDirectory() as temporary:
-            path = Path(temporary) / "both.json"
-            path.write_text(json.dumps(payload))
-            root, calls, code = run_fake_child("planar-7dof", FakePlanarPlant,
-                extra_args=("--pedal-map-config", str(path),))
-            self.assertEqual(code, 0)
-            summary = json.loads((root / "summary.json").read_text())
-            self.assertEqual(summary["pedal_map"]["original_json"], payload)
-            self.assertEqual(summary["pedal_map"]["file_sha256"], hashlib.sha256(path.read_bytes()).hexdigest())
-            self.assertEqual(summary["pedal_map"]["normalized"]["physical_calibration"], payload["physical_calibration"])
-            self.assertEqual(summary["runtime_model_identity"]["semantic_pedal_map_sha256"],
-                             summary["pedal_map"]["semantic_sha256"])
-            self.assertTrue(summary["pedal_map"]["has_demand_map"])
-            self.assertEqual(len(calls), 1)
-
-    def test_runner_captures_each_layer_and_both_in_mocks(self):
-        from dataclasses import dataclass
-        from tools.run.run_iem24_forward_driver import pedal_map_provenance
-        from simplified_vehicle_models.solvers.forward_driver import PreviewDriver
-        from types import SimpleNamespace
-        controller = SimpleNamespace(actuator_calibration=None)
-        assembly = SimpleNamespace(controller=controller)
-        vehicle = SimpleNamespace(controller=controller,
-                                  drivetrain=SimpleNamespace(drivetrain=assembly),
-                                  wheelbase=1.5, steering_maximum_angle=.5,
-                                  steering_maximum_rate=2., maximum_pedal_force=1000.)
-        @dataclass(frozen=True)
-        class Replaceable:
-            controller: object
-            actuator_calibration: object = None
-        @dataclass(frozen=True)
-        class Assembly:
-            controller: object
-        @dataclass(frozen=True)
-        class Runtime:
-            drivetrain: object
-        @dataclass(frozen=True)
-        class Vehicle:
-            controller: object
-            drivetrain: object
-        original_controller = Replaceable(None)
-        compiled = Vehicle(original_controller, Runtime(Assembly(original_controller)))
-        demand = LongitudinalDemandMap(MonotoneTable1D([0, 2, 5], [0, .2, 1], "m/s^2", "1"),
-                                       MonotoneTable1D([0, 3, 6], [0, .3, 1], "m/s^2", "1"))
-        physical = PedalActuatorCalibration(MonotoneTable1D([0, .2, 1], [0, .1, 1], "1", "1"),
-                                            MonotoneTable1D([0, .25, 1], [0, .1, 1], "1", "1"))
-        for use_demand, use_physical in ((False, False), (True, False), (False, True), (True, True)):
-            config_payload = {"schema_version": 1,
-                "demand_map": self._demand_payload() if use_demand else None,
-                "physical_calibration": self._physical_payload() if use_physical else None}
-            with tempfile.TemporaryDirectory() as temporary:
-                path = Path(temporary) / "map.json"
-                path.write_text(json.dumps(config_payload))
-                args = parse_args(["--pedal-map-config", str(path)])
-                provenance, bound = pedal_map_provenance(args, compiled)
-                self.assertEqual(bound.controller.actuator_calibration is not None, use_physical)
-                self.assertEqual(bound.controller, bound.drivetrain.drivetrain.controller)
-                self.assertEqual(args.pedal_map_config.demand_map is not None, use_demand)
-                self.assertEqual(provenance["has_demand_map"], use_demand)
-                self.assertEqual(provenance["has_physical_calibration"], use_physical)
-                self.assertEqual(PreviewDriver.__dataclass_fields__["demand_map"].default, None)
-                driver = PreviewDriver(SpeedPlan(np.array([0., 1.]), np.array([1., 1.]),
-                    np.array([0., 0.]), is_closed=False), 1.5, .5, 2., 1000.,
-                    demand_map=args.pedal_map_config.demand_map)
-                self.assertEqual(driver.demand_map is not None, use_demand)
-
-    def _demand_payload(self):
-        return {"units": {"acceleration_axis": "m/s^2", "deceleration_axis": "m/s^2", "pedal_output": "1"},
-                "acceleration_to_throttle": {"axis": [0, 2, 5], "value": [0, .2, 1]},
-                "deceleration_to_brake": {"axis": [0, 3, 6], "value": [0, .3, 1]}}
-
     def _physical_payload(self):
         return {"units": {"throttle_input": "1", "throttle_effective_request": "1", "brake_input": "1", "brake_effective_request": "1"},
                 "throttle_fraction": {"axis": [0, .2, 1], "value": [0, .1, 1]},
                 "brake_force_fraction": {"axis": [0, .25, 1], "value": [0, .1, 1]}}
 
     def test_invalid_map_variants_fail_before_attempt_or_spawn(self):
-        from tools.run.run_iem24_forward_driver import load_runner_pedal_map
         cases = [b'{"schema_version": 1, "bad": NaN}',
                  b'{"schema_version": 2}',
-                 json.dumps({"schema_version": 1, "demand_map": {
-                     "units": {"acceleration_axis": "m/s^2", "deceleration_axis": "m/s^2", "pedal_output": "%"},
-                     "acceleration_to_throttle": {"axis": [0, 1], "value": [0, 1]},
-                     "deceleration_to_brake": {"axis": [0, 1], "value": [0, 1]}}}).encode(),
+                 json.dumps({"schema_version": 1, "demand_map": None}).encode(),
                  b'{"schema_version": 1, "mystery": 1}']
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "bad.json"
@@ -540,34 +364,6 @@ class RunnerTests(unittest.TestCase):
                 with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
                     main(["--output-root", temporary, "--pedal-map-config", str(path)])
                 spawn.assert_not_called()
-
-    def test_warm_start_requires_semantic_map_and_legacy_only_no_map(self):
-        args = parse_args([])
-        hashes = {"track.xml": "a"}
-        settings = {"planner": "conservative", "maximum_speed": 8., "lateral_acceleration": None,
-                    "pedal_travel_time": .175, "spacing": .5, "preview_seconds": .15,
-                    "heading_gain": 1.5, "lateral_gain": 1.5, "speed_gain": 2.,
-                    "lateral_margin": None, "track": str(args.track)}
-        legacy = {"status": "Completed", "lap_completed": True, "source_hashes": hashes, "settings": settings}
-        self.assertTrue(warm_start_matches(legacy, hashes, args, "no-pedal-map"))
-        self.assertFalse(warm_start_matches(legacy, hashes, args, "custom-map"))
-        mapped = dict(legacy, pedal_map={"semantic_sha256": "custom-map"})
-        self.assertTrue(warm_start_matches(mapped, hashes, args, "custom-map"))
-        self.assertFalse(warm_start_matches(mapped, hashes, args, "different-map"))
-
-    def test_no_map_default_and_mutated_config_rejected_before_attempt(self):
-        from tools.run.run_iem24_forward_driver import pedal_map_provenance
-        args = parse_args([])
-        provenance, _ = pedal_map_provenance(args)
-        self.assertEqual(provenance["semantic_sha256"], "no-pedal-map")
-        with tempfile.TemporaryDirectory() as temporary:
-            path = Path(temporary) / "map.json"
-            path.write_text(json.dumps({"schema_version": 1}))
-            args = parse_args(["--pedal-map-config", str(path)])
-            path.write_text(json.dumps({"schema_version": 1, "demand_map": None}))
-            with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
-                parse_args(["--pedal-map-config", str(path), "--expected-pedal-map-sha256",
-                            args.pedal_map_file_sha256])
 
     def test_track_is_forwarded_to_child_command(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -598,22 +394,23 @@ class RunnerTests(unittest.TestCase):
             "throttle_apply_rate": 4., "throttle_release_rate": 6.,
             "brake_apply_rate": 5., "brake_release_rate": 6.}}
         self.assertEqual(parent["pedal_slew"], expected)
-        settings = {"planner": "conservative", "maximum_speed": 8.,
+        settings = {"maximum_speed": 8.,
                     "lateral_acceleration": None, "pedal_travel_time": .175,
                     "spacing": .5, "preview_seconds": .15, "heading_gain": 1.5,
                     "lateral_gain": 1.5, "speed_gain": 2., "lateral_margin": None,
                     "track": str(args.track), "throttle_apply_rate": 4.,
                     "throttle_release_rate": 6., "brake_apply_rate": 5.,
                     "brake_release_rate": 6.}
-        previous = {"status": "Completed", "lap_completed": True,
-                    "source_hashes": {"source": "hash"}, "settings": settings}
+        previous = current_policy_warm_start(settings, args)
+        previous["source_hashes"] = {"source": "hash"}
         self.assertTrue(warm_start_matches(previous, {"source": "hash"}, args))
         changed = dict(settings, brake_release_rate=7.)
         self.assertFalse(warm_start_matches(dict(previous, settings=changed),
                                             {"source": "hash"}, args))
         omitted = parse_args([])
-        legacy = dict(previous, settings={k: v for k, v in settings.items()
-                                         if not k.endswith("_rate")})
+        legacy_settings = {k: v for k, v in settings.items() if not k.endswith("_rate")}
+        legacy = current_policy_warm_start(legacy_settings, omitted)
+        legacy["source_hashes"] = {"source": "hash"}
         self.assertTrue(warm_start_matches(legacy, {"source": "hash"}, omitted))
 
         root, calls, code = run_fake_child("planar-7dof", FakePlanarPlant,
@@ -660,13 +457,13 @@ class RunnerTests(unittest.TestCase):
                          {"preview_seconds": .25, "heading_gain": 2.0,
                           "lateral_gain": .75})
         hashes = {"track.xml": "a"}
-        settings = {"planner": "conservative", "maximum_speed": 8.,
+        settings = {"maximum_speed": 8.,
                     "lateral_acceleration": None, "pedal_travel_time": .175,
                     "spacing": .5, "preview_seconds": .25,
                     "heading_gain": 2.0, "lateral_gain": .75,
                     "track": str(DEFAULT_TRACK)}
-        previous = {"status": "Completed", "lap_completed": True,
-                    "source_hashes": hashes, "settings": settings}
+        previous = current_policy_warm_start(settings, args)
+        previous["source_hashes"] = hashes
         self.assertTrue(warm_start_matches(previous, hashes, args))
         for key, value in (("preview_seconds", .15), ("heading_gain", 1.5),
                            ("lateral_gain", 1.5)):
@@ -679,13 +476,12 @@ class RunnerTests(unittest.TestCase):
         from simplified_vehicle_models.solvers.driver_maps import parse_pedal_map_config
         from simplified_vehicle_models.solvers.envelope_driver import EnvelopePolicy
 
-        payload = {"schema_version": 1, "demand_map": None,
+        payload = {"schema_version": 1,
                    "physical_calibration": self._physical_payload()}
         calibration = parse_pedal_map_config(payload).physical_calibration
         root = Path(tempfile.mkdtemp())
         (root / "calibration.json").write_text(json.dumps(payload))
-        args = parse_args(["--output-root", str(root), "--planner", "live", "--duration", ".05",
-                           "--longitudinal-policy", "braking-envelope",
+        args = parse_args(["--output-root", str(root), "--duration", ".05",
                            "--pedal-map-config", str(root / "calibration.json")])
         args.child_attempt = root / "attempt"
         args.child_attempt.mkdir()
@@ -737,7 +533,6 @@ class RunnerTests(unittest.TestCase):
         def solve_stub(plant, driver, initial_state, **kwargs):
             calls["solve"] += 1
             self.assertIsInstance(driver.envelope_policy, EnvelopePolicy)
-            self.assertTrue(driver.live_limit)
             self.assertEqual(driver.plan, plan)
             driver = replace(driver, pedal_travel_time=.175)
             # Actual solve_forward accepted-state callback exercises the production stages.
@@ -797,7 +592,6 @@ class RunnerTests(unittest.TestCase):
         def solve_then_fail(plant, driver, initial_state, **kwargs):
             calls["solve"] += 1
             self.assertIsInstance(driver.envelope_policy, EnvelopePolicy)
-            self.assertTrue(driver.live_limit)
             self.assertEqual(driver.plan, plan)
             driver = replace(driver, pedal_travel_time=.175)
             before = plant.observations
@@ -836,8 +630,8 @@ class RunnerTests(unittest.TestCase):
 
     def test_policy_warm_start_matches_and_rejects_different_configuration(self):
         hashes = {"track": "x"}
-        args = parse_args(["--planner", "live", "--longitudinal-policy", "braking-envelope"])
-        common = dict(planner="live", maximum_speed=8., lateral_acceleration=None,
+        args = parse_args([])
+        common = dict(maximum_speed=8., lateral_acceleration=None,
                       pedal_travel_time=.175, spacing=.5, preview_seconds=.15,
                       heading_gain=1.5, lateral_gain=1.5, track=DEFAULT_TRACK)
         identity = policy_identity_settings(args)
@@ -868,14 +662,14 @@ class RunnerTests(unittest.TestCase):
     def test_warm_start_requires_matching_track_and_hashes(self):
         hashes = {"track.xml": "a", "track.csv": "b", "tire.xml": "c", "form.xml": "d"}
         args = parse_args(["--track", CANONICAL_TRACK])
-        keys = dict(planner="conservative", maximum_speed=8., lateral_acceleration=None,
+        keys = dict(maximum_speed=8., lateral_acceleration=None,
                     pedal_travel_time=.175, spacing=.5, preview_seconds=.15,
-                    heading_gain=1.5, lateral_gain=1.5)
-        previous = {"status": "Completed", "lap_completed": True,
-                    "source_hashes": dict(hashes),
-                    "settings": dict(keys, track=CANONICAL_TRACK)}
+                    heading_gain=1.5, lateral_gain=1.5, speed_gain=2.,
+                    lateral_margin=None, track=CANONICAL_TRACK)
+        previous = current_policy_warm_start(keys, args)
+        previous["source_hashes"] = dict(hashes)
         self.assertTrue(warm_start_matches(previous, hashes, args))
-        for change in ({"track": ORIGINAL_TRACK}, {"planner": "live"}):
+        for change in ({"track": ORIGINAL_TRACK},):
             candidate = dict(previous, settings=dict(previous["settings"], **change))
             self.assertFalse(warm_start_matches(candidate, hashes, args))
         for name in hashes:  # any track/CSV/tire/formulation hash change rejects
@@ -883,7 +677,8 @@ class RunnerTests(unittest.TestCase):
             self.assertFalse(warm_start_matches(dict(previous, source_hashes=changed), hashes, args))
         # Historical attempts have no recorded track: they mean the original
         # track, never the (new) default.
-        legacy = dict(previous, settings=dict(keys))
+        legacy = current_policy_warm_start({key:value for key,value in keys.items() if key != "track"}, args)
+        legacy["source_hashes"] = dict(hashes)
         self.assertFalse(warm_start_matches(legacy, hashes, args))
         self.assertFalse(warm_start_matches(legacy, hashes, parse_args([])))
         self.assertTrue(warm_start_matches(legacy, hashes,
@@ -1269,7 +1064,11 @@ class WallBudgetTests(unittest.TestCase):
 
     def test_solve_forward_wall_ceiling(self):
         plan = SpeedPlan(np.array([0., 1.]), np.array([1., 1.]), np.zeros(2))
-        driver = PreviewDriver(plan, 1.5, .5, 2., 1000.)
+        from simplified_vehicle_models.solvers.braking_envelope import BrakingEnvelope
+        from simplified_vehicle_models.solvers.envelope_driver import EnvelopePolicy
+        envelope = BrakingEnvelope(np.array([0., .5, 1.]), np.zeros(3), np.ones(3), np.ones(3),
+            np.full(2, 5.), np.zeros(3, dtype=int), True, 8., {"fixture": True})
+        driver = PreviewDriver(plan, 1.5, .5, 2., 1000., envelope_policy=EnvelopePolicy(envelope))
 
         class Plant:
             state_size = 1
@@ -1501,41 +1300,13 @@ class JounceTravelTests(unittest.TestCase):
 
 
 class TestLongitudinalPolicyCLI(unittest.TestCase):
-    def test_parent_handoff_retains_envelope_settings(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            with patch("tools.run.run_iem24_forward_driver.subprocess.run",
-                       return_value=subprocess.CompletedProcess([], 124)) as spawn:
-                with contextlib.redirect_stdout(io.StringIO()):
-                    main(["--output-root", temporary, "--planner", "live",
-                          "--longitudinal-policy", "braking-envelope",
-                          "--envelope-deceleration-margin", ".55",
-                          "--envelope-speed-points", "13"])
-            command = spawn.call_args.args[0]
-            self.assertIn("--longitudinal-policy", command)
-            attempt = next(Path(temporary).glob("attempt_*"))
-            parent = json.loads((attempt / "parent.json").read_text())
-            self.assertEqual({key: parent["longitudinal_policy"][key] for key in
-                ("policy", "deceleration_margin", "speed_query_points")},
-                {"policy": "braking-envelope", "deceleration_margin": .55, "speed_query_points": 13})
-            self.assertEqual(parent["longitudinal_policy"]["settings_identity_sha256"],
-                hashlib.sha256(canonical_json(policy_identity_settings(parse_args([
-                    "--planner", "live", "--longitudinal-policy", "braking-envelope",
-                    "--envelope-deceleration-margin", ".55", "--envelope-speed-points", "13"]))).encode()).hexdigest())
-
-    def test_schedule_default_and_envelope_prevalidation(self):
-        baseline = parse_args([])
-        self.assertEqual(baseline.longitudinal_policy, "schedule")
-        self.assertEqual(baseline.envelope_deceleration_margin, .6)
-        self.assertEqual(baseline.envelope_speed_points, 9)
-        for argv in (
-            ["--longitudinal-policy", "braking-envelope"],
-            ["--longitudinal-policy", "braking-envelope", "--planner", "live",
-             "--envelope-deceleration-margin", "0"],
-            ["--longitudinal-policy", "braking-envelope", "--planner", "live",
-             "--envelope-speed-points", "1"],
-        ):
+    def test_removed_cli_alternatives_are_rejected(self):
+        for argv in (["--planner", "live"], ["--longitudinal-policy", "schedule"]):
             with self.subTest(argv=argv), self.assertRaises(SystemExit):
                 parse_args(argv)
+
+    def test_envelope_policy_is_default(self):
+        self.assertEqual(parse_args([]).longitudinal_policy, "braking-envelope")
 
 
 if __name__ == "__main__":

@@ -45,9 +45,18 @@ class RunSettings:
     def from_json(cls, data: dict[str, Any]) -> "RunSettings":
         if not isinstance(data, dict):
             raise ValueError("run settings must be a JSON object")
-        retired = {"yaw_map", "mode", "plan", "controller", "planner", "path_plan"}
-        if retired.intersection(data):
-            fields = ", ".join(sorted(retired.intersection(data)))
+        retired_fields = {
+            "profile_seconds", "profile_rounds", "spacing", "control_spacing",
+            "line_seconds", "line_evaluations", "line_outer_passes",
+            "line_optimizer_iterations", "duration", "replay_seconds",
+            "maximum_step", "controller", "yaw_map", "mode", "plan",
+            "planner", "path_plan",
+        }
+        retired = retired_fields.intersection(data)
+        if data.get("solver_kind") == "yaw-aware":
+            retired.add("solver_kind=yaw-aware")
+        if retired:
+            fields = ", ".join(sorted(retired))
             raise ValueError(f"retired yaw workflow setting(s): {fields}; choose forward-driver or point-mass")
         unknown = set(data) - set(cls.__dataclass_fields__)
         if unknown:

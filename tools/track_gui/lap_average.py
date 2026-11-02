@@ -5,6 +5,8 @@ import math
 
 import numpy as np
 
+from tools.track_gui.lap_closure import smooth_seam
+
 
 def _arc(x, y):
     """Return cumulative polyline length beginning at zero."""
@@ -342,7 +344,10 @@ def average_laps(
     for begin, end, length, _duration in length_consistent:
         north_loop = x[begin:end].copy()
         east_loop = y[begin:end].copy()
-        fraction = np.linspace(0.0, 1.0, len(north_loop))
+        raw_distance = _arc(north_loop, east_loop)
+        if raw_distance[-1] <= 0:
+            continue
+        fraction = raw_distance / raw_distance[-1]
         north_loop -= fraction * (north_loop[-1] - north_loop[0])
         east_loop -= fraction * (east_loop[-1] - east_loop[0])
         distance = _arc(north_loop, east_loop)
@@ -432,6 +437,7 @@ def average_laps(
     mean = (stack * keep[:, :, None]).sum(axis=0) / support[:, None]
     overlaps = stack.copy()
 
+    raw_mean = mean.copy()
     # Smoothing occurs once here; downstream geometry construction must use zero.
     if smoothing > 0:
         from tools.tracks.build_closed_track import periodic_gaussian
@@ -440,6 +446,7 @@ def average_laps(
         mean[:, 0] = periodic_gaussian(mean[:, 0], sigma_nodes)
         mean[:, 1] = periodic_gaussian(mean[:, 1], sigma_nodes)
 
+    mean, seam_diagnostics = smooth_seam(raw_mean, stack, keep, mean)
     closed_mean = np.vstack((mean, mean[0]))
     distance = _arc(closed_mean[:, 0], closed_mean[:, 1])
     result_length = float(distance[-1])
@@ -453,6 +460,10 @@ def average_laps(
     )
     mean = np.vstack((mean, mean[0]))
 
+    closure_gaps = [
+        float(np.hypot(x[end - 1] - x[begin], y[end - 1] - y[begin]))
+        for begin, end, _length, _duration in length_consistent
+    ]
     diagnostics.update(
         {
             "accepted_laps": int(len(stack)),
@@ -474,6 +485,17 @@ def average_laps(
                 "median": float(np.median(residual)),
                 "p95": float(np.percentile(residual, 95)),
                 "maximum": float(np.max(residual)),
+            },
+            "closure_gaps_m": closure_gaps,
+            "correction_method": {
+                "method": "linear endpoint displacement correction over raw cumulative distance",
+                "assumption": "endpoint displacement is treated as linear integrated drift; driving-line displacement and drift are not separately identifiable",
+                "distance_basis": "raw uncorrected cumulative polyline distance",
+            },
+            "seam_closure": {
+                **seam_diagnostics,
+                "envelope_scope": "accepted unclipped lap samples on the matched-phase seam window; sampled observations, not physical track edges",
+                "solver_grid_constraint": "bounds apply at solver nodes only; final periodic arc-length interpolation/resampling is downstream and not envelope-certified",
             },
             "registration": (
                 "normalized arc-length cyclic phase with translation-only alignment; "

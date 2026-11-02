@@ -7,6 +7,7 @@ The unit and regression suite, run with `unittest`.
 | File | Contents |
 |---|---|
 | `test_catalunya_ttc_formulation.py` | Exact TTC artifact preservation, steady/transient parameter partition, and planar 7-DoF assembly selection. |
+| `test_track_gui_lap_closure.py` | Synthetic stadium coverage for bounded periodic seam smoothing and skip/refusal conditions. |
 | `test_forward_validation_cost.py` | Accepted-state and dense-midpoint validation coverage and timing-accounting regressions for the shared forward solver. |
 | `test_forward_driver.py` | Continuous forward-driver dynamics, directional pedal slew, and speed planning. |
 | `test_braking_envelope.py` | Analytic sampled braking-cap propagation, closed seams, sampling and oracle-query boundaries. |

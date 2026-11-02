@@ -3,6 +3,11 @@ import unittest
 
 import numpy as np
 
+try:
+    import scipy  # noqa: F401
+except ImportError:
+    scipy = None
+
 from tools.track_gui.lap_closure import smooth_seam
 
 
@@ -27,6 +32,7 @@ def stadium(n=240, radius=20.0, half_straight=25.0):
     return np.roll(out, -idx, axis=0)
 
 
+@unittest.skipIf(scipy is None, "SciPy is required for bounded seam optimization")
 class LapClosureTests(unittest.TestCase):
     @staticmethod
     def _bending(y):
@@ -165,6 +171,24 @@ class LapClosureTests(unittest.TestCase):
         self.assertTrue(np.isfinite(result).all())
         self.assertLess(diag["bending_energy_after"],diag["bending_energy_before"])
         self.assertLessEqual(diag["max_bound_violation_m"],1e-7)
+
+        # Independently recompute expanded energy using reported periodic fit
+        # indices plus one exterior target node at each end.
+        fit_ids=np.asarray(diag["fit_node_indices"],dtype=int)
+        node_ids=np.r_[fit_ids[0]-1,fit_ids,fit_ids[-1]+1] % n
+        tangent=np.asarray(diag["frame_tangent"])
+        normal=np.array([-tangent[1],tangent[0]])
+        stations=(target[node_ids]-mean[0])@tangent
+        before_lat=(target[node_ids]-mean[0])@normal
+        after_lat=(result[node_ids]-mean[0])@normal
+        def physical_energy(values, station_values):
+            h0,h1=np.diff(station_values)[:-1],np.diff(station_values)[1:]
+            curvature=2*((values[2:]-values[1:-1])/h1-(values[1:-1]-values[:-2])/h0)/(h0+h1)
+            return float(np.sum((h0+h1)*.5*curvature**2))
+        expected_before=physical_energy(before_lat,stations)
+        expected_after=physical_energy(after_lat,stations)
+        self.assertAlmostEqual(diag["bending_energy_before"],expected_before,delta=1e-9)
+        self.assertAlmostEqual(diag["bending_energy_after"],expected_after,delta=1e-9)
 
     def test_incoming_bend_outgoing_straight_is_not_fitted_as_straight(self):
         base=stadium()

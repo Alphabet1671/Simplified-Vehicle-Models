@@ -181,11 +181,14 @@ def smooth_seam(mean, overlaps, keep, target):
 
     out = t.copy()
     out[ids] = m[0] + station[:, None] * tangent[None, :] + y[:, None] * normal[None, :]
-    before, after = _energy(y0, station), _energy(y, station)
+    before = _energy(np.r_[outer_y[0], y0, outer_y[-1]], outer_station)
+    after = _energy(np.r_[outer_y[0], y, outer_y[-1]], outer_station)
     diagnostics = {
         "status": "success", "skip_reason": None,
         "max_bound_violation_m": float(max(np.max(lo - y), np.max(y - hi), 0.0)),
         "longitudinal_station_span_m": float(station[-1] - station[0]),
+        "fit_node_indices": ids.tolist(),
+        "frame_tangent": tangent.tolist(),
         "physical_span_m": float(station[-1] - station[0]),
         "peak_movement_m": float(np.max(np.abs(y - y0))),
         "corridor_width_m": float(np.max(upper - lower)),

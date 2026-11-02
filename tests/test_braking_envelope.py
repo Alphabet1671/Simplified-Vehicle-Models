@@ -152,7 +152,7 @@ class PropagationTests(unittest.TestCase):
         )
         sample = env.sample(2.1)
         self.assertEqual(sample.binding_distance, 0.)
-        self.assertEqual(sample.corner_speed, 3.)
+        self.assertAlmostEqual(sample.corner_speed**2, 3.**2 + (4.**2-3.**2)*.1/5.)
         self.assertEqual(sample.speed_domain_max, 3.)
         wrapped = env.sample(-.1)
         self.assertGreaterEqual(wrapped.binding_distance, 0.)

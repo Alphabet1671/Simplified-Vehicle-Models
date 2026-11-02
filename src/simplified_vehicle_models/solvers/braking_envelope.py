@@ -171,7 +171,9 @@ class BrakingEnvelope:
         dx=s-x[i]
         slope=(self.entry_speed[i+1]**2-self.entry_speed[i]**2)/(x[i+1]-x[i])
         q=max(0.,self.entry_speed[i]**2+slope*dx)
-        localcap=min(float(self.corner_speed[i]),float(self.corner_speed[i+1]))
+        corner_q0=float(self.corner_speed[i])**2
+        corner_q1=float(self.corner_speed[i+1])**2
+        localcap=math.sqrt(max(0.,corner_q0+(corner_q1-corner_q0)*dx/(x[i+1]-x[i])))
         domain=self.provenance.get("segment_speed_domain_max",[localcap]*len(self.deceleration))[i]
         bi=int(self.binding_index[i])
         if bi == i: bd=0.

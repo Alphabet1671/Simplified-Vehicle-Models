@@ -21,11 +21,13 @@ class EnvelopeDriverSettings:
     response_allowance_s: float = .06
     disabled_transition_time_s: float = .4
     positive_acceleration_reserve_mps2: float = 4.
+    feedforward_distance_m: float = 2.
     def __post_init__(self):
         for name in ('speed_gain','throttle_acceleration_scale','brake_acceleration_scale','disabled_transition_time_s'):
             _finite(getattr(self,name),name)
         _finite(self.response_allowance_s,'response_allowance_s',positive=False)
         _finite(self.positive_acceleration_reserve_mps2,'positive_acceleration_reserve_mps2',positive=False)
+        _finite(self.feedforward_distance_m,'feedforward_distance_m')
 
 @dataclass(frozen=True, slots=True)
 class PedalPolicyContext:
@@ -120,19 +122,15 @@ class EnvelopePolicy:
         reserve=self._derived(v*T+.5*self.settings.positive_acceleration_reserve_mps2*T*T,'reserve distance')
         preview_station=self._derived(s+reserve,'preview station')
         current=self.envelope.sample(s); preview=self.envelope.sample(preview_station)
-        qpreview=self._derived(preview.squared_speed,'preview squared speed')
-        qcorner=self._derived(current.corner_speed**2,'local corner cap squared')
         qglobal=self._derived(self.envelope.maximum_speed**2,'global cap squared')
-        qref=min(qpreview,qcorner,qglobal)
-        binds_local=qcorner<=qpreview and qcorner<=qglobal
-        binds_global=qglobal<=qpreview and qglobal<=qcorner
-        cap=min(qcorner,qglobal)
-        if qpreview<cap:
-            slope=preview.squared_speed_slope
-        elif qpreview==cap:
-            slope=min(0.,preview.squared_speed_slope)
-        else:
-            slope=0.
+        h=self.settings.feedforward_distance_m
+        def effective_q(station):
+            entry=self.envelope.sample(self._derived(station+reserve,'effective entry station'))
+            corner=self.envelope.sample(station)
+            return self._derived(min(entry.squared_speed,corner.corner_speed**2,qglobal),'effective squared speed')
+        qref=effective_q(s)
+        q_ahead=effective_q(self._derived(s+h,'feedforward station'))
+        slope=self._derived((q_ahead-qref)/h,'finite-chord squared-speed slope')
         reference=math.sqrt(max(0.,qref))
         reference=self._derived(reference,'reference speed')
         slope=self._derived(slope,'selected squared-speed slope')

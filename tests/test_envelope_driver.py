@@ -11,17 +11,30 @@ def envelope(caps, entry, decel=None, maximum=60.):
 def obs(s=0.,v=0.,margin=float('inf')): return DriverObservation(s,0.,0.,v,0.,0.,wheel_speed_margin=margin)
 
 class EnvelopePolicyTests(unittest.TestCase):
-    def test_descending_q_uses_half_slope_and_is_deterministic(self):
+    def test_descending_q_uses_finite_chord_and_is_deterministic(self):
         env=envelope([30,30,10],[np.sqrt(300),np.sqrt(200),10])
         pol=EnvelopePolicy(env,EnvelopeDriverSettings(response_allowance_s=0.,disabled_transition_time_s=.01,positive_acceleration_reserve_mps2=0.))
         d=pol.decide(obs(0,10.),0.)
         self.assertAlmostEqual(d.acceleration_request,.5*d.squared_speed_slope+2.*(d.reference_speed-10.))
+        self.assertAlmostEqual(d.squared_speed_slope,-10.,places=12)
         self.assertLess(d.squared_speed_slope,0.)
         self.assertEqual(d,pol.decide(obs(0,10.),0.))
+    def test_feedforward_distance_must_be_positive_finite(self):
+        for value in (0., -1., float('nan'), float('inf')):
+            with self.subTest(value=value), self.assertRaises((TypeError, ValueError)):
+                EnvelopeDriverSettings(feedforward_distance_m=value)
+
     def test_full_throttle_below_flat_cap_and_none_at_cap(self):
         env=envelope([20,20,20],[20,20,20],maximum=20.)
         self.assertEqual(EnvelopePolicy(env).decide(obs(v=0),0.).requested_throttle,1.)
         self.assertEqual(EnvelopePolicy(env).decide(obs(v=20),0.).requested_throttle,0.)
+    def test_finite_chord_approaches_continuously_across_grid_node(self):
+        env=envelope([30.,30.,10.],[np.sqrt(300.),np.sqrt(200.),10.])
+        policy=EnvelopePolicy(env,EnvelopeDriverSettings(response_allowance_s=0.,disabled_transition_time_s=.01,positive_acceleration_reserve_mps2=0.))
+        values=[policy.decide(obs(s=x,v=10.),0.).acceleration_request for x in (10.-1e-7,10.,10.+1e-7)]
+        self.assertLess(abs(values[0]-values[1]),1e-5)
+        self.assertLess(abs(values[2]-values[1]),1e-5)
+
     def test_legacy_feedforward_absent_and_repeat_reorder(self):
         env=envelope([30,30,30],[30,30,30]); pol=EnvelopePolicy(env)
         d=pol.decide(obs(v=5),-.5)
@@ -79,9 +92,9 @@ class EnvelopePolicyTests(unittest.TestCase):
         now=Sample(100.,cap=10.)
         d=EnvelopePolicy(Fake(now,Sample(400.,slope=-8.,cap=20.)),settings).decide(obs(v=60.),0.)
         self.assertEqual(d.squared_speed,100.)
-        self.assertEqual(d.squared_speed_slope,0.)
+        self.assertAlmostEqual(d.squared_speed_slope,150.)
         tie=EnvelopePolicy(Fake(Sample(400.,cap=20.),Sample(400.,slope=-9.,cap=20.,station=12.)),settings).decide(obs(v=60.),0.)
-        self.assertEqual(tie.squared_speed_slope,-9.)
+        self.assertAlmostEqual(tie.squared_speed_slope,0.)
         self.assertGreater(tie.preview_station,10.)
         # A global cap stricter than both local and preview q is independently binding.
         class LowGlobal(Fake): maximum_speed=5.
@@ -105,14 +118,14 @@ class EnvelopePolicyTests(unittest.TestCase):
         # The local cap equals qpreview exactly; at the boundary retain braking feedforward.
         local=EnvelopePolicy(Fake(Sample(400.,0.,20.),descending),settings).decide(obs(v=10.),0.)
         self.assertEqual(local.squared_speed,100.)
-        self.assertEqual(local.squared_speed_slope,-8.)
-        self.assertEqual(local.acceleration_request,-4.)
+        self.assertEqual(local.squared_speed_slope,0.)
+        self.assertEqual(local.acceleration_request,0.)
         # Global cap is independently tied to qpreview while local cap is nonbinding.
         global_tie=EnvelopePolicy(type('GlobalFake',(Fake,),{'maximum_speed':10.})(
             Sample(400.,0.,20.),Sample(100.,-6.,20.)),settings).decide(obs(v=10.),0.)
         self.assertEqual(global_tie.squared_speed,100.)
-        self.assertEqual(global_tie.squared_speed_slope,-6.)
-        self.assertEqual(global_tie.acceleration_request,-3.)
+        self.assertEqual(global_tie.squared_speed_slope,0.)
+        self.assertEqual(global_tie.acceleration_request,0.)
 
     def test_nonbinding_rising_preview_keeps_full_slope(self):
         class Sample:
@@ -127,8 +140,8 @@ class EnvelopePolicyTests(unittest.TestCase):
             def sample(self,s): return self.now if s==0. else self.future
         settings=EnvelopeDriverSettings(disabled_transition_time_s=.2,positive_acceleration_reserve_mps2=0.)
         d=EnvelopePolicy(Fake(),settings).decide(obs(v=10.),0.)
-        self.assertEqual(d.squared_speed_slope,5.)
-        self.assertEqual(d.acceleration_request,2.5)
+        self.assertEqual(d.squared_speed_slope,0.)
+        self.assertEqual(d.acceleration_request,0.)
 
     def test_rising_preview_slope_at_cap_tie_stays_zero(self):
         class Sample:

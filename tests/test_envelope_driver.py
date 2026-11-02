@@ -50,6 +50,13 @@ class EnvelopePolicyTests(unittest.TestCase):
         with self.assertRaises((TypeError,ValueError)):
             policy.decide(DriverObservation(0.,float('nan'),0.,8.,0.,0.),0.)
 
+    def test_open_negative_trial_station_uses_endpoint_extension(self):
+        policy=EnvelopePolicy(envelope([30,30,30],[30,30,30]))
+        decision=policy.decide(obs(s=-1.e-5,v=6.),0.)
+        self.assertEqual(decision.requested_throttle,1.)
+        self.assertTrue(np.isfinite(decision.reserve_distance_m))
+        self.assertEqual(decision.current_corner_cap,30.)
+
     def test_negative_actual_speed_rejected_and_derived_overflow_is_clear(self):
         env=envelope([30,30,30],[30,30,30]); policy=EnvelopePolicy(env)
         with self.assertRaisesRegex(ValueError,'speed'):

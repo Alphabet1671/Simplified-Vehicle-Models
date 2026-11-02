@@ -88,8 +88,8 @@ class EnvelopePolicy:
         if isinstance(raw_station,bool) or not isinstance(raw_station,Real) or not math.isfinite(float(raw_station)):
             raise ValueError('observation.distance must be finite numeric')
         s=float(raw_station)
-        if s<0. and not self.envelope.is_closed:
-            raise ValueError('observation.distance must be nonnegative for an open envelope')
+        # Open envelopes hold their endpoint outside the sampled interval. Solver
+        # Jacobian/Newton trials may briefly probe a negative station at launch.
         v=_finite(observation.speed,'observation.speed',positive=False)
         for name in ('lateral_error','heading_error','yaw_rate','steering','lateral_speed'):
             value=getattr(observation,name)

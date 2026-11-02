@@ -1,4 +1,4 @@
-"""Validation-coverage and accounting regressions for bounded replay."""
+"""Validation-coverage and accounting regressions for the shared forward solver."""
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch

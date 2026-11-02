@@ -7,12 +7,12 @@ from pathlib import Path
 from typing import Any, Literal
 
 MODEL_NAMES = frozenset({"point-mass", "planar-7dof", "14dof-simple"})
-SolverKind = Literal["point-mass", "yaw-aware"]
+SolverKind = Literal["point-mass", "yaw-aware", "forward-driver"]
 
 
 @dataclass(frozen=True, slots=True)
 class RunSettings:
-    """Settings are explicitly partitioned by point-mass or yaw-aware solver."""
+    """Settings for point-mass, yaw-aware, and opt-in forward-driver workflows."""
     solver_kind: SolverKind = "yaw-aware"
     yaw_map: str = ""
     mode: Literal["fixed", "line", "replay"] = "fixed"
@@ -40,6 +40,14 @@ class RunSettings:
     point_mass_rtol: float = 1e-5
     point_mass_method: str = "BDF"
     point_mass_record_precision: str = "float32"
+    # Opt-in continuity-fixed sampled braking-envelope forward driver.
+    forward_duration: float = 300.0
+    forward_wall_seconds: float = 600.0
+    forward_maximum_speed: float = 60.0
+    forward_spacing: float = 0.5
+    forward_deceleration_margin: float = 0.6
+    forward_feedforward_distance: float = 2.0
+    forward_speed_points: int = 9
 
     @classmethod
     def for_model(cls, model: str) -> "RunSettings":
@@ -57,13 +65,15 @@ class RunSettings:
         unknown = set(data) - set(cls.__dataclass_fields__)
         if unknown:
             raise ValueError(f"unknown run setting(s): {', '.join(sorted(unknown))}")
-        integer_fields = {"profile_rounds", "line_evaluations", "line_outer_passes", "line_optimizer_iterations"}
+        integer_fields = {"profile_rounds", "line_evaluations", "line_outer_passes", "line_optimizer_iterations", "forward_speed_points"}
         float_fields = {
             "spacing", "control_spacing", "profile_seconds", "line_seconds", "duration",
             "replay_seconds", "maximum_step", "point_mass_duration", "point_mass_spacing",
             "point_mass_maximum_speed", "point_mass_pedal_travel_time", "point_mass_preview_seconds",
             "point_mass_heading_gain", "point_mass_lateral_gain", "point_mass_rtol",
-            "point_mass_lateral_acceleration",
+            "point_mass_lateral_acceleration", "forward_duration", "forward_wall_seconds",
+            "forward_maximum_speed", "forward_spacing", "forward_deceleration_margin",
+            "forward_feedforward_distance",
         }
         string_fields = {"solver_kind", "yaw_map", "mode", "controller", "point_mass_method", "point_mass_record_precision"}
         nullable_strings = {"plan"}
@@ -77,7 +87,7 @@ class RunSettings:
             if name in nullable_strings and value is not None and not isinstance(value, str):
                 raise ValueError(f"{name} must be a string or null")
         enums = {
-            "solver_kind": {"point-mass", "yaw-aware"},
+            "solver_kind": {"point-mass", "yaw-aware", "forward-driver"},
             "mode": {"fixed", "line", "replay"},
             "controller": {"preview", "model-aware"},
             "point_mass_method": {"BDF", "LSODA", "RK45", "DOP853", "Radau"},
@@ -98,20 +108,38 @@ class RunSettings:
         return settings
 
 
+def forward_driver_config(settings: RunSettings) -> dict[str, Any]:
+    """Return the fully resolved forward-policy calibration and solver settings."""
+    return {
+        "policy": "continuous-braking-envelope-v1", "speed_gain": 2.0,
+        "throttle_acceleration_scale": 2.5, "brake_acceleration_scale": 6.0,
+        "response_allowance_s": 0.06, "positive_acceleration_reserve_mps2": 4.0,
+        "feedforward_distance_m": settings.forward_feedforward_distance,
+        "lateral_margin": 0.9, "initial_speed_mps": 6.0, "initial_pedal": 0.0,
+        "preview_seconds": 0.15, "heading_gain": 1.5, "lateral_gain": 1.5,
+        "steering_time_constant_s": 0.08, "pedal_time_constant_s": 0.02,
+        "throttle_apply_rate": 4.0, "throttle_release_rate": 6.0,
+        "brake_apply_rate": 5.0, "brake_release_rate": 6.0,
+        "method": "Radau", "rtol": 1e-6, "atol": 1e-8, "maximum_step_s": 0.02,
+        "record_precision": "float32",
+    }
+
+
 def solution_model_for(settings: RunSettings, selected_model: str) -> str:
     """Resolve source to solver representation without compiling or dispatching.
 
     Point-mass ignores yaw capability and consumes a point-mass view whether
-    selected directly or adapted from either full model. Yaw-aware uses the
-    planar 7DoF solution, adapting a 14DoF source to that form.
+    selected directly or adapted from either full model. Yaw-aware and forward-
+    driver use the planar 7DoF solution, adapting a 14DoF source to that form.
     """
     if selected_model not in MODEL_NAMES:
         raise ValueError(f"unsupported GUI model: {selected_model}")
     if settings.solver_kind == "point-mass":
         return "point-mass"
-    if settings.solver_kind == "yaw-aware":
+    if settings.solver_kind in {"yaw-aware", "forward-driver"}:
         if selected_model == "point-mass":
-            raise ValueError("yaw-aware mode requires a 7DoF/14DoF source; point-mass is unsupported")
+            workflow = "yaw-aware" if settings.solver_kind == "yaw-aware" else "forward-driver"
+            raise ValueError(f"{workflow} mode requires a 7DoF/14DoF source; point-mass is unsupported")
         return "planar-7dof"
     raise ValueError(f"unsupported solver kind: {settings.solver_kind}")
 
@@ -137,7 +165,7 @@ def _validate_map(path: Path) -> None:
 
 
 def validate(settings: RunSettings, model: str, track: Path) -> None:
-    """Validate selected source, settings partition, and required yaw artifacts."""
+    """Validate selected source, workflow-specific settings, and required artifacts."""
     del track  # Track parsing and solver dispatch belong to the run contract.
     solution_model_for(settings, model)
     if settings.solver_kind == "point-mass":
@@ -158,6 +186,25 @@ def validate(settings: RunSettings, model: str, track: Path) -> None:
             raise ValueError(f"unsupported point-mass integration method: {settings.point_mass_method}")
         if settings.point_mass_record_precision not in {"float32", "float64"}:
             raise ValueError("point_mass_record_precision must be float32 or float64")
+        return
+    if settings.solver_kind == "forward-driver":
+        if settings.yaw_map or settings.mode != "fixed" or settings.plan is not None:
+            raise ValueError("yaw map, mode, and plan settings do not apply to forward-driver")
+        for name in ("forward_duration", "forward_wall_seconds", "forward_maximum_speed",
+                     "forward_spacing", "forward_deceleration_margin", "forward_feedforward_distance"):
+            value = getattr(settings, name)
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
+                raise ValueError(f"{name} must be finite and positive")
+        if settings.forward_deceleration_margin > 1:
+            raise ValueError("forward_deceleration_margin must be at most 1")
+        if isinstance(settings.forward_speed_points, bool) or not isinstance(settings.forward_speed_points, int) or settings.forward_speed_points < 2:
+            raise ValueError("forward_speed_points must be an integer >= 2")
+        if settings.forward_spacing > 0.5:
+            raise ValueError("forward_spacing must be <= 0.5 m")
+        if settings.forward_wall_seconds > 600:
+            raise ValueError("forward wall budget must be <= 600 s")
+        if settings.forward_wall_seconds <= settings.forward_duration:
+            raise ValueError("forward wall budget must exceed simulated duration")
         return
     if settings.solver_kind != "yaw-aware":
         raise ValueError(f"unsupported solver kind: {settings.solver_kind}")

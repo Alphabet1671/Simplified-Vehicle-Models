@@ -233,7 +233,7 @@ def _point_mass(case: dict, attempt: Path, settings: RunSettings, case_dir: Path
 def run_case(case_dir: Path, attempt: Path) -> int:
     case_dir, attempt = Path(case_dir).resolve(), Path(attempt).resolve()
     payload = json.loads((case_dir / "case.json").read_text())
-    if not isinstance(payload, dict) or payload.get("solver_kind") not in {"yaw-aware", "point-mass"}:
+    if not isinstance(payload, dict) or payload.get("solver_kind") not in {"yaw-aware", "point-mass", "forward-driver"}:
         raise ValueError("invalid case.json solver contract")
     attempt.mkdir(parents=True, exist_ok=False)
     settings = None
@@ -243,6 +243,9 @@ def run_case(case_dir: Path, attempt: Path) -> int:
             raise ValueError("case solver_kind conflicts with serialized settings")
         if settings.solver_kind == "yaw-aware":
             return _yaw(payload, attempt, settings, case_dir)
+        if settings.solver_kind == "forward-driver":
+            from tools.sim_gui.forward_execute import run as run_forward
+            return run_forward(payload, attempt, settings, case_dir)
         return _point_mass(payload, attempt, settings, case_dir)
     except Exception as error:
         inputs = {"status": "failed", "case": str(case_dir)}
@@ -250,13 +253,24 @@ def run_case(case_dir: Path, attempt: Path) -> int:
             inputs["yaw_map"] = settings.yaw_map
             inputs["track"] = payload.get("track")
             inputs["formulation"] = payload.get("formulation")
+        elif settings is not None and settings.solver_kind == "forward-driver":
+            if (attempt / "summary.json").is_file():
+                return 4
+            inputs.update({"solver_kind": "forward-driver", "source_model": payload.get("model"),
+                "solution_model": payload.get("solution_model"), "formulation": payload.get("formulation"),
+                "track": payload.get("track"), "settings": settings.to_json(),
+                "driver_config": payload.get("driver_config"), "input_identity": payload.get("input_identity")})
         elif settings is not None:
             inputs["source_model"] = payload.get("model")
             inputs["solution_model"] = payload.get("solution_model")
             inputs["resolution_mapping"] = payload.get("resolution_mapping")
         _write_json(attempt / "inputs.json", inputs)
-        _write_json(attempt / "summary.json", {"status": "failed", "exception": type(error).__name__,
-                                                   "message": str(error)})
+        failure = {"status": "failed", "exception": type(error).__name__, "message": str(error)}
+        if settings is not None and settings.solver_kind == "forward-driver":
+            # The backend writes its own progress-prefix/error diagnostics; do not
+            # replace a rich partial failure summary with a generic traceback.
+            return 4
+        _write_json(attempt / "summary.json", failure)
         return 4
 
 

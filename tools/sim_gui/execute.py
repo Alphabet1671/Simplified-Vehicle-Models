@@ -59,7 +59,7 @@ def prepare_case(study_dir: Path, definition: StudyDefinition, case: CaseSpec) -
     for key, value in sorted(changes, key=lambda item: (item[0].count("/"), item[0])):
         configuration = configuration.with_choice(key, value)
     files = write_variant(configuration, model_dir, case.id)
-    if not (settings.solver_kind == "yaw-aware" and case.model == "14dof-simple") and solution_model != case.model:
+    if not (settings.solver_kind in {"yaw-aware", "forward-driver"} and case.model == "14dof-simple") and solution_model != case.model:
         from xml.etree import ElementTree
         tree = ElementTree.parse(files.formulation)
         tree.getroot().set("subtype", solution_model)
@@ -75,7 +75,7 @@ def prepare_case(study_dir: Path, definition: StudyDefinition, case: CaseSpec) -
     if settings.solver_kind == "yaw-aware":
         argv = yaw_runner_argv(settings, track)
     else:
-        argv = []  # Point-mass options are loaded from immutable case.json.
+        argv = []  # Non-yaw workflows load options from immutable case.json.
 
     track_path = track.resolve()
     replay_plan = (Path(settings.plan).expanduser().resolve()
@@ -85,7 +85,7 @@ def prepare_case(study_dir: Path, definition: StudyDefinition, case: CaseSpec) -
         "settings": settings.to_json(), "solver_kind": settings.solver_kind,
         "solution_model": solution_model,
         "resolution_mapping": {"source_model": case.model, "solver_kind": settings.solver_kind,
-                               "solution_model": solution_model, "reduction": ("point_mass_view_of_planar" if settings.solver_kind == "point-mass" and case.model == "planar-7dof" else "14dof.planar->point_mass_view_of_planar" if settings.solver_kind == "point-mass" and case.model == "14dof-simple" else "identity" if settings.solver_kind == "point-mass" else "14dof.planar->planar-7dof" if case.model == "14dof-simple" else "identity")},
+                               "solution_model": solution_model, "reduction": ("point_mass_view_of_planar" if settings.solver_kind == "point-mass" and case.model == "planar-7dof" else "14dof.planar->point_mass_view_of_planar" if settings.solver_kind == "point-mass" and case.model == "14dof-simple" else "14dof.planar->planar-7dof" if case.model == "14dof-simple" and settings.solver_kind in {"yaw-aware", "forward-driver"} else "identity")},
         "source_model": case.model,
         "formulation": files.formulation.relative_to(directory).as_posix(),
         "source_formulation": files.formulation.relative_to(directory).as_posix(),
@@ -102,16 +102,25 @@ def prepare_case(study_dir: Path, definition: StudyDefinition, case: CaseSpec) -
     }
     _atomic_json(directory / "case.json", payload)
     timeout = (settings.point_mass_duration if settings.solver_kind == "point-mass"
+               else settings.forward_wall_seconds + 60 if settings.solver_kind == "forward-driver"
                else settings.replay_seconds if settings.mode == "replay" else settings.profile_seconds)
     timeout = min(1800.0, timeout)
+    if settings.solver_kind == "forward-driver":
+        from .settings import forward_driver_config
+        payload["driver_config"] = forward_driver_config(settings)
+        payload["input_identity"].update(settings=settings.to_json(), driver_config=payload["driver_config"],
+            settings_sha256=hashlib.sha256(json.dumps(settings.to_json(), sort_keys=True,
+                separators=(",", ":"), allow_nan=False).encode()).hexdigest())
+        _atomic_json(directory / "case.json", payload)
+    duration = settings.forward_duration if settings.solver_kind == "forward-driver" else settings.duration
     return PreparedCase(directory, files.formulation, files.vehicle, argv, model=solution_model,
-                        timeout_seconds=timeout, duration=settings.duration, solver_kind=settings.solver_kind)
+                        timeout_seconds=timeout, duration=duration, solver_kind=settings.solver_kind)
 
 
 def validate_case(prepared: PreparedCase) -> str | None:
     try:
         compiled = compile_formulation(str(prepared.formulation)).model
-        if prepared.solver_kind == "yaw-aware" and prepared.model == "planar-7dof" and not hasattr(compiled, "yaw_inertia"):
+        if prepared.solver_kind in {"yaw-aware", "forward-driver"} and prepared.model == "planar-7dof" and not hasattr(compiled, "yaw_inertia"):
             raise ValueError("yaw-aware selected variant did not compile to planar 7DoF")
         if prepared.model == "point-mass":
             from simplified_vehicle_models.parameters.vehicle import PointMassVehicleParameters
@@ -164,6 +173,11 @@ def finish_case(prepared: PreparedCase, attempt: Path, *, return_code: int | Non
         inputs_valid = isinstance(inputs, dict) and all(inputs.get(key) == identity.get(key) for key in
             ("solver_kind", "source_model", "solution_model", "track", "track_sha256", "formulation", "formulation_sha256"))
         inputs_valid = inputs_valid and isinstance(identity, dict) and identity.get("solver_kind") == prepared.solver_kind
+        if prepared.solver_kind == "forward-driver":
+            inputs_valid = inputs_valid and identity.get("settings") == payload.get("settings")
+            inputs_valid = inputs_valid and inputs.get("settings") == payload.get("settings")
+            inputs_valid = inputs_valid and inputs.get("driver_config") == identity.get("driver_config") == payload.get("driver_config")
+            inputs_valid = inputs_valid and inputs.get("settings_sha256") == identity.get("settings_sha256")
         inputs_valid = inputs_valid and Path(identity.get("track", "")).is_file() and hashlib.sha256(Path(identity["track"]).read_bytes()).hexdigest() == identity.get("track_sha256")
         inputs_valid = inputs_valid and Path(identity.get("formulation", "")).is_file() and hashlib.sha256(Path(identity["formulation"]).read_bytes()).hexdigest() == identity.get("formulation_sha256")
         if prepared.solver_kind == "yaw-aware":
@@ -176,6 +190,21 @@ def finish_case(prepared: PreparedCase, attempt: Path, *, return_code: int | Non
             inputs_valid = inputs_valid and map_path.is_file() and hashlib.sha256(map_path.read_bytes()).hexdigest() == identity.get("yaw_map_sha256")
         else:
             inputs_valid = inputs_valid and identity.get("yaw_map") is None
+        if prepared.solver_kind == "forward-driver":
+            inputs_valid = inputs_valid and inputs.get("formulation") == identity.get("formulation")
+            inputs_valid = inputs_valid and inputs.get("track") == identity.get("track")
+            inputs_valid = inputs_valid and inputs.get("formulation_sha256") == identity.get("formulation_sha256")
+            inputs_valid = inputs_valid and inputs.get("settings") == identity.get("settings")
+            inputs_valid = inputs_valid and inputs.get("driver_config") == identity.get("driver_config")
+            inputs_valid = inputs_valid and inputs.get("track_sha256") == identity.get("track_sha256")
+            inputs_valid = inputs_valid and inputs.get("completed_forward_result") is True
+            inputs_valid = inputs_valid and inputs.get("lap_completed") is True
+            inputs_valid = inputs_valid and inputs.get("midpoint_sample_validation_complete") is True
+            inputs_valid = inputs_valid and type(inputs.get("accepted_states_validated")) is int
+            inputs_valid = inputs_valid and type(inputs.get("dense_samples_validated")) is int
+            forward_summary = json.loads(summary_path.read_text())
+            inputs_valid = inputs_valid and inputs.get("source_hashes") == forward_summary.get("source_hashes")
+            inputs_valid = inputs_valid and inputs.get("accepted_policy_sha256") == forward_summary.get("accepted_policy_sha256")
     except (OSError, ValueError, TypeError):
         inputs_valid = False
 
@@ -188,6 +217,15 @@ def finish_case(prepared: PreparedCase, attempt: Path, *, return_code: int | Non
             with np.load(path, allow_pickle=False) as archive:
                 return set(members).issubset(archive.files) and all(np.asarray(archive[key]).size > 0 for key in members)
         except Exception:
+            return False
+
+    def valid_jsonl(name, expected_rows):
+        path = Path(attempt) / name
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+            return (type(expected_rows) is int and len(lines) == expected_rows
+                    and all(isinstance(json.loads(line), dict) for line in lines))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
             return False
 
     def matches_digest(name, digest):
@@ -211,10 +249,14 @@ def finish_case(prepared: PreparedCase, attempt: Path, *, return_code: int | Non
         except Exception:
             return False
 
-    def _valid_run_record(path):
+    def _valid_run_record(path, *, verify_sources=False):
         try:
             from simplified_vehicle_models.results.run_record import load_run_record
-            load_run_record(path, verify_sources=False)
+            source_root = Path(attempt).parents[2] if Path(attempt).parents[1].name == "cases" else REPOSITORY_ROOT
+            record = load_run_record(path, verify_sources=verify_sources, root=source_root)
+            if verify_sources:
+                return (record.manifest.sources == inputs.get("source_hashes")
+                        and bool(record.manifest.sources))
             return True
         except Exception:
             return False
@@ -245,6 +287,45 @@ def finish_case(prepared: PreparedCase, attempt: Path, *, return_code: int | Non
           and matches_digest("plan.npz", inputs.get("plan_sha256"))
           and valid_yaw_plan(Path(attempt) / "plan.npz")):
         status, parent_status, parent_code = "planned", "Child_Planned", return_code
+    elif (prepared.solver_kind == "forward-driver" and summary.get("status") == "completed"
+          and inputs.get("lap_completed") is True
+          and inputs.get("midpoint_sample_validation_complete") is True
+          and inputs.get("completed_forward_result") is True
+          and summary.get("lap_completed") is True and summary.get("midpoint_sample_validation_complete") is True
+          and type(summary.get("accepted_steps")) is int and summary["accepted_steps"] > 0
+          and type(summary.get("accepted_states_validated")) is int
+          and summary.get("accepted_states_validated") == summary["accepted_steps"] + 1
+          and type(summary.get("dense_samples_validated")) is int
+          and summary.get("dense_samples_validated") == summary.get("midpoint_samples")
+          and type(summary.get("midpoint_samples")) is int
+          and isinstance(summary.get("validation_counts"), dict)
+          and type(summary.get("accepted_policy_rows")) is int
+          and summary.get("accepted_policy_rows") == summary.get("accepted_steps") + 1
+          and type(summary["validation_counts"].get("accepted_states_validated")) is int
+          and type(summary["validation_counts"].get("dense_probes_validated")) is int
+          and valid_jsonl("accepted_policy.jsonl", summary.get("accepted_steps") + 1)
+          and summary["validation_counts"].get("accepted_states_validated") == summary["accepted_states_validated"]
+          and summary["validation_counts"].get("dense_probes_validated") == summary["dense_samples_validated"]
+          and summary["midpoint_samples"] >= summary["accepted_steps"]
+          and summary.get("settings_sha256") == identity.get("settings_sha256")
+          and summary.get("forward_driver_config") == identity.get("driver_config")
+          and valid_npz("run_record.npz", ("manifest.json", "time"))
+          and _valid_run_record(Path(attempt) / "run_record.npz", verify_sources=True)
+          and inputs.get("accepted_policy_file") == "accepted_policy.jsonl"
+          and type(inputs.get("accepted_policy_rows")) is int
+          and inputs.get("accepted_policy_rows") == summary.get("accepted_steps") + 1
+          and matches_digest("accepted_policy.jsonl", inputs.get("accepted_policy_sha256"))
+          and inputs.get("source_hashes") == summary.get("source_hashes")
+          and isinstance(summary.get("source_hashes"), dict)
+          and len(summary["source_hashes"]) >= 3
+          and matches_digest("accepted_policy.jsonl", summary.get("accepted_policy_sha256"))
+          and summary.get("accepted_policy_rows") == inputs.get("accepted_policy_rows")
+          and inputs.get("accepted_policy_rows") == summary.get("accepted_steps") + 1
+          and matches_digest("run_record.npz", summary.get("run_record_sha256"))
+          and matches_digest("run_record.npz", inputs.get("run_record_sha256"))
+          and valid_npz("envelope_arrays.npz", ("distance", "curvature", "corner_speed", "entry_speed", "deceleration", "binding_index"))
+          and matches_digest("envelope_arrays.npz", summary.get("envelope_arrays_sha256"))):
+        status, parent_status, parent_code = "completed", "Child_Completed", return_code
     elif (prepared.solver_kind == "point-mass" and summary["status"] == "completed"
           and summary.get("converged") is True and summary.get("lap_completed") is True
           and valid_npz("point_mass_plan.npz", ("distance", "speed", "elapsed_time", "longitudinal_acceleration", "lateral_acceleration"))
@@ -283,13 +364,15 @@ def finish_case(prepared: PreparedCase, attempt: Path, *, return_code: int | Non
     record = Path(attempt) / "run_record.npz"
     plan = Path(attempt) / "plan.npz"
     point_plan = Path(attempt) / "point_mass_plan.npz"
+    envelope_arrays = Path(attempt) / "envelope_arrays.npz"
     artifacts = {name: (Path(attempt) / name).relative_to(study_root).as_posix()
-                 for name in ("inputs.json", "plan.npz", "run_record.npz", "point_mass_plan.npz", "trace.csv")
+                 for name in ("inputs.json", "plan.npz", "run_record.npz", "point_mass_plan.npz", "trace.csv", "envelope_arrays.npz", "accepted_policy.json", "accepted_policy.jsonl", "progress.json")
                  if (Path(attempt) / name).is_file()}
     return {"status": status, "attempt": rel_attempt,
             "run_record": record.relative_to(study_root).as_posix() if record.exists() else None,
             "plan": plan.relative_to(study_root).as_posix() if plan.exists() else None,
             "point_mass_plan": point_plan.relative_to(study_root).as_posix() if point_plan.exists() else None,
+            "envelope_arrays": envelope_arrays.relative_to(study_root).as_posix() if envelope_arrays.exists() else None,
             "artifacts": artifacts, "summary": summary}
 
 

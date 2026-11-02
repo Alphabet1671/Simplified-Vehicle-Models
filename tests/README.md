@@ -16,6 +16,7 @@ The unit and regression suite, run with `unittest`.
 | `test_pedal_actuator_calibration.py` | Runtime physical pedal calibration binding, forward evaluator parity, and bounds.
 | `test_continuous_driver_throttle_comparison.py` | Matched throttle-runner plan slicing, duration-weighted metrics, manifest/output contracts and arm isolation. |
 | `test_linear_driver_input_study.py` | Dedicated fixed-plan linear driver demand/slew candidate matrix, provenance, and accepted-trace metric contracts. |
+| `test_sim_gui_forward.py` | Opt-in GUI forward-driver settings, immutable identity, child dispatch, RunRecord-backed completion gate, and workflow-specific Qt visibility. |
 
 Test modules named `test_<topic>.py` each cover one topic and run under `unittest`. `test_gui_launchers.py` exercises direct venv launch from unrelated working directories. Maneuver result tests verify canonical RunRecord handoff to animator readers; video encoding is not a maneuver responsibility.
 

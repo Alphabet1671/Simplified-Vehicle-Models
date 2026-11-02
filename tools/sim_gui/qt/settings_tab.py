@@ -1,4 +1,4 @@
-"""Qt widget for point-mass and yaw-aware simulation settings."""
+"""Qt settings widget for point-mass, yaw-aware, and forward-driver workflows."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -19,8 +19,10 @@ class SettingsTab(QWidget):
         "point_mass_pedal_travel_time", "point_mass_preview_seconds", "point_mass_heading_gain",
         "point_mass_lateral_gain", "point_mass_rtol", "spacing", "control_spacing",
         "profile_seconds", "line_seconds", "duration", "replay_seconds", "maximum_step",
+        "forward_duration", "forward_wall_seconds", "forward_maximum_speed", "forward_spacing",
+        "forward_deceleration_margin", "forward_feedforward_distance",
     )
-    INT_FIELDS = ("profile_rounds", "line_evaluations", "line_outer_passes", "line_optimizer_iterations")
+    INT_FIELDS = ("profile_rounds", "line_evaluations", "line_outer_passes", "line_optimizer_iterations", "forward_speed_points")
     POINT_MASS_FIELDS = frozenset(FLOAT_FIELDS[:8])
     LABELS = {
         "point_mass_duration": "Duration (s)", "point_mass_spacing": "Spacing (m)",
@@ -34,6 +36,10 @@ class SettingsTab(QWidget):
         "maximum_step": "Maximum integration step (s)", "profile_rounds": "Profile rounds",
         "line_evaluations": "Line evaluations", "line_outer_passes": "Line outer passes",
         "line_optimizer_iterations": "Line optimizer iterations",
+        "forward_duration": "Forward simulated duration (s)", "forward_wall_seconds": "Forward runtime budget (s)",
+        "forward_maximum_speed": "Forward speed cap (m/s)", "forward_spacing": "Envelope spacing (m)",
+        "forward_deceleration_margin": "Deceleration margin", "forward_feedforward_distance": "Chord distance (m)",
+        "forward_speed_points": "Envelope speed points",
     }
 
     def __init__(self, parent=None):
@@ -45,32 +51,46 @@ class SettingsTab(QWidget):
         self.solver_kind = QComboBox()
         self.solver_kind.addItem("Point-mass quick investigation", "point-mass")
         self.solver_kind.addItem("Yaw-aware transient", "yaw-aware")
+        self.solver_kind.addItem("Virtual driver (braking envelope)", "forward-driver")
         self.solver_kind.setCurrentIndex(self.solver_kind.findData(self._settings.solver_kind))
-        self.solver_kind.currentIndexChanged.connect(self._changed)
+        self.solver_kind.currentIndexChanged.connect(self._mode_changed)
         self._form.addRow("Solver workflow", self.solver_kind)
         self.prerequisite = QLabel("Yaw-aware requires an existing completed, identity-checked vehicle-limit yaw map; this GUI never rebuilds it.")
+        self.prerequisite.setObjectName("prerequisite")
         self.prerequisite.setWordWrap(True)
         self._form.addRow(self.prerequisite)
         self.limitation = QLabel("Yaw-aware output is sampled/discrete evidence, not continuous feasibility or containment certification.")
+        self.limitation.setObjectName("limitation")
         self.limitation.setWordWrap(True)
         self._form.addRow(self.limitation)
+        self.forward_note = QLabel("Forward driver: sampled backward braking envelope (not a safety certificate); no yaw map required. 14DoF sources are explicitly reduced to their composed planar model. Runtime includes setup and validation; GUI watchdog allows 60 s cleanup.")
+        self.forward_note.setObjectName("forward_note")
+        self.forward_note.setWordWrap(True)
+        self._form.addRow(self.forward_note)
         self.yaw_map = QLineEdit()
+        self.yaw_map.setObjectName("yaw_map")
         self.yaw_map.textChanged.connect(self._changed)
         self.map_row = QWidget()
+        self.map_row.setObjectName("map_row")
         row = QHBoxLayout(self.map_row)
         row.setContentsMargins(0, 0, 0, 0)
         row.addWidget(self.yaw_map)
         self.browse_map = QPushButton("Browse…")
         self.browse_map.clicked.connect(self._browse_map)
         row.addWidget(self.browse_map)
-        self._form.addRow("Completed yaw map", self.map_row)
+        self.map_label = QLabel("Completed yaw map")
+        self.map_label.setObjectName("yaw_map_label")
+        self._form.addRow(self.map_label, self.map_row)
         self.mode = QComboBox()
+        self.mode.setObjectName("mode")
         self.mode.addItems(("fixed", "line", "replay"))
         self.mode.currentTextChanged.connect(self._mode_changed)
         self._form.addRow("Yaw mode", self.mode)
         self.plan = QLineEdit()
+        self.plan.setObjectName("plan")
         self.plan.textChanged.connect(self._changed)
         self.plan_row = QWidget()
+        self.plan_row.setObjectName("plan_row")
         row = QHBoxLayout(self.plan_row)
         row.setContentsMargins(0, 0, 0, 0)
         row.addWidget(self.plan)
@@ -86,6 +106,7 @@ class SettingsTab(QWidget):
             widget.valueChanged.connect(self._changed)
             self._widgets[name] = widget
             setattr(self, name, widget)
+            widget.setObjectName(name)
             self._form.addRow(self.LABELS[name], widget)
         for name in self.INT_FIELDS:
             widget = QSpinBox()
@@ -94,8 +115,10 @@ class SettingsTab(QWidget):
             widget.valueChanged.connect(self._changed)
             self._widgets[name] = widget
             setattr(self, name, widget)
+            widget.setObjectName(name)
             self._form.addRow(self.LABELS[name], widget)
         self.controller = QComboBox()
+        self.controller.setObjectName("controller")
         self.controller.addItems(("preview", "model-aware"))
         self.controller.currentTextChanged.connect(self._changed)
         self._form.addRow("Controller", self.controller)
@@ -116,22 +139,35 @@ class SettingsTab(QWidget):
         self._changed()
 
     def _sync_visibility(self):
-        yaw = self.solver_kind.currentData() == "yaw-aware"
+        kind = self.solver_kind.currentData()
+        yaw = kind == "yaw-aware"
+        forward = kind == "forward-driver"
+        self.forward_note.setVisible(forward)
+        self.yaw_map.setVisible(yaw)
+        self.plan.setVisible(yaw and self.mode.currentText() == "replay")
         for widget in (self.prerequisite, self.limitation, self.map_row, self.mode):
             widget.setVisible(yaw)
         self.plan_row.setVisible(yaw and self.mode.currentText() == "replay")
         for name in self.FLOAT_FIELDS:
-            self._widgets[name].setVisible((name not in self.POINT_MASS_FIELDS) if yaw else (name in self.POINT_MASS_FIELDS))
+            forward_field = name.startswith("forward_")
+            point_field = name in self.POINT_MASS_FIELDS
+            visible = forward if forward_field else (not point_field if yaw else point_field if kind == "point-mass" else False)
+            self._widgets[name].setVisible(visible)
         for name in self.INT_FIELDS:
-            self._widgets[name].setVisible(yaw)
+            self._widgets[name].setVisible((yaw and not name.startswith("forward_"))
+                                            or (forward and name == "forward_speed_points"))
         self.controller.setVisible(yaw)
-        hidden_fields = {widget for name, widget in self._widgets.items() if not widget.isVisible()}
-        hidden_fields.update(widget for widget in (self.map_row, self.plan_row) if not widget.isVisible())
+        row_visibility = {widget.objectName(): widget.isHidden()
+                          for widget in (*self._widgets.values(), self.forward_note, self.prerequisite,
+                                         self.limitation, self.map_row, self.map_label, self.yaw_map, self.mode,
+                                         self.plan_row, self.plan, self.controller)}
         for row in range(self._form.rowCount()):
             field = self._form.itemAt(row, QFormLayout.ItemRole.FieldRole)
             label = self._form.itemAt(row, QFormLayout.ItemRole.LabelRole)
-            if field and label and field.widget() in hidden_fields:
-                label.widget().setVisible(False)
+            if field and label:
+                widget = field.widget()
+                hidden = row_visibility.get(widget.objectName(), widget.isHidden() if widget else False)
+                label.widget().setVisible(not hidden)
 
     def settings(self):
         return self._settings
@@ -153,8 +189,11 @@ class SettingsTab(QWidget):
 
     def _changed(self, *_args):
         values = {name: widget.value() for name, widget in self._widgets.items()}
-        values.update(solver_kind=self.solver_kind.currentData(), yaw_map=self.yaw_map.text().strip(),
-                      mode=self.mode.currentText(), plan=self.plan.text().strip() or None,
+        kind = self.solver_kind.currentData()
+        values.update(solver_kind=kind,
+                      yaw_map=self.yaw_map.text().strip() if kind == "yaw-aware" else "",
+                      mode=self.mode.currentText() if kind == "yaw-aware" else "fixed",
+                      plan=(self.plan.text().strip() or None) if kind == "yaw-aware" else None,
                       controller=self.controller.currentText())
         self._settings = RunSettings(**values)
         self._sync_visibility()

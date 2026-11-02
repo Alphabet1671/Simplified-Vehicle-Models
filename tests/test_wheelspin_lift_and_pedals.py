@@ -11,6 +11,8 @@ from simplified_vehicle_models.powertrain.motor_envelope import (
     INVERTER_SPEED_REGULATION_BAND, motor_speed_limit, motor_torque_limit,
     speed_regulated_torque_limit,
 )
+from simplified_vehicle_models.solvers.braking_envelope import BrakingEnvelope
+from simplified_vehicle_models.solvers.envelope_driver import EnvelopePolicy
 from simplified_vehicle_models.solvers.forward_driver import (
     DriverCommand, DriverObservation, PreviewDriver, RateSystem, SpeedPlan,
     build_speed_plan, solve_forward,
@@ -101,7 +103,10 @@ class PedalSlewTests(unittest.TestCase):
     def setUp(self):
         distance = np.linspace(0., 100., 101)
         self.plan = build_speed_plan(distance, np.zeros(101), 15., 4., 2., 3.)
-        self.driver = PreviewDriver(self.plan, 1.5, .5, 2., 1000., pedal_travel_time=.175)
+        envelope = BrakingEnvelope(np.array([0., 50., 100.]), np.zeros(3), np.full(3, 15.),
+            np.full(3, 15.), np.full(2, 5.), np.zeros(3, dtype=int), True, 15., {"fixture": True})
+        self.driver = PreviewDriver(self.plan, 1.5, .5, 2., 1000., pedal_travel_time=.175,
+                                    envelope_policy=EnvelopePolicy(envelope))
 
     def test_rate_limit_and_exclusive_pedals(self):
         self.assertAlmostEqual(self.driver.pedal_rate(-1., 1.), 1. / .175)
@@ -147,7 +152,7 @@ class PedalSlewTests(unittest.TestCase):
         self.assertTrue(all(t * b == 0. for t, b in plant.seen))
 
     def test_without_travel_time_pedals_stay_instantaneous(self):
-        driver = PreviewDriver(self.plan, 1.5, .5, 2., 1000.)
+        driver = PreviewDriver(self.plan, 1.5, .5, 2., 1000., envelope_policy=self.driver.envelope_policy)
         self.assertFalse(driver.has_pedal_dynamics)
 
 

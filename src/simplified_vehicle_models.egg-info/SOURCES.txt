@@ -104,7 +104,6 @@ src/simplified_vehicle_models/solvers/maneuver_simulation.py
 src/simplified_vehicle_models/solvers/maneuver_vertical.py
 src/simplified_vehicle_models/solvers/minimum_time_run.py
 src/simplified_vehicle_models/solvers/offset_geometry_bounds.py
-src/simplified_vehicle_models/solvers/physical_longitudinal_mapper.py
 src/simplified_vehicle_models/solvers/planar_dense_certificate.py
 src/simplified_vehicle_models/solvers/planar_forward.py
 src/simplified_vehicle_models/solvers/profile_line_seed.py
@@ -121,7 +120,6 @@ src/simplified_vehicle_models/solvers/standing_launch.py
 src/simplified_vehicle_models/solvers/standing_straight_ocp.py
 src/simplified_vehicle_models/solvers/track_problem_contract.py
 src/simplified_vehicle_models/solvers/trajectory_artifact.py
-src/simplified_vehicle_models/solvers/trajectory_forward_replay.py
 src/simplified_vehicle_models/solvers/vertical_between_step.py
 src/simplified_vehicle_models/solvers/vertical_dense_certificate.py
 src/simplified_vehicle_models/solvers/vertical_equilibrium.py
@@ -217,9 +215,7 @@ tests/test_fixed_line_spline_solve.py
 tests/test_fixed_path_energy_nlp.py
 tests/test_fixed_split.py
 tests/test_forward_between_step_certificate.py
-tests/test_forward_command_mapper.py
 tests/test_forward_driver.py
-tests/test_forward_driver_plot.py
 tests/test_forward_driver_runner.py
 tests/test_forward_refinement_vertical.py
 tests/test_forward_tube_v2.py
@@ -286,7 +282,6 @@ tests/test_open_course.py
 tests/test_open_standing_start.py
 tests/test_pedal_controller.py
 tests/test_periodic_cut_mapping.py
-tests/test_physical_longitudinal_mapper.py
 tests/test_planar_7dof.py
 tests/test_planar_dense_certificate.py
 tests/test_planar_dynamics.py
@@ -361,7 +356,6 @@ tests/test_track_tool_patches.py
 tests/test_track_width.py
 tests/test_tracks.py
 tests/test_trajectory_artifact.py
-tests/test_trajectory_forward_replay.py
 tests/test_transmission.py
 tests/test_tv_runner.py
 tests/test_unitire_envelope.py

@@ -71,6 +71,20 @@ class PropagationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             env.distance[0] = 3.
 
+    def test_sample_default_domain_does_not_materialize_length_n_fallback(self):
+        n = 10_000
+        provenance = {"source": "test"}
+        env = BrakingEnvelope(
+            np.arange(n, dtype=float), np.zeros(n), np.full(n, 30.),
+            np.full(n, 20.), np.ones(n - 1), np.zeros(n, dtype=int),
+            False, 60., provenance,
+        )
+        # The missing-domain fallback is the sampled local cap, not an array
+        # proportional to the envelope's segment count.
+        sample = env.sample(n / 2 + .25)
+        self.assertEqual(sample.speed_domain_max, sample.corner_speed)
+        self.assertEqual(len(env.provenance), 1)
+
     def test_builder_lateral_margin_scales_radius_before_oracle(self):
         vehicle = PointMassVehicleParameters.__new__(PointMassVehicleParameters)
         def corner_oracle(vehicle, radius, **kwargs):

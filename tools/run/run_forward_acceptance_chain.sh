@@ -17,7 +17,7 @@ case "$STAGE" in
   fourth) STEP=$(python3 -c "print($BASE_STEP/8)"); RTOL=1.25e-06;;
   *) echo "unknown stage $STAGE" >&2; exit 2;;
 esac
-ARGS=(--model "$MODEL" --planner live --maximum-speed 60.0 --pedal-travel-time 0.175
+ARGS=(--model "$MODEL" --maximum-speed 60.0 --pedal-travel-time 0.175
       --maximum-step "$STEP" --rtol "$RTOL" --method BDF --spacing 0.5 --duration 300.0
       --timeout-seconds "$TIMEOUT" --preview-seconds "$PREVIEW" --heading-gain "$HEADING"
       --lateral-gain "$LATERAL" --output-root "$OUT/$STAGE")

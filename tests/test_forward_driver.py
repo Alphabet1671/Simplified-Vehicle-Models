@@ -7,7 +7,14 @@ from simplified_vehicle_models.compiler.compile import compile_formulation
 from simplified_vehicle_models.solvers.forward_driver import (
     RateSystem, DriverObservation, PreviewDriver, build_speed_plan, solve_forward,
 )
-from simplified_vehicle_models.solvers.driver_maps import LongitudinalDemandMap, MonotoneTable1D
+from simplified_vehicle_models.solvers.envelope_driver import EnvelopePolicy, EnvelopeDriverSettings
+from simplified_vehicle_models.solvers.braking_envelope import BrakingEnvelope
+
+def test_policy(plan, cap=60.):
+    d = np.asarray(plan.distance, dtype=float)
+    return EnvelopePolicy(BrakingEnvelope(d, np.asarray(plan.curvature), np.full(d.shape, np.sqrt(cap)),
+        np.full(d.shape, np.sqrt(cap)), np.full(d.shape[0] - 1, 5.), np.zeros(d.shape, dtype=int),
+        bool(plan.is_closed), cap, {"fixture": True}), EnvelopeDriverSettings())
 
 
 class RateSystemTests(unittest.TestCase):
@@ -38,7 +45,7 @@ class DriverTests(unittest.TestCase):
         curvature = np.zeros(101)
         curvature[45:56] = 0.2
         self.plan = build_speed_plan(distance, curvature, 15., 4., 2., 3.)
-        self.driver = PreviewDriver(self.plan, 1.5, 0.5, 2., 1000.)
+        self.driver = PreviewDriver(self.plan, 1.5, 0.5, 2., 1000., envelope_policy=test_policy(self.plan))
 
     def test_braking_before_corner_and_periodic_seam(self):
         self.assertLess(self.plan.speed[40], self.plan.speed[20])
@@ -59,7 +66,7 @@ class DriverTests(unittest.TestCase):
     def test_explicit_steering_tuning_changes_request_and_respects_limits(self):
         observation = DriverObservation(45., .05, .02, 10., 0., 0.)
         tuned = PreviewDriver(self.plan, 1.5, 0.5, 20., 1000.,
-                              preview_seconds=.35, heading_gain=2.5, lateral_gain=.75)
+                              preview_seconds=.35, heading_gain=2.5, lateral_gain=.75, envelope_policy=test_policy(self.plan))
         legacy = self.driver.command(observation)
         command = tuned.command(observation)
         self.assertTrue(np.all(np.isfinite((command.throttle, command.brake_force,
@@ -68,18 +75,18 @@ class DriverTests(unittest.TestCase):
         self.assertNotEqual(command.steering_rate, legacy.steering_rate)
 
     def test_directional_mode_works_without_legacy_travel_time(self):
-        driver = PreviewDriver(self.plan, 1.5, .5, 2., 1000., pedal_travel_time=None,
+        driver = PreviewDriver(self.plan, 1.5, .5, 2., 1000., pedal_travel_time=None, envelope_policy=test_policy(self.plan),
                                throttle_apply_rate=4., throttle_release_rate=6.,
                                brake_apply_rate=5., brake_release_rate=6.)
         self.assertEqual(driver.pedal_rate(0., 1.), 4.)
 
     def test_omitted_directional_rates_keep_legacy_rate(self):
-        legacy = PreviewDriver(self.plan, 1.5, .5, 2., 1000., pedal_travel_time=.175)
+        legacy = PreviewDriver(self.plan, 1.5, .5, 2., 1000., pedal_travel_time=.175, envelope_policy=test_policy(self.plan))
         self.assertEqual(legacy.pedal_rate(.5, -1.), -1. / .175)
 
     def test_directional_pedal_slew_rates_and_neutral_crossing(self):
         driver = PreviewDriver(self.plan, 1.5, 0.5, 2., 1000.,
-                               pedal_time_constant=.02,
+                               pedal_time_constant=.02, envelope_policy=test_policy(self.plan),
                                throttle_apply_rate=4., throttle_release_rate=6.,
                                brake_apply_rate=5., brake_release_rate=6.)
         self.assertEqual(driver.pedal_rate(.5, 1.), 4.)
@@ -99,35 +106,12 @@ class DriverTests(unittest.TestCase):
                  brake_apply_rate=5., brake_release_rate=6.),
         ):
             with self.subTest(settings=settings), self.assertRaises(ValueError):
-                PreviewDriver(self.plan, 1.5, .5, 2., 1000., **settings)
+                PreviewDriver(self.plan, 1.5, .5, 2., 1000., envelope_policy=test_policy(self.plan), **settings)
 
     def test_direct_preview_driver_defaults_remain_legacy_values(self):
         self.assertEqual(self.driver.preview_seconds, .15)
         self.assertEqual(self.driver.heading_gain, 1.5)
         self.assertEqual(self.driver.lateral_gain, 1.5)
-
-    def test_custom_demand_map_replaces_only_longitudinal_arithmetic(self):
-        demand = LongitudinalDemandMap(
-            MonotoneTable1D((0., 2., 4.), (0., .8, 1.), "m/s^2", "1"),
-            MonotoneTable1D((0., 4., 8.), (0., .6, 1.), "m/s^2", "1"),
-        )
-        flat_plan = build_speed_plan(np.array([0., 100.]), np.zeros(2), 10.,
-                                     3., 2., 3.)
-        legacy = PreviewDriver(flat_plan, 1.5, .5, 2., 1000.)
-        configured = PreviewDriver(flat_plan, 1.5, .5, 2., 1000., demand_map=demand)
-        positive = DriverObservation(20., .02, .01, 9., .1, .03)
-        mapped = configured.command(positive)
-        self.assertAlmostEqual(mapped.throttle, .8)
-        self.assertEqual(mapped.brake_force, 0.)
-        self.assertAlmostEqual(mapped.steering_rate, legacy.command(positive).steering_rate)
-        negative = DriverObservation(50., .02, .01, 12., .1, .03,
-                                    wheel_speed_margin=.425)
-        mapped_brake = configured.command(negative)
-        self.assertAlmostEqual(mapped_brake.brake_force, 300.)
-        self.assertEqual(mapped_brake.throttle, 0.)
-        self.assertAlmostEqual(mapped_brake.steering_rate, legacy.command(negative).steering_rate)
-        coast = configured.command(DriverObservation(30., 0., 0., 10., 0., 0.))
-        self.assertEqual((coast.throttle, coast.brake_force), (0., 0.))
 
     def test_driver_sign_limits_and_overlap(self):
         command = self.driver.command(DriverObservation(50., 0., 0., 15., 0., 0.))
@@ -148,8 +132,8 @@ class DriverTests(unittest.TestCase):
         self.assertEqual(command(0.).brake_force, 0.)
 
     def test_driver_tracks_course_not_zero_body_sideslip(self):
-        straight = build_speed_plan(np.array([0., 100.]), np.zeros(2))
-        driver = PreviewDriver(straight, 1.5, .5, 2., 1000.)
+        straight = build_speed_plan(np.array([0., 100.]), np.zeros(2), open_course=True)
+        driver = PreviewDriver(straight, 1.5, .5, 2., 1000., envelope_policy=test_policy(straight))
         zero = driver.command(DriverObservation(0., 0., 0., 8., 0., 0.))
         angled = driver.command(DriverObservation(0., 0., -np.arctan2(1., 8.),
                                                   8., 0., 0., 1.))
@@ -180,47 +164,6 @@ class DriverTests(unittest.TestCase):
             result.time,
         )
 
-    def test_custom_demand_initial_target_lag_and_step_sample_stages(self):
-        from simplified_vehicle_models.solvers.forward_driver import DriverCommand
-        from types import SimpleNamespace
-        demand = LongitudinalDemandMap(
-            MonotoneTable1D([0., 1., 2.], [0., .5, 1.], "m/s^2", "1"),
-            MonotoneTable1D([0., 1., 2.], [0., .5, 1.], "m/s^2", "1"))
-        plan = build_speed_plan(np.array([0., 100.]), np.zeros(2), 10., 3., 2., 3.)
-        from unittest.mock import patch
-        demand = LongitudinalDemandMap(
-            MonotoneTable1D([0., 4., 8.], [0., .5, 1.], "m/s^2", "1"),
-            MonotoneTable1D([0., 4., 8.], [0., .5, 1.], "m/s^2", "1"))
-        base = PreviewDriver(plan, 1.5, .5, 2., 1000., pedal_travel_time=.2,
-                             demand_map=demand)
-        class Plant:
-            state_size = 1
-            seen = []
-            def observe(self, state): return DriverObservation(0., 0., 0., 8., 0., 0.)
-            def evaluate(self, time, state, command):
-                self.seen.append(command)
-                return RateSystem(np.array([0.]))
-        samples = []
-        plant = Plant()
-        with patch.object(LongitudinalDemandMap, "command", return_value=(.5, 0.)):
-            result = solve_forward(plant, base, np.array([0.]), duration=.03,
-                                   maximum_step=.01, step_sink=samples.append)
-        self.assertAlmostEqual(result.pedal[0], .5)
-        self.assertAlmostEqual(result.pedal[-1], .5)
-        samples.clear()
-        with patch.object(LongitudinalDemandMap, "command", return_value=(.5, 0.)):
-            lagged = solve_forward(plant, base, np.array([0.]), duration=.03,
-                                   maximum_step=.01, initial_pedal=0., step_sink=samples.append)
-        self.assertGreater(lagged.pedal[-1], 0.)
-        self.assertLess(lagged.pedal[-1], .5)
-        sample = samples[0]
-        self.assertEqual(sample.requested_command.throttle, .5)
-        self.assertEqual(sample.mapped_command.throttle, .5)
-        self.assertEqual(sample.requested_command.steering_rate, 0.)
-        self.assertEqual(sample.mapped_command.steering_rate, 0.)
-        self.assertAlmostEqual(sample.command.throttle, 0.)
-        self.assertEqual(sample.command.steering_rate, 0.)
-
     def test_initial_pedal_state_is_preserved_for_warm_start(self):
         class Plant:
             state_size = 1
@@ -229,7 +172,7 @@ class DriverTests(unittest.TestCase):
             def evaluate(self, time, state, command):
                 return RateSystem(np.array([1.]))
         driver = PreviewDriver(self.plan, 1.5, 0.5, 2., 1000.,
-                               pedal_travel_time=.175)
+                               pedal_travel_time=.175, envelope_policy=test_policy(self.plan))
         result = solve_forward(Plant(), driver, np.array([0.]), duration=.01,
                                initial_pedal=-.25)
         self.assertAlmostEqual(result.pedal[0], -.25)

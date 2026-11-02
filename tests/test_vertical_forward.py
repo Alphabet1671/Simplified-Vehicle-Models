@@ -37,8 +37,10 @@ from simplified_vehicle_models.formulations.vertical_14dof import (
     unsprung_masses,
 )
 from simplified_vehicle_models.solvers.forward_driver import (
-    DriverCommand, ForwardPlant, RateSystem, SpeedPlan, TrialStateError, solve_forward,
+    DriverCommand, ForwardPlant, PreviewDriver, RateSystem, SpeedPlan, TrialStateError, solve_forward,
 )
+from simplified_vehicle_models.solvers.braking_envelope import BrakingEnvelope
+from simplified_vehicle_models.solvers.envelope_driver import EnvelopePolicy
 from simplified_vehicle_models.solvers.forward_powertrain import evaluate_forward_powertrain
 from simplified_vehicle_models.solvers.planar_forward import PlanarForwardPlant
 from simplified_vehicle_models.solvers.vertical_forward import (
@@ -118,6 +120,16 @@ def straight_plan(speed: float = TRIAL_SPEED, distance: float = TRIAL_DISTANCE) 
     """Return a straight closed plan at a constant requested speed."""
 
     return SpeedPlan(np.array([0.0, distance]), np.full(2, float(speed)), np.zeros(2))
+
+
+def constant_envelope_policy(plan):
+    """Explicit constant-envelope fixture for generic vertical plant integration tests."""
+    d = np.asarray(plan.distance, dtype=float)
+    cap = float(np.max(plan.speed))
+    envelope = BrakingEnvelope(d, np.asarray(plan.curvature), np.full(d.shape, cap),
+        np.full(d.shape, cap), np.full(d.size - 1, 5.), np.zeros(d.shape, dtype=int),
+        bool(plan.is_closed), max(cap, 1.), {"fixture": True})
+    return EnvelopePolicy(envelope)
 
 
 @dataclass(frozen=True)
@@ -626,7 +638,8 @@ class VerticalForwardDriverLoopTests(unittest.TestCase):
         plan = SpeedPlan(np.array([0.0, 300.0]), np.full(2, 15.0), np.full(2, curvature))
         plant = VerticalForwardPlant(vehicle, plan)
         driver = PreviewDriver(plan, planar.wheelbase, planar.steering_maximum_angle,
-                               planar.steering_maximum_rate, planar.maximum_pedal_force)
+                               planar.steering_maximum_rate, planar.maximum_pedal_force,
+                               envelope_policy=constant_envelope_policy(plan))
         initial = plant.initial_state(15.0)
         result = solve_forward(plant, driver, initial, duration=6.0, wall_seconds=280.0,
                                maximum_step=TRIAL_MAXIMUM_STEP, rtol=1e-6, atol=1e-8,

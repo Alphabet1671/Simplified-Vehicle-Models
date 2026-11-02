@@ -11,7 +11,7 @@ from tools.sim_gui import REPOSITORY_ROOT, child_environment
 from tools.sim_gui.catalogue import candidates, scan_catalogue, tracks
 from tools.sim_gui.vehicle import VehicleConfiguration
 from tools.sim_gui.variant import VariantFiles, write_variant
-from tools.sim_gui.settings import RunSettings, solution_model_for, yaw_runner_argv, validate
+from tools.sim_gui.settings import RunSettings, solution_model_for, validate
 from tools.sim_gui.study import (
     StudyDefinition, StudyIndex, TooManyCases, Dimension, CaseSpec, expand, dimension_from_sweep,
 )
@@ -20,34 +20,36 @@ from simplified_vehicle_models.compiler.compile import compile_formulation
 
 
 class SettingsTests(unittest.TestCase):
-    def test_yaw_cli_contract_and_strict_legacy_field_rejection(self):
-        settings = RunSettings(yaw_map="maps/completed.npz", mode="fixed")
-        argv = yaw_runner_argv(settings, Path("track.xml"))
-        self.assertEqual(argv[argv.index("--yaw-map") + 1], "maps/completed.npz")
-        self.assertEqual(argv[argv.index("--mode") + 1], "fixed")
-        self.assertNotIn("--planner", argv)
-        for legacy in ("planner", "lateral_acceleration", "maximum_speed", "quasi_static_attitude"):
-            with self.subTest(legacy=legacy), self.assertRaisesRegex(ValueError, "unknown run setting"):
-                RunSettings.from_json({legacy: 1})
+    def test_current_workflows_and_retired_serialized_settings(self):
+        self.assertEqual(RunSettings().solver_kind, "forward-driver")
+        self.assertEqual(RunSettings.for_model("14dof-simple").solver_kind, "forward-driver")
+        self.assertEqual(RunSettings.for_model("point-mass").solver_kind, "point-mass")
+        self.assertEqual({"forward-driver", "point-mass"},
+                         {RunSettings().solver_kind, RunSettings(solver_kind="point-mass").solver_kind})
+        retired_fields = ("profile_seconds", "profile_rounds", "spacing", "control_spacing",
+                          "line_seconds", "line_evaluations", "line_outer_passes",
+                          "line_optimizer_iterations", "duration", "replay_seconds",
+                          "maximum_step", "controller", "yaw_map", "mode", "plan")
+        for field in retired_fields:
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, "retired yaw"):
+                RunSettings.from_json({field: "old-value"})
+        with self.assertRaisesRegex(ValueError, "retired yaw"):
+            RunSettings.from_json({"solver_kind": "yaw-aware"})
         point = RunSettings(solver_kind="point-mass")
         validate(point, "14dof-simple", Path("track.xml"))
         self.assertEqual(solution_model_for(point, "14dof-simple"), "point-mass")
-        with self.assertRaisesRegex(ValueError, "unsupported"):
-            validate(RunSettings(solver_kind="yaw-aware"), "point-mass", Path("track.xml"))
 
     def test_settings_json_rejects_malformed_types_and_enums(self):
         invalid = (
-            {"solver_kind": "legacy-forward"}, {"solver_kind": 4}, {"mode": "standing-start"},
-            {"mode": None}, {"controller": "other"}, {"point_mass_method": "made-up"},
-            {"point_mass_record_precision": "float16"}, {"spacing": True},
-            {"profile_rounds": 2.5}, {"line_evaluations": False}, {"yaw_map": None},
-            {"plan": 4}, {"point_mass_lateral_acceleration": "5"}, {"maximum_step": float("nan")},
+            {"solver_kind": "legacy-forward"}, {"solver_kind": 4}, {"yaw_map": None}, {"point_mass_method": "made-up"},
+            {"point_mass_record_precision": "float16"},
+            {"point_mass_lateral_acceleration": "5"}, {"forward_spacing": float("nan")},
         )
         for payload in invalid:
             with self.subTest(payload=payload), self.assertRaises(ValueError):
                 RunSettings.from_json(payload)
         with self.assertRaisesRegex(ValueError, "JSON object"):
-            RunSettings.from_json(["yaw-aware"])
+            RunSettings.from_json(["forward-driver"])
 
     def test_model_and_solver_resolution_mapping(self):
         for source in ("point-mass", "planar-7dof", "14dof-simple"):
@@ -64,21 +66,9 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(RunSettings.from_json(RunSettings().to_json()), RunSettings())
         with self.assertRaisesRegex(ValueError, "unknown run setting"):
             RunSettings.from_json({"unknown": 1})
-        with self.assertRaisesRegex(ValueError, "completed yaw-map artifact is required"):
-            validate(RunSettings(), "planar-7dof", Path("track.xml"))
-        with self.assertRaisesRegex(ValueError, "requires a saved plan"):
-            validate(RunSettings(yaw_map="missing", mode="replay"), "planar-7dof", Path("track.xml"))
-        with tempfile.TemporaryDirectory() as folder:
-            plan = Path(folder) / "plan.npz"
-            plan.touch()
-            with mock.patch("tools.sim_gui.settings._validate_map") as map_check:
-                validate(RunSettings(yaw_map="artifact.npz", mode="replay", plan=str(plan)), "14dof-simple", Path("track.xml"))
-                map_check.assert_called_once()
-        for field in ("profile_seconds", "line_seconds", "spacing", "line_evaluations", "maximum_step"):
+        for field in ("forward_duration", "forward_spacing", "forward_speed_points"):
             with self.subTest(field=field), self.assertRaises(ValueError):
-                validate(RunSettings(yaw_map="missing", **{field: 0}), "planar-7dof", Path("track.xml"))
-        with self.assertRaisesRegex(ValueError, "yaw map, mode, and plan"):
-            validate(RunSettings(solver_kind="point-mass", mode="line"), "planar-7dof", Path("track.xml"))
+                validate(RunSettings(**{field: 0}), "planar-7dof", Path("track.xml"))
 
 
 class StudyTests(unittest.TestCase):
@@ -325,7 +315,8 @@ class CatalogueTests(unittest.TestCase):
     def test_tire_candidates_share_the_capability(self):
         slot = self.by_rel["tires/iem24_murphy_real_unitire.xml"]
         self.assertEqual(self.rel(candidates(slot, self.catalogue)),
-                         {"tires/iem24_murphy_real_unitire.xml", "tires/hoosier-43075-r20-simple.xml"})
+                         {"tires/iem24_murphy_real_unitire.xml", "tires/hoosier-43075-r20-simple.xml",
+                          "tires/ttc-r20-unitire-steady.xml"})
 
     def test_capability_none_matches_type_and_subtype(self):
         slot = self.by_rel["controllers/placeholder_2024_pedal_controller.xml"]
@@ -505,23 +496,18 @@ class ExecutionTests(unittest.TestCase):
             self.assertEqual(contract["resolution_mapping"]["solution_model"], "point-mass")
             self.assertEqual(prepared.solver_kind, "point-mass")
 
-    def test_child_command_uses_adapter_and_exact_case_binding(self):
+    def test_child_command_uses_renamed_case_adapter(self):
         from tools.sim_gui.execute import PreparedCase
-        argv = yaw_runner_argv(RunSettings(yaw_map="/tmp/completed.npz"), Path("track.xml"))
-        prepared = PreparedCase(Path('/tmp/case'), Path('/tmp/formulation.xml'), Path('/tmp/vehicle.xml'), argv)
+        prepared = PreparedCase(Path('/tmp/case'), Path('/tmp/formulation.xml'), Path('/tmp/vehicle.xml'), [])
         command = child_command(prepared, Path('/tmp/case/attempt_A'))
-        self.assertTrue(command[2].endswith("tools/sim_gui/run_yaw_case.py"))
+        self.assertTrue(command[2].endswith("tools/sim_gui/run_case.py"))
         self.assertEqual(command[-4:], ["--case-dir", "/tmp/case", "--child-attempt", "/tmp/case/attempt_A"])
-        self.assertNotIn("run_iem24_forward_driver", " ".join(command))
-        bare = child_command(PreparedCase(prepared.directory, prepared.formulation, prepared.vehicle, []), Path('/tmp/a'))
-        self.assertTrue(bare[2].endswith("tools/sim_gui/run_yaw_case.py"))
 
     def test_point_mass_child_uses_same_case_adapter(self):
         from tools.sim_gui.execute import PreparedCase
         prepared = PreparedCase(Path('/tmp/case'), Path('/tmp/formulation.xml'), Path('/tmp/vehicle.xml'), [],
                                 model="point-mass", solver_kind="point-mass")
-        command = child_command(prepared, Path('/tmp/case/attempt_A'))
-        self.assertTrue(command[2].endswith("tools/sim_gui/run_yaw_case.py"))
+        self.assertTrue(child_command(prepared, Path('/tmp/case/attempt_A'))[2].endswith("tools/sim_gui/run_case.py"))
 
     def test_finish_case_records_timeout_without_legacy_solver(self):
         from tools.sim_gui.execute import PreparedCase
@@ -534,42 +520,6 @@ class ExecutionTests(unittest.TestCase):
             self.assertEqual(parent['timeout_seconds'], 120.0)
             self.assertEqual(parent['solver_wall_budget_seconds'], 120.0)
 
-    def test_finish_case_status_mapping(self):
-        from tools.sim_gui.execute import PreparedCase
-        with tempfile.TemporaryDirectory() as d:
-            prepared = PreparedCase(Path(d), Path(d) / 'f.xml', Path(d) / 'v.xml', ['--model', 'planar-7dof'])
-            for code, timed, cancelled, expected in ((0, False, False, 'planned'), (2, False, False, 'rejected'),
-                                                       (1, False, False, 'failed'), (0, True, False, 'timed_out'),
-                                                       (0, False, True, 'cancelled')):
-                attempt = Path(d) / ('attempt_' + expected)
-                attempt.mkdir()
-                if code == 0 and not timed and not cancelled:
-                    from tools.sim_gui.settings import RunSettings
-                    track = REPOSITORY_ROOT / 'models/tracks/2024_michigan_endurance_closed.xml'
-                    form = REPOSITORY_ROOT / 'models/formulations/iem24_murphy_real_planar_7dof.xml'
-                    yaw_map = REPOSITORY_ROOT / 'runs/yaw_map_build/iem24-vehicle-limit-final.npz'
-                    identity = {'solver_kind':'yaw-aware','source_model':'planar-7dof','solution_model':'planar-7dof',
-                        'track':str(track),'track_sha256':hashlib.sha256(track.read_bytes()).hexdigest(),
-                        'formulation':str(form),'formulation_sha256':hashlib.sha256(form.read_bytes()).hexdigest(),
-                        'yaw_map':str(yaw_map),'yaw_map_sha256':hashlib.sha256(yaw_map.read_bytes()).hexdigest()}
-                    (prepared.directory / 'case.json').write_text(json.dumps({'input_identity':identity}))
-                    import numpy as np
-                    arrays={'distance':np.arange(3.),'curvature':np.zeros(3),'curvature_rate':np.zeros(3),'speed':np.ones(3),
-                        'reference_distance':np.arange(3.),'north':np.zeros(3),'east':np.zeros(3),'heading':np.zeros(3)}
-                    from simplified_vehicle_models.planning.yaw_lap_artifact import _digest, SCHEMA
-                    from simplified_vehicle_models.solvers.yaw_profile_contracts import CoupledProfileSettings
-                    from dataclasses import asdict
-                    metadata={'schema':SCHEMA,'track_identity':'tid','map_identity':'mid','array_digest':_digest(arrays),
-                        'is_closed':False,'profile_settings':asdict(CoupledProfileSettings())}
-                    np.savez(attempt/'plan.npz',**arrays,metadata=np.array(json.dumps(metadata)))
-                    digest=hashlib.sha256((attempt/'plan.npz').read_bytes()).hexdigest()
-                    (attempt/'inputs.json').write_text(json.dumps({**identity,'track_identity':'tid','map_identity':'mid',
-                        'map_sha256':identity['yaw_map_sha256'],'plan_sha256':digest}))
-                    (attempt/'summary.json').write_text(json.dumps({'status':'planned','lap_completed':False,'plan_artifact_sha256':digest}))
-                result = finish_case(prepared, attempt, return_code=code, timed_out=timed,
-                                     cancelled=cancelled, wall_seconds=1.25, command=['cmd'])
-                self.assertEqual(result['status'], expected)
-                self.assertTrue((attempt / 'parent.json').is_file())
 
 if __name__ == "__main__":
     unittest.main()

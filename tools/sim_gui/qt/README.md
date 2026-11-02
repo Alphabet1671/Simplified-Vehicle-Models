@@ -1,6 +1,6 @@
 # qt
 
-Qt layer of the simulation GUI.
+Qt layer of the simulation GUI, including forward-driver and point-mass workflow controls.
 
 ## Files
 

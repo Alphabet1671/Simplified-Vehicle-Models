@@ -20,9 +20,7 @@ from tools.run.solve_minimum_time_line import _write_trajectory_metadata
 from simplified_vehicle_models.solvers.qss_spline_ocp import (
     _SplineStateEvaluator, TIME_QUADRATURE_NAME, _time_quadrature_metadata,
 )
-from simplified_vehicle_models.solvers.forward_driver import (
-    PreviewDriver, DriverObservation, SpeedPlan,
-)
+from simplified_vehicle_models.solvers.forward_driver import SpeedPlan
 
 
 class TrajectoryArtifactTest(unittest.TestCase):
@@ -106,18 +104,12 @@ class TrajectoryArtifactTest(unittest.TestCase):
                         actual[2], reference_speed_plan.sample(d)[2], atol=1e-4):
                     distinct_acceleration_witness = True
             self.assertTrue(distinct_acceleration_witness)
-            # PreviewDriver consumes the exact bridge as a plan-like signal; this
-            # CPU-only call verifies feedforward comes from physical evaluator a.
-            preview = PreviewDriver(driver, 2.5, .6, 2.0, 2000.0, preview_seconds=0.0)
+            # Artifact round-trip verifies exact-reference sampling independently;
+            # autonomous trajectory replay was retired and is not an active driver.
             probe_distance = float(driver.distance[len(driver.distance) // 2])
-            target_speed, _, exact_feedforward = driver.sample(probe_distance)
-            obs = DriverObservation(probe_distance, 0.0, 0.0, target_speed, 0.0, 0.0)
-            command = preview.command(obs)
-            expected_throttle = np.clip(exact_feedforward / 6., 0., 1.)
-            expected_brake = np.clip(-exact_feedforward / 6., 0., 1.)
-            self.assertAlmostEqual(command.throttle, expected_throttle, places=12)
-            self.assertAlmostEqual(command.brake_force / preview.maximum_brake_force,
-                                   expected_brake, places=12)
+            target_speed, _, exact_acceleration = driver.sample(probe_distance)
+            self.assertTrue(np.isfinite(target_speed))
+            self.assertTrue(np.isfinite(exact_acceleration))
             if not closed:
                 with self.assertRaises(ValueError):
                     driver.sample(-1.)

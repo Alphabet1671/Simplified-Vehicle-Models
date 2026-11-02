@@ -5,7 +5,6 @@ import unittest
 from pathlib import Path
 
 from simplified_vehicle_models.solvers.driver_maps import (
-    LongitudinalDemandMap,
     MonotoneTable1D,
     PedalActuatorCalibration,
     PedalMapConfiguration,
@@ -57,28 +56,7 @@ class MonotoneTableTests(unittest.TestCase):
                 t.inverse(q)
 
 
-class LayerTests(unittest.TestCase):
-    def test_demand_sign_zero_and_exclusive_outputs(self):
-        drive = MonotoneTable1D([0, 2, 6], [0, .35, 1], 'm/s^2', '1')
-        brake = MonotoneTable1D([0, 2, 8], [0, .25, 1], 'm/s^2', '1')
-        m = LongitudinalDemandMap(drive, brake)
-        self.assertEqual(m.command(0), (0, 0))
-        self.assertEqual(m.command(1), (.175, 0))
-        self.assertEqual(m.command(-4), (0, .5))
-        self.assertEqual(m.command(100), (1, 0))
-        self.assertEqual(m.command(-100), (0, 1))
-        with self.assertRaises((TypeError, ValueError)):
-            m.command(True)
-
-    def test_demand_ownership_units_and_endpoints(self):
-        good = MonotoneTable1D([0, 1], [0, 1], 'm/s^2', '1')
-        bad_unit = MonotoneTable1D([0, 1], [0, 1], 'km/h', '1')
-        for d, b in ((good, bad_unit), (bad_unit, good)):
-            with self.assertRaises(ValueError):
-                LongitudinalDemandMap(d, b)
-        with self.assertRaises(ValueError):
-            LongitudinalDemandMap(MonotoneTable1D([0, 1], [.1, 1], 'm/s^2', '1'), good)
-
+class CalibrationTests(unittest.TestCase):
     def calibration(self):
         return PedalActuatorCalibration(
             MonotoneTable1D([0, .2, 1], [0, .08, 1], '1', '1'),
@@ -101,49 +79,38 @@ class LayerTests(unittest.TestCase):
 
 class ConfigurationTests(unittest.TestCase):
     def payload(self):
-        return {'schema_version': 1, 'demand_map': {
-            'units': {'acceleration_axis': 'm/s^2', 'deceleration_axis': 'm/s^2', 'pedal_output': '1'},
-            'acceleration_to_throttle': {'axis': [0, 2, 6], 'value': [0, .35, 1]},
-            'deceleration_to_brake': {'axis': [0, 2, 8], 'value': [0, .25, 1]}},
-            'physical_calibration': {
-            'units': {'throttle_input': '1', 'throttle_effective_request': '1', 'brake_input': '1', 'brake_effective_request': '1'},
-            'throttle_fraction': {'axis': [0, .2, 1], 'value': [0, .08, 1]},
-            'brake_force_fraction': {'axis': [0, .3, 1], 'value': [0, .1, 1]}}}
+        return {"schema_version": 1, "physical_calibration": {
+            "units": {"throttle_input": "1", "throttle_effective_request": "1",
+                      "brake_input": "1", "brake_effective_request": "1"},
+            "throttle_fraction": {"axis": [0, .2, 1], "value": [0, .08, 1]},
+            "brake_force_fraction": {"axis": [0, .3, 1], "value": [0, .1, 1]}}}
 
-    def test_both_each_or_neither_round_trip_and_digest(self):
-        full = self.payload()
-        for payload in (full, {**full, 'demand_map': None}, {**full, 'physical_calibration': None},
-                        {'schema_version': 1}):
-            c = parse_pedal_map_config(payload)
-            self.assertIsInstance(c, PedalMapConfiguration)
-            restored = parse_pedal_map_config(c.to_dict())
-            self.assertEqual(c.to_dict(), restored.to_dict())
-            self.assertEqual(c.sha256, restored.sha256)
-        reversed_keys = json.loads(json.dumps(full, sort_keys=True))
-        self.assertEqual(parse_pedal_map_config(full).sha256, parse_pedal_map_config(reversed_keys).sha256)
-        self.assertEqual(parse_pedal_map_config(full).to_dict()['schema_version'], 1)
+    def test_physical_calibration_round_trip_digest_and_empty(self):
+        for payload in (self.payload(), {"schema_version": 1}):
+            config = parse_pedal_map_config(payload)
+            restored = parse_pedal_map_config(config.to_dict())
+            self.assertEqual(config.to_dict(), restored.to_dict())
+            self.assertEqual(config.sha256, restored.sha256)
+        self.assertEqual(parse_pedal_map_config({"schema_version": 1}).physical_calibration, None)
 
-    def test_strict_schema_units_and_json_nonfinite(self):
+    def test_demand_policy_schema_is_actionably_retired(self):
+        with self.assertRaisesRegex(ValueError, "demand_map is retired"):
+            parse_pedal_map_config({"schema_version": 1, "demand_map": None})
+
+    def test_strict_physical_schema_and_json_nonfinite(self):
         base = self.payload()
-        cases = []
-        for version in (True, 1.0, 2, 0): cases.append({**base, 'schema_version': version})
-        cases.append({**base, 'extra': 1})
-        cases.append({k: v for k, v in base.items() if k != 'schema_version'})
-        cases.append({**base, 'demand_map': {**base['demand_map'], 'mystery': 1}})
-        cases.append({**base, 'demand_map': {k: v for k, v in base['demand_map'].items() if k != 'acceleration_to_throttle'}})
-        cases.append({**base, 'demand_map': {**base['demand_map'], 'units': {**base['demand_map']['units'], 'pedal_output': 'percent'}}})
-        for p in cases:
-            with self.subTest(payload=p), self.assertRaises(ValueError): parse_pedal_map_config(p)
-        with self.assertRaises(ValueError): parse_pedal_map_config(json.loads('{"schema_version":1,"x":NaN}'))
+        cases = [{**base, "schema_version": version} for version in (True, 1.0, 2, 0)]
+        cases.extend(({**base, "extra": 1}, {"physical_calibration": base["physical_calibration"]},
+                      {**base, "physical_calibration": {**base["physical_calibration"], "extra": 1}}))
+        for payload in cases:
+            with self.subTest(payload=payload), self.assertRaises(ValueError):
+                parse_pedal_map_config(payload)
+        with self.assertRaises(ValueError):
+            parse_pedal_map_config(json.loads('{"schema_version":1,"x":NaN}'))
         with tempfile.TemporaryDirectory() as td:
-            path = Path(td) / 'map.json'
+            path = Path(td) / "map.json"
             path.write_text(json.dumps(base))
             self.assertEqual(load_pedal_map_config(path).sha256, parse_pedal_map_config(base).sha256)
-
-    def test_integer_float_normalization(self):
-        p = self.payload()
-        q = json.loads(json.dumps(p))
-        self.assertEqual(parse_pedal_map_config(p).sha256, parse_pedal_map_config(q).sha256)
 
 
 if __name__ == '__main__':

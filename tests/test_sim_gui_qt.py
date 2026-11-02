@@ -304,49 +304,38 @@ class SettingsTabTests(unittest.TestCase):
     def tearDown(self):
         self.tab.deleteLater()
 
-    def test_quasi_static_disabled_for_14dof(self):
-        self.tab.set_model("14dof-simple")
-        self.assertFalse(self.tab.quasi_static_attitude.isEnabled())
+    def test_only_current_workflows_are_offered_and_forward_is_default(self):
+        self.tab.show()
+        self.assertEqual(self.tab.solver_kind.count(), 2)
+        self.assertEqual({self.tab.solver_kind.itemData(i) for i in range(self.tab.solver_kind.count())},
+                         {"forward-driver", "point-mass"})
+        self.assertEqual(self.tab.solver_kind.currentData(), "forward-driver")
+        self.assertTrue(self.tab.forward_duration.isVisible())
+        self.assertFalse(self.tab.point_mass_duration.isVisible())
 
-    def test_planar_timeout_maximum(self):
-        self.tab.set_model("planar-7dof")
-        self.assertEqual(self.tab.timeout_seconds.maximum(), 300.0)
+    def test_point_mass_choice_shows_qss_controls(self):
+        self.tab.show()
+        self.tab.solver_kind.setCurrentIndex(self.tab.solver_kind.findData("point-mass"))
+        self.assertEqual(self.tab.settings().solver_kind, "point-mass")
+        self.assertTrue(self.tab.point_mass_duration.isVisible())
+        self.assertFalse(self.tab.forward_duration.isVisible())
 
-    def test_14dof_clears_quasi_static_and_uses_long_timeout(self):
-        self.tab.quasi_static_attitude.setChecked(True)
-        self.tab.set_model("14dof-simple")
-        self.assertFalse(self.tab.quasi_static_attitude.isChecked())
-        self.assertFalse(self.tab.settings().quasi_static_attitude)
-        self.assertEqual(self.tab.timeout_seconds.value(), 3600.0)
-        self.assertEqual(self.tab.timeout_seconds.maximum(), 1e6)
-
-    def test_set_settings_emits_once_and_sets_lateral_cap(self):
+    def test_set_settings_is_atomic_single_emission_and_round_trips_workflows(self):
         emitted = []
         self.tab.settingsChanged.connect(emitted.append)
-        from tools.sim_gui.settings import RunSettings
-        self.tab.set_settings(RunSettings(lateral_acceleration=2.0))
-        self.assertEqual(len(emitted), 1)
-        self.assertTrue(self.tab.lateral_cap.isChecked())
-        self.assertTrue(self.tab.lateral_value.isEnabled())
-
-    def test_preset_emits_once(self):
-        emitted = []
-        self.tab.settingsChanged.connect(emitted.append)
-        self.tab.preset_button.click()
-        self.assertEqual(len(emitted), 1)
-        self.assertEqual(emitted[0], RunSettings.for_model("planar-7dof"))
-
-    def test_nonplanar_settings_clear_quasi_static_and_validate(self):
-        self.tab.set_model("14dof-simple")
-        self.tab.set_settings(RunSettings(quasi_static_attitude=True))
-        self.assertFalse(self.tab.settings().quasi_static_attitude)
-
-    def test_choice_lists_match_runner_parser(self):
-        from tools.run import run_iem24_forward_driver as runner
-        for name, values in self.tab._CHOICES.items():
-            for value in values:
-                args = runner.parse_args(["--model", "planar-7dof", f"--{name.replace('_', '-')}", value])
-                self.assertEqual(getattr(args, name), value)
+        point = RunSettings(solver_kind="point-mass", point_mass_duration=42.,
+                            point_mass_spacing=1.25, point_mass_lateral_acceleration=3.5,
+                            forward_feedforward_distance=7.)
+        self.tab.set_settings(point)
+        self.assertEqual(emitted, [point])
+        self.assertEqual(self.tab.settings(), point)
+        forward = RunSettings(solver_kind="forward-driver", forward_duration=23.,
+                              forward_spacing=.25, forward_feedforward_distance=4.5)
+        self.tab.set_settings(forward)
+        self.assertEqual(emitted, [point, forward])
+        self.assertEqual(self.tab.settings(), forward)
+        self.assertEqual(self.tab.forward_feedforward_distance.value(), 4.5)
+        self.assertEqual(self.tab.point_mass_duration.value(), forward.point_mass_duration)
 
 
 @unittest.skipIf(QApplication is None, "PyQt6 is not installed")
@@ -552,7 +541,7 @@ class MainWindowTests(unittest.TestCase):
         self.addCleanup(window.close)
         window.open_model(REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_planar_7dof.xml")
         window.track_tab.set_track(REPOSITORY_ROOT / "models/tracks/2024_michigan_endurance_closed.xml")
-        window.settings_tab.duration.setValue(0.3)
+        window.settings_tab.forward_duration.setValue(0.3)
         window.settings_tab.timeout_seconds.setValue(120.0)
         window.run_cases()
         loop = QEventLoop()
@@ -698,7 +687,7 @@ class MainWindowTests(unittest.TestCase):
         window = self._window()
         window.open_model(REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_planar_7dof.xml")
         window.track_tab.set_track(REPOSITORY_ROOT / "models/tracks/2024_michigan_endurance_closed.xml")
-        window.settings_tab.duration.setValue(0.3)
+        window.settings_tab.forward_duration.setValue(0.3)
         window.settings_tab.timeout_seconds.setValue(120.0)
         export = Path(tempfile.mkdtemp())
         self.addCleanup(lambda: shutil.rmtree(export, ignore_errors=True))
@@ -790,7 +779,7 @@ class MainWindowTests(unittest.TestCase):
     def test_stop_cancels_a_single_run(self):
         window = self._window()
         window.open_model(REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_planar_7dof.xml")
-        window.settings_tab.duration.setValue(60.0)
+        window.settings_tab.forward_duration.setValue(60.0)
         export = Path(tempfile.mkdtemp())
         self.addCleanup(lambda: shutil.rmtree(export, ignore_errors=True))
         window.single_tab.set_export_folder(export)
@@ -805,7 +794,7 @@ class MainWindowTests(unittest.TestCase):
     def test_study_run_still_uses_the_queue(self):
         window = self._window()
         window.open_model(REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_planar_7dof.xml")
-        window.settings_tab.duration.setValue(0.3)
+        window.settings_tab.forward_duration.setValue(0.3)
         window.settings_tab.timeout_seconds.setValue(120.0)
         window.build_cases()
         self._until(lambda: window._validation_thread is None, 60)

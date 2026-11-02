@@ -199,23 +199,14 @@ class EnvelopePolicyTests(unittest.TestCase):
         env=envelope([10,10,10],[10,10,10]); d=EnvelopePolicy(env).decide(obs(v=10),0.)
         self.assertEqual((d.requested_throttle,d.governed_brake_force),(0.,0.))
         with self.assertRaises((ValueError,TypeError)): PedalPolicyContext(0,1,1,1,1)
-    def test_default_command_parity_and_context_fallback(self):
+    def test_missing_envelope_policy_is_rejected_for_autonomous_commands(self):
         from simplified_vehicle_models.solvers.forward_driver import SpeedPlan
         plan=SpeedPlan(np.array([0.,20.]),np.array([10.,8.]),np.array([0.,.1]),False)
         base=PreviewDriver(plan,1.5,.5,2.,1000.)
         o=DriverObservation(3.,.02,.01,9.,.1,.03,.2)
-        legacy=base.command(o)
-        # Preserve baseline steering and longitudinal calculations independently.
-        target,curv,ff=plan.sample(o.distance)
-        pc=plan.sample(o.distance+max(o.speed,0.)*base.preview_seconds)[1]
-        course=o.heading_error+np.arctan2(o.lateral_speed,max(o.speed,.25))
-        desired=np.clip(np.arctan(base.wheelbase*pc)-base.heading_gain*course-np.arctan2(base.lateral_gain*o.lateral_error,max(o.speed,1.))-.1*(o.yaw_rate-o.speed*curv),-base.maximum_steering,base.maximum_steering)
-        steer=float(np.clip((desired-o.steering)/base.steering_time_constant,-base.maximum_steering_rate,base.maximum_steering_rate))
-        accel=ff+base.speed_gain*(target-o.speed)
-        governor=np.clip(o.wheel_speed_margin/base.brake_governor_margin,0.,1.)
-        expected=(np.clip(accel/6.,0.,1.),np.clip(-accel/6.,0.,1.)*governor*base.maximum_brake_force,steer)
-        np.testing.assert_array_equal((legacy.throttle,legacy.brake_force,legacy.steering_rate),expected)
-        self.assertEqual(base.command_with_context(o),(legacy,None))
+        for method in (base.command, base.command_with_context):
+            with self.subTest(method=method.__name__), self.assertRaisesRegex(ValueError, "require EnvelopePolicy"):
+                method(o)
     def test_solver_sink_adds_no_physics_or_policy_samples(self):
         class CountingEnvelope:
             is_closed=False; maximum_speed=60.; distance=np.array([0.,10.,20.])

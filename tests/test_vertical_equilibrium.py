@@ -61,6 +61,21 @@ class VerticalEquilibriumOracleTests(unittest.TestCase):
     def setUpClass(cls):
         cls.vehicle = without_bump_steer(compile_formulation(str(FORMULATION)).model)
 
+    def test_steady_corner_trial_accepts_finite_jounce_beyond_legacy_range(self):
+        from simplified_vehicle_models.solvers.vertical_equilibrium import _RejectedTrial, _corner_point
+        state0 = solve_static_equilibrium(self.vehicle)
+        x = np.zeros(14)
+        x[3:6] = state0.as_vector()[6:9]
+        x[6:10] = state0.as_vector()[13:17] + 0.04
+        # Hold tire deflection/load safely in-domain with matching heave so this
+        # assertion isolates the former jounce-range rejection, not tire safety.
+        x[3] += 0.04
+        trial, _, _, _ = _corner_point(self.vehicle, x, 8.0, 0.0)
+        self.assertTrue(np.all(trial.as_vector()[13:17] > 0.0318))
+        x[6] = np.nan
+        with self.assertRaisesRegex(_RejectedTrial, "non-finite jounce"):
+            _corner_point(self.vehicle, x, 8.0, 0.0)
+
     def test_steady_trial_uses_same_steering_lift_as_evaluator(self):
         from dataclasses import replace
         from simplified_vehicle_models.solvers.vertical_equilibrium import _corner_point

@@ -20,6 +20,7 @@ XML model graph: one subdirectory per model type.
 | `springs/` | Spring models. |
 | `suspension-kinematics/` | Suspension kinematics models. |
 | `suspensions/` | Suspension models. |
+| `struts/` | Physical suspension strut bundles nested by additive assemblies. |
 | `tires/` | Tire models. |
 | `tracks/` | Track models and their data tables. |
 | `transmissions/` | Transmission models. |

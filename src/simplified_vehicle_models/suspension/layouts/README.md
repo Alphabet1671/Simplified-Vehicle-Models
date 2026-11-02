@@ -12,3 +12,4 @@ One suspension layout implementation per layout.
 | `hydraulic.py` | Hydraulically interconnected layout: corner springs plus gas-orifice cylinder circuits. |
 | `independent_corner.py` | Independent-corner layout: a spring and a damper per wheel and one ARB per axle. |
 | `modal.py` | Stateless modal force network and the two mode matrices built on it. |
+| `parallel.py` | Additive physical corner and axle heave/roll struts with full modal inertia. |

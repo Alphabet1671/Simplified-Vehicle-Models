@@ -1,4 +1,4 @@
-"""N-valve damper force table: monotone velocity spline x multilinear clicks.
+"""N-valve damper force table: Akima velocity interpolation x multilinear clicks.
 
 Sign convention: positive velocity is compression and compression force is
 positive. The rebound half is stored signed (negative velocity, negative
@@ -17,7 +17,8 @@ from typing import Literal, Mapping
 import numpy as np
 
 from .errors import DomainError  # re-exported for callers
-from .monotone_spline import MonotoneSpline
+from scipy.interpolate import Akima1DInterpolator
+
 
 __all__ = [
     "DamperForce",
@@ -75,22 +76,50 @@ class DamperTable:
     _splines: dict = field(init=False, repr=False, compare=False, default_factory=dict)
 
     def __post_init__(self) -> None:
-        vc = _frozen(self.velocity_axis_compression, "velocity_axis_compression", 1)
-        vr = _frozen(self.velocity_axis_rebound, "velocity_axis_rebound", 1)
+        vc_raw = np.array(self.velocity_axis_compression, dtype=float, copy=True)
+        vr_raw = np.array(self.velocity_axis_rebound, dtype=float, copy=True)
+        if vc_raw.ndim != 1 or vr_raw.ndim != 1:
+            raise ValueError("velocity axes must be 1-D")
+        if not np.all(np.isfinite(vc_raw)) or not np.all(np.isfinite(vr_raw)):
+            raise ValueError("velocity axes must be finite")
+        if vc_raw.size < 1 or vr_raw.size < 1:
+            raise ValueError("velocity axes need at least one source knot")
+        if np.any(np.diff(vc_raw) <= 0.0) or np.any(np.diff(vr_raw) <= 0.0):
+            raise ValueError("velocity axes must be strictly increasing")
+        if vc_raw[0] < 0.0 or vr_raw[-1] > 0.0:
+            raise ValueError("compression and rebound axes must lie on their signed sides")
+        if np.any(vc_raw < 0.0) or np.any(vr_raw > 0.0):
+            raise ValueError("compression and rebound axes must lie on their signed sides")
+        fc_raw = np.array(self.compression_force, dtype=float, copy=True)
+        fr_raw = np.array(self.rebound_force, dtype=float, copy=True)
+        if fc_raw.ndim < 1 or fr_raw.ndim < 1:
+            raise ValueError("force arrays must have a velocity axis")
+        if not np.all(np.isfinite(fc_raw)) or not np.all(np.isfinite(fr_raw)):
+            raise ValueError("force arrays must be finite")
+        if fc_raw.shape[0] != vc_raw.size or fr_raw.shape[0] != vr_raw.size:
+            raise ValueError("force arrays must match source velocity axes")
+        if vc_raw[0] == 0.0:
+            fc_raw[0] = 0.0
+        else:
+            vc_raw = np.r_[0.0, vc_raw]
+            fc_raw = np.concatenate((np.zeros_like(fc_raw[:1]), fc_raw), axis=0)
+        if vr_raw[-1] == 0.0:
+            fr_raw[-1] = 0.0
+        else:
+            vr_raw = np.r_[vr_raw, 0.0]
+            fr_raw = np.concatenate((fr_raw, np.zeros_like(fr_raw[:1])), axis=0)
+        vc = _frozen(vc_raw, "velocity_axis_compression", 1)
+        vr = _frozen(vr_raw, "velocity_axis_rebound", 1)
         if vc.size < 2 or vr.size < 2:
-            raise ValueError("velocity axes need at least two knots")
-        if vc[0] != 0.0 or np.any(np.diff(vc) <= 0.0):
-            raise ValueError("compression velocity axis must start at 0 and increase")
-        if vr[-1] != 0.0 or np.any(np.diff(vr) <= 0.0):
-            raise ValueError("rebound velocity axis must end at 0 and increase")
+            raise ValueError("velocity axes need at least two knots including origin")
         valves = tuple(self.valves)
         names = [v.name for v in valves]
         if len(set(names)) != len(names):
             raise ValueError("valve names must be unique")
         if not all(isinstance(v, DamperValve) for v in valves):
             raise ValueError("valves must be DamperValve instances")
-        fc = _frozen(self.compression_force, "compression_force")
-        fr = _frozen(self.rebound_force, "rebound_force")
+        fc = _frozen(fc_raw, "compression_force")
+        fr = _frozen(fr_raw, "rebound_force")
         for half, force, axis in (("compression", fc, vc), ("rebound", fr, vr)):
             clicks = tuple(v.clicks for v in valves if v.half == half)
             if not clicks:
@@ -100,13 +129,13 @@ class DamperTable:
                     f"{half}_force shape {force.shape} does not match "
                     f"velocity knots and valve clicks {(axis.size,) + clicks}"
                 )
-        if np.any(fc[0] != 0.0) or np.any(fr[-1] != 0.0):
-            raise ValueError("force at zero velocity must be zero for every click")
         if np.any(fc < 0.0):
             raise ValueError("compression force must be non-negative")
         if np.any(fr > 0.0):
             raise ValueError("rebound force must be signed (non-positive)")
         meta = {str(k): str(v) for k, v in dict(self.metadata).items()}
+        meta["interpolation_method"] = "akima"
+        meta["origin_policy"] = "overwrite_or_insert_zero_force"
         object.__setattr__(self, "velocity_axis_compression", vc)
         object.__setattr__(self, "velocity_axis_rebound", vr)
         object.__setattr__(self, "valves", valves)
@@ -117,20 +146,29 @@ class DamperTable:
     def valves_of(self, half: str) -> tuple[DamperValve, ...]:
         return tuple(v for v in self.valves if v.half == half)
 
-    def _spline(self, half: str, index: tuple[int, ...]) -> MonotoneSpline:
+    def _spline(self, half: str, index: tuple[int, ...]):
         key = (half, index)
         spline = self._splines.get(key)
         if spline is None:
             if half == "compression":
-                spline = MonotoneSpline(
-                    self.velocity_axis_compression,
-                    self.compression_force[(slice(None),) + index],
-                )
+                axis, forces = self.velocity_axis_compression, self.compression_force[(slice(None),) + index]
             else:
-                spline = MonotoneSpline(
-                    self.velocity_axis_rebound,
-                    self.rebound_force[(slice(None),) + index],
-                )
+                axis, forces = self.velocity_axis_rebound, self.rebound_force[(slice(None),) + index]
+            if axis.size == 2:
+                class LinearInterpolator:
+                    def __init__(self, x, y):
+                        self.x, self.y = x, y
+                        self.slope = (y[-1] - y[0]) / (x[-1] - x[0])
+                    def __call__(self, q):
+                        return self.y[0] + self.slope * (np.asarray(q) - self.x[0])
+                    def derivative(self):
+                        class Derivative:
+                            def __init__(self, value): self.value = value
+                            def __call__(self, q): return np.zeros_like(np.asarray(q), dtype=float) + self.value
+                        return Derivative(self.slope)
+                spline = LinearInterpolator(axis, forces)
+            else:
+                spline = Akima1DInterpolator(axis, forces, method="akima", extrapolate=False)
             self._splines[key] = spline
         return spline
 
@@ -200,7 +238,7 @@ def _half_force(table: DamperTable, half: str, setting: DamperSetting, v: np.nda
     for index, weight in _corner_weights(values, counts):
         spline = table._spline(half, index)
         force += weight * spline(vq)
-        slope += weight * spline.derivative(vq)
+        slope += weight * spline.derivative()(vq)
     # Linear extension with the end slope (vq == v inside the table).
     force = force + slope * (v - vq)
     return force, slope, v != vq
@@ -221,6 +259,7 @@ def damper_force(table: DamperTable, setting: DamperSetting, velocity) -> Damper
         if np.any(mask):
             f, s, o = _half_force(table, half, setting, v[mask])
             force[mask], slope[mask], flag[mask] = f, s, o
+    force[v == 0.0] = 0.0
     if scalar:
         return DamperForce(force[0], slope[0], flag[0])
     return DamperForce(force, slope, flag)

@@ -557,12 +557,28 @@ def suspension_description(suspension) -> str:
     read through the network, not from a fixed corner-damper attribute.
     """
     network = suspension.network
-    dampers = tuple(network.dampers)
 
     def setting(damper) -> str:
         clicks = damper.setting.clicks
         return "/".join(f"{float(clicks[name]):g}" for name in sorted(clicks))
 
+    if suspension.layout == "parallel-corner-axle":
+        from simplified_vehicle_models.suspension.layouts.parallel import STRUT_NAMES
+        rows = []
+        for name, strut in zip(STRUT_NAMES, network.struts):
+            damper = strut.damper
+            clicks = getattr(getattr(damper, "setting", None), "clicks", None)
+            setting_text = (", ".join(f"{key}={float(value):g}" for key, value in sorted(clicks.items()))
+                            if clicks else "none")
+            kind = type(damper).__name__
+            rows.append(
+                f"{name}: spring={strut.spring_rate:g} N/m, preload={strut.preload:g} N, "
+                f"inertance={strut.inertance:g} kg, damper_scale={strut.damper_scale:g}, "
+                f"damper={kind}, settings=[{setting_text}], MR={strut.motion_ratio:g}, "
+                f"orientation={strut.orientation:+g}"
+            )
+        return "parallel physical suspension (all eight devices; no corner bump stops or separate ARB): " + "; ".join(rows)
+    dampers = tuple(network.dampers)
     if suspension.layout == "independent-corner":
         clicks = dampers[0].setting.clicks
         return (
@@ -734,7 +750,7 @@ Per-model differences (all on the same canonical track):
 |---|---|---|---|
 | Degrees of freedom | 3 (path speed, rear-drive force, energy) | 7 planar (v_x, v_y, yaw, four wheel speeds) | 14 (planar 7 + heave, roll, pitch, four jounces) |
 | Tire model | peak/sliding pure-slip envelope from the UniTire lab fit | steady UniTire combined slip with four wheel-speed states | the same steady UniTire plus the PROPOSED transient (relaxation) layer |
-| Suspension / vertical load | none; a quasi-static load-transfer-free grip limit | none; per-wheel load from quasi-static lateral/longitudinal transfer | {suspension_text}, jounce travel {gates_14.get('jounce_travel_limits_m', [0, 0])[0]:g}–{gates_14.get('jounce_travel_limits_m', [0, 0])[1]:g} m, DSS roll-centre table |
+| Suspension / vertical load | none; a quasi-static load-transfer-free grip limit | none; per-wheel load from quasi-static lateral/longitudinal transfer | {suspension_text}, unlimited jounce (design range {gates_14.get('jounce_design_range_m', 'historical / unavailable')}), DSS roll-centre table |
 | Driver | prescribed-path minimum-time optimum (no driver) | preview driver on the live point-mass speed plan | same preview driver and plan as the 7DoF |
 | Solver | energy-coupled forward/backward profile iterations | BDF, rtol {settings['planar_7dof']['rtol']:g}, maximum step {settings['planar_7dof']['maximum_step']:g} s | BDF, rtol {settings['vertical_14dof']['rtol']:g}, maximum step {settings['vertical_14dof']['maximum_step']:g} s |
 | Path spacing | {point['spacing_m']:g} m mesh, {point['nodes']} nodes | {settings['planar_7dof']['spacing']:g} m plan | {settings['vertical_14dof']['spacing']:g} m plan |
@@ -816,10 +832,10 @@ Model-to-model agreement on the same grid (point mass minus the listed model, so
 
 ## Caveats
 
-- **These are the values we did not measure** for this car in the log: wheelbase, track width, yaw inertia, wheel inertia, tire force/slip characteristics and the whole transient-tire layer, battery resistance and capacity map, drivetrain and motor efficiency, steering geometry and rate, brake parameters, spring/damper/ARB/bump-stop curves, vertical load transfer, suspension travel limits, roll-centre table, ambient air density and mechanical brake bias. They are carried over from the IEM24 vehicle compilation (and, for the vertical layer, from the workbook-derived Task 6 tables), not inferred from this experiment. The {limit:g} N·m motor torque cap and the four friction values are model calibrations.
+- **These are the values we did not measure** for this car in the log: wheelbase, track width, yaw inertia, wheel inertia, tire force/slip characteristics and the whole transient-tire layer, battery resistance and capacity map, drivetrain and motor efficiency, steering geometry and rate, brake parameters, spring/damper/ARB/bump-stop curves, vertical load transfer, suspension kinematics and extrapolation geometry, roll-centre table, ambient air density and mechanical brake bias. They are carried over from the IEM24 vehicle compilation (and, for the vertical layer, from the workbook-derived Task 6 tables), not inferred from this experiment. The {limit:g} N·m motor torque cap and the four friction values are model calibrations.
 - **The vertical inertias are unvalidated and one modal gate is out of band.** The pitch radius of gyration {vertical.pitch_radius_of_gyration:g} m (D5) is user-reported and unvalidated; with it the vertical model's undamped pitch mode is **7.30 Hz, outside the plan's 3.4–4.7 Hz band**, and the roll radius {vertical.roll_radius_of_gyration:g} m gives a 9.90 Hz roll mode that is not gated at all. The ledger ruling was to report this as a plan-gate deviation rather than tune springs, ARB, tires or inertias; the heave mode (3.83 Hz) and the body-fixed hop set do meet their gates.
 - **The transient tire coefficients are PROPOSED, not fitted to this tire.** Length scales {vertical.transient_tire.longitudinal_length_scale:g} / {vertical.transient_tire.lateral_length_scale:g} m and trail pole/lead {vertical.transient_tire.trail_pole_ratio:g} / {vertical.transient_tire.trail_lead_ratio:g} were chosen from a published reduced model whose equations were not independently re-verified (the paper text was unavailable), and a fitting tool does not yet exist in the repository. Any 14DoF-versus-7DoF difference therefore mixes suspension load transfer with an unfitted tire relaxation model.
-- **{'Both forward laps pass the numerical acceptance gates' if both_usable else 'At least one forward lap fails the acceptance gates'}** (see Configuration): `usable` = {_gate_cell(gates_7.get('usable'))} for the planar 7DoF and {_gate_cell(gates_14.get('usable'))} for the vertical 14DoF. `usable` certifies that each lap closes periodically, tracks the path within 0.25 m, is reproduced by tighter-step/tolerance reruns and satisfies the between-step checks; it does not compare the model with measured behaviour. The planar between-step check includes an interval load-closure certificate; the vertical 14DoF between-step check proves only the evaluation-domain guards (table, jounce, damper-velocity, tire-inverse, plant guards) on the BDF dense enclosure, with the powertrain closure covered by its audit test and the tire-force outputs not enclosed (see `solvers/vertical_between_step.py`, `SCOPE`). These remain driven transients, not optimal laps; the traces are complete laps, so the comparison is meaningful, but no claim about full-vehicle fidelity follows from it.
+- **{'Both forward laps pass the numerical acceptance gates' if both_usable else 'At least one forward lap fails the acceptance gates'}** (see Configuration): `usable` = {_gate_cell(gates_7.get('usable'))} for the planar 7DoF and {_gate_cell(gates_14.get('usable'))} for the vertical 14DoF. `usable` certifies that each lap closes periodically, tracks the path within 0.25 m, is reproduced by tighter-step/tolerance reruns and satisfies the between-step checks; it does not compare the model with measured behaviour. The planar between-step check includes an interval load-closure certificate; the vertical 14DoF between-step check proves only the supported evaluation-domain guards (damper-velocity, tire-inverse, plant guards) on the BDF dense enclosure; the active physical-layout legacy interface is unsupported and makes no blanket certification claim, with the powertrain closure covered by its audit test and the tire-force outputs not enclosed (see `solvers/vertical_between_step.py`, `SCOPE`). These remain driven transients, not optimal laps; the traces are complete laps, so the comparison is meaningful, but no claim about full-vehicle fidelity follows from it.
 - **The point mass is a prescribed-path minimum-time optimum, not a driven lap.** It has no steering, sideslip, wheel-speed or vertical dynamics and no driver model, so its lap is a bound on the shared-grip model's performance; the two forward laps are feasible points of a driver model on a live speed plan and are **not** optima (`minimum_time_optimum` = false in both summaries).
 - **Aero drag couple.** The planar models omit the vertical-model drag couple `D·(h_s − h_cg)/L`; the plan's planar-reduction gate therefore had to compare with aero zeroed, and the residual gap (pinned by an oracle at `D·h_s/L`) is a disclosed structural difference between the planar 7DoF and the vertical 14DoF rows.
 - **Gravity convention differs by tier:** the vertical modules use g = 9.80665 m/s² while the planar conventions use 9.81 m/s². The offset is 3.4·10⁻⁴ relative on front-axle load, inside the 1e-2 planar-reduction gate but not zero.

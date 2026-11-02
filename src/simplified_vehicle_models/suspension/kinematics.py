@@ -48,6 +48,9 @@ class AxleGeometry:
     steering_lift_cosine_right: float = 0.0
 
     def __post_init__(self) -> None:
+        # Jounce geometry uses explicit unlimited-travel policies; roll tables remain strict.
+        object.__setattr__(self, 'motion_ratio', MonotoneSpline(self.motion_ratio.x, self.motion_ratio.y, extrapolation='constant'))
+        object.__setattr__(self, 'jounce_steer', MonotoneSpline(self.jounce_steer.x, self.jounce_steer.y, extrapolation='linear'))
         low, high = self.jounce_limits
         if not (np.isfinite(low) and np.isfinite(high) and low < 0.0 < high):
             raise ValueError("jounce_limits must be finite with low < 0 < high")

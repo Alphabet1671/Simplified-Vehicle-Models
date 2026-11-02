@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<model schema-version="1.0" id="zero-linear-damper" type="damper-model" subtype="linear">
+  <parameters><parameter name="coefficient" value="0" unit="N*s/m"/></parameters>
+</model>

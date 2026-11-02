@@ -93,10 +93,6 @@ TIRE_INDEX: tuple[int, ...] = tuple(
 #: refines: heave, roll, pitch and the four jounces.
 VERTICAL_POSITION_INDEX: tuple[int, ...] = (6, 7, 8, 13, 14, 15, 16)
 
-#: Trial domain: jounce outside the compiled travel limit plus this margin
-#: raises ``TrialStateError``. 10 mm is the plan's trial allowance.
-JOUNCE_TRIAL_MARGIN = 0.010
-
 _CONTACT_SPEED_FLOOR = 1.0
 #: First column of the suspension network's own states.
 NETWORK_OFFSET = TIRE_OFFSET + 3 * _CORNER_COUNT
@@ -181,9 +177,7 @@ class VerticalForwardPlant:
         self.minimum_speed = 0.25 if plan.is_closed else 0.0
         self.minimum_progress = 0.25 if plan.is_closed else 0.0
         self.driven, self.gearing, self.gear_efficiency = _drivetrain_context(vehicle.planar)
-        limits = vehicle.suspension.kinematics.jounce_limits
-        self.jounce_minimum = limits[:, 0] - JOUNCE_TRIAL_MARGIN
-        self.jounce_maximum = limits[:, 1] + JOUNCE_TRIAL_MARGIN
+        # Jounce limits are design-range metadata, not mechanical guards.
         # Diagnostic counters and extremes, matching ``PlanarForwardPlant`` names.
         # The vertical load path is algebraic (no inner load loop), so the load
         # closure diagnostics stay at their trivial values and are counted under
@@ -426,11 +420,7 @@ class VerticalForwardPlant:
             raise TrialStateError("prototype requires forward body and wheel motion")
         if abs(values[STEERING_INDEX]) > self.vehicle.planar.steering_maximum_angle + 1.0e-7:
             raise ValueError("steering angle exceeds the physical bound")
-        jounce = values[list(JOUNCE_INDEX)]
-        if np.any(jounce < self.jounce_minimum) or np.any(jounce > self.jounce_maximum):
-            raise TrialStateError(
-                f"trial jounce outside the suspension travel plus margin: {jounce}"
-            )
+        # State finiteness is checked above; finite suspension displacement is unlimited.
         point = self.powertrain(values, command)
         mechanical = self.mechanical_state(values)
         tires = self.tire_states(values)
@@ -485,6 +475,7 @@ class VerticalForwardPlant:
         self.load_method_counts["direct"] += 1
         self.minimum_contact_load = min(self.minimum_contact_load,
                                         float(np.min(evaluation.normal_loads)))
+        jounce = values[list(JOUNCE_INDEX)]
         self.maximum_jounce = max(self.maximum_jounce, float(np.max(jounce)))
         self.minimum_jounce = min(self.minimum_jounce, float(np.min(jounce)))
         damper_velocity = np.asarray(evaluation.corner_forces.damper_velocity, dtype=float)

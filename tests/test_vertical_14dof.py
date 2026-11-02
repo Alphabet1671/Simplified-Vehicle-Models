@@ -197,8 +197,8 @@ def without_bump_steer(vehicle):
 class VerticalStateTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.vehicle = without_bump_steer(
-            compile_formulation(ROOT / "models/formulations/iem24_murphy_real_14dof_simple.xml").model)
+        from tests.legacy_suspension import legacy_vehicle
+        cls.vehicle = without_bump_steer(legacy_vehicle())
 
     def test_geometric_steering_lift_changes_tire_load_and_velocity(self):
         from dataclasses import replace
@@ -564,6 +564,8 @@ class VerticalStateTests(unittest.TestCase):
     @classmethod
     def _static(cls):
         from simplified_vehicle_models.solvers.vertical_equilibrium import solve_static_equilibrium
+        from tests.legacy_suspension import legacy_vehicle
+        cls.vehicle = without_bump_steer(legacy_vehicle())
         state = solve_static_equilibrium(cls.vehicle)
         base = evaluate_vertical_dynamics(cls.vehicle, state, np.zeros(4), 0.0,
                                           (TransientTireState(0.0, 0.0, 0.0),) * 4)
@@ -754,6 +756,67 @@ class VerticalStateTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             VerticalState.from_vector(vector)
 
+class ActiveParallelMassMatrixTests(unittest.TestCase):
+    """Integration regression on the active additive physical network."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.vehicle = compile_formulation(
+            ROOT / "models/formulations/iem24_murphy_real_14dof_simple.xml").model
+        cls.helper = VerticalMassMatrixTests()
+
+    def test_simultaneous_corner_and_modal_inertance_full_matrix_and_static_residual(self):
+        self.assertEqual(self.vehicle.suspension.layout, "parallel-corner-axle")
+        from dataclasses import replace
+        network = self.vehicle.suspension.network
+        inertances = (1.7, 2.1, 2.4, 2.8, 5.0, 3.0, 6.0, 4.0)
+        network = replace(network, struts=tuple(
+            replace(strut, inertance=value)
+            for strut, value in zip(network.struts, inertances)))
+        vehicle = replace(self.vehicle, suspension=self.vehicle.suspension.with_network(network))
+        state, tires = self.helper._perturbed_state(vehicle)
+        z = state.as_vector()[13:17]
+        out = evaluate_vertical_dynamics(vehicle, state, np.array([40., 40., 80., 80.]), 0., tires)
+        from simplified_vehicle_models.formulations.vertical_14dof import vertical_mass_block
+        base = vertical_mass_block(self.vehicle, z)
+        # Independent analytic oracle: stated corner/heave/left-turn-roll rows,
+        # not ParallelNetwork.jacobian or inertia_block.
+        rows = np.array([
+            [1., 0., 0., 0.], [0., 1., 0., 0.],
+            [0., 0., 1., 0.], [0., 0., 0., 1.],
+            [.5, .5, 0., 0.], [-.5, .5, 0., 0.],
+            [0., 0., .5, .5], [0., 0., -.5, .5],
+        ])
+        ratios = np.array([s.motion_ratio for s in network.struts])
+        orientations = np.array([s.orientation for s in network.struts])
+        A = rows * (orientations / ratios)[:, None]
+        expected = A.T @ (np.asarray(inertances)[:, None] * A)
+        block = vertical_mass_block(vehicle, z)
+        np.testing.assert_allclose(block[3:, 3:] - base[3:, 3:], expected, rtol=1e-13, atol=1e-12)
+        self.assertGreater(abs(expected[0, 1]), 0.)
+        self.assertGreater(abs(expected[2, 3]), 0.)
+        np.testing.assert_allclose(block, block.T, atol=1e-12)
+        self.assertGreater(float(np.linalg.eigvalsh(block).min()), 0.)
+        indices = [2, 3, 4, 17, 18, 19, 20]
+        np.testing.assert_allclose(block @ out.rates[indices], out.forcing[indices], rtol=1e-10, atol=1e-8)
+        from simplified_vehicle_models.solvers.forward_driver import RateSystem
+        np.testing.assert_allclose(RateSystem(out.forcing, out.mass_matrix).solve(), out.rates,
+                                   rtol=1e-10, atol=1e-9)
+        from simplified_vehicle_models.solvers.vertical_equilibrium import solve_static_equilibrium
+        static = solve_static_equilibrium(vehicle)
+        zeros = (TransientTireState(0., 0., 0.),) * 4
+        residual = evaluate_vertical_dynamics(vehicle, static, np.zeros(4), 0., zeros)
+        np.testing.assert_allclose(residual.generalized_forces, 0., atol=1e-6)
+        self.assertTrue(all(strut.spring_rate == 0. and strut.preload == 0.
+                            for strut in network.struts[:4]))
+
+    def test_active_zero_inertance_has_identity_force_path(self):
+        state, tires = self.helper._perturbed_state(self.vehicle)
+        out = evaluate_vertical_dynamics(self.vehicle, state, np.zeros(4), 0., tires)
+        self.assertIsNone(out.mass_matrix)
+        np.testing.assert_array_equal(out.forcing, out.rates)
+
+
 class VerticalMassMatrixTests(unittest.TestCase):
     """Task 6 mass block: physical M0, grounded-to-chassis-point inerter, RateSystem."""
 
@@ -761,14 +824,16 @@ class VerticalMassMatrixTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.vehicle = without_bump_steer(
-            compile_formulation(ROOT / "models/formulations/iem24_murphy_real_14dof_simple.xml").model)
+        from tests.legacy_suspension import legacy_vehicle
+        cls.vehicle = without_bump_steer(legacy_vehicle())
 
     @staticmethod
     def _with_inertance(vehicle, front, rear):
         from dataclasses import replace
+        from tests.legacy_suspension import legacy_network
         s = vehicle.suspension
-        return replace(vehicle, suspension=s.with_network(s.network.with_inertance(front, rear)))
+        return replace(vehicle, suspension=replace(s, network=legacy_network(
+            s.kinematics, front, rear)))
 
     def _static_tires(self, vehicle, speed=0.0):
         from simplified_vehicle_models.solvers.vertical_equilibrium import solve_static_equilibrium
@@ -828,8 +893,50 @@ class VerticalMassMatrixTests(unittest.TestCase):
         self.assertGreater(float(np.linalg.eigvalsh(mb).min()), float(np.linalg.eigvalsh(m0).min()))
         np.testing.assert_allclose(mb, mb.T, atol=1e-12)
 
+    def test_parallel_modal_inertance_adds_full_off_diagonal_block_and_solves(self):
+        """Active additive physical struts enter the evaluator as A.T diag(b) A."""
+        from dataclasses import replace
+        from simplified_vehicle_models.formulations.vertical_14dof import vertical_mass_block
+        v = compile_formulation(ROOT / "models/formulations/iem24_murphy_real_14dof_simple.xml").model
+        network = v.suspension.network
+        # Exercise simultaneous corner and modal inerters, including the
+        # opposite-signed roll-shaft Jacobians that create off-diagonal terms.
+        inertances = (1.7, 2.1, 2.4, 2.8, 5.0, 3.0, 6.0, 4.0)
+        struts = tuple(replace(s, inertance=b) for s, b in zip(network.struts, inertances))
+        network = replace(network, struts=struts)
+        v = replace(v, suspension=v.suspension.with_network(network))
+        state, tires = self._perturbed_state(v)
+        z = state.as_vector()[13:17]
+        out = evaluate_vertical_dynamics(v, state, np.array([40., 40., 80., 80.]), 0., tires)
+        base = vertical_mass_block(compile_formulation(ROOT / "models/formulations/iem24_murphy_real_14dof_simple.xml").model, z)
+        expected = network.inertia_block(z)
+        np.testing.assert_allclose(vertical_mass_block(v, z)[3:, 3:] - base[3:, 3:], expected,
+                                   rtol=1e-13, atol=1e-12)
+        self.assertGreater(abs(expected[0, 1]), 0.)
+        self.assertGreater(abs(expected[2, 3]), 0.)
+        block = vertical_mass_block(v, z)
+        np.testing.assert_allclose(block, block.T, atol=1e-12)
+        self.assertGreater(float(np.linalg.eigvalsh(block).min()), 0.)
+        index = [2, 3, 4, 17, 18, 19, 20]
+        np.testing.assert_allclose(block @ out.rates[index], out.forcing[index],
+                                   rtol=1e-10, atol=1e-8)
+        from simplified_vehicle_models.solvers.forward_driver import RateSystem
+        np.testing.assert_allclose(RateSystem(out.forcing, out.mass_matrix).solve(), out.rates,
+                                   rtol=1e-10, atol=1e-9)
+        # Inertance affects dynamics only; equilibrium uses the same network's
+        # aggregate spring/preload force, including explicit zero corner devices.
+        from simplified_vehicle_models.solvers.vertical_equilibrium import solve_static_equilibrium
+        static = solve_static_equilibrium(v)
+        zero_tires = (TransientTireState(0.0, 0.0, 0.0),) * 4
+        static_out = evaluate_vertical_dynamics(v, static, np.zeros(4), 0.0, zero_tires)
+        np.testing.assert_allclose(static_out.generalized_forces, 0.0, atol=1e-6)
+        self.assertTrue(all(s.spring_rate == 0.0 and s.preload == 0.0
+                            for s in network.struts[:4]))
+        self.assertGreater(float(np.linalg.norm(v.suspension.network.static_forces(
+            static.as_vector()[13:17]))), 0.0)
+
     def test_zero_inertance_baseline_has_no_matrix_and_forcing_equals_rates(self):
-        v = self._with_inertance(self.vehicle, 0.0, 0.0)
+        v = compile_formulation(ROOT / "models/formulations/iem24_murphy_real_14dof_simple.xml").model
         state, tires = self._perturbed_state(v)
         out = evaluate_vertical_dynamics(v, state, np.array([40.0, 40.0, 80.0, 80.0]), 0.0, tires)
         self.assertIsNone(out.mass_matrix)
@@ -1037,8 +1144,8 @@ class LateralLoadTransferTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.vehicle = without_bump_steer(
-            compile_formulation(ROOT / "models/formulations/iem24_murphy_real_14dof_simple.xml").model)
+        from tests.legacy_suspension import legacy_vehicle
+        cls.vehicle = without_bump_steer(legacy_vehicle())
 
     def _lateral_setup(self, speed=30.0, sideslip=0.36):
         """Return (state, tire states) for a sideslip at the static equilibrium.
@@ -1382,8 +1489,8 @@ class LongitudinalLoadTransferTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.vehicle = without_bump_steer(
-            compile_formulation(ROOT / "models/formulations/iem24_murphy_real_14dof_simple.xml").model)
+        from tests.legacy_suspension import legacy_vehicle
+        cls.vehicle = without_bump_steer(legacy_vehicle())
 
     def _braking_at(self, delta_ax, anti=True, speed=None):
         """Solve for the braking slip that changes ax by ``delta_ax`` from coasting."""

@@ -6,6 +6,7 @@ Damper models.
 
 | File | Contents |
 |---|---|
+| `zero.xml` | Explicit zero-coefficient linear damper for disabled physical devices. |
 | `iem24_mode_heave_damper.xml` | `iem24-mode-heave-damper` model, type `damper-model`, subtype `table-mode`. |
 | `iem24_mode_roll_front_damper.xml` | `iem24-mode-roll-front-damper` model, type `damper-model`, subtype `table-mode`. |
 | `iem24_mode_roll_rear_damper.xml` | `iem24-mode-roll-rear-damper` model, type `damper-model`, subtype `table-mode`. |

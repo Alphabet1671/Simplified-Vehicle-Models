@@ -16,10 +16,13 @@ class VerticalDenseCertificateTests(unittest.TestCase):
     def test_passes_and_reports_scope(self):
         r=certify_vertical_dense_domain(self.vehicle,self.plan,self.bounds())
         self.assertTrue(r['certified']); self.assertFalse(r['full_between_step_certificate'])
-    def test_physical_jounce_limit_rejects(self):
-        b=self.bounds(); b[0,16,1]=self.vehicle.suspension.kinematics.jounce_limits[0,1]+1e-3
+    def test_jounce_beyond_design_range_is_not_a_dense_obligation(self):
+        b=self.bounds(); b[:,16:20,0]=.08; b[:,16:20,1]=.10
         r=certify_vertical_dense_domain(self.vehicle,self.plan,b)
-        self.assertFalse(r['certified']); self.assertIn('jounce_upper_margin',r['failed'])
+        self.assertNotIn('jounce_upper_margin',r['failed'])
+        self.assertNotIn('jounce_upper_margin',r['margins'])
+        self.assertEqual(r['suspension_travel_policy'], 'unlimited')
+        self.assertIs(r['suspension_travel_enforced'], False)
     def test_nan_and_shape_fail(self):
         b=self.bounds(); b[0,3,0]=np.nan
         self.assertFalse(certify_vertical_dense_domain(self.vehicle,self.plan,b)['certified'])

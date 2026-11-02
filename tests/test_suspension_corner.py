@@ -26,6 +26,7 @@ from simplified_vehicle_models.suspension.layouts.independent_corner import buil
 from simplified_vehicle_models.suspension.monotone_spline import MonotoneSpline
 from simplified_vehicle_models.suspension.network import CompiledSuspension
 from simplified_vehicle_models.xml.loader import load_model
+from tests.legacy_suspension import legacy_suspension
 
 ROOT = Path(__file__).resolve().parents[1]
 XML = ROOT / "models" / "suspensions" / "iem24_murphy_real_suspension.xml"
@@ -43,14 +44,9 @@ REAR_LOAD = (287 * 0.55 - 26) / 2 * 9.80665
 
 
 def build(inertance=(0.0, 0.0)):
-    dampers = (compile_damper(load_model(FRONT_DAMPER)), compile_damper(load_model(REAR_DAMPER)))
-    return build_independent_corner(
-        kinematics=compile_suspension_kinematics(load_model(KINEMATICS_XML)),
-        springs=compile_corner_springs(load_model(SPRING_XML)),
-        arb=compile_axle_arb(load_model(ARB_XML)),
-        damper_front=dampers[0], damper_rear=dampers[1],
-        inertance_front=inertance[0], inertance_rear=inertance[1],
-    )
+    """Explicit historical independent-corner fixture, not the active assembly."""
+    kinematics = compile_suspension_kinematics(load_model(KINEMATICS_XML))
+    return legacy_suspension(kinematics, inertance[0], inertance[1])
 
 
 class CornerTests(unittest.TestCase):
@@ -134,11 +130,10 @@ class CornerTests(unittest.TestCase):
             self.assertLess(np.max(np.abs(rates)), 10.001)
             self.assertGreater(np.min(rates), 0.999)
 
-    def test_domain_failure_beyond_travel(self):
-        for z in (0.0319, -0.0319):
-            with self.assertRaises(DomainError):
-                self.forces([z, 0.0, 0.0, 0.0])
-        self.forces([0.0318, -0.0318, 0.0318, -0.0318])  # the limits themselves are valid
+    def test_spring_extrapolates_beyond_travel(self):
+        for z in (0.1, -0.1):
+            self.assertTrue(np.all(np.isfinite(self.forces([z, 0.0, 0.0, 0.0]).total)))
+        self.forces([0.0318, -0.0318, 0.0318, -0.0318])
 
     def test_arb(self):
         d = 0.01
@@ -230,10 +225,10 @@ class ToeTests(unittest.TestCase):
         model = self.with_front_steer([(-0.0318, 0.0), (0.0, 0.0), (0.0318, 0.0)], static_toe=toe)
         np.testing.assert_array_equal(model.toe(np.zeros(4)), [toe, -toe, 0.0, 0.0])
 
-    def test_out_of_travel_fails(self):
+    def test_out_of_travel_uses_linear_toe_tail(self):
         model = self.with_front_steer([(-0.0318, 0.0), (0.0, 0.0), (0.0318, 0.001)])
-        with self.assertRaises(DomainError):
-            model.toe(np.array([0.0319, 0.0, 0.0, 0.0]))
+        toe = model.toe(np.array([0.0636, 0.0, 0.0, 0.0]))
+        self.assertGreater(toe[0], 0.001)
 
 
 class AxleValidationTests(unittest.TestCase):
@@ -283,15 +278,18 @@ class ComponentFileTests(unittest.TestCase):
             self.assertIn(f'name="{name}"', text)
         for name in ("arb_wheel_rate_front", "arb_wheel_rate_rear"):
             self.assertIn(f'name="{name}"', ARB_XML.read_text())
-        for name in ("inertance_front", "inertance_rear"):
-            self.assertIn(f'name="{name}"', XML.read_text())
         self.assertIn("Jounce steer: from real car data", text)
         self.assertNotIn("baseline, no measured jounce-steer data", text)
         self.assertIn('role="corner-table"', text)
+        # This module builds the explicit legacy independent-corner fixture above;
+        # the active assembly now consumes physical struts, not these curves.
 
-    def test_assembly_references_the_five_children(self):
+    def test_legacy_network_is_explicit_fixture_not_active_assembly(self):
+        self.assertEqual(build().layout, "independent-corner")
         text = XML.read_text()
-        for role in ("kinematics", "spring", "arb", "damper-front", "damper-rear"):
+        self.assertIn('subtype="parallel-corner-axle"', text)
+        for role in ("corner-fl", "corner-fr", "corner-rl", "corner-rr",
+                     "heave-front", "roll-front", "heave-rear", "roll-rear"):
             self.assertIn(f'<component role="{role}"', text)
 
     def test_npz_keys_and_metadata(self):

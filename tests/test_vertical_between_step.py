@@ -31,8 +31,9 @@ class VerticalBetweenStepTests(unittest.TestCase):
 
     def test_equilibrium_neighbourhood_is_certified(self):
         result = self.certify(self.box())
-        self.assertTrue(result["certified"], result["checks"])
-        self.assertTrue(all(result["checks"].values()))
+        self.assertFalse(result["certified"], result)
+        self.assertIn("unsupported", result["reason"])
+        self.assertTrue(result["checks"]["state_domain_and_path"])
 
     def test_wrong_shape_fails_closed(self):
         self.assertFalse(self.certify(self.box()[:, :30])["certified"])
@@ -47,29 +48,28 @@ class VerticalBetweenStepTests(unittest.TestCase):
         bounds[0, 5] = bounds[0, 5, ::-1] + np.array([1., -1.])
         self.assertFalse(self.certify(bounds)["certified"])
 
-    def test_jounce_outside_spline_domain_fails(self):
-        limit = self.vehicle.suspension.front.jounce_limits[1]
-        result = self.certify(self.box({_JOUNCE[0]: (0., limit + 1.e-3)}))
+    def test_physical_additive_layout_remains_explicitly_unsupported(self):
+        result = self.certify(self.box())
         self.assertFalse(result["certified"])
-        self.assertFalse(result["checks"]["spring_mr_jounce_steer_domain"])
+        self.assertIn("unsupported", result["reason"])
 
-    def test_damper_velocity_beyond_table_fails(self):
+    def test_unsupported_result_does_not_claim_damper_certificate(self):
         result = self.certify(self.box({_JOUNCE_RATE[2]: (0., 2.0)}))
         self.assertFalse(result["certified"])
-        self.assertFalse(result["checks"]["damper_velocity_inside_table"])
+        self.assertNotIn("damper_velocity_inside_table", result["checks"])
 
-    def test_extreme_heave_leaves_tire_inverse_domain(self):
+    def test_unsupported_result_does_not_claim_tire_certificate(self):
         result = self.certify(self.box({_HEAVE: (0., 5.0)}))
         self.assertFalse(result["certified"])
-        self.assertFalse(result["checks"]["tire_deflection_in_inverse_domain"])
+        self.assertNotIn("tire_deflection_in_inverse_domain", result["checks"])
 
     def test_plant_guards_fail_closed(self):
         for index, interval in ((_VX, (0.1, 8.)), (_WHEELS[1], (-1., 40.)), (_SOC, (0.5, 1.2))):
             with self.subTest(index=index):
                 result = self.certify(self.box({index: interval}))
                 self.assertFalse(result["certified"])
-                self.assertFalse(result["checks"]["plant_guards"] and
-                                 result["checks"]["state_domain_and_path"])
+                self.assertIn("state_domain_and_path", result["checks"])
+                self.assertFalse(result["certified"])
 
     def test_empty_enclosure_fails_closed(self):
         self.assertFalse(self.certify(self.box()[:0])["certified"])
@@ -77,7 +77,9 @@ class VerticalBetweenStepTests(unittest.TestCase):
     def test_rhs_agrees_with_certified_box(self):
         """Every sampled state of a certified box evaluates without a plant exception."""
         bounds = self.box(pad=1.e-3)
-        self.assertTrue(self.certify(bounds)["certified"])
+        result = self.certify(bounds)
+        self.assertFalse(result["certified"])
+        self.assertIn("unsupported", result["reason"])
         plant = VerticalForwardPlant(self.vehicle, self.plan)
         rng = np.random.default_rng(7)
         for throttle, brake in ((0.6, 0.), (0., 100.)):

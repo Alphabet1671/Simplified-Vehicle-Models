@@ -159,9 +159,9 @@ class NetworkTests(unittest.TestCase):
         full = self.n.forces(z, np.zeros(4))
         np.testing.assert_allclose(self.n.static_forces(z), full.total, rtol=1e-12)
 
-    def test_outside_the_travel_raises_not_extrapolates(self):
-        with self.assertRaises(ValueError):
-            self.n.forces(np.array([0.2, 0, 0, 0]), np.zeros(4))
+    def test_outside_the_travel_is_admitted_by_network(self):
+        np.testing.assert_allclose(self.n.forces(np.array([0.2, 0, 0, 0]), np.zeros(4)).total,
+                                   self.n.static_forces(np.array([0.2, 0, 0, 0])))
 
     def test_shape_validation(self):
         with self.assertRaises(ValueError):

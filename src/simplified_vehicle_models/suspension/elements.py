@@ -24,6 +24,10 @@ class CornerSprings:
     front: MonotoneSpline
     rear: MonotoneSpline
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, 'front', MonotoneSpline(self.front.x, self.front.y, extrapolation='linear'))
+        object.__setattr__(self, 'rear', MonotoneSpline(self.rear.x, self.rear.y, extrapolation='linear'))
+
     def axle(self, axle: int) -> MonotoneSpline:
         """Return the curve of axle 0 (front) or 1 (rear)."""
 

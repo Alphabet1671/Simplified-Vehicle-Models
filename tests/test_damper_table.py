@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 
 import numpy as np
+from scipy.interpolate import Akima1DInterpolator
 
 from simplified_vehicle_models.suspension.damper_table import (
     DamperSetting,
@@ -63,6 +64,19 @@ def _table(**overrides):
 
 def _setting(lsc=1, hsc=1, lsr=1, hsr=1):
     return DamperSetting({"lsc": lsc, "hsc": hsc, "lsr": lsr, "hsr": hsr})
+
+
+def _corner_weights_test(values, counts):
+    import itertools
+    choices = []
+    for value, count in zip(values, counts):
+        lo = min(int(np.floor(value)), count - 1)
+        frac = value - lo
+        choices.append(((lo, 1.0),) if frac <= 0 or lo + 1 >= count
+                       else ((lo, 1.0 - frac), (lo + 1, frac)))
+    for combo in itertools.product(*choices):
+        weight = np.prod([w for _, w in combo])
+        yield tuple(i for i, _ in combo), weight
 
 
 class DamperTableTests(unittest.TestCase):
@@ -188,19 +202,94 @@ class DamperTableTests(unittest.TestCase):
 
     def test_axis_and_zero_force_validation(self):
         with self.assertRaises(ValueError):
-            _table(velocity_axis_compression=V_C + 0.01)  # does not start at 0
+            _table(velocity_axis_compression=np.array([0.0, 0.0, 1.0]))
         with self.assertRaises(ValueError):
-            _table(velocity_axis_rebound=V_R - 0.01)  # does not end at 0
-        bad = _compression_force()
-        bad[0, 1, 1] = 1.0
+            _table(velocity_axis_rebound=np.array([-1.0, 0.0, 0.0]))
         with self.assertRaises(ValueError):
-            _table(compression_force=bad)
-        bad = _rebound_force()
-        bad[-1, 0, 0] = -1.0
-        with self.assertRaises(ValueError):
-            _table(rebound_force=bad)
+            _table(velocity_axis_compression=np.array([0.0, np.nan, 1.0]))
         with self.assertRaises(ValueError):  # rebound must be signed negative
             _table(rebound_force=-_rebound_force())
+
+    def test_algorithm_metadata_is_canonical_even_if_input_conflicts(self):
+        metadata = {"interpolation_method": "fritsch_carlson",
+                    "origin_policy": "reject_nonzero_origin", "source_sha256": "keep"}
+        table = _table(metadata=metadata)
+        self.assertEqual(table.metadata["interpolation_method"], "akima")
+        self.assertEqual(table.metadata["origin_policy"], "overwrite_or_insert_zero_force")
+        self.assertEqual(table.metadata["source_sha256"], "keep")
+        self.assertEqual(metadata["interpolation_method"], "fritsch_carlson")
+
+    def test_normalizes_existing_origin_without_shifting_other_knots_or_inputs(self):
+        c = _compression_force()
+        r = _rebound_force()
+        c[0, :, :] = 12.5
+        r[-1, :, :] = -7.25
+        c_before, r_before = c.copy(), r.copy()
+        table = _table(compression_force=c, rebound_force=r)
+        np.testing.assert_array_equal(c, c_before)
+        np.testing.assert_array_equal(r, r_before)
+        np.testing.assert_array_equal(table.compression_force[0], 0.0)
+        np.testing.assert_array_equal(table.rebound_force[-1], 0.0)
+        np.testing.assert_array_equal(table.compression_force[1:], c[1:])
+        np.testing.assert_array_equal(table.rebound_force[:-1], r[:-1])
+        self.assertEqual(float(damper_force(table, _setting(1.5, 1, 1.5, 1), 0).force), 0.0)
+
+    def test_inserts_origin_for_both_halves_and_preserves_knots_and_inputs(self):
+        vc = V_C[1:].copy()
+        vr = V_R[:-1].copy()
+        c, r = _compression_force()[1:].copy(), _rebound_force()[:-1].copy()
+        cb, rb, vcb, vrb = c.copy(), r.copy(), vc.copy(), vr.copy()
+        table = _table(velocity_axis_compression=vc, velocity_axis_rebound=vr,
+                       compression_force=c, rebound_force=r)
+        np.testing.assert_array_equal(table.velocity_axis_compression, np.r_[0.0, vc])
+        np.testing.assert_array_equal(table.velocity_axis_rebound, np.r_[vr, 0.0])
+        np.testing.assert_array_equal(table.compression_force[0], 0.0)
+        np.testing.assert_array_equal(table.rebound_force[-1], 0.0)
+        np.testing.assert_array_equal(table.compression_force[1:], cb)
+        np.testing.assert_array_equal(table.rebound_force[:-1], rb)
+        for original, before in ((c, cb), (r, rb), (vc, vcb), (vr, vrb)):
+            np.testing.assert_array_equal(original, before)
+        for clicks in ((0, 0, 0, 0), (2.5, 1.5, 2.5, 1.5)):
+            self.assertEqual(float(damper_force(table, _setting(*clicks), 0).force), 0.0)
+
+    def test_ordinary_akima_matches_independent_oracle_and_derivative(self):
+        from scipy.interpolate import Akima1DInterpolator as Akima
+        table = _table()
+        setting = _setting(1.5, 1.25, 2.25, 0.5)
+        for half, velocities, names, query in (
+            ("compression", V_C, ("lsc", "hsc"), np.array([0.023, 0.14, 0.67, 1.73])),
+            ("rebound", V_R, ("lsr", "hsr"), np.array([-1.61, -0.73, -0.16, -0.031])),
+        ):
+            values = [setting.clicks[n] for n in names]
+            combinations = []
+            for index, weight in _corner_weights_test(values, [4, 3]):
+                row = table.compression_force if half == "compression" else table.rebound_force
+                combinations.append((weight, row[(slice(None),) + index]))
+            oracle_force = np.zeros(query.shape)
+            oracle_slope = np.zeros(query.shape)
+            for weight, knots in combinations:
+                ref = Akima(velocities, knots, method="akima", extrapolate=False)
+                oracle_force += weight * ref(query)
+                oracle_slope += weight * ref.derivative()(query)
+            got = damper_force(table, setting, query)
+            np.testing.assert_allclose(got.force, oracle_force, rtol=1e-12, atol=1e-12)
+            np.testing.assert_allclose(got.slope, oracle_slope, rtol=1e-12, atol=1e-12)
+
+    def test_small_knot_counts_are_finite_and_two_knot_linear(self):
+        for count in (2, 3, 4):
+            vc = np.linspace(0, 1, count)
+            vr = np.linspace(-1, 0, count)
+            c = vc[:, None].copy()
+            r = vr[:, None].copy()
+            valves = (DamperValve("c", "compression", "low", 1),
+                      DamperValve("r", "rebound", "low", 1))
+            table = DamperTable(vc, vr, valves, c, r, {})
+            q = np.array([0.0, 0.17, 0.53, 1.0, -0.17, -0.53, -1.0])
+            out = damper_force(table, DamperSetting({"c": 0, "r": 0}), q)
+            self.assertTrue(np.all(np.isfinite(out.force)))
+            self.assertTrue(np.all(np.isfinite(out.slope)))
+            if count == 2:
+                np.testing.assert_allclose(out.force, q)
 
     def test_arrays_read_only(self):
         table = _table()
@@ -243,6 +332,8 @@ class DamperNpzTests(unittest.TestCase):
         self.assertEqual(loaded.valves, reference.valves)
         self.assertEqual(loaded.metadata["source_sha256"], "deadbeef")
         self.assertEqual(loaded.metadata["generator_version"], "test-1")
+        self.assertEqual(loaded.metadata["interpolation_method"], "akima")
+        self.assertEqual(loaded.metadata["origin_policy"], "overwrite_or_insert_zero_force")
         self.assertEqual(json.loads(loaded.metadata["corrections"]), {"note": "none"})
         self.assertFalse(loaded.compression_force.flags.writeable)
         self.assertFalse(loaded.velocity_axis_rebound.flags.writeable)

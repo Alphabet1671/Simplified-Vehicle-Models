@@ -210,6 +210,7 @@ def register_builtin_components() -> None:
         components,
         hydraulic_components,
         modal_components,
+        physical_components,
     )
 
     _ = (
@@ -227,6 +228,7 @@ def register_builtin_components() -> None:
         components,
         hydraulic_components,
         modal_components,
+        physical_components,
     )
     register_component(
         "vehicle-assembly",

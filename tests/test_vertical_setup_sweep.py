@@ -25,7 +25,9 @@ What is gated here and where the oracle comes from:
   names of both compiled damper tables plus the compiled suspension scalars.
   Unknown names, out-of-range clicks, and fractional clicks raise ``ValueError``.
   A tmp four-valve synthetic damper (built the way ``tests/test_damper_table.py``
-  builds its tables) accepts ``click_<valve>`` for all four valves.
+  builds its tables) accepts ``click_<valve>`` for all four valves. This module
+  pins legacy independent-corner setup values; the active physical sweep has
+  separate explicit tests so old wheel-rate expectations are not misapplied.
 """
 
 import csv
@@ -45,6 +47,7 @@ from simplified_vehicle_models.formulations.vertical_14dof import (
 from simplified_vehicle_models.solvers.vertical_equilibrium import solve_static_equilibrium
 from simplified_vehicle_models.suspension.damper_table import DamperSetting, damper_force
 from simplified_vehicle_models.tires.vertical import tire_deflection_load
+from tests.legacy_suspension import legacy_vehicle, legacy_suspension, legacy_formulation
 
 from tools.run.sweep_vertical_setup import (
     DEFAULT_FORMULATION,
@@ -60,6 +63,11 @@ from tools.run.sweep_vertical_setup import (
 
 ROOT = Path(__file__).resolve().parents[1]
 FORMULATION_XML = ROOT / "models/formulations/iem24_murphy_real_14dof_simple.xml"
+LEGACY_FORMULATION_XML = FORMULATION_XML
+# Tests in this module assert the historical independent-corner metric contract.
+# They are paired with explicit legacy fixtures; the separate physical consumer
+# tests exercise the active additive layout.
+
 VEHICLE_XML = ROOT / "models/vehicles/iem24_murphy_real_planar.xml"
 SUSPENSION_XML = ROOT / "models/suspensions/iem24_murphy_real_suspension.xml"
 MODELS = ROOT / "models"
@@ -73,11 +81,18 @@ _VEHICLE_CACHE: dict = {}
 
 
 def compiled_vehicle():
-    """Return the compiled IEM24 14-DoF vehicle, cached across the module."""
+    """Return the explicit historical independent-corner fixture vehicle."""
 
     if "vehicle" not in _VEHICLE_CACHE:
-        _VEHICLE_CACHE["vehicle"] = compile_formulation(FORMULATION_XML).model
+        _VEHICLE_CACHE["vehicle"] = legacy_vehicle()
     return _VEHICLE_CACHE["vehicle"]
+
+
+def legacy_formulation_path():
+    """Return a temporary XML compilation fixture using the former corner assembly."""
+    if "formulation" not in _VEHICLE_CACHE:
+        _VEHICLE_CACHE["formulation"] = legacy_formulation()
+    return _VEHICLE_CACHE["formulation"]
 
 
 def baseline_clicks(axle_index: int, compression: int, rebound: int) -> DamperSetting:
@@ -199,9 +214,9 @@ def _synthetic_four_valve_formulation(directory: Path) -> Path:
             "</model>\n"
         )
         damper_xmls[axle] = path
-    # The dampers are children of the suspension assembly: write a tmp copy of it
-    # with the two damper roles pointed at the synthetic files.
-    suspension_text = SUSPENSION_XML.read_text()
+    # The dampers are children of the suspension assembly: write a tmp copy of the
+    # explicit legacy XML fixture with the two damper refs pointed at synthetic files.
+    suspension_text = (MODELS / "suspensions/iem24_murphy_real_suspension_legacy.xml").read_text()
     suspension_text = suspension_text.replace('ref="../', f'ref="{MODELS}/')
     suspension_text = suspension_text.replace('path="../', f'path="{MODELS}/')
     suspension_text = suspension_text.replace(
@@ -256,7 +271,7 @@ class OverrideValidationTests(unittest.TestCase):
 
     def test_unknown_name_raises_and_lists_the_valid_names(self):
         with self.assertRaises(ValueError) as caught:
-            sweep_vertical_setup(FORMULATION_XML, [{"clicks_compression": 3}], "step-response")
+            sweep_vertical_setup(legacy_formulation_path(), [{"clicks_compression": 3}], "step-response")
         message = str(caught.exception)
         self.assertIn("clicks_compression", message)
         self.assertIn("click_compression", message)
@@ -302,7 +317,7 @@ class BaselineClickSweepTests(unittest.TestCase):
     def setUpClass(cls):
         cls.started = time.perf_counter()
         cls.overrides = [{"click_compression": click, "click_rebound": 7} for click in range(12)]
-        cls.results = sweep_vertical_setup(FORMULATION_XML, cls.overrides, "step-response")
+        cls.results = sweep_vertical_setup(legacy_formulation_path(), cls.overrides, "step-response")
         cls.elapsed = time.perf_counter() - cls.started
 
     def test_one_result_per_setup_and_the_override_is_echoed(self):
@@ -441,7 +456,7 @@ class BaselineClickSweepTests(unittest.TestCase):
 
     def test_results_are_deterministic(self):
         repeat = sweep_vertical_setup(
-            FORMULATION_XML, self.overrides[:3], "step-response"
+            legacy_formulation_path(), self.overrides[:3], "step-response"
         )
         for first, second in zip(self.results[:3], repeat):
             self.assertEqual(first, second)
@@ -456,7 +471,7 @@ class StepOracleTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.result = sweep_vertical_setup(
-            FORMULATION_XML, [{}], "step-response", step_samples=12001
+            legacy_formulation_path(), [{}], "step-response", step_samples=12001
         )[0]
 
     def test_linear_step_agrees_with_the_recorded_task_7_oracle(self):
@@ -563,7 +578,7 @@ class SuspensionScalarOverrideTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.baseline, cls.inertance, cls.toe = sweep_vertical_setup(
-            FORMULATION_XML,
+            legacy_formulation_path(),
             [{}, {"inertance_front": 3.0}, {"static_toe_front": 0.01}],
             "step-response",
         )
@@ -603,11 +618,11 @@ class FrequencyResponseTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.baseline = sweep_vertical_setup(FORMULATION_XML, [{}], "frequency-response")[0]
+        cls.baseline = sweep_vertical_setup(legacy_formulation_path(), [{}], "frequency-response")[0]
         rear = compiled_vehicle().suspension.network.arb.rear
         cls.factors = (0.0, 1.0, 3.0, 5.0, 10.0)
         cls.arb_results = sweep_vertical_setup(
-            FORMULATION_XML,
+            legacy_formulation_path(),
             [{"arb_wheel_rate_rear": factor * rear} for factor in cls.factors],
             "frequency-response",
         )
@@ -718,7 +733,7 @@ class OutputTests(unittest.TestCase):
         cls.overrides = [{"click_compression": 3, "click_rebound": 7},
                          {"click_compression": 5, "click_rebound": 7}]
         cls.results = sweep_vertical_setup(
-            FORMULATION_XML,
+            legacy_formulation_path(),
             cls.overrides,
             "frequency-response",
             output_csv=cls.path / "sweep.csv",
@@ -761,9 +776,11 @@ class OutputTests(unittest.TestCase):
         # The two convention disclosures travel with every summary.
         self.assertIn("natural", definition["modal_frequency_convention"])
         self.assertIn("compression-branch", definition["damping_branch_convention"])
+        self.assertIn("physical shaft values", definition["physical_input_semantics"])
         hashes = document["source_hashes"]
-        expected = hashlib.sha256(FORMULATION_XML.read_bytes()).hexdigest()
-        self.assertEqual(hashes[str(FORMULATION_XML)], expected)
+        legacy_xml = legacy_formulation_path().resolve()
+        expected = hashlib.sha256(legacy_xml.read_bytes()).hexdigest()
+        self.assertEqual(hashes[str(legacy_xml)], expected)
         self.assertTrue(
             any(path.endswith("multimatic_dssv_vc01.npz") for path in hashes), sorted(hashes)
         )
@@ -807,7 +824,7 @@ class OutputTests(unittest.TestCase):
         csv_path = self.path / "cli.csv"
         json_path = self.path / "cli.json"
         code = main([
-            "--formulation", str(FORMULATION_XML),
+            "--formulation", str(legacy_formulation_path()),
             "--grid", json.dumps({"click_compression": [0, 6, 11], "click_rebound": [7]}),
             "--study", "step-response",
             "--output-csv", str(csv_path),

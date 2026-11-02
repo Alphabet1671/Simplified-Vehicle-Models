@@ -105,7 +105,8 @@ def compiled_vehicle():
     """Return the compiled IEM24 14-DoF vehicle, cached across the module."""
 
     if "vehicle" not in _VEHICLE_CACHE:
-        _VEHICLE_CACHE["vehicle"] = compile_formulation(FORMULATION_XML).model
+        from tests.legacy_suspension import legacy_vehicle
+        _VEHICLE_CACHE["vehicle"] = legacy_vehicle()
     return _VEHICLE_CACHE["vehicle"]
 
 

@@ -63,7 +63,8 @@ class IndependentCornerNetwork:
     def forces(self, jounce, jounce_rate, state=None) -> NetworkForces:
         """Return the wheel-referred spring, ARB and damper forces of four corners.
 
-        A jounce outside the design travel raises ``DomainError``.
+        Finite jounce is unlimited; the spring curve extrapolates linearly and
+        damper velocity remains subject to the damper table's own domain.
         """
 
         z = _four("jounce", jounce)

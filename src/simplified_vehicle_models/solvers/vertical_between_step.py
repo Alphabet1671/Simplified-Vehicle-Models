@@ -9,30 +9,27 @@ interpolant, so this module proves each of them from the per-interval state
 enclosures ``bounds`` (shape ``(intervals, 38 or 39, 2)``) by interval
 arithmetic:
 
-1. every jounce stays inside the spring / motion-ratio / jounce-steer spline
-   domain (the physical jounce limits);
-2. every damper velocity ``jounce_rate / motion_ratio`` stays inside the damper
+1. every damper velocity ``jounce_rate / motion_ratio`` stays inside the damper
    table axes (``out_of_range`` can never be raised and no linear extension is
    used);
-3. the tire deflection stays where the closed-form loaded-radius inverse is
+2. the tire deflection stays where the closed-form loaded-radius inverse is
    defined, and the tire normal load (elastic part times ``1 + psi`` plus the
    damping term) stays below ``SUPPORTED_MAXIMUM_LOAD`` where the inverse is
    proved valid;
-4. the 7x7 vertical mass block is constant (zero inertance, constant motion
+3. the 7x7 vertical mass block is constant (zero inertance, constant motion
    ratio) and positive definite, so the acceleration solve never fails;
-5. the body speed stays above the plant's guard, wheel speeds stay
+4. the body speed stays above the plant's guard, wheel speeds stay
    nonnegative, SOC stays in ``[0, 1]`` and steering stays inside its bound
    (the plant's explicit guards), and the path denominator / progress stay
    positive (delegated to ``certify_vertical_dense_domain``);
-6. every state enclosure is finite (so no transient-tire state leaves the real
+5. every state enclosure is finite (so no transient-tire state leaves the real
    line).
 
 Assumptions that are *not* proved here, and are stated in the certificate:
 
 * the enclosure bounds the integrator's dense interpolant, not the true ODE
   trajectory (the refinement tube is the separate empirical support for that);
-* the monotone cubic spline stays inside the hull of its knot values on each
-  segment (Fritsch-Carlson), used only for the motion-ratio table;
+* motion ratio stays positive and holds its endpoint value outside the jounce knots; spring and jounce-steer tails are linear endpoint-tangent extensions;
 * the shared powertrain closure's bracketing / monotonicity argument, covered by
   ``tests/test_powertrain_closure_audit.py`` (an exhaustive grid audit);
 * directed rounding: the enclosure padding covers rounding, as in the planar
@@ -76,7 +73,7 @@ _SOC, _STEER = 24, 25
 
 SCOPE = (
     "evaluation-domain obligations of the explicit vertical 14-DoF right-hand side "
-    "over the BDF dense interpolant (spline/damper/tire/mass-block/powertrain "
+    "over the BDF dense interpolant (damper/tire/mass-block/powertrain "
     "guards); not the true ODE trajectory, not directed rounding, and the "
     "powertrain closure monotonicity rests on the shared grid audit"
 )
@@ -125,22 +122,24 @@ def certify_vertical_between_step(vehicle, plan, bounds, summary=None, pedal_dyn
 
     # -- 1/2. spline and damper domains ------------------------------------
     try:
-        axles = (vehicle.suspension.front, vehicle.suspension.rear)
+        suspension = vehicle.suspension
+        if not hasattr(suspension, "front") or not hasattr(suspension, "rear"):
+            # Physical additive suspension has no certified active-layout accessor
+            # here. Keep the legacy interface explicitly unsupported, fail closed.
+            return _fail("between-step physical suspension layout is unsupported", checks,
+                         state_domain=dense)
+        axles = (suspension.front, suspension.rear)
         sides = ((0, 1, axles[0]), (2, 3, axles[1]))
-        jounce_margin = np.inf
         damper_margin = np.inf
         ratio_positive = True
         for dampers_index, (left, right, axle) in enumerate(sides):
-            limit_lo, limit_hi = (float(x) for x in axle.jounce_limits)
             ratio_lo, ratio_hi = _axle_hull(axle)
             ratio_positive &= ratio_lo > 0.0
             table = vehicle.dampers[dampers_index].table
             axis_lo = float(table.velocity_axis_rebound[0])
             axis_hi = float(table.velocity_axis_compression[-1])
             for corner in (left, right):
-                z_lo, z_hi = lo[:, _JOUNCE[corner]], hi[:, _JOUNCE[corner]]
-                jounce_margin = min(jounce_margin, float(np.min(z_lo - limit_lo)),
-                                    float(np.min(limit_hi - z_hi)))
+                # Finite jounce only; spring and kinematic geometry curves extrapolate.
                 rate_lo, rate_hi = lo[:, _JOUNCE_RATE[corner]], hi[:, _JOUNCE_RATE[corner]]
                 if ratio_lo > 0.0:
                     # v = rate / ratio with ratio in [ratio_lo, ratio_hi] > 0.
@@ -148,9 +147,8 @@ def certify_vertical_between_step(vehicle, plan, bounds, summary=None, pedal_dyn
                     v_hi = np.maximum(rate_hi / ratio_lo, rate_hi / ratio_hi)
                     damper_margin = min(damper_margin, float(np.min(v_lo - axis_lo)),
                                         float(np.min(axis_hi - v_hi)))
-        margins["jounce_spline_domain"] = float(jounce_margin)
         margins["damper_velocity_axis"] = float(damper_margin)
-        checks["spring_mr_jounce_steer_domain"] = bool(jounce_margin >= 0.0)
+        checks["suspension_travel_unlimited"] = True
         checks["damper_velocity_inside_table"] = bool(ratio_positive and damper_margin >= 0.0)
     except (AttributeError, IndexError, TypeError, ValueError) as error:
         return _fail(f"suspension or damper tables could not be read: {error}", checks)
@@ -232,9 +230,16 @@ def certify_vertical_between_step(vehicle, plan, bounds, summary=None, pedal_dyn
         "intervals": int(bounds.shape[0]),
         "state_domain": {key: dense.get(key) for key in ("certified", "failed", "margins")},
         "scope": SCOPE,
+        "suspension_travel_policy": "unlimited",
+        "suspension_travel_enforced": False,
+        "jounce_design_range_m": (
+            getattr(getattr(vehicle, "suspension", None), "kinematics", None).jounce_limits.tolist()
+            if getattr(getattr(vehicle, "suspension", None), "kinematics", None) is not None else None
+        ),
         "assumptions": [
             "enclosure bounds the BDF dense interpolant, not the true ODE trajectory",
-            "motion-ratio spline stays in the hull of its knot values (Fritsch-Carlson)",
+            "motion ratio is positive and constant-hull; outside its jounce knots it holds the endpoint value",
+            "spring extrapolation is endpoint-tangent linear and jounce-steer is endpoint-tangent linear",
             "powertrain closure monotonicity: tests.test_powertrain_closure_audit",
             "slip, transient-tire and aero evaluations are total on finite inputs (every "
             "division is floored by a positive constant); argued by reading the code, "

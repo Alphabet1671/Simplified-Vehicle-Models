@@ -12,4 +12,4 @@ Run scripts for solver attempts and sweeps.
 | `run_with_deadline.py` | Spawn and supervise one command under a parent wall deadline. |
 | `run_iem24_point_mass_track_pair.py` | Run the same supported IEM24 energy-coupled point-mass solve on two signed tracks. |
 | `solve_minimum_time_line.py` | Run the stage 1 minimum-time racing-line acceptance pipeline. |
-| `sweep_vertical_setup.py` | Damper, anti-roll and inertance setup sweep for the vertical 14-DoF model. |
+| `sweep_vertical_setup.py` | Legacy-layout ride studies plus physical-strut shaft override catalogue for the vertical 14-DoF model; legacy quarter-car metrics reject additive physical layouts. |

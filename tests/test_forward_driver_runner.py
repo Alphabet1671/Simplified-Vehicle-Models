@@ -65,11 +65,17 @@ REQUIRED_14DOF_SOURCES = (
     "models/tires/iem24_murphy_real_unitire_transient.xml",
     "models/suspensions/iem24_murphy_real_suspension.xml",
     "models/suspension-kinematics/iem24_murphy_real_suspension_kinematics.xml",
-    "models/springs/iem24_murphy_real_suspension_springs.xml",
-    "models/anti-roll-bars/iem24_murphy_real_suspension_arb.xml",
-    "models/dampers/multimatic_dssv_vc01_front.xml",
-    "models/dampers/multimatic_dssv_vc01_rear.xml",
-    "models/data/multimatic_dssv_vc01.npz",
+    "models/struts/iem24_corner_zero_strut.xml",
+    "models/struts/iem24_heave_front_strut.xml",
+    "models/struts/iem24_roll_front_strut.xml",
+    "models/struts/iem24_heave_rear_strut.xml",
+    "models/struts/iem24_roll_rear_strut.xml",
+    "models/dampers/zero.xml",
+    "models/dampers/iem24_mode_heave_damper.xml",
+    "models/dampers/iem24_mode_roll_front_damper.xml",
+    "models/dampers/iem24_mode_roll_rear_damper.xml",
+    "models/data/iem24_heave_damper_vc01.npz",
+    "models/data/iem24_roll_damper_vc01.npz",
     "models/data/iem24_murphy_real_corners.npz",
     "src/simplified_vehicle_models/solvers/forward_driver.py",
     "src/simplified_vehicle_models/solvers/forward_powertrain.py",
@@ -85,6 +91,9 @@ REQUIRED_14DOF_SOURCES = (
     "src/simplified_vehicle_models/suspension/network.py",
     "src/simplified_vehicle_models/suspension/layouts/independent_corner.py",
     "src/simplified_vehicle_models/suspension/monotone_spline.py",
+    "src/simplified_vehicle_models/suspension/physical.py",
+    "src/simplified_vehicle_models/suspension/physical_components.py",
+    "src/simplified_vehicle_models/suspension/layouts/parallel.py",
 )
 
 
@@ -784,13 +793,16 @@ class ForwardRunnerModelTests(unittest.TestCase):
                                summary["solver_wall_budget_seconds"] - summary["setup_seconds"],
                                delta=0.5)
         self.assertEqual(summary["wheel_inertia"], 0.2064512)
-        # contact_valid comes from the replay diagnostics and the travel bound.
+        # contact_valid is independent of unlimited finite suspension travel.
         self.assertTrue(summary["contact_valid"])
         self.assertTrue(summary["jounce_travel_valid"])
+        self.assertEqual(summary["suspension_travel_policy"], "unlimited")
+        self.assertIs(summary["suspension_travel_enforced"], False)
+        self.assertIsNone(summary["jounce_travel_limits_m"])
+        self.assertEqual(summary["jounce_design_range_m"], [[-0.0318, 0.0318]] * 4)
         self.assertEqual(summary["out_of_range_evaluations"], 0)
-        self.assertEqual(summary["jounce_travel_limits_m"], [-0.0318, 0.0318])
-        # The gate reads the accepted states (jounce_initial); the plant's
-        # all-evaluation extremes stay separate diagnostics.
+        # The finite-jounce compatibility check reads accepted values, while the
+        # plant's all-evaluation extrema stay separate diagnostics.
         self.assertEqual(summary["jounce_accepted_minimum_m"], 0.002)
         self.assertEqual(summary["jounce_accepted_maximum_m"], 0.002)
         self.assertEqual(summary["jounce_evaluation_minimum_m"], -0.004)
@@ -854,13 +866,13 @@ class ForwardRunnerModelTests(unittest.TestCase):
         json.loads(text, parse_constant=lambda value: self.fail(f"non-strict constant {value}"))
         self.assertTrue((root / "error.txt").exists())
 
-    def test_14dof_contact_valid_rejects_travel_or_table_excursions(self):
+    def test_14dof_contact_valid_is_independent_of_jounce_design_range(self):
         root, _, code = run_fake_child("14dof-simple",
                                        vertical_fake(jounce_initial=0.05))
         self.assertEqual(code, 0)
         summary = json.loads((root / "summary.json").read_text())
-        self.assertFalse(summary["jounce_travel_valid"])
-        self.assertFalse(summary["contact_valid"])
+        self.assertTrue(summary["jounce_travel_valid"])
+        self.assertTrue(summary["contact_valid"])
         self.assertEqual(summary["jounce_accepted_maximum_m"], 0.05)
         root, _, _ = run_fake_child("14dof-simple", vertical_fake(out_of_range_evaluations=2))
         summary = json.loads((root / "summary.json").read_text())
@@ -885,20 +897,19 @@ class ForwardRunnerModelTests(unittest.TestCase):
         self.assertEqual(summary["jounce_evaluation_minimum_m"], -0.0418)
         self.assertEqual(summary["jounce_evaluation_maximum_m"], 0.0418)
 
-    def test_14dof_travel_gate_covers_the_dense_interval_bounds(self):
-        # A midpoint excursion inside an accepted interval must fail the gate
-        # even though every accepted node is inside the travel.
+    def test_14dof_jounce_dense_extremes_remain_diagnostic(self):
+        # Dense jounce beyond historical table knots does not fail travel.
         bounds = np.zeros((2, 38, 2))
         bounds[:, 16:20, 0], bounds[:, 16:20, 1] = -0.002, 0.002
         bounds[1, 17, 1] = 0.04
         root, _, _ = run_fake_child("14dof-simple", FakeVerticalPlant, dense_bounds=bounds)
         summary = json.loads((root / "summary.json").read_text())
         self.assertEqual(summary["jounce_accepted_maximum_m"], 0.04)
-        self.assertFalse(summary["jounce_travel_valid"])
-        self.assertFalse(summary["contact_valid"])
-        self.assertIn("midpoint", summary["jounce_gate_scope"])
+        self.assertTrue(summary["jounce_travel_valid"])
+        self.assertTrue(summary["contact_valid"])
+        self.assertIn("dense bounds", summary["jounce_gate_scope"])
 
-    def test_14dof_boundary_jounce_at_the_travel_limit_passes(self):
+    def test_14dof_boundary_jounce_is_finite_and_accepted(self):
         root, _, _ = run_fake_child("14dof-simple",
                                     vertical_fake(jounce_initial=0.0318))
         summary = json.loads((root / "summary.json").read_text())
@@ -937,6 +948,10 @@ class ForwardRunnerModelTests(unittest.TestCase):
                               "src/simplified_vehicle_models/solvers/vertical_equilibrium.py",
                               "src/simplified_vehicle_models/tires/unitire_transient.py"):
             self.assertNotIn(Path(vertical_only).resolve(), planar)
+        for required in ("src/simplified_vehicle_models/suspension/physical.py",
+                         "src/simplified_vehicle_models/suspension/physical_components.py",
+                         "src/simplified_vehicle_models/suspension/layouts/parallel.py"):
+            self.assertIn(Path(required).resolve(), sources)
         # Two sources may not share a basename: the snapshot writes by basename.
         names = [Path(path).name for path in source_files("14dof-simple", DEFAULT_TRACK)]
         self.assertEqual(len(set(names)), len(names))
@@ -945,20 +960,25 @@ class ForwardRunnerModelTests(unittest.TestCase):
         root, _, _ = run_fake_child("14dof-simple", FakeVerticalPlant)
         summary = json.loads((root / "summary.json").read_text())
         hashed = {Path(path).resolve() for path in summary["source_hashes"]}
-        for required in ("models/dampers/multimatic_dssv_vc01_front.xml",
-                         "models/dampers/multimatic_dssv_vc01_rear.xml",
+        for required in ("models/dampers/zero.xml", "models/dampers/iem24_mode_heave_damper.xml",
+                         "models/dampers/iem24_mode_roll_front_damper.xml",
+                         "models/dampers/iem24_mode_roll_rear_damper.xml",
                          "models/suspension-kinematics/iem24_murphy_real_suspension_kinematics.xml",
-                         "models/springs/iem24_murphy_real_suspension_springs.xml",
-                         "models/anti-roll-bars/iem24_murphy_real_suspension_arb.xml",
-                         "models/data/multimatic_dssv_vc01.npz",
+                         "models/data/iem24_heave_damper_vc01.npz",
+                         "models/data/iem24_roll_damper_vc01.npz",
                          "models/data/iem24_murphy_real_corners.npz",
                          "models/suspensions/iem24_murphy_real_suspension.xml",
+                         "models/struts/iem24_heave_front_strut.xml",
                          "models/tires/iem24_murphy_real_unitire_transient.xml"):
             self.assertIn(Path(required).resolve(), hashed, required)
         self.assertTrue((root / "source_snapshot").is_dir())
         snapshot = {path.name for path in (root / "source_snapshot").iterdir()}
-        self.assertIn("multimatic_dssv_vc01.npz", snapshot)
+        self.assertIn("iem24_heave_damper_vc01.npz", snapshot)
+        self.assertIn("iem24_roll_damper_vc01.npz", snapshot)
         self.assertIn("iem24_murphy_real_corners.npz", snapshot)
+        self.assertIn("physical.py", snapshot)
+        self.assertIn("physical_components.py", snapshot)
+        self.assertIn("parallel.py", snapshot)
 
     def test_14dof_component_roles_resolve_to_distinct_components(self):
         inputs = model_inputs("14dof-simple", DEFAULT_TRACK)
@@ -968,24 +988,20 @@ class ForwardRunnerModelTests(unittest.TestCase):
                          Path("models/tires/iem24_murphy_real_unitire_transient.xml"))
         self.assertEqual(inputs["suspension_xml"],
                          Path("models/suspensions/iem24_murphy_real_suspension.xml"))
-        # The suspension assembly nests five children; each is recorded under
-        # "suspension_<child>_xml" with its table under "..._data".
+        # The additive assembly hashes/records the physical strut tree and nested dampers.
         self.assertEqual(inputs["suspension_kinematics_xml"], Path(
             "models/suspension-kinematics/iem24_murphy_real_suspension_kinematics.xml"))
-        self.assertEqual(inputs["suspension_spring_xml"], Path(
-            "models/springs/iem24_murphy_real_suspension_springs.xml"))
-        self.assertEqual(inputs["suspension_arb_xml"], Path(
-            "models/anti-roll-bars/iem24_murphy_real_suspension_arb.xml"))
-        self.assertEqual(inputs["suspension_damper_front_xml"],
-                         Path("models/dampers/multimatic_dssv_vc01_front.xml"))
-        self.assertEqual(inputs["suspension_damper_rear_xml"],
-                         Path("models/dampers/multimatic_dssv_vc01_rear.xml"))
-        self.assertEqual(inputs["suspension_damper_front_data"],
-                         Path("models/data/multimatic_dssv_vc01.npz"))
-        self.assertEqual(inputs["suspension_kinematics_data"],
-                         Path("models/data/iem24_murphy_real_corners.npz"))
-        self.assertEqual(inputs["suspension_spring_data"],
-                         Path("models/data/iem24_murphy_real_corners.npz"))
+        for role in ("corner-fl", "corner-fr", "corner-rl", "corner-rr", "heave-front",
+                     "roll-front", "heave-rear", "roll-rear"):
+            expected_strut = ("iem24_corner_zero_strut.xml" if role.startswith("corner-")
+                              else f"iem24_{role.replace('-', '_')}_strut.xml")
+            self.assertEqual(inputs[f"suspension_{role.replace('-', '_')}_xml"],
+                             Path("models/struts") / expected_strut)
+        self.assertEqual(inputs["suspension_corner_fl_damper_xml"], Path("models/dampers/zero.xml"))
+        self.assertEqual(inputs["suspension_heave_front_damper_xml"],
+                         Path("models/dampers/iem24_mode_heave_damper.xml"))
+        self.assertEqual(inputs["suspension_roll_front_damper_xml"],
+                         Path("models/dampers/iem24_mode_roll_front_damper.xml"))
         for path in inputs.values():
             self.assertTrue(Path(path).is_file(), path)
         # The planar model resolves only its own roles.
@@ -997,14 +1013,15 @@ class ForwardRunnerModelTests(unittest.TestCase):
         compiled = compile_formulation(str(model_spec("14dof-simple").formulation))
         roles = {record.role for record in compiled.manifest.loaded_components}
         self.assertTrue({"suspension", "tire-transient", "suspension/kinematics",
-                         "suspension/spring", "suspension/arb", "suspension/damper-front",
-                         "suspension/damper-rear"} <= roles)
+                         "suspension/corner-fl", "suspension/corner-fr", "suspension/corner-rl",
+                         "suspension/corner-rr", "suspension/heave-front", "suspension/roll-front",
+                         "suspension/heave-rear", "suspension/roll-rear"} <= roles)
         components = {compiled.manifest.capability(capability).component_model_id
                       for capability in (SUSPENSION_FORCES, TRANSIENT_COMBINED_SLIP)}
         self.assertEqual(len(components), 2)
         model_ids = {record.model_id for record in compiled.manifest.loaded_components
                      if record.role.startswith("suspension/")}
-        self.assertEqual(len(model_ids), 5)
+        self.assertEqual(len(model_ids), 6)
         self.assertEqual(compiled.manifest.unused_components, ())
 
 

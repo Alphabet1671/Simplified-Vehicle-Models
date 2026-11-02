@@ -102,14 +102,14 @@ def geometry_from_arrays(arrays: dict, axle: str, *, static_toe: float) -> AxleG
     if limits.shape != (2,):
         raise ValueError("jounce_limits must hold two values")
     return AxleGeometry(
-        motion_ratio=MonotoneSpline(get("motion_ratio_jounce"), get("motion_ratio")),
+        motion_ratio=MonotoneSpline(get("motion_ratio_jounce"), get("motion_ratio"), extrapolation='constant'),
         roll_centre_height=MonotoneSpline(get("rc_roll"), get("rc_height")),
         roll_centre_lateral=MonotoneSpline(get("rc_roll"), get("rc_lateral")),
         anti_brake=float(get("anti_brake")),
         anti_drive=float(get("anti_drive")),
         camber_gain=float(get("camber_gain")),
         static_toe=float(static_toe),
-        jounce_steer=MonotoneSpline(get("jounce_steer_jounce"), get("jounce_steer_toe")),
+        jounce_steer=MonotoneSpline(get("jounce_steer_jounce"), get("jounce_steer_toe"), extrapolation='linear'),
         jounce_limits=(float(limits[0]), float(limits[1])),
         static_sprung_load=float(get("static_sprung_load")),
     )

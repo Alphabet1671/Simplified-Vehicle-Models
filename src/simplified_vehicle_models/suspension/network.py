@@ -38,6 +38,9 @@ class NetworkForces:
     damper_velocity: np.ndarray
     out_of_range: np.ndarray
     ds_dt: np.ndarray = field(default_factory=lambda: np.zeros(0))
+    element_velocity: Mapping[str, float] = field(default_factory=dict)
+    element_force: Mapping[str, float] = field(default_factory=dict)
+    element_out_of_range: Mapping[str, bool] = field(default_factory=dict)
 
 
 @runtime_checkable

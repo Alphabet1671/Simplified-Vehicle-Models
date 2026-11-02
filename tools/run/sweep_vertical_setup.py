@@ -6,6 +6,13 @@ Two layouts are swept.
   wheel-rate curve is a spline inside the sha256-pinned corner NPZ, not an XML
   scalar, so a spring sweep needs a LUT regeneration or a new suspension parameter
   (see the Task 10 report's Open issue 1).
+* **parallel-corner-axle (active physical).** Override names use physical shaft
+  quantities: ``rate_<strut>`` in N/m, ``inertance_<strut>`` in kg,
+  ``preload_<strut>`` in N, and ``<strut>.click_<valve>`` for enabled table
+  dampers (strut names are ``corner-fl``, ``corner-fr``, ``corner-rl``,
+  ``corner-rr``, ``heave-front``, ``roll-front``, ``heave-rear``,
+  ``roll-rear``). Linear dampers have no click settings. These are physical
+  shaft values, never wheel-rate conversions.
 * **axle-roll-heave and four-mode (modal).** The mode spring rates are XML scalars,
   so ``rate_<mode>`` is accepted (``rate_heave``, ``rate_roll``, ``rate_pitch``,
   ``rate_warp``, or ``rate_heave_front``, ``rate_roll_front``, ``rate_heave_rear``,
@@ -117,6 +124,7 @@ from simplified_vehicle_models.suspension.damper_table import DamperSetting
 from simplified_vehicle_models.suspension.elements import AxleArbRates
 from simplified_vehicle_models.suspension.layouts.independent_corner import IndependentCornerNetwork
 from simplified_vehicle_models.suspension.layouts.modal import ModalNetwork
+from simplified_vehicle_models.suspension.layouts.parallel import ParallelNetwork, STRUT_NAMES
 from simplified_vehicle_models.tires.unitire_transient import (
     TransientTireState,
     steady_rolling_state,
@@ -292,12 +300,12 @@ class _LinearSubsystem:
 # Overrides
 # --------------------------------------------------------------------------- #
 def _corner_network(vehicle) -> IndependentCornerNetwork:
-    """Return the independent-corner network; other layouts are not swept yet."""
+    """Return legacy independent-corner network, rejecting other layouts."""
 
     network = vehicle.suspension.network
     if not isinstance(network, IndependentCornerNetwork):
         raise ValueError(
-            f"the setup sweep supports the independent-corner layout only, "
+            f"this operation requires the independent-corner layout, "
             f"not {vehicle.suspension.layout!r}"
         )
     return network
@@ -307,9 +315,9 @@ def _network(vehicle):
     """Return the compiled network of a layout the sweep supports."""
 
     network = vehicle.suspension.network
-    if not isinstance(network, (IndependentCornerNetwork, ModalNetwork)):
+    if not isinstance(network, (IndependentCornerNetwork, ModalNetwork, ParallelNetwork)):
         raise ValueError(
-            f"the setup sweep supports the independent-corner and modal layouts, "
+            f"the setup sweep supports independent-corner, modal and parallel physical layouts, "
             f"not {vehicle.suspension.layout!r}"
         )
     return network
@@ -327,6 +335,9 @@ def _corner_stiffness_diagonal(vehicle, position: np.ndarray) -> np.ndarray:
     network = _network(vehicle)
     if isinstance(network, ModalNetwork):
         return np.diag(network.stiffness_matrix).copy()
+    if isinstance(network, ParallelNetwork):
+        tangent = network.jacobian.T @ (np.asarray([s.spring_rate for s in network.struts])[:, None] * network.jacobian)
+        return np.diag(tangent).copy()
     rate = np.empty(4)
     for axle, (left, right) in ((0, (0, 1)), (1, (2, 3))):
         rate[[left, right]] = network.springs.axle(axle).derivative(position[[left, right]])
@@ -345,20 +356,31 @@ def _damping_matrix(vehicle, slopes: np.ndarray, position: np.ndarray) -> np.nda
         factors = np.asarray(network.damper_velocity_factors, dtype=float)
         modal_slopes = np.asarray(slopes, dtype=float) * factors**2
         return network.transform.T @ (modal_slopes[:, None] * network.transform)
+    if isinstance(network, ParallelNetwork):
+        scales = np.asarray([s.damper_scale for s in network.struts])
+        return network.jacobian.T @ ((np.asarray(slopes, dtype=float) * scales)[:, None] * network.jacobian)
     ratios = np.array([vehicle.suspension.kinematics.motion_ratio(i, position[i]) for i in range(4)])
     axle = np.array([slopes[0], slopes[0], slopes[1], slopes[1]], dtype=float)
     return np.diag(axle / ratios**2)
 
 
 def _damper_list(vehicle) -> tuple:
-    """Return the compiled dampers: two axle dampers or four mode dampers."""
+    """Return dampers that support a slope/force query for the selected network."""
 
-    return tuple(_network(vehicle).dampers)
+    network = _network(vehicle)
+    if isinstance(network, ParallelNetwork):
+        return tuple(s.damper for s in network.struts)
+    return tuple(network.dampers)
 
 
 def _axle_scalar(vehicle, name: str, axle: int) -> float:
     """Return one axle scalar (``arb_wheel_rate``, ``inertance`` or ``static_toe``)."""
 
+    network = vehicle.suspension.network
+    if isinstance(network, ParallelNetwork):
+        if name == "static_toe":
+            return float(vehicle.suspension.kinematics.axle(axle).static_toe)
+        raise ValueError(f"{name} is not a physical parallel-layout scalar")
     network = _corner_network(vehicle)
     if name == "arb_wheel_rate":
         return float(network.arb.axle(axle))
@@ -382,6 +404,20 @@ def valid_override_names(vehicle) -> dict[str, str]:
 
     catalogue: dict[str, str] = {}
     network = _network(vehicle)
+    if isinstance(network, ParallelNetwork):
+        for name, strut in zip(STRUT_NAMES, network.struts):
+            # Expose physical spring-rate overrides even for currently disabled
+            # devices, so sweeps can activate zero-rate corner springs explicitly.
+            catalogue[f"rate_{name}"] = f"physical {name} shaft spring rate [N/m] ({strut.spring_rate!r})"
+            catalogue[f"inertance_{name}"] = f"physical {name} inertance [kg] ({strut.inertance!r})"
+            if strut.preload > 0.0:
+                catalogue[f"preload_{name}"] = f"physical {name} shaft preload [N] ({strut.preload!r})"
+            if hasattr(strut.damper, "table") and strut.damper_scale > 0.0:
+                for valve in strut.damper.table.valves:
+                    catalogue[f"{name}.click_{valve.name}"] = f"{name} damper {valve.name} click (0..{valve.clicks - 1})"
+        for axle, axle_name in enumerate(("front", "rear")):
+            catalogue[f"static_toe_{axle_name}"] = f"compiled {axle_name} axle static toe"
+        return catalogue
     modal = isinstance(network, ModalNetwork)
     labels = [_mode_key(n) for n in network.mode_names] if modal else ["front", "rear"]
     common_valves: set[str] | None = None
@@ -389,9 +425,7 @@ def valid_override_names(vehicle) -> dict[str, str]:
         valves = {valve.name: valve for valve in damper.table.valves}
         common_valves = set(valves) if common_valves is None else common_valves & set(valves)
         for name, valve in sorted(valves.items()):
-            catalogue[f"{label}.click_{name}"] = (
-                f"{label} damper {name!r} click (0..{valve.clicks - 1})"
-            )
+            catalogue[f"{label}.click_{name}"] = f"{label} damper {name!r} click (0..{valve.clicks - 1})"
     for name in sorted(common_valves or ()):
         catalogue[f"click_{name}"] = f"all dampers, {name!r} click"
     if modal:
@@ -402,10 +436,7 @@ def valid_override_names(vehicle) -> dict[str, str]:
         scalar_names = ("arb_wheel_rate", "inertance", "static_toe")
     for name in scalar_names:
         for axle, axle_name in enumerate(("front", "rear")):
-            value = (
-                float(vehicle.suspension.kinematics.axle(axle).static_toe)
-                if name == "static_toe" else _axle_scalar(vehicle, name, axle)
-            )
+            value = float(vehicle.suspension.kinematics.axle(axle).static_toe) if name == "static_toe" else _axle_scalar(vehicle, name, axle)
             catalogue[f"{name}_{axle_name}"] = f"compiled {axle_name} axle {name} ({value!r})"
     return catalogue
 
@@ -440,8 +471,11 @@ def apply_overrides(vehicle, overrides: Mapping[str, float]):
         raise ValueError(
             f"unknown override name(s) {unknown}; valid names are {sorted(catalogue)}"
         )
-    if isinstance(_network(vehicle), ModalNetwork):
+    selected = _network(vehicle)
+    if isinstance(selected, ModalNetwork):
         return _apply_modal_overrides(vehicle, requested)
+    if isinstance(selected, ParallelNetwork):
+        return _apply_parallel_overrides(vehicle, requested)
     network = _corner_network(vehicle)
     clicks = [dict(damper.setting.clicks) for damper in network.dampers]
     scalars = {
@@ -495,6 +529,49 @@ def apply_overrides(vehicle, overrides: Mapping[str, float]):
         vehicle,
         suspension=replace(vehicle.suspension, kinematics=kinematics, network=network),
     )
+
+
+def _apply_parallel_overrides(vehicle, requested: Mapping[str, float]):
+    """Apply explicitly physical shaft overrides to additive struts."""
+    network = vehicle.suspension.network
+    struts = list(network.struts)
+    for name, value in requested.items():
+        name, value = _coerce_override(name, value)
+        if name.startswith(("rate_", "inertance_", "preload_")):
+            prefix, strut_name = name.split("_", 1)
+            if strut_name not in STRUT_NAMES:
+                raise ValueError(f"unknown physical strut in {name!r}")
+            if value < 0.0:
+                raise ValueError(f"override {name!r}: value {value} must be non-negative")
+            index = STRUT_NAMES.index(strut_name)
+            field = {"rate": "spring_rate", "inertance": "inertance", "preload": "preload"}[prefix]
+            struts[index] = replace(struts[index], **{field: value})
+        elif ".click_" in name:
+            strut_name, valve_name = name.split(".click_", 1)
+            if strut_name not in STRUT_NAMES:
+                raise ValueError(f"unknown physical strut in {name!r}")
+            index = STRUT_NAMES.index(strut_name)
+            strut = struts[index]
+            if not hasattr(strut.damper, "table"):
+                raise ValueError(f"{strut_name} uses a linear damper and has no click settings")
+            clicks = dict(strut.damper.setting.clicks)
+            if valve_name not in clicks or value != int(value):
+                raise ValueError(f"invalid click override {name!r}={value}")
+            clicks[valve_name] = value
+            damper = replace(strut.damper, setting=DamperSetting(clicks))
+            damper.setting.validate(damper.table)
+            struts[index] = replace(strut, damper=damper)
+        elif name.startswith("static_toe_"):
+            axle = 0 if name.endswith("_front") else 1 if name.endswith("_rear") else None
+            if axle is None:
+                raise ValueError(f"invalid static toe override {name!r}")
+            kin = vehicle.suspension.kinematics.with_axle(axle, static_toe=value)
+            network = network.with_kinematics(kin)
+        else:
+            raise ValueError(f"unsupported physical-layout override {name!r}")
+    network = replace(network, struts=tuple(struts))
+    return replace(vehicle, suspension=replace(vehicle.suspension,
+                    kinematics=network.kinematics, network=network))
 
 
 def _apply_modal_overrides(vehicle, requested: Mapping[str, float]):
@@ -614,8 +691,15 @@ def _quarter_car_ride_frequency(vehicle, spring_rate: np.ndarray, tire_rate: np.
 
 
 def _linear_subsystem(vehicle, speed: float) -> _LinearSubsystem:
-    """Linearize the seven-coordinate vertical subsystem at the static equilibrium."""
+    """Linearize the seven-coordinate vertical subsystem at static equilibrium.
 
+    The historic quarter-car ride metric is defined only for independent/modal
+    layouts. The active physical layout is intentionally rejected here rather
+    than having physical shaft rates mislabeled as wheel rates.
+    """
+    network = vehicle.suspension.network
+    if isinstance(network, ParallelNetwork):
+        raise ValueError("the legacy quarter-car setup studies do not support parallel physical layout")
     q0, tires = _static_vertical_state(vehicle, speed)
     position = np.asarray(q0)[list(POSITION_ROWS)]
     stiffness = np.empty((7, 7))
@@ -637,9 +721,13 @@ def _linear_subsystem(vehicle, speed: float) -> _LinearSubsystem:
         column[2] = -positions[index, 0]
         column[3 + index] = -1.0
         damping += vehicle.tire_vertical_damping * np.outer(column, column)
-    slopes = np.array([
-        float(np.asarray(damper.force(np.zeros(1)).slope)[0]) for damper in _damper_list(vehicle)
-    ])
+    network = vehicle.suspension.network
+    if isinstance(network, ParallelNetwork):
+        slopes = np.array([float(np.asarray(s.damper.force(np.zeros(1)).slope)[0])
+                           if s.damper_scale > 0.0 else 0.0 for s in network.struts])
+    else:
+        slopes = np.array([float(np.asarray(damper.force(np.zeros(1)).slope)[0])
+                           for damper in _damper_list(vehicle)])
     damping[3:, 3:] += _damping_matrix(vehicle, slopes, position[3:])
     spring_rate = _corner_stiffness_diagonal(vehicle, position[3:])
     tire_rate = np.asarray(
@@ -649,6 +737,8 @@ def _linear_subsystem(vehicle, speed: float) -> _LinearSubsystem:
         dtype=float,
     )
     ride = _quarter_car_ride_frequency(vehicle, spring_rate, tire_rate)
+    if isinstance(network, ParallelNetwork):
+        raise ValueError("corner ride-frequency metric is not defined for additive physical modes; use modal metrics")
     mass = np.asarray(vertical_mass_block(vehicle, position[3:]), dtype=float)
     return _LinearSubsystem(
         position=position,
@@ -670,11 +760,21 @@ def _corner_damping_ratio(vehicle, subsystem: _LinearSubsystem, index: int, velo
     """
 
     front = index == 0
-    secant = np.array([
-        abs(float(np.asarray(damper.force(np.array([velocity])).force)[0])) / abs(velocity)
-        for damper in _damper_list(vehicle)
-    ])
-    wheel_rate = float(_damping_matrix(vehicle, secant, np.zeros(4))[0 if front else 2, 0 if front else 2])
+    network = vehicle.suspension.network
+    if isinstance(network, ParallelNetwork):
+        indices = (4, 5) if front else (6, 7)
+        secant = np.array([abs(float(np.asarray(network.struts[i].damper.force(
+            np.array([velocity])).force)[0])) / abs(velocity) * network.struts[i].damper_scale
+            for i in indices])
+        rows = network.jacobian[list(indices)]
+        stiffness = rows.T @ (secant[:, None] * rows)
+        wheel_rate = float(stiffness[0 if front else 2, 0 if front else 2])
+    else:
+        secant = np.array([
+            abs(float(np.asarray(damper.force(np.array([velocity])).force)[0])) / abs(velocity)
+            for damper in _damper_list(vehicle)
+        ])
+        wheel_rate = float(_damping_matrix(vehicle, secant, np.zeros(4))[0 if front else 2, 0 if front else 2])
     fraction = vehicle.sprung_front_fraction if front else 1.0 - vehicle.sprung_front_fraction
     sprung = vehicle.sprung_mass * fraction / 2.0
     omega = 2.0 * np.pi * subsystem.ride_frequency_hz[index]
@@ -928,6 +1028,11 @@ def study_definition(study: str, settings: _StudySettings) -> dict:
             "*_frequency_hz is |lambda|/(2*pi), the undamped-equivalent natural "
             "frequency of the damped pole; *_damped_frequency_hz is "
             "Im(lambda)/(2*pi) (0 for an overdamped mode)"
+        ),
+        "physical_input_semantics": (
+            "For parallel-corner-axle, rate_<strut>, inertance_<strut>, and "
+            "preload_<strut> are physical shaft values in N/m, kg, and N. "
+            "The legacy quarter-car sweep metrics reject this layout."
         ),
         "damping_branch_convention": (
             "the linearized damping matrix uses each damper table's "
@@ -1249,10 +1354,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="sweep_vertical_setup.py",
         description=(
-            "Damper click, ARB, inertance and static-toe setup sweep over the "
-            "vertical 14-DoF linearization. A spring-rate override is not available "
-            "(the spring curve is inside the pinned corner NPZ). It writes a CSV row "
-            "per setup and a JSON summary. It does not run laps."
+            "Legacy damper/ARB setup studies and physical-shaft override catalogue "
+            "for the vertical 14-DoF model. Legacy ride-study metrics reject the "
+            "active parallel physical layout rather than relabeling shaft values as "
+            "wheel rates. Writes CSV/JSON summaries; does not run laps."
         ),
     )
     parser.add_argument("--formulation", default=str(DEFAULT_FORMULATION),

@@ -46,9 +46,9 @@ class Vertical14DofCompileTests(unittest.TestCase):
         self.assertIsInstance(vehicle.planar, PlanarVehicleParameters)
         self.assertIsInstance(vehicle.suspension, CompiledSuspension)
         self.assertIsInstance(vehicle.transient_tire, TransientTireParameters)
-        dampers = vehicle.suspension.network.dampers
-        self.assertEqual(len(dampers), 2)
-        self.assertTrue(all(isinstance(d, CompiledDamper) for d in dampers))
+        dampers = [s.damper for s in vehicle.suspension.network.struts[4:]]
+        self.assertEqual(len(dampers), 4)
+        self.assertTrue(all(callable(d.force) for d in dampers))
 
     def test_planar_part_equals_the_planar_formulation(self) -> None:
         planar = compile_formulation(PLANAR_FORMULATION).model
@@ -118,11 +118,10 @@ class Vertical14DofCompileTests(unittest.TestCase):
     def test_suspension_is_one_capability_with_nested_children(self) -> None:
         self.assertEqual(self.manifest.capability(SUSPENSION_FORCES).component_role, "suspension")
         roles = {record.role: record for record in self.manifest.loaded_components}
-        for child in ("kinematics", "spring", "arb", "damper-front", "damper-rear"):
+        for child in ("kinematics", "corner-fl", "corner-fr", "corner-rl", "corner-rr",
+                      "heave-front", "roll-front", "heave-rear", "roll-rear"):
             self.assertIn(f"suspension/{child}", roles)
-        self.assertNotEqual(roles["suspension/damper-front"].model_id,
-                            roles["suspension/damper-rear"].model_id)
-        dampers = self.vehicle.suspension.network.dampers
+        dampers = [s.damper for s in self.vehicle.suspension.network.struts[4:]]
         self.assertIsNot(dampers[0], dampers[1])
 
     def test_steady_and_transient_tires_use_separate_roles(self) -> None:

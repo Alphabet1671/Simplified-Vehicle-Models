@@ -266,9 +266,10 @@ class VerticalEvaluation:
       inside the evaluator.
     - otherwise ``mass_matrix`` is the 21x21 physical block: identity on every
       row except ``VERTICAL_ACCELERATION_INDEX``, where it holds the 7x7 matrix
-      ``M0 + diag(0, 0, 0, b_i/MR_i^2)`` (kg, kg*m, kg*m^2). ``forcing`` is the
-      generalized force on those rows (N, N*m, N, including the
-      variable-motion-ratio inertance velocity term) and equals ``rates`` on
+      ``M0`` with ``network.inertia_block(jounce)`` embedded in its jounce
+      sub-block (``M0 + embed(A.T @ diag(b) @ A)``; kg, kg*m, kg*m^2).
+      ``forcing`` is the generalized force on those rows (N, N*m, N, including
+      the variable-motion-ratio inertance velocity term) and equals ``rates`` on
       all other rows. Solving ``RateSystem(out.forcing, out.mass_matrix)``
       recovers ``rates``; do not solve ``rates`` again.
 
@@ -337,12 +338,13 @@ def sprung_wheel_positions(vehicle) -> np.ndarray:
 def vertical_mass_block(vehicle, jounce) -> np.ndarray:
     """Return the physical 7x7 mass matrix of [heave, roll, pitch, jounce x4].
 
-    ``M = diag(m_s, I_roll, I_pitch, 0, 0, 0, 0) + sum_i m_ui c_i c_i^T
-    + diag(0, 0, 0, b_i/MR_i^2)`` with ``c_i = [1, y_i, -x_i, -e_i]`` the hub
-    downward-velocity coefficients (``x_i`` measured from the sprung CG, ``e_i`` the
-    unit vector of jounce ``i``). The inerter is an ideal two-terminal device between
-    the hub and a chassis point whose relative velocity is ``jounce_rate / MR``, so
-    it adds ``b/MR^2`` only to the jounce diagonal and nothing couples the body.
+    The block contains the sprung-body diagonal mass/inertias, the four unsprung
+    contributions ``m_ui c_i c_i.T`` (including their body/jounce off-diagonal
+    terms), and the full suspension-network inertia block embedded in the lower
+    right 4x4 jounce submatrix. For an additive physical network this is
+    ``M0 + embed(A.T @ diag(b) @ A)``; modal inerters can therefore couple jounce
+    coordinates through off-diagonal terms. ``c_i = [1, y_i, -x_i, -e_i]`` uses
+    wheel positions relative to the sprung CG.
     """
 
     z = np.asarray(jounce, dtype=float)

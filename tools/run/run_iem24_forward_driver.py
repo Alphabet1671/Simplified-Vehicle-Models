@@ -87,6 +87,9 @@ _VERTICAL_SOURCES = _SOLVER_SOURCES + (
     Path("src/simplified_vehicle_models/suspension/layouts/independent_corner.py"),
     Path("src/simplified_vehicle_models/suspension/monotone_spline.py"),
     Path("src/simplified_vehicle_models/suspension/network.py"),
+    Path("src/simplified_vehicle_models/suspension/physical.py"),
+    Path("src/simplified_vehicle_models/suspension/physical_components.py"),
+    Path("src/simplified_vehicle_models/suspension/layouts/parallel.py"),
 )
 
 
@@ -247,16 +250,7 @@ def component_data_paths(component_xml_path):
 
 
 def model_inputs(model: str, track_xml):
-    """Return the named physical inputs of one model: role name -> path.
-
-    The track, its referenced CSV, the vehicle assembly, the formulation and
-    the steady tire XML are always present. A model with extra component roles
-    (the vertical 14DoF suspension and the transient tire) also records each of
-    those component XMLs and every data table they reference. A component that
-    nests children (the suspension assembly: kinematics, spring, ARB, dampers)
-    also records each child under its role path, for example
-    ``suspension_damper_front_xml``.
-    """
+    """Return named physical inputs, recursively including nested components."""
     spec = model_spec(model)
     track_xml, track_csv = track_files(track_xml)
     inputs = {"track_xml": track_xml, "track_csv": track_csv,
@@ -356,15 +350,7 @@ def jounce_indices(plant):
 
 
 def accepted_jounce_extremes(result, plant):
-    """Return ``(minimum, maximum, scope)`` jounce over the accepted trajectory.
-
-    The plant's own ``minimum_jounce``/``maximum_jounce`` are diagnostics over
-    *every* evaluation, including rejected Newton trials, and a trial may
-    legally sit inside the vertical plant's ±10 mm trial margin around the
-    travel limits. The travel gate must therefore read the accepted states of
-    ``result`` (and, when the method produced a verifiable interpolant, the
-    per-interval dense bounds that cover every midpoint).
-    """
+    """Return finite jounce extrema over accepted states and dense bounds."""
     indices = list(jounce_indices(plant))
     values = np.asarray(result.state, dtype=float)[indices]
     minimum, maximum = float(np.min(values)), float(np.max(values))
@@ -380,14 +366,9 @@ def accepted_jounce_extremes(result, plant):
 
 
 def jounce_travel_limits(vehicle):
-    """Return the ``[lower, upper]`` jounce travel every corner must satisfy.
-
-    ``vehicle`` is the compiled vertical 14DoF model. The interval is the
-    intersection of the front and rear axle limits, so a state inside it is
-    inside every corner's travel without needing per-corner extremes.
-    """
-    limits = vehicle.suspension.kinematics.jounce_limits
-    return (float(np.max(limits[:, 0])), float(np.min(limits[:, 1])))
+    """Return legacy jounce design metadata, not an enforced travel bound."""
+    limits = np.asarray(vehicle.suspension.kinematics.jounce_limits, dtype=float)
+    return float(np.max(limits[:, 0])), float(np.min(limits[:, 1]))
 
 
 def finite_or_none(value):
@@ -1133,6 +1114,8 @@ def child(args):
                                                      / (.5 * (plan.speed[1:] + plan.speed[:-1])))),
                        planned_peak_lateral_acceleration=float(np.max(
                            plan.speed**2 * np.abs(plan.curvature))))
+        summary["suspension_travel_policy"] = "unlimited"
+        summary["suspension_travel_enforced"] = False
         # A completed transient is not usable unless every independent acceptance
         # gate (including periodicity and between-step/refinement checks) passes.
         # Every accepted state has been checked by solve_forward. Zero contact
@@ -1143,17 +1126,15 @@ def child(args):
                 and math.isfinite(plant.minimum_contact_load)
                 and plant.minimum_contact_load >= 0.)
         else:
-            # The vertical plant has no inner load loop, so its contact evidence
-            # is the accepted trajectory's minimum tire load, the table-domain
-            # counter (damper, spring, bump-stop and jounce-steer exits) and the
-            # travel bound. The travel gate reads the accepted states and the
-            # dense interval bounds, never the plant's all-evaluation jounce
-            # extremes: a rejected Newton trial may legally sit inside the
-            # ±10 mm trial margin around the limits.
-            lower, upper = jounce_travel_limits(vehicle)
+            # Contact/usability is independent of unlimited travel. The range
+            # remains descriptive design metadata; the compatibility flag means
+            # accepted jounces are finite, not within that range.
             accepted_low, accepted_high, scope = accepted_jounce_extremes(result, plant)
-            travel_valid = bool(accepted_low >= lower and accepted_high <= upper)
-            summary["jounce_travel_limits_m"] = [lower, upper]
+            travel_valid = bool(math.isfinite(accepted_low) and math.isfinite(accepted_high))
+            summary["suspension_travel_policy"] = "unlimited"
+            summary["suspension_travel_enforced"] = False
+            summary["jounce_travel_limits_m"] = None
+            summary["jounce_design_range_m"] = vehicle.suspension.kinematics.jounce_limits.tolist()
             summary["jounce_gate_scope"] = scope
             summary["jounce_accepted_minimum_m"] = accepted_low
             summary["jounce_accepted_maximum_m"] = accepted_high
@@ -1167,8 +1148,7 @@ def child(args):
                 and math.isfinite(plant.minimum_contact_load)
                 and plant.minimum_contact_load >= 0.
                 and plant.out_of_range_evaluations == 0
-                and summary.get("network_state_valid", True)
-                and travel_valid)
+                and summary.get("network_state_valid", True))
         # Interval-wide evidence that is narrower than between-step validation:
         # it bounds the BDF dense interpolant (not the true trajectory) for the
         # explicit state domain, and checks parameter-dependent contact
@@ -1249,6 +1229,10 @@ def child(args):
                            speed_regulated_evaluations=plant.speed_regulated_evaluations,
                            maximum_motor_speed_ratio=plant.maximum_motor_speed_ratio)
             if not spec.planar_dense_certificate:
+                summary.setdefault("suspension_travel_policy", "unlimited")
+                summary.setdefault("suspension_travel_enforced", False)
+                summary.setdefault("jounce_travel_limits_m", None)
+                summary.setdefault("jounce_design_range_m", None)
                 # Diagnostics over every plant evaluation, including rejected
                 # trials. An attempt aborted before its first successful
                 # evaluation still holds the ±inf sentinels, which

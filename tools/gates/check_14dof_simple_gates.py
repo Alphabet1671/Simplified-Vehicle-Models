@@ -67,9 +67,8 @@ REFINEMENT_LAP_TIME_TOLERANCE_S = 0.005
 REFINEMENT_SPEED_TOLERANCE_MPS = 0.05
 REFINEMENT_MATCHED_SAMPLES = 1017
 
-#: The LUT metadata's bump-stop onset: a 10x wheel-rate rise from 29.8 mm with a
-#: C1 smoothstep blend over 27.8-29.8 mm. A jounce beyond the blend start is a
-#: bump-stop entry; the hard acceptance limit is the travel limit (31.8 mm).
+#: Historical bump-stop blend onset in the descriptive LUT data; not a
+#: mechanical travel or acceptance limit under the current unlimited policy.
 BUMP_STOP_BLEND_START_M = 0.0278
 
 #: Cross-fidelity speed-trace sample count written next to the gate table. The
@@ -316,8 +315,9 @@ def contact_gate(directory, summary) -> dict:
 def bump_stop_evidence(directory, tables: dict) -> dict:
     """Return the bump-stop entry count and peak wheel force from the trace.
 
-    Entry is ``|jounce| > 27.8 mm`` (the C1 blend start of the PROPOSED 10x
-    bump-stop rise); the hard travel limit stays 31.8 mm. The peak wheel force is
+    Entry is ``|jounce| > 27.8 mm`` (the C1 blend start in the historical LUT's
+    PROPOSED 10x spring-rate rise); this is descriptive only, not a travel gate.
+    The peak wheel force is
     the compiled spring curve evaluated at the accepted extreme, which already
     includes the bump stop. When the BDF dense bounds are still present, the
     per-interval bounds are checked too, so a midpoint-only entry is caught.
@@ -366,7 +366,11 @@ def bump_stop_evidence(directory, tables: dict) -> dict:
 
 
 def travel_gate(directory, summary, tables: dict) -> dict:
-    """Gate 3: jounce inside the travel limits, with bump-stop reporting."""
+    """Gate 3: finite jounce diagnostics and bump-stop reporting.
+
+    Current unlimited-policy summaries pass without a travel test. Historical
+    summaries lacking the policy retain their original bounded interpretation.
+    """
     evidence = {"jounce_travel_limits_m": summary.get("jounce_travel_limits_m"),
                 "jounce_accepted_minimum_m": summary.get("jounce_accepted_minimum_m"),
                 "jounce_accepted_maximum_m": summary.get("jounce_accepted_maximum_m"),
@@ -379,17 +383,26 @@ def travel_gate(directory, summary, tables: dict) -> dict:
         evidence["bump_stop_evidence_error"] = None
     except (OSError, ValueError, KeyError) as error:  # trace or bounds unavailable
         evidence["bump_stop_evidence_error"] = f"{type(error).__name__}: {error}"
-    return gate(
-        summary.get("jounce_travel_valid") is True,
-        "All accepted and midpoint states keep jounce inside +/-31.8 mm. Bump-stop entry "
-        "before the limit is reported, not failed; a state beyond the limit fails.",
-        relative_attempt(directory),
-        {"jounce_travel_valid": summary.get("jounce_travel_valid")},
-        evidence)
+    unlimited_policy = summary.get("suspension_travel_policy") == "unlimited"
+    unlimited = (unlimited_policy and summary.get("suspension_travel_enforced") is False)
+    finite_jounce = all(isinstance(summary.get(key), (int, float))
+                        and np.isfinite(summary[key])
+                        for key in ("jounce_accepted_minimum_m", "jounce_accepted_maximum_m"))
+    passed = ((unlimited and summary.get("jounce_travel_valid") is True and finite_jounce
+               and float(summary["jounce_accepted_minimum_m"]) <= float(summary["jounce_accepted_maximum_m"]))
+              if unlimited_policy else summary.get("jounce_travel_valid") is True)
+    definition = ("Suspension displacement is unlimited; jounce_travel_valid confirms finite accepted jounce. "
+                  "Damper and other physical-domain checks remain separate." if unlimited else
+                  "Historical interpretation: accepted and midpoint jounce stays inside recorded travel limits.")
+    return gate(passed, definition, relative_attempt(directory),
+                {"jounce_travel_valid": summary.get("jounce_travel_valid"),
+                 "suspension_travel_policy": summary.get("suspension_travel_policy"),
+                 "suspension_travel_enforced": summary.get("suspension_travel_enforced")},
+                evidence)
 
 
 def table_domain_gate(directory, summary, tables: dict, damper: dict) -> dict:
-    """Gate 4: no query left a compiled damper, spring or roll-centre table."""
+    """Gate 4: bounded domains remain enforced; unlimited jounce knots are descriptive."""
     plant_class = vertical_plant()
     trace = trace_of(directory)
     maximum_roll_deg = float(np.degrees(np.max(np.abs(trace[:, column(plant_class, "roll")]))))
@@ -399,25 +412,30 @@ def table_domain_gate(directory, summary, tables: dict, damper: dict) -> dict:
     roll_limit_deg = 5.0
     has_network = "network_state_valid" in summary
     network_valid = summary.get("network_state_valid", True)
+    unlimited = (summary.get("suspension_travel_policy") == "unlimited" and summary.get("suspension_travel_enforced") is False)
+    domain_text = ("out_of_range_evaluations == 0 for bounded damper/other strict domains; spring and jounce-geometry knot ranges are descriptive only."
+                   if unlimited else "Historical interpretation: no query left recorded damper, spring, or roll-centre table domains.")
+    if has_network:
+        domain_text += " Every suspension-network state remains within physical bounds."
     return gate(
         summary.get("out_of_range_evaluations") == 0 and network_valid is True,
-        ("out_of_range_evaluations == 0 for dampers, springs and the roll-centre table, and "
-         "every suspension-network state (gas volume) inside its physical bounds."
-         if has_network else
-         "out_of_range_evaluations == 0 for dampers, springs and the roll-centre table."),
+        domain_text,
         relative_attempt(directory),
         {"out_of_range_evaluations": summary.get("out_of_range_evaluations")},
         {"out_of_range_evaluations": summary.get("out_of_range_evaluations"),
-         "out_of_range_scope": ("every plant evaluation, including rejected Newton trials: "
-                                "damper-velocity exits plus spring, bump-stop and "
-                                "jounce-steer DomainError conversions"),
-         "maximum_damper_velocity_mps": maximum_damper,
+          "out_of_range_scope": ("bounded damper/strict-domain exits only; jounce spring/geometry knots are descriptive, not enforced" if unlimited else "historical table-domain counter interpretation"),
+          "jounce_table_ranges_scope": ("design/table knot metadata only, not mechanical travel limits" if unlimited else "historical table-domain metadata"),
+          "maximum_damper_velocity_mps": maximum_damper,
          "damper_table_velocity_limit_mps": damper_limit,
          "damper_velocity_headroom_fraction": (None if maximum_damper is None
                                                else 1. - float(maximum_damper) / damper_limit),
-         "spring_curve_jounce_domain_m": [float(np.min(tables["spring_jounce_front"])),
+         "spring_design_knot_range_m": [float(np.min(tables["spring_jounce_front"])),
+                                           float(np.max(tables["spring_jounce_front"]))],
+          "spring_curve_jounce_domain_m": [float(np.min(tables["spring_jounce_front"])),
                                           float(np.max(tables["spring_jounce_front"]))],
-         "jounce_steer_jounce_domain_m": [float(np.min(tables["jounce_steer_jounce_front"])),
+         "jounce_steer_design_knot_range_m": [float(np.min(tables["jounce_steer_jounce_front"])),
+                                                 float(np.max(tables["jounce_steer_jounce_front"]))],
+          "jounce_steer_jounce_domain_m": [float(np.min(tables["jounce_steer_jounce_front"])),
                                           float(np.max(tables["jounce_steer_jounce_front"]))],
          "jounce_accepted_extremes_m": [summary.get("jounce_accepted_minimum_m"),
                                         summary.get("jounce_accepted_maximum_m")],

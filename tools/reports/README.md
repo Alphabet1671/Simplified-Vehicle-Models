@@ -7,7 +7,7 @@ Report generators and plot scripts.
 | File | Contents |
 |---|---|
 | `__init__.py` | Package marker. |
-| `compare_iem24_four_way.py` | Four-way MIS 2024 comparison: measured stint vs point mass, 7DoF and 14DoF. |
+| `compare_iem24_four_way.py` | Four-way MIS 2024 comparison: measured stint vs point mass, 7DoF and 14DoF; reports active physical suspension settings by shaft strut. |
 | `compare_iem24_modal_vs_corner.py` | Compare the IEM24 modal roll/heave setup with the independent-corner + rear ARB. |
 | `compare_iem24_murphy_stint.py` | Compare one simulated MIS lap with the measured IEM24 Murphy stint. |
 | `compare_iem24_three_way.py` | Overlay unchanged measured IEM24 laps with point-mass and planar 7-DOF runs. |

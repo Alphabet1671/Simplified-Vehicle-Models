@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<model schema-version="1.0" id="iem24-corner-zero-strut" type="suspension-strut" subtype="physical">
+  <parameters>
+    <parameter name="spring_rate" value="0" unit="N/m"/><parameter name="preload" value="0" unit="N"/>
+    <parameter name="inertance" value="0" unit="kg"/><parameter name="damper_scale" value="0" unit="1"/>
+    <parameter name="motion_ratio" value="1" unit="1"/><parameter name="orientation" value="1" unit="1"/>
+  </parameters>
+  <components><component role="damper" ref="../dampers/zero.xml"/></components>
+</model>

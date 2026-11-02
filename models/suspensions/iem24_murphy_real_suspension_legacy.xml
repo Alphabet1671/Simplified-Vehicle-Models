@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Preserved legacy independent-corner assembly for explicit compatibility fixtures only. -->
+<model schema-version="1.0" id="iem24-murphy-real-suspension-legacy" type="suspension-assembly" subtype="independent-corner">
+  <components>
+    <component role="kinematics" ref="../suspension-kinematics/iem24_murphy_real_suspension_kinematics.xml"/>
+    <component role="spring" ref="../springs/iem24_murphy_real_suspension_springs.xml"/>
+    <component role="arb" ref="../anti-roll-bars/iem24_murphy_real_suspension_arb.xml"/>
+    <component role="damper-front" ref="../dampers/multimatic_dssv_vc01_front.xml"/>
+    <component role="damper-rear" ref="../dampers/multimatic_dssv_vc01_rear.xml"/>
+  </components>
+  <parameters>
+    <parameter name="inertance_front" value="0" unit="kg"/>
+    <parameter name="inertance_rear" value="0" unit="kg"/>
+  </parameters>
+</model>

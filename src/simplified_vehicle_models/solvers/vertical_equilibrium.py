@@ -82,9 +82,8 @@ def solve_static_equilibrium(
         delta, *_ = np.linalg.lstsq(jac, -r, rcond=None)
         scale = 1.0
         norm = np.linalg.norm(r)
-        # A trial outside the suspension travel or the damper table raises
-        # DomainError; count it as a rejected step, exactly like a step that
-        # fails to reduce the residual.
+        # Damper/table domain errors reject a step exactly like a residual
+        # increase; finite suspension travel itself is unlimited.
         while scale > 1e-6:
             try:
                 trial = residual(q + scale * delta)
@@ -147,9 +146,8 @@ CONTINUATION_ACCEPTANCE = 1e-9
 MAXIMUM_NEWTON_ITERATIONS = 40
 MINIMUM_LINE_SEARCH_SCALE = 1.0 / 1024.0
 
-#: Trial bounds. Jounce is the DSS travel, the load floor keeps all four tires
-#: in contact, and the sideslip/slip-ratio caps reject wild Newton excursions.
-MAXIMUM_TRIAL_JOUNCE = 0.0318
+#: Trial bounds. The load floor keeps all four tires in contact, and the
+#: sideslip/slip-ratio caps reject wild Newton excursions. Jounce is unlimited.
 MINIMUM_TRIAL_LOAD = 2.0
 MAXIMUM_TRIAL_SIDESLIP = 0.5
 MAXIMUM_TRIAL_SLIP_RATIO = 0.5
@@ -412,7 +410,7 @@ def _corner_point(
     """Build the state, torques, steering and steady tire states at ``x``.
 
     Raises ``_RejectedTrial`` for a point outside the admissible box (steering,
-    torque, jounce, sideslip and slip-ratio bounds, and a tire out of contact).
+    torque, sideslip and slip-ratio bounds, non-finite jounce, and tire contact).
     """
 
     planar = vehicle.planar
@@ -428,8 +426,8 @@ def _corner_point(
         raise _RejectedTrial("sideslip beyond its bound")
     if np.any(np.abs(kappa) > MAXIMUM_TRIAL_SLIP_RATIO):
         raise _RejectedTrial("slip ratio beyond its bound")
-    if np.any(np.abs(jounce) > MAXIMUM_TRIAL_JOUNCE):
-        raise _RejectedTrial("jounce beyond the suspension travel")
+    if not np.all(np.isfinite(jounce)):
+        raise _RejectedTrial("non-finite jounce")
 
     yaw_rate = lateral_acceleration / speed
     v_x = speed * np.cos(sideslip)

@@ -7,7 +7,7 @@ name = "simplified-vehicle-models"
 version = "0.1.0"
 description = "Simplified vehicle models and lap simulation tools"
 requires-python = ">=3.12"
-dependencies = ["numpy>=2.0"]
+dependencies = ["numpy>=2.0", "scipy>=1.13"]
 
 [project.optional-dependencies]
 forward = ["scipy>=1.11"]

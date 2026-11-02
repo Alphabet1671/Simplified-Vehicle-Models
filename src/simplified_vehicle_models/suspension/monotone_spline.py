@@ -50,10 +50,14 @@ class MonotoneSpline:
     """C1 piecewise cubic Hermite interpolant with Fritsch-Carlson slopes.
 
     Monotone data give a monotone interpolant. Queries outside
-    ``[x[0], x[-1]]`` raise :class:`DomainError`.
+    ``[x[0], x[-1]]`` follow the explicit ``extrapolation`` policy: ``raise``
+    (the default), endpoint-tangent ``linear``, or endpoint-held ``constant``.
     """
 
-    def __init__(self, x, y) -> None:
+    def __init__(self, x, y, *, extrapolation='raise') -> None:
+        if extrapolation not in ('raise', 'linear', 'constant'):
+            raise ValueError("extrapolation must be 'raise', 'linear', or 'constant'")
+        self._extrapolation = extrapolation
         x = np.array(x, dtype=float)
         y = np.array(y, dtype=float)
         if x.ndim != 1 or y.shape != x.shape:
@@ -84,7 +88,9 @@ class MonotoneSpline:
 
     def _locate(self, q, side: str = "right"):
         q = np.asarray(q, dtype=float)
-        if not np.all((q >= self._x[0]) & (q <= self._x[-1])):
+        if not np.all(np.isfinite(q)):
+            raise DomainError("spline queries must be finite")
+        if self._extrapolation == 'raise' and not np.all((q >= self._x[0]) & (q <= self._x[-1])):
             raise DomainError(
                 f"query outside spline domain [{self._x[0]}, {self._x[-1]}]"
             )
@@ -100,32 +106,58 @@ class MonotoneSpline:
         return k, h, t
 
     def __call__(self, q) -> np.ndarray:
-        k, h, t = self._locate(q)
+        q = np.asarray(q, dtype=float)
+        if not np.all(np.isfinite(q)):
+            raise DomainError("spline queries must be finite")
+        if self._extrapolation == 'raise':
+            k, h, t = self._locate(q)
+        else:
+            clipped = np.clip(q, self._x[0], self._x[-1])
+            k, h, t = self._locate(clipped)
         t2 = t * t
         t3 = t2 * t
         h00 = 2.0 * t3 - 3.0 * t2 + 1.0
         h10 = t3 - 2.0 * t2 + t
         h01 = -2.0 * t3 + 3.0 * t2
         h11 = t3 - t2
-        return (
+        result = (
             h00 * self._y[k]
             + h10 * h * self._m[k]
             + h01 * self._y[k + 1]
             + h11 * h * self._m[k + 1]
         )
+        if self._extrapolation == 'linear':
+            result = np.where(q < self._x[0], self._y[0] + self._m[0] * (q - self._x[0]), result)
+            result = np.where(q > self._x[-1], self._y[-1] + self._m[-1] * (q - self._x[-1]), result)
+        elif self._extrapolation == 'constant':
+            result = np.where(q < self._x[0], self._y[0], result)
+            result = np.where(q > self._x[-1], self._y[-1], result)
+        return result
 
     def derivative(self, q, side: str = "right") -> np.ndarray:
         """First derivative. ``side`` picks the interval at an interior knot;
         the Hermite construction makes both choices agree (C1)."""
-        k, h, t = self._locate(q, side)
+        q = np.asarray(q, dtype=float)
+        if not np.all(np.isfinite(q)):
+            raise DomainError("spline queries must be finite")
+        if self._extrapolation == 'raise':
+            k, h, t = self._locate(q, side)
+        else:
+            k, h, t = self._locate(np.clip(q, self._x[0], self._x[-1]), side)
         t2 = t * t
         d00 = 6.0 * t2 - 6.0 * t
         d10 = 3.0 * t2 - 4.0 * t + 1.0
         d01 = -6.0 * t2 + 6.0 * t
         d11 = 3.0 * t2 - 2.0 * t
-        return (
+        result = (
             d00 * self._y[k] / h
             + d10 * self._m[k]
             + d01 * self._y[k + 1] / h
             + d11 * self._m[k + 1]
         )
+        if self._extrapolation == 'linear':
+            result = np.where(q < self._x[0], self._m[0], result)
+            result = np.where(q > self._x[-1], self._m[-1], result)
+        elif self._extrapolation == 'constant':
+            result = np.where((q < self._x[0]) | (q > self._x[-1]), 0.0, result)
+        return result

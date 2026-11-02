@@ -28,6 +28,30 @@ class EnvelopePolicyTests(unittest.TestCase):
         env=envelope([20,20,20],[20,20,20],maximum=20.)
         self.assertEqual(EnvelopePolicy(env).decide(obs(v=0),0.).requested_throttle,1.)
         self.assertEqual(EnvelopePolicy(env).decide(obs(v=20),0.).requested_throttle,0.)
+    def test_global_cap_continuously_limits_positive_acceleration(self):
+        env=envelope([20.,20.,20.],[20.,20.,20.],maximum=20.)
+        policy=EnvelopePolicy(env,EnvelopeDriverSettings(feedforward_distance_m=.5))
+        near=[policy.decide(obs(v=20.+delta),0.) for delta in (-1e-8,0.,1e-8)]
+        self.assertEqual(near[1].requested_throttle,0.)
+        self.assertLessEqual(near[2].requested_throttle,near[1].requested_throttle)
+        self.assertLess(abs(near[0].acceleration_request-near[1].acceleration_request),1e-6)
+        class Rising:
+            maximum_speed=20.; distance=np.array([0.,10.,20.]); is_closed=False
+            def sample(self,station):
+                from types import SimpleNamespace
+                q=100. if station<.7 else 400.
+                return SimpleNamespace(squared_speed=q,corner_speed=20.,entry_speed=np.sqrt(q),
+                    squared_speed_slope=0.,deceleration=0.,binding_index=0,binding_station=0.,
+                    binding_distance=0.,speed_domain_max=20.,station=station)
+        rp=EnvelopePolicy(Rising(),EnvelopeDriverSettings(feedforward_distance_m=.5,
+                         disabled_transition_time_s=.001,response_allowance_s=0.,positive_acceleration_reserve_mps2=0.))
+        commands=[rp.decide(obs(s=0.,v=v),0.) for v in (20.-1e-8,20.,20.+1e-8)]
+        self.assertEqual(commands[1].requested_throttle,0.)
+        self.assertLess(abs(commands[0].acceleration_request-commands[1].acceleration_request),1e-5)
+        self.assertLess(abs(commands[2].acceleration_request-commands[1].acceleration_request),1e-5)
+        flat=EnvelopePolicy(env).decide(obs(v=20.),0.)
+        self.assertEqual(flat.requested_throttle,0.)
+
     def test_finite_chord_approaches_continuously_across_grid_node(self):
         env=envelope([30.,30.,10.],[np.sqrt(300.),np.sqrt(200.),10.])
         policy=EnvelopePolicy(env,EnvelopeDriverSettings(response_allowance_s=0.,disabled_transition_time_s=.01,positive_acceleration_reserve_mps2=0.))

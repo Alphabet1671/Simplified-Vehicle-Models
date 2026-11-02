@@ -1,4 +1,4 @@
-"""GUI child adapter for yaw-aware planning/replay and point-mass studies.
+"""GUI child adapter for forward-driver and point-mass studies.
 
 Invoked only through the GUI deadline-managed child process. Inputs are read
 from the immutable case.json; outputs belong to one fresh attempt directory.
@@ -34,123 +34,6 @@ def _write_json(path: Path, data: dict) -> None:
     tmp.replace(path)
 
 
-def _yaw(case: dict, attempt: Path, settings: RunSettings, case_dir: Path) -> int:
-    from tools.run import run_yaw_lap_suite as suite
-    track = _inside(_resolve(case["track"]), (REPOSITORY_ROOT,), "track")
-    if not track.is_file():
-        raise ValueError(f"track does not exist: {track}")
-    map_path = _inside(_resolve(settings.yaw_map), (REPOSITORY_ROOT,), "yaw map")
-    if not map_path.is_file():
-        raise ValueError(f"completed yaw-map artifact does not exist: {map_path}")
-    from tools.sim_gui.settings import _validate_map
-    _validate_map(map_path)
-    plan = None
-    if settings.plan:
-        plan = _inside(_resolve(settings.plan, base=case_dir), (REPOSITORY_ROOT, case_dir), "replay plan")
-    validate(settings, case["model"], track)
-    model_root = (case_dir / "model").resolve()
-    formulation = _inside(_resolve(case["formulation"], base=case_dir), (model_root,), "formulation")
-    if not formulation.is_file():
-        raise ValueError(f"case formulation does not exist: {formulation}")
-    if settings.mode == "replay" and not plan:
-        raise ValueError("replay requires a saved plan")
-    if settings.mode != "replay" and plan is not None:
-        raise ValueError("saved plan is only accepted in replay mode")
-    argv = list(case["argv"])
-    for flag, value in (("--track", str(track)), ("--yaw-map", str(map_path))):
-        if flag not in argv:
-            raise ValueError(f"immutable case argv is missing {flag}")
-        argv[argv.index(flag) + 1] = value
-    if "--output-dir" in argv:
-        raise ValueError("case argv must not select an output directory")
-    if settings.mode == "replay" and plan is None:
-        raise ValueError("replay requires a saved plan")
-    if plan is not None and not plan.is_file():
-        raise ValueError(f"replay plan does not exist: {plan}")
-    if plan is not None:
-        expected_plan = case.get("input_identity", {}).get("replay_plan")
-        expected_digest = case.get("input_identity", {}).get("replay_plan_sha256")
-        if str(plan) != expected_plan or hashlib.sha256(plan.read_bytes()).hexdigest() != expected_digest:
-            raise ValueError("replay plan differs from immutable case identity")
-        if "--plan" not in argv:
-            raise ValueError("replay case argv is missing --plan")
-        argv[argv.index("--plan") + 1] = str(plan)
-    # Compile the selected source first; 14DoF planar conversion uses its
-    # composed planar member and does not substitute a baseline formulation.
-    from simplified_vehicle_models.compiler.compile import compile_formulation
-    compile_result = compile_formulation(str(formulation))
-    compiled_source = compile_result.model
-    source_model = case["model"]
-    if source_model == "14dof-simple":
-        if not isinstance(compiled_source, VerticalVehicleParameters):
-            raise ValueError("14DoF case formulation did not compile as 14dof-simple")
-        # The validated 14DoF compile composes the exact selected assembly's
-        # planar data as .planar. The suite consumes that actual compiled value
-        # without substituting a baseline formulation.
-        argv.extend(("--solution-model", "14dof-simple"))
-    else:
-        if not isinstance(compiled_source, PlanarVehicleParameters):
-            raise ValueError(f"yaw-aware source must compile as planar-7dof; received {source_model}")
-    argv.extend(("--formulation", str(formulation), "--output-dir", str(attempt)))
-    args = suite.parse_args(argv)
-    result = int(suite.run(args))
-    summary_path = attempt / "summary.json"
-    try:
-        summary = json.loads(summary_path.read_text())
-    except (OSError, json.JSONDecodeError):
-        summary = None
-    plan_path = attempt / "plan.npz"
-    plan_digest = hashlib.sha256(plan_path.read_bytes()).hexdigest() if plan_path.is_file() else None
-    run_record = attempt / "run_record.npz"
-    if isinstance(summary, dict):
-        summary["plan_artifact_sha256"] = plan_digest
-        summary["artifact_sha256"] = hashlib.sha256(run_record.read_bytes()).hexdigest() if run_record.is_file() else plan_digest
-        _write_json(summary_path, summary)
-    try:
-        inputs = json.loads((attempt / "inputs.json").read_text())
-    except (OSError, json.JSONDecodeError):
-        inputs = {}
-    if not isinstance(inputs, dict):
-        inputs = {}
-    manifest = getattr(compile_result, "manifest", None)
-    inputs.update({
-        "solver_kind": "yaw-aware", "source_model": source_model,
-        "solution_model": "planar-7dof", "track": str(track), "formulation": str(formulation),
-        "source_formulation": str(formulation),
-        "source_manifest": _manifest_source_ids(manifest),
-        "yaw_map": str(map_path), "mode": settings.mode, "plan": str(plan) if plan else None,
-        "compiled_source_subtype": "14dof-simple" if source_model == "14dof-simple" else "planar-7dof",
-        "reduction": "14dof.planar->planar-7dof" if source_model == "14dof-simple" else "identity",
-        "track_sha256": hashlib.sha256(track.read_bytes()).hexdigest(),
-        "map_sha256": hashlib.sha256(map_path.read_bytes()).hexdigest(),
-        "formulation_sha256": hashlib.sha256(formulation.read_bytes()).hexdigest(),
-        "plan_sha256": plan_digest,
-        "run_record_sha256": hashlib.sha256(run_record.read_bytes()).hexdigest() if run_record.is_file() else None,
-    })
-    if plan_path.is_file():
-        try:
-            import numpy as np
-            with np.load(plan_path, allow_pickle=False) as archive:
-                metadata = json.loads(str(archive["metadata"].item()))
-            inputs.update(map_identity=metadata.get("map_identity"), track_identity=metadata.get("track_identity"))
-        except Exception:
-            pass
-    _write_json(attempt / "inputs.json", inputs)
-    return result
-
-
-def _manifest_source_ids(manifest) -> list[str]:
-    if manifest is None:
-        return []
-    assembly = getattr(manifest, "assembly", None)
-    sources = [str(getattr(assembly, "path", ""))] if assembly is not None else []
-    components = getattr(manifest, "loaded_components", ())
-    if not isinstance(components, (tuple, list)):
-        components = ()
-    sources.extend(str(getattr(item, "path", "")) for item in components)
-    return [source for source in sources if source]
-
-
 def _point_mass(case: dict, attempt: Path, settings: RunSettings, case_dir: Path) -> int:
     import numpy as np
     from simplified_vehicle_models.compiler.compile import compile_formulation
@@ -165,8 +48,6 @@ def _point_mass(case: dict, attempt: Path, settings: RunSettings, case_dir: Path
     track = load_track(track_path)
     if not track.is_closed:
         raise ValueError("point-mass GUI supports closed tracks only; open/standing-start courses are unsupported")
-    if settings.mode != "fixed" or settings.plan is not None or settings.yaw_map:
-        raise ValueError("point-mass GUI accepts no yaw mode, saved plan, or yaw map")
     if (isinstance(settings.point_mass_duration, bool) or not isinstance(settings.point_mass_duration, (int, float))
             or not np.isfinite(settings.point_mass_duration) or settings.point_mass_duration <= 0):
         raise ValueError("point-mass duration must be finite and positive")
@@ -215,7 +96,7 @@ def _point_mass(case: dict, attempt: Path, settings: RunSettings, case_dir: Path
         "resolution_mapping": case["resolution_mapping"],
         "reduction": reduction, "source_formulation": str(formulation),
         "source_manifest": _manifest_source_ids(getattr(compiled, "manifest", None)),
-        "track_closed": True, "yaw_map_used": False,
+        "track_closed": True,
         "semantics": "closed flying-lap power investigation; no energy/stint semantics",
         "artifact": "point_mass_plan.npz", "artifact_sha256": plan_digest,
     })
@@ -233,7 +114,11 @@ def _point_mass(case: dict, attempt: Path, settings: RunSettings, case_dir: Path
 def run_case(case_dir: Path, attempt: Path) -> int:
     case_dir, attempt = Path(case_dir).resolve(), Path(attempt).resolve()
     payload = json.loads((case_dir / "case.json").read_text())
-    if not isinstance(payload, dict) or payload.get("solver_kind") not in {"yaw-aware", "point-mass", "forward-driver"}:
+    if not isinstance(payload, dict):
+        raise ValueError("invalid case.json solver contract")
+    if payload.get("solver_kind") == "yaw-aware":
+        raise ValueError("retired yaw workflow in case.json; select forward-driver or point-mass")
+    if payload.get("solver_kind") not in {"point-mass", "forward-driver"}:
         raise ValueError("invalid case.json solver contract")
     if attempt.exists():
         if not attempt.is_dir() or any(attempt.iterdir()):
@@ -245,19 +130,13 @@ def run_case(case_dir: Path, attempt: Path) -> int:
         settings = RunSettings.from_json(payload["settings"])
         if payload["solver_kind"] != settings.solver_kind:
             raise ValueError("case solver_kind conflicts with serialized settings")
-        if settings.solver_kind == "yaw-aware":
-            return _yaw(payload, attempt, settings, case_dir)
         if settings.solver_kind == "forward-driver":
             from tools.sim_gui.forward_execute import run as run_forward
             return run_forward(payload, attempt, settings, case_dir)
         return _point_mass(payload, attempt, settings, case_dir)
     except Exception as error:
         inputs = {"status": "failed", "case": str(case_dir)}
-        if settings is not None and settings.solver_kind == "yaw-aware":
-            inputs["yaw_map"] = settings.yaw_map
-            inputs["track"] = payload.get("track")
-            inputs["formulation"] = payload.get("formulation")
-        elif settings is not None and settings.solver_kind == "forward-driver":
+        if settings is not None and settings.solver_kind == "forward-driver":
             if (attempt / "summary.json").is_file():
                 return 4
             inputs.update({"solver_kind": "forward-driver", "source_model": payload.get("model"),

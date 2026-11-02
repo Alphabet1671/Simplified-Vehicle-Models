@@ -11,7 +11,7 @@ from tools.sim_gui.settings import RunSettings, solution_model_for, validate
 
 class ForwardSettingsTests(unittest.TestCase):
     def test_defaults_roundtrip_and_legacy_default_preserved(self):
-        self.assertEqual(RunSettings().solver_kind, "yaw-aware")
+        self.assertEqual(RunSettings().solver_kind, "forward-driver")
         settings = RunSettings(solver_kind="forward-driver")
         self.assertEqual(RunSettings.from_json(settings.to_json()), settings)
         self.assertEqual(settings.forward_duration, 300.)
@@ -29,8 +29,8 @@ class ForwardSettingsTests(unittest.TestCase):
                 settings = RunSettings(solver_kind="forward-driver", **{key: value})
                 with self.assertRaises(ValueError):
                     validate(settings, "planar-7dof", Path("unused"))
-        with self.assertRaisesRegex(ValueError, "yaw map, mode"):
-            validate(RunSettings(solver_kind="forward-driver", yaw_map="legacy"), "planar-7dof", Path("unused"))
+        with self.assertRaisesRegex(ValueError, "retired yaw"):
+            RunSettings.from_json({"yaw_map": "legacy"})
 
     def test_invalid_before_compile(self):
         from tools.sim_gui import execute
@@ -48,7 +48,7 @@ class ForwardSettingsTests(unittest.TestCase):
             write_variant.assert_not_called()
 
     def test_run_case_dispatches_to_forward_adapter(self):
-        from tools.sim_gui.run_yaw_case import run_case
+        from tools.sim_gui.run_case import run_case
         settings = RunSettings(solver_kind="forward-driver")
         with tempfile.TemporaryDirectory() as folder:
             case_dir = Path(folder) / "case"
@@ -228,44 +228,24 @@ class ForwardWidgetTests(unittest.TestCase):
         from PyQt6.QtWidgets import QApplication
         cls.app = QApplication.instance() or QApplication([])
 
-    def test_visibility_and_roundtrip(self):
+    def test_visibility_and_roundtrip_has_only_supported_workflows(self):
         from tools.sim_gui.qt.settings_tab import SettingsTab
         widget = SettingsTab()
         widget.show()
-        widget.solver_kind.setCurrentIndex(widget.solver_kind.findData("forward-driver"))
         self.app.processEvents()
-        self.assertTrue(widget.forward_note.isVisible())
+        self.assertEqual([widget.solver_kind.itemData(i) for i in range(widget.solver_kind.count())],
+                         ["forward-driver", "point-mass"])
+        self.assertEqual(widget.settings().solver_kind, "forward-driver")
         self.assertTrue(widget.forward_duration.isVisible())
-        self.assertFalse(widget.yaw_map.isVisible())
-        self.assertTrue(widget.yaw_map.isHidden())
-        def label_for(control):
-            for row in range(widget._form.rowCount()):
-                field = widget._form.itemAt(row, widget._form.ItemRole.FieldRole)
-                if field and field.widget() is control:
-                    return widget._form.itemAt(row, widget._form.ItemRole.LabelRole).widget()
-            self.fail("control has no form label")
-        self.assertFalse(label_for(widget.forward_duration).isHidden())
-        self.assertTrue(widget.map_label.isHidden())
         widget.forward_feedforward_distance.setValue(2.25)
         settings = widget.settings()
         self.assertEqual(settings.solver_kind, "forward-driver")
         self.assertEqual(RunSettings.from_json(settings.to_json()), settings)
-        widget.solver_kind.setCurrentIndex(widget.solver_kind.findData("yaw-aware"))
-        self.app.processEvents()
-        self.assertFalse(widget.forward_note.isVisible())
-        self.assertTrue(widget.forward_duration.isHidden())
-        self.assertFalse(widget.spacing.isHidden())
-        self.assertFalse(widget.yaw_map.isHidden())
-        self.assertTrue(label_for(widget.forward_duration).isHidden())
         widget.solver_kind.setCurrentIndex(widget.solver_kind.findData("point-mass"))
         self.app.processEvents()
-        self.assertFalse(widget.point_mass_duration.isHidden())
-        self.assertTrue(widget.spacing.isHidden())
-        widget.solver_kind.setCurrentIndex(widget.solver_kind.findData("forward-driver"))
-        self.app.processEvents()
-        self.assertEqual(widget.forward_feedforward_distance.value(), 2.25)
-        self.assertFalse(widget.forward_duration.isHidden())
-        self.assertTrue(widget.yaw_map.isHidden())
+        self.assertTrue(widget.point_mass_duration.isVisible())
+        self.assertTrue(widget.forward_duration.isHidden())
+        widget.deleteLater()
 
 
 if __name__ == "__main__":

@@ -58,6 +58,38 @@ class LapAverageTests(unittest.TestCase):
         signed_area = .5 * np.sum(n * np.roll(e,-1) - e * np.roll(n,-1))
         self.assertGreater(signed_area, 0.0)
 
+    def test_distance_drift_correction_is_sampling_density_independent(self):
+        import tools.track_gui.lap_average as lap_module
+
+        def run(density, warped_sampling):
+            stamps, north, east, laps = [], [], [], []
+            for lap_index, count in enumerate(density):
+                phase = np.linspace(0.0, 1.0, count)
+                # Same circle geometry sampled at uniform versus strongly
+                # nonuniform spatial phase; old sample-fraction correction differs.
+                warped = phase ** (1.7 if warped_sampling else 1.0)
+                angle = 2 * np.pi * warped
+                arc_fraction = warped
+                x = 20.0 * np.cos(angle) + 2.0 * arc_fraction
+                y = 20.0 * np.sin(angle) - 1.0 * arc_fraction
+                begin = len(stamps)
+                stamps.extend(lap_index * 8.1 + phase * 8.0)
+                north.extend(x)
+                east.extend(y)
+                laps.append((begin, len(stamps)))
+            with mock.patch.object(lap_module, "detect_laps", return_value=(
+                laps, {"candidate_count": len(laps), "rejected": [], "detection_stride": 1}
+            )):
+                return average_laps(np.asarray(stamps), np.asarray(north), np.asarray(east),
+                    spacing=1.0, smoothing=0.0, minimum_travel=100, minimum_duration=6,
+                    maximum_duration=10, deviation_limit=10)[0:2]
+
+        dense, dense_e = run([501, 501], False)
+        sparse, sparse_e = run([501, 501], True)
+        self.assertEqual(len(dense), len(sparse))
+        np.testing.assert_allclose(dense, sparse, atol=0.06)
+        np.testing.assert_allclose(dense_e, sparse_e, atol=0.06)
+
     def test_clips_local_spike_and_rejects_gross_loop(self):
         import tools.track_gui.lap_average as lap_module
         t,x,y=circle_trace(3)
@@ -72,6 +104,8 @@ class LapAverageTests(unittest.TestCase):
             lap_module.detect_laps=original
         self.assertGreater(diag["clipped_samples"],0)
         self.assertEqual(diag["accepted_laps"],3)
+        self.assertEqual(len(diag["closure_gaps_m"]), diag["accepted_laps"])
+
         self.assertTrue(np.isfinite(n).all() and np.isfinite(e).all())
 
     def test_incomplete_tail_and_stationary_window(self):

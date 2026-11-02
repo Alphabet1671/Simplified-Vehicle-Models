@@ -334,6 +334,13 @@ class ClosedTab(QWidget):
         self.discover_button = QPushButton("Discover channels")
         self.discover_button.clicked.connect(self.discover_channels)
         self.multi_lap = QCheckBox("Detect and average multiple laps")
+        self.multi_lap.setToolTip(
+            "Combines accepted complete laps, correcting endpoint displacement over distance. "
+            "A bounded automatic join fit uses the sampled matched-phase corridor on a straight "
+            "crossing the selected window start; choose a window starting on the start/finish "
+            "straight. The corridor is observed driving-line data, not physical track edges. "
+            "If the start is not straight or overlap is inadequate, the join fit is skipped."
+        )
         self.return_radius = _spin(.1,1e4,12.,2,1.)
         self.minimum_travel = _spin(1,1e6,100.,1,10.)
         self.minimum_duration = _spin(.1,1e5,15.,1,1.)
@@ -596,7 +603,16 @@ class ClosedTab(QWidget):
         self.course_plot.set_overlaps(geometry.get("overlap_north",[]),geometry.get("overlap_east",[]))
         if geometry.get("lap_diagnostics"):
             diag=geometry["lap_diagnostics"]
-            self.report.appendPlainText("\nlap_diagnostics: "+str(diag))
+            seam = diag.get("seam_closure", {})
+            seam_status = seam.get("status", "unavailable")
+            seam_line = f"\nSeam join: {seam_status}"
+            if seam_status == "success":
+                seam_line += (f", sampled matched-phase span {seam.get('physical_span_m', 0.0):.2f} m, "
+                              f"peak movement {seam.get('peak_movement_m', 0.0):.3f} m")
+            elif seam.get("skip_reason"):
+                seam_line += f" ({seam['skip_reason']})"
+            seam_line += "\nEnvelope: sampled matched-phase bounds, not physical track edges; downstream resampling is not certified."
+            self.report.appendPlainText(seam_line + "\nlap_diagnostics: " + str(diag))
         self.notice.setText("built")
         self.save_button.setEnabled(True)
         self.transfer_button.setEnabled(True)

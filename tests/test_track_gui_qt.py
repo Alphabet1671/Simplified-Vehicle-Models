@@ -65,6 +65,23 @@ class WindowTests(unittest.TestCase):
             self.assertTrue((Path(folder) / "gui_test.xml").is_file())
             self.assertIn("saved", messages[-1])
 
+    def test_multi_lap_tooltip_and_report_expose_caveat_and_skip_reason(self):
+        tab = self.window.closed_tab
+        tooltip = tab.multi_lap.toolTip().lower()
+        self.assertIn("start/finish", tooltip)
+        self.assertIn("not physical track edges", tooltip)
+        tab._build_token = (tab.telemetry.text(),tab.start.value(),tab.end.value(),tab.spacing.value(),tab.smoothing.value(),
+            tab.max_radius.value(),tab.mode.currentText(),tab.x_scale.value(),tab.y_scale.value(),tab.x_unknown.isChecked(),
+            tab.y_unknown.isChecked(),tab.multi_lap.isChecked(),tab.return_radius.value(),tab.minimum_travel.value(),
+            tab.minimum_duration.value(),tab.maximum_duration.value(),tab.deviation_limit.value(),tab.x_channel.currentData(),tab.y_channel.currentData())
+        geometry = {"distance": [], "north": [], "east": [],
+            "lap_diagnostics": {"seam_closure":{"status":"skipped","skip_reason":"insufficient_straight_span"}}}
+        with patch("tools.track_gui.qt.main_window.closed.summarize", return_value={}):
+            tab._built(geometry)
+        report = tab.report.toPlainText()
+        self.assertIn("Seam join: skipped (insufficient_straight_span)", report)
+        self.assertIn("not physical track edges", report)
+
     def test_closed_tab_without_telemetry_reports_the_problem(self):
         tab = self.window.closed_tab
         tab.telemetry.setText("")

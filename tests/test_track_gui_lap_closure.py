@@ -135,6 +135,50 @@ class LapClosureTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "optimizer failed"):
                 smooth_seam(mean, overlaps, np.ones((2,len(mean)),bool), mean)
 
+    def test_gaussian_smoothed_target_on_noisy_straight_fits(self):
+        mean = stadium()
+        n = len(mean)
+        overlaps = np.repeat(mean[None], 2, axis=0)
+        overlaps[:, :, 1] += np.array([-.5, .5])[:, None]
+        target = mean.copy()
+        phase = np.arange(n)
+        target[:, 1] += .18*np.exp(-((np.minimum(phase,n-phase)/3.)**2))
+        target[:, 0] += .02*np.sin(2*np.pi*phase/n)
+        result, diag = smooth_seam(mean, overlaps, np.ones((2,n),bool), target)
+        self.assertEqual(diag["status"], "success")
+        self.assertTrue(np.isfinite(result).all())
+        self.assertGreater(np.max(np.linalg.norm(result-target,axis=1)), 1e-5)
+
+    def test_nonuniform_objective_and_bounds(self):
+        mean=stadium()
+        n=len(mean)
+        mean[:,1]+=.09*np.exp(-((np.minimum(np.arange(n),n-np.arange(n))/2.)**2))
+        overlaps=np.repeat(mean[None],2,axis=0)
+        overlaps[:,:,1]+=np.array([-.25,.25])[:,None]
+        target=mean.copy()
+        # Nonuniform target station and lateral data emulate speed-independent smoothing.
+        target[:,0]+=.03*np.sin(2*np.pi*np.arange(n)/n)
+        result,diag=smooth_seam(mean,overlaps,np.ones((2,n),bool),target)
+        self.assertEqual(diag["status"],"success")
+        selected=np.linalg.norm(result-target,axis=1)>1e-9
+        self.assertTrue(selected.any())
+        self.assertTrue(np.isfinite(result).all())
+        self.assertLess(diag["bending_energy_after"],diag["bending_energy_before"])
+        self.assertLessEqual(diag["max_bound_violation_m"],1e-7)
+
+    def test_incoming_bend_outgoing_straight_is_not_fitted_as_straight(self):
+        base=stadium()
+        n=len(base)
+        # A smooth corner only on the incoming (negative arc-length) side.
+        d=np.arange(n)
+        bump=.65*np.exp(-((np.minimum(d,n-d)/8.)**2))
+        incoming=np.where(d>n//2,bump,0.)
+        mean=base.copy(); mean[:,1]+=incoming
+        overlaps=np.repeat(mean[None],2,axis=0)
+        out,diag=smooth_seam(mean,overlaps,np.ones((2,n),bool),mean)
+        self.assertEqual(diag["status"],"skipped")
+        np.testing.assert_array_equal(out,mean)
+
     def test_malformed_arrays_refused(self):
         mean = np.zeros((20, 2))
         with self.assertRaises(ValueError):

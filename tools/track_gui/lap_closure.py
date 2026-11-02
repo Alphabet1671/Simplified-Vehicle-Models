@@ -67,11 +67,13 @@ def smooth_seam(mean, overlaps, keep, target):
         count = 0
         distance = 0.0
         while count < n // 4 and distance < max_side:
-            next_index = (sign * (count + 1)) % n
-            vec = at_distance(distance + sign * 2.0) - at_distance(distance - sign * 2.0)
+            signed_distance = sign * distance
+            # Keep the tangent forward-oriented for both incoming and outgoing walks.
+            vec = at_distance(signed_distance + 2.0) - at_distance(signed_distance - 2.0)
             vnorm = float(np.linalg.norm(vec))
-            if vnorm < 1e-9 or abs(float(np.dot(vec / vnorm, tangent))) < heading_tol:
+            if vnorm < 1e-9 or float(np.dot(vec / vnorm, tangent)) < heading_tol:
                 break
+            next_index = (sign * (count + 1)) % n
             edge_length = edges[next_index] if sign < 0 else edges[(next_index - 1) % n]
             if distance + edge_length > max_side:
                 break
@@ -84,13 +86,14 @@ def smooth_seam(mean, overlaps, keep, target):
     left, right = side_counts[0][0], side_counts[1][0]
     ids = np.arange(-left, right + 1) % n
     points = m[ids]
-    station = (points - m[0]) @ tangent
-    if np.any(np.diff(station) <= 1e-8):
+    mean_station = (points - m[0]) @ tangent
+    if np.any(np.diff(mean_station) <= 1e-8):
         return _skip(t, "folded_longitudinal_station")
-    y0 = (t[ids] - m[0]) @ normal
-    tangential_offset = (t[ids] - m[0]) @ tangent - station
-    if np.any(np.abs(tangential_offset[:2]) > 1e-6) or np.any(np.abs(tangential_offset[-2:]) > 1e-6):
-        return _skip(t, "boundary_target_station_mismatch")
+    target_relative = t[ids] - m[0]
+    station = target_relative @ tangent
+    y0 = target_relative @ normal
+    if np.any(np.diff(station) <= 1e-8):
+        return _skip(t, "nonincreasing_target_station")
 
     lap_lat = (o[:, ids, :] - m[0][None, None, :]) @ normal
     lower = np.full(len(ids), np.inf)
@@ -117,31 +120,43 @@ def smooth_seam(mean, overlaps, keep, target):
     ds = np.diff(station)
     if np.any(ds <= 1e-8):
         return _skip(t, "nonincreasing_station")
-    # Weighted sparse nonuniform second derivative on lateral path position.
-    D = lil_matrix((len(ids) - 2, len(ids)))
-    for j in range(1, len(ids) - 1):
-        h0, h1 = ds[j - 1], ds[j]
-        scale = np.sqrt((h0 + h1) / 2.0) * 2.0 / (h0 + h1)
-        D[j - 1, j - 1] = scale / h0
-        D[j - 1, j] = -scale * (1.0 / h0 + 1.0 / h1)
-        D[j - 1, j + 1] = scale / h1
+    # Include the adjacent unchanged target nodes outside the fit in the
+    # bending stencil, so transition curvature contributes to the objective.
+    outer_ids = np.array([(ids[0] - 1) % n, *ids.tolist(), (ids[-1] + 1) % n])
+    outer_station = (t[outer_ids] - m[0]) @ tangent
+    outer_y = (t[outer_ids] - m[0]) @ normal
+    outer_ds = np.diff(outer_station)
+    if np.any(outer_ds <= 1e-8):
+        return _skip(t, "nonincreasing_target_station")
+    D = lil_matrix((len(outer_ids) - 2, len(outer_ids)))
+    for j in range(1, len(outer_ids) - 1):
+        h0, h1 = outer_ds[j - 1], outer_ds[j]
+        weight = np.sqrt((h0 + h1) / 2.0) * 2.0 / (h0 + h1)
+        D[j - 1, j - 1] = weight / h0
+        D[j - 1, j] = -weight * (1.0 / h0 + 1.0 / h1)
+        D[j - 1, j + 1] = weight / h1
     D = D.tocsr()
     H = (D.T @ D).tocsr()
+    # Free variables are in the middle fit window. The exterior target nodes
+    # are fixed stencil values and the first/last two fit nodes remain anchored.
     free_mask = (~fixed) & (hi > lo)
     free = np.flatnonzero(free_mask)
-    held = ~free_mask
+    free_outer = free + 1
+    held_outer = np.setdiff1d(np.arange(len(outer_ids)), free_outer)
     scale = max(float(np.ptp(y0)), float(np.mean(ds)), 1e-3)
     lam = 1e-3 / (scale * scale)
     fixed_values = y0.copy()
     zero_width = (~fixed) & (hi == lo)
     fixed_values[zero_width] = lo[zero_width]
-    Hff = H[free][:, free]
-    linear = np.asarray(H[free][:, held] @ fixed_values[held]).ravel()
+    full_fixed = np.r_[outer_y[0], fixed_values, outer_y[-1]]
+    Hff = H[free_outer][:, free_outer]
+    linear = np.asarray(H[free_outer][:, held_outer] @ full_fixed[held_outer]).ravel()
 
     def fun(x):
         y = fixed_values.copy()
         y[free] = x
-        dy = D @ y
+        full = np.r_[outer_y[0], y, outer_y[-1]]
+        dy = D @ full
         return float(dy @ dy + lam * np.sum((y - y0) ** 2))
 
     def jac(x):
@@ -160,6 +175,7 @@ def smooth_seam(mean, overlaps, keep, target):
         raise RuntimeError(f"seam closure optimizer failed: {result.message}")
     y = fixed_values.copy()
     y[free] = result.x
+    # Absolute 1e-7 m tolerance covers optimizer roundoff only; bounds are metres.
     if np.any(y < lo - 1e-7) or np.any(y > hi + 1e-7):
         raise RuntimeError("seam closure optimizer returned a bound violation")
 
@@ -168,6 +184,8 @@ def smooth_seam(mean, overlaps, keep, target):
     before, after = _energy(y0, station), _energy(y, station)
     diagnostics = {
         "status": "success", "skip_reason": None,
+        "max_bound_violation_m": float(max(np.max(lo - y), np.max(y - hi), 0.0)),
+        "longitudinal_station_span_m": float(station[-1] - station[0]),
         "physical_span_m": float(station[-1] - station[0]),
         "peak_movement_m": float(np.max(np.abs(y - y0))),
         "corridor_width_m": float(np.max(upper - lower)),

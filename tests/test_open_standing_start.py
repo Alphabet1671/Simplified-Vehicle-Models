@@ -8,6 +8,8 @@ import numpy as np
 from simplified_vehicle_models.compiler.compile import compile_formulation
 from simplified_vehicle_models.solvers.forward_driver import (
     PreviewDriver, SpeedPlan, build_speed_plan, solve_forward)
+from simplified_vehicle_models.solvers.braking_envelope import BrakingEnvelope
+from simplified_vehicle_models.solvers.envelope_driver import EnvelopePolicy
 from simplified_vehicle_models.solvers.planar_dense_certificate import (
     certify_planar_dense_domain, curvature_enclosure, open_curvature_enclosure)
 from simplified_vehicle_models.solvers.planar_forward import PlanarForwardPlant
@@ -21,6 +23,16 @@ ACCELERATION = ROOT / "models/tracks/fsae_2026_acceleration.xml"
 SKIDPAD = ROOT / "models/tracks/fsae_2026_skidpad.xml"
 PLANAR = ROOT / "models/formulations/iem24_murphy_real_planar_7dof.xml"
 VERTICAL = ROOT / "models/formulations/iem24_murphy_real_14dof_simple.xml"
+
+
+def constant_envelope_policy(plan):
+    """Explicit non-autonomous fixture policy for plant launch integration tests."""
+    distance = np.asarray(plan.distance, dtype=float)
+    cap = float(np.max(plan.speed))
+    envelope = BrakingEnvelope(distance, np.asarray(plan.curvature), np.full(distance.shape, cap),
+        np.full(distance.shape, cap), np.full(distance.size - 1, 5.), np.zeros(distance.shape, dtype=int),
+        bool(plan.is_closed), max(cap, 1.), {"fixture": True})
+    return EnvelopePolicy(envelope)
 
 
 def control(vehicle):
@@ -152,7 +164,8 @@ class StandingStartPlantTests(unittest.TestCase):
         car = control(self.planar_vehicle)
         driver = PreviewDriver(self.plan, car.wheelbase, car.steering_maximum_angle,
                                car.steering_maximum_rate, car.maximum_pedal_force,
-                               speed_gain=10., pedal_travel_time=.175)
+                               speed_gain=10., pedal_travel_time=.175,
+                               envelope_policy=constant_envelope_policy(self.plan))
         result = solve_forward(plant, driver, plant.initial_state(0.), duration=1.5,
                                wall_seconds=60., method="BDF", initial_pedal=0.)
         speed = result.state[3]
@@ -166,7 +179,8 @@ class StandingStartPlantTests(unittest.TestCase):
         car = control(self.vertical_vehicle)
         driver = PreviewDriver(self.plan, car.wheelbase, car.steering_maximum_angle,
                                car.steering_maximum_rate, car.maximum_pedal_force,
-                               speed_gain=10., pedal_travel_time=.175)
+                               speed_gain=10., pedal_travel_time=.175,
+                               envelope_policy=constant_envelope_policy(self.plan))
         result = solve_forward(plant, driver, plant.initial_state(0.), duration=1.5,
                                wall_seconds=120., method="BDF", initial_pedal=0.,
                                maximum_wall_seconds=300.)

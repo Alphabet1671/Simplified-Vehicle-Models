@@ -9,5 +9,6 @@ Vehicle assemblies.
 | `iem24_murphy_real.xml` | `iem24-murphy-real` model, type `vehicle-assembly`, subtype `four-wheel`. |
 | `iem24_murphy_real_14dof.xml` | `iem24-murphy-real-14dof-assembly` model, type `vehicle-assembly`, subtype `four-wheel`. |
 | `iem24_murphy_real_planar.xml` | `iem24-murphy-real-planar` model, type `vehicle-assembly`, subtype `four-wheel`. |
+| `iem24_murphy_real_planar_ttc_r20.xml` | Isolated TTC R20 planar assembly with TTC steady and four-scalar transient components, type `vehicle-assembly`, subtype `four-wheel`; the planar formulation consumes only steady coefficients. |
 | `murphy_2024.xml` | `murphy-2024` model, type `vehicle-assembly`, subtype `four-wheel`. |
 | `murphy_legacy_point_mass.xml` | `murphy-legacy-point-mass-vehicle` model, type `vehicle-assembly`, subtype `four-wheel`. |

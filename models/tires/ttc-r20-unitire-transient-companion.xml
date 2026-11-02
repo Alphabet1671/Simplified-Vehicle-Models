@@ -1,0 +1,10 @@
+<?xml version='1.0' encoding='utf-8'?>
+<model schema-version="1.0" id="ttc-r20-unitire-transient-companion" type="tire-model" subtype="unitire-transient-simple">
+  <!-- Four transient scalars copied from models/tires/ttc-r20-unitire-transient.xml. The source remains the user-supplied provenance artifact. -->
+  <parameters>
+    <parameter name="longitudinal_length_scale" unit="1" value="0.574" />
+    <parameter name="lateral_length_scale" unit="1" value="0.5742000000000003" />
+    <parameter name="trail_pole_ratio" unit="1" value="0.01670000000000016" />
+    <parameter name="trail_lead_ratio" unit="1" value="0.6172" />
+  </parameters>
+</model>

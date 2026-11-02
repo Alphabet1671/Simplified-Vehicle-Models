@@ -194,6 +194,40 @@ class UnitireSimpleTests(unittest.TestCase):
             -float(left.overturning_moment),
         )
 
+    def test_zero_slip_with_zero_epsilon_is_finite_for_scalar_and_vector_inputs(self) -> None:
+        parameters = replace(self.parameters, slip_eps=0.0)
+        scalar = evaluate_unitire(parameters, 0.0, 0.0, 1000.0, 50.0)
+        vector = evaluate_unitire(
+            parameters, np.array([0.0, 0.0]), np.array([0.0, 0.0]),
+            np.array([1000.0, 1000.0]), np.array([50.0, 50.0]),
+        )
+        for result in (scalar, vector):
+            self.assertTrue(np.all(np.isfinite(result.longitudinal_force)))
+            self.assertTrue(np.all(np.isfinite(result.lateral_force)))
+            np.testing.assert_array_equal(result.longitudinal_force, 0.0)
+            np.testing.assert_array_equal(result.lateral_force, 0.0)
+
+        near_zero = evaluate_unitire(parameters, np.array([1e-12]), np.array([1e-12]), 1000.0, 50.0)
+        self.assertTrue(np.all(np.isfinite(near_zero.longitudinal_force)))
+        self.assertTrue(np.all(np.isfinite(near_zero.lateral_force)))
+        self.assertLess(abs(float(near_zero.longitudinal_force[0])), 1e-6)
+        self.assertLess(abs(float(near_zero.lateral_force[0])), 1e-6)
+
+    def test_positive_slip_epsilon_behavior_is_unchanged(self) -> None:
+        positive = self.parameters
+        inputs = (0.01, 0.02, 1000.0, 50.0)
+        actual = evaluate_unitire(positive, *inputs)
+        # Explicitly retain the configured linear branch behavior below epsilon.
+        linear_parameters = replace(positive, slip_eps=1.0)
+        linear = evaluate_unitire(linear_parameters, *inputs)
+        fzn = inputs[2] / linear_parameters.f_z_rated
+        kx = np.polyval(linear_parameters.k_x, fzn)
+        ky = np.polyval(linear_parameters.k_y, fzn)
+        self.assertAlmostEqual(float(linear.longitudinal_force), float(kx * inputs[1]))
+        self.assertAlmostEqual(float(linear.lateral_force), float(ky * np.tan(inputs[0])))
+        self.assertTrue(np.isfinite(float(actual.longitudinal_force)))
+        self.assertTrue(np.isfinite(float(actual.lateral_force)))
+
     def test_free_rolling_has_no_slip_force(self) -> None:
         result = evaluate_unitire(self.parameters, 0.0, 0.0, 1000.0, 50.0)
 

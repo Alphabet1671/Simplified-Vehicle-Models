@@ -11,6 +11,7 @@ Lap, line, forward-driver and maneuver solvers, with their certificates and evid
 | `artifact_chart_audit.py` | Bounded whole-artifact aggregation for the cached-polynomial chart check. |
 | `artifact_chart_check.py` | Bind a loaded energy-Hermite artifact to the explicit 3h chart checker. |
 | `bounded_attempts.py` | Pure parent-deadline controller for bounded synchronous attempts. |
+| `braking_envelope.py` | Offline sampled quasi-static corner/braking envelope and pure backward-cap propagation. |
 | `capability_exchange.py` | Bounded empirical physical-residual localization and fixed-mesh exchange. |
 | `capability_profile.py` | Independent fixed-path capability-profile reference (no torque vectoring). |
 | `chart_element_certificate.py` | Bound explicit rational energy/control polynomials against a stored signed chart. |
@@ -23,7 +24,9 @@ Lap, line, forward-driver and maneuver solvers, with their certificates and evid
 | `energy_seed_projection.py` | Bounded mechanical projection for fixed-energy Hermite--Simpson seeds. |
 | `fixed_path_energy_nlp.py` | Independent fixed-path energy NLP reference using a signed capability chart. |
 | `forward_backward.py` | Python module `forward_backward`. |
-| `forward_driver.py` | Drive a complete vehicle state forward along a prescribed path. |
+| `forward_driver.py` | Drive a complete vehicle state forward along a prescribed path with optional signed-pedal dynamics. |
+| `envelope_driver.py` | Pure actual-speed and pedal-aware longitudinal control against a sampled braking envelope. |
+| `driver_maps.py` | Immutable physical pedal calibration and strict versioned JSON configuration.
 | `forward_powertrain.py` | Shared forward-driver powertrain closure. |
 | `input_preflight.py` | Bounded filesystem admission checks for worker-owned model inputs. |
 | `joint_event_contract.py` | Analytic helper for constant-acceleration motion from rest. |
@@ -39,7 +42,6 @@ Lap, line, forward-driver and maneuver solvers, with their certificates and evid
 | `maneuver_vertical.py` | Cartesian open-loop maneuver adapter for the vertical 14-DoF plant. |
 | `minimum_time_run.py` | Spawned, deadline-owning supervisor for minimum-time harness attempts. |
 | `offset_geometry_bounds.py` | Exact-rational enclosures for the stored analytic offset path geometry. |
-| `physical_longitudinal_mapper.py` | Opt-in quasi-steady force-to-actuator command mapping. |
 | `planar_dense_certificate.py` | Certify the planar plant's explicit state domain over BDF dense intervals. |
 | `planar_forward.py` | Adapt the transient planar vehicle to the shared forward driver. |
 | `profile_line_seed.py` | Optional exact-centreline fixed-path energy-profile seed for spline OCPs. |
@@ -56,7 +58,6 @@ Lap, line, forward-driver and maneuver solvers, with their certificates and evid
 | `standing_straight_ocp.py` | Actual fixed-straight, nonnegative-acceleration standing-start OCP. |
 | `track_problem_contract.py` | Pure structural preflight for the versioned track-problem request contract. |
 | `trajectory_artifact.py` | Strict reader and exact reference bridge for analytic trajectory artifacts. |
-| `trajectory_forward_replay.py` | Diagnostic exact-reference trials for serialized trajectories. |
 | `vertical_between_step.py` | Between-step evaluation-domain certificate for the vertical 14-DoF plant. |
 | `vertical_dense_certificate.py` | Conservative state-domain certificate for vertical 14-DoF dense output. |
 | `vertical_equilibrium.py` | Static and steady-corner vertical equilibrium for the 14-DoF vehicle model. |

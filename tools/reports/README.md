@@ -15,7 +15,6 @@ Report generators and plot scripts.
 | `export_forward_attempt_channels.py` | Export the six MIS 2024 comparison channels from *any* forward-driver attempt. |
 | `export_iem24_forward_correlation.py` | Export a freshly integrated 7DoF forward-driver lap for correlation plots. |
 | `plot_iem24_endurance_correlation.py` | Draw five-channel IEM24 measured/point-mass/7DoF distance and time overlays. |
-| `plot_iem24_forward_driver_comparison.py` | Generate comparison figures for IEM24 Murphy forward driver trials. |
 | `plot_point_mass_planar_comparison.py` | Retired compatibility entrypoint for the historical point-mass/planar plot. |
 | `report_iem24_point_mass_track_pair.py` | Standard MIS 2024 correlation report for paired point-mass track experiments. |
 | `report_iem24_seven_dof_track_pair.py` | MIS 2024 correlation report for two fresh 7DoF forward-driver laps on two tracks. |

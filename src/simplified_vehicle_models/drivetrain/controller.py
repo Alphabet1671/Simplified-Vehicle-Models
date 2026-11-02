@@ -3,6 +3,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from simplified_vehicle_models.solvers.driver_maps import PedalActuatorCalibration
 
 from simplified_vehicle_models.compiler.registry import register_component
 from simplified_vehicle_models.xml.model import Model
@@ -48,8 +52,13 @@ class PedalControllerParameters:
     regen_motor_torque_limit: float = 10.0
     maximum_drive_motor_torque_nm: float = 1000.0
     regen_enabled: bool = True
+    actuator_calibration: PedalActuatorCalibration | None = None
 
     def __post_init__(self) -> None:
+        if self.actuator_calibration is not None:
+            from simplified_vehicle_models.solvers.driver_maps import PedalActuatorCalibration
+            if not isinstance(self.actuator_calibration, PedalActuatorCalibration):
+                raise TypeError("actuator_calibration must be PedalActuatorCalibration or None")
         for name in ("maximum_tps_percent", "maximum_drive_motor_torque_nm"):
             value = getattr(self, name)
             if not math.isfinite(value) or value <= 0.0:

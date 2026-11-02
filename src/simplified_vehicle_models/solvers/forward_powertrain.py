@@ -52,6 +52,15 @@ def evaluate_forward_powertrain(vehicle, driven, gearing, gear_efficiency,
             or abs(command.steering_rate) > vehicle.steering_maximum_rate + 1.e-10
             or command.throttle * command.brake_force > 1.e-12):
         raise ValueError("driver command exceeds physical bounds or overlaps pedals")
+    calibration = getattr(controller, "actuator_calibration", None)
+    if calibration is None:
+        effective_throttle = command.throttle
+        effective_brake_force = command.brake_force
+    else:
+        effective_throttle = calibration.shape_throttle(command.throttle)
+        effective_brake_force = calibration.shape_brake_force(
+            command.brake_force, vehicle.maximum_pedal_force
+        )
     charge_state = StorageState(float(soc))
     limits = evaluate_storage(storage, charge_state)
     resistance = storage.series_count / storage.parallel_count * float(np.interp(
@@ -68,9 +77,9 @@ def evaluate_forward_powertrain(vehicle, driven, gearing, gear_efficiency,
     minimum_power = -(limits.bus_voltage + resistance * charge_current) * charge_current
     wheel_speed = np.asarray(wheel_speed)
     motor_speed = motor.gear_ratio * wheel_speed[driven]
-    requested = command.throttle * min(motor.peak_motor_torque,
-                                       controller.maximum_drive_motor_torque_nm)
-    regen_fraction = (min(command.brake_force / controller.regen_pedal_force_limit, 1.)
+    requested = effective_throttle * min(motor.peak_motor_torque,
+                                          controller.maximum_drive_motor_torque_nm)
+    regen_fraction = (min(effective_brake_force / controller.regen_pedal_force_limit, 1.)
                       if controller.regen_enabled else 0.)
     requested_regen = regen_fraction * controller.regen_motor_torque_limit
 
@@ -134,7 +143,7 @@ def evaluate_forward_powertrain(vehicle, driven, gearing, gear_efficiency,
     voltage = next_voltage
     if voltage < minimum_voltage - 1.e-7 or voltage > maximum_voltage + 1.e-7:
         raise RuntimeError("battery voltage constraint violated")
-    hydraulic_force = max(command.brake_force - controller.hydraulic_deadband_n, 0.)
+    hydraulic_force = max(effective_brake_force - controller.hydraulic_deadband_n, 0.)
     # The hydraulic chain takes the physical pedal force in newtons.
     brake = brake_torques(hydraulic_force,
         vehicle.maximum_pedal_force, vehicle.pedal_curve,

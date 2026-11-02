@@ -328,7 +328,9 @@ def evaluate_unitire(
     denominator = np.hypot(lam * phi_x, phi_y)
 
     # The source uses the linear stiffness branch below a small slip.
-    linear = denominator < parameters.slip_eps
+    # The exact zero-slip force limit is linear even with slip_eps == 0.
+    # Preserve the configured nonzero-slip threshold; do not impose a floor.
+    linear = (denominator < parameters.slip_eps) | (denominator == 0.0)
     safe_denominator = np.where(linear, 1.0, denominator)
     longitudinal_force = np.where(
         linear,

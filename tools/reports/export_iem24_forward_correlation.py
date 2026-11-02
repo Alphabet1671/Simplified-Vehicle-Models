@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Export a freshly integrated 7DoF forward-driver lap for correlation plots.
 
-Replays accepted states using the current plant to recover body accelerations and
-per-motor electrical power; the trace is a driven lap, not an OCP solution.
+Replays accepted states using persisted applied-command decisions and the current
+plant to recover body accelerations and per-motor electrical power; the trace is
+a driven lap, not an OCP solution. Legacy attempts without a complete accepted-policy
+log are refused rather than reconstructing retired controller behavior.
 """
 from __future__ import annotations
 
@@ -50,7 +52,7 @@ def export(attempt: Path) -> Path:
     from simplified_vehicle_models.compiler.compile import compile_formulation
     from simplified_vehicle_models.tracks.profile import load_track
     from simplified_vehicle_models.tracks.path_coordinates import evaluate_path
-    from simplified_vehicle_models.solvers.forward_driver import build_speed_plan, PreviewDriver
+    from simplified_vehicle_models.solvers.forward_driver import build_speed_plan, DriverCommand
     from simplified_vehicle_models.solvers.planar_forward import PlanarForwardPlant, body_accelerations
 
     summary = json.loads((attempt / "summary.json").read_text(encoding="utf-8"))
@@ -68,33 +70,26 @@ def export(attempt: Path) -> Path:
     count = int(np.ceil(track.lap_length / float(settings["spacing"])))
     distance = np.linspace(0., track.lap_length, count + 1)
     _, _, _, curvature = evaluate_path(track.path_coordinates, distance)
-    live = settings["planner"] == "live"
     lateral = settings.get("lateral_acceleration")
-    if lateral is None and not live:
-        lateral = 2.
     plan = build_speed_plan(
         distance, curvature, float(settings["maximum_speed"]), lateral, 1., 2.,
-        vehicle=vehicle if live else None, live_limit=live,
+        vehicle=vehicle, live_limit=True,
     )
     plant = PlanarForwardPlant(vehicle, plan)
-    driver = PreviewDriver(
-        plan, vehicle.wheelbase, vehicle.steering_maximum_angle,
-        vehicle.steering_maximum_rate, vehicle.maximum_pedal_force,
-        live_limit=live, pedal_travel_time=settings.get("pedal_travel_time"),
-    )
-    trace = np.loadtxt(attempt / "trace.csv", delimiter=",", skiprows=1)
-    if trace.ndim != 2 or trace.shape[1] != 1 + plant.state_size:
-        raise ValueError(
-            f"expected time and {plant.state_size} forward-driver states")
-    pedal_path = attempt / "pedal.csv"
-    if driver.has_pedal_dynamics:
-        if not pedal_path.is_file():
-            raise ValueError("pedal dynamics require a matching pedal.csv")
-        pedal = np.loadtxt(pedal_path, delimiter=",", skiprows=1)
-        if pedal.shape != (len(trace), 2) or not np.array_equal(pedal[:, 0], trace[:, 0]):
-            raise ValueError("pedal samples must match accepted trace samples")
-    else:
-        pedal = None
+    if summary.get("longitudinal_policy", {}).get("policy") != "braking-envelope":
+        raise ValueError("attempt has no persisted braking-envelope decisions; refusing legacy command reconstruction")
+    policy_path = attempt / "accepted_policy.jsonl"
+    sidecar_path = attempt / "accepted_policy.json"
+    if not policy_path.is_file() or not sidecar_path.is_file():
+        raise ValueError("attempt lacks persisted accepted-policy decisions")
+    sidecar = json.loads(sidecar_path.read_text())
+    if sidecar.get("status") != "complete":
+        raise ValueError("accepted policy log is incomplete")
+    decisions = [json.loads(line) for line in policy_path.read_text().splitlines() if line]
+    if len(decisions) != int(sidecar.get("accepted_decision_count", -1)):
+        raise ValueError("accepted policy decision count does not match sidecar")
+    if len(decisions) != len(trace):
+        raise ValueError("accepted policy samples do not match trace samples")
     states = trace[:, 1:]
     # Column indices come from the plant's published layout, not literals.
     names = tuple(plant.state_names)
@@ -103,9 +98,14 @@ def export(attempt: Path) -> Path:
     powers = np.empty((len(trace), 2))
     throttle = np.empty(len(trace))
     for i, (time, state) in enumerate(zip(trace[:, 0], states)):
-        command = driver.command(plant.observe(state))
-        if pedal is not None:
-            command = driver.realized_command(float(pedal[i, 1]), command)
+        decision = decisions[i]
+        if decision.get("step_index") != i or decision.get("time") != float(time):
+            raise ValueError("accepted policy index/time does not match trace")
+        payload = decision.get("applied_command")
+        if not isinstance(payload, dict):
+            raise ValueError(f"accepted policy row {i} lacks applied_command")
+        command = DriverCommand(float(payload["throttle"]), float(payload["brake_force"]),
+                                float(payload["steering_rate"]))
         rates[i] = plant.evaluate(float(time), state, command).solve()
         operating = plant.powertrain(state, command)
         # Motor-wheel torque includes gear efficiency; shaft electrical input

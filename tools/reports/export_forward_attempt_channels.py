@@ -198,7 +198,7 @@ def build_plan(vehicle, settings: dict, track):
     count = int(np.ceil(track.lap_length / float(settings["spacing"])))
     distance = np.linspace(0.0, track.lap_length, count + 1)
     _, _, _, curvature = evaluate_path(track.path_coordinates, distance)
-    live = settings["planner"] == "live"
+    live = True
     lateral = settings.get("lateral_acceleration")
     if lateral is None and not live:
         lateral = 2.0
@@ -211,7 +211,7 @@ def build_plan(vehicle, settings: dict, track):
 def replay(attempt, *, root: Path = ROOT) -> tuple[dict[str, np.ndarray], dict]:
     """Replay the accepted states of one attempt and return its channels."""
     from simplified_vehicle_models.compiler.compile import compile_formulation
-    from simplified_vehicle_models.solvers.forward_driver import PreviewDriver
+    from simplified_vehicle_models.solvers.forward_driver import DriverCommand
     from simplified_vehicle_models.tracks.profile import load_track
 
     attempt = Path(attempt)
@@ -229,28 +229,32 @@ def replay(attempt, *, root: Path = ROOT) -> tuple[dict[str, np.ndarray], dict]:
         raise ExportBlocker(f"attempt {attempt}: recorded track length differs from "
                             f"{info['track']}")
     plan = build_plan(control, settings, track)
-    live = settings["planner"] == "live"
+    live = True
     klass = plant_class(model)
     plant = klass(vehicle, plan)
     names = tuple(plant.state_names)
-    driver = PreviewDriver(plan, control.wheelbase, control.steering_maximum_angle,
-                           control.steering_maximum_rate, control.maximum_pedal_force,
-                           live_limit=live,
-                           pedal_travel_time=settings.get("pedal_travel_time"))
+    if summary.get("longitudinal_policy", {}).get("policy") != "braking-envelope":
+        raise ExportBlocker("attempt has no persisted braking-envelope decisions; refusing legacy command reconstruction")
+    policy_path = attempt / "accepted_policy.jsonl"
+    sidecar = attempt / "accepted_policy.json"
+    if not policy_path.is_file() or not sidecar.is_file():
+        raise ExportBlocker("attempt lacks persisted accepted_policy.jsonl decision data")
+    policy_meta = json.loads(sidecar.read_text(encoding="utf-8"))
+    if policy_meta.get("status") != "complete":
+        raise ExportBlocker("accepted policy log is incomplete")
+    decisions = [json.loads(line) for line in policy_path.read_text(encoding="utf-8").splitlines() if line]
+    if len(decisions) != int(policy_meta.get("accepted_decision_count", -1)):
+        raise ExportBlocker("accepted policy decision count does not match its sidecar")
     trace = np.loadtxt(attempt / "trace.csv", delimiter=",", skiprows=1)
+    if trace.ndim != 2 or len(decisions) != len(trace):
+        raise ExportBlocker("accepted policy samples do not match trace samples")
     if trace.ndim != 2 or trace.shape[1] != 1 + plant.state_size:
         raise ExportBlocker(f"attempt {attempt}: expected time and {plant.state_size} "
                             "forward-driver states")
     pedal = None
-    if driver.has_pedal_dynamics:
-        pedal_path = attempt / "pedal.csv"
-        if not pedal_path.is_file():
-            raise ExportBlocker(f"attempt {attempt}: pedal dynamics require a matching "
-                                "pedal.csv")
-        pedal = np.loadtxt(pedal_path, delimiter=",", skiprows=1)
-        if pedal.shape != (len(trace), 2) or not np.array_equal(pedal[:, 0], trace[:, 0]):
-            raise ExportBlocker(f"attempt {attempt}: pedal samples must match accepted "
-                                "trace samples")
+    for index, (decision, time_value) in enumerate(zip(decisions, trace[:, 0])):
+        if decision.get("step_index") != index or decision.get("time") != float(time_value):
+            raise ExportBlocker("accepted policy sample index/time does not match trace")
     states = trace[:, 1:]
     columns = wheel_speed_columns(names)
     accelerations = accelerations_function(model)
@@ -261,9 +265,12 @@ def replay(attempt, *, root: Path = ROOT) -> tuple[dict[str, np.ndarray], dict]:
     voltage = np.empty(count)
     throttle = np.empty(count)
     for i, (time, state) in enumerate(zip(trace[:, 0], states)):
-        command = driver.command(plant.observe(state))
-        if pedal is not None:
-            command = driver.realized_command(float(pedal[i, 1]), command)
+        command_data = decisions[i].get("applied_command")
+        if not isinstance(command_data, dict):
+            raise ExportBlocker(f"accepted policy row {i} lacks an applied command")
+        command = DriverCommand(float(command_data["throttle"]),
+                                float(command_data["brake_force"]),
+                                float(command_data["steering_rate"]))
         rates[i] = plant.evaluate(float(time), state, command).solve()
         operating = plant.powertrain(state, command)
         shaft_power = (operating.motor_wheel_torques[plant.driven]

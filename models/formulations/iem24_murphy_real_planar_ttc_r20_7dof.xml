@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<model schema-version="1.0" id="iem24-murphy-real-planar-ttc-r20-7dof" type="vehicle-formulation" subtype="planar-7dof">
+    <source ref="../vehicles/iem24_murphy_real_planar_ttc_r20.xml" />
+    <requires capability="steady-combined-slip" />
+    <requires capability="aero-loads" />
+    <requires capability="drive-force-limit" />
+</model>

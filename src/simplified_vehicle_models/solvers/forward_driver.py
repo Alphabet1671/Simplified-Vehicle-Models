@@ -718,7 +718,7 @@ def solve_forward(plant: ForwardPlant, driver: PreviewDriver, initial_state,
         observation = plant.observe(plant_state)
         if policy_enabled:
             requested, decision = driver.command_with_context(
-                observation, float(state[plant_size]) if pedal_dynamics else None)
+                observation, float(np.clip(state[plant_size], -1., 1.)) if pedal_dynamics else None)
             policy_stage[0] = decision
         else:
             requested = driver.command(observation)

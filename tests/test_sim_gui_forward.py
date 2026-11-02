@@ -64,6 +64,28 @@ class ForwardSettingsTests(unittest.TestCase):
             self.assertEqual(failure["message"], "synthetic child failure")
             self.assertIn("accepted_policy_prefix_rows", failure)
 
+    def test_component_identity_rejected_before_compile(self):
+        from tools.sim_gui.forward_execute import run
+        settings = RunSettings(solver_kind="forward-driver")
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            formulation, track, component = (root / name for name in ("formulation.xml", "track.xml", "component.xml"))
+            formulation.write_text("form")
+            track.write_text("track")
+            component.write_text("original")
+            source_identity = {str(component): "sha256:" + hashlib.sha256(component.read_bytes()).hexdigest()}
+            case = {"solver_kind": "forward-driver", "model": "planar-7dof",
+                "formulation": str(formulation), "track": str(track), "argv": [],
+                "input_identity": {"component_source_hashes": source_identity}}
+            attempt = root / "attempt"
+            attempt.mkdir()
+            component.write_text("mutated-after-prepare")
+            with mock.patch("tools.sim_gui.forward_execute.compile_formulation") as compile_model:
+                self.assertEqual(run(case, attempt, settings, root), 4)
+                compile_model.assert_not_called()
+            failure = json.loads((attempt / "summary.json").read_text())
+            self.assertIn("immutable component source mismatch", failure["message"])
+
     def test_identity_rejected_before_compile(self):
         from tools.sim_gui.forward_execute import run
         settings = RunSettings(solver_kind="forward-driver")
@@ -100,7 +122,8 @@ class ForwardFinishTests(unittest.TestCase):
                 "formulation": str(formulation.resolve()),
                 "formulation_sha256": hashlib.sha256(formulation.read_bytes()).hexdigest(),
                 "settings": settings.to_json(), "settings_sha256": settings_hash,
-                "driver_config": forward_driver_config(settings), "yaw_map": None}
+                "driver_config": forward_driver_config(settings), "yaw_map": None,
+                "component_source_hashes": {}}
             (case_dir / "case.json").write_text(json.dumps({"input_identity": identity, "settings": settings.to_json(),
                 "driver_config": identity["driver_config"]}))
             from simplified_vehicle_models.results.run_record import RunRecorder, sha256_of
@@ -109,7 +132,10 @@ class ForwardFinishTests(unittest.TestCase):
             source_a, source_b, source_c = (source_base / name for name in ("source-a.xml", "source-b.xml", "source-c.xml"))
             for index, source in enumerate((source_a, source_b, source_c)):
                 source.write_text(f"source-{index}")
-            source_hashes = {source.name: sha256_of(source) for source in (source_a, source_b, source_c)}
+            source_hashes = {str(source.resolve()): sha256_of(source) for source in (source_a, source_b, source_c)}
+            identity["component_source_hashes"] = source_hashes
+            (case_dir / "case.json").write_text(json.dumps({"input_identity": identity,
+                "settings": settings.to_json(), "driver_config": identity["driver_config"]}))
             record = attempt / "run_record.npz"
             recorder = RunRecorder(record, state_names=("s",), state_units=("m",),
                 control_names=(), channel_names=())

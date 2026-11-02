@@ -235,7 +235,11 @@ def run_case(case_dir: Path, attempt: Path) -> int:
     payload = json.loads((case_dir / "case.json").read_text())
     if not isinstance(payload, dict) or payload.get("solver_kind") not in {"yaw-aware", "point-mass", "forward-driver"}:
         raise ValueError("invalid case.json solver contract")
-    attempt.mkdir(parents=True, exist_ok=False)
+    if attempt.exists():
+        if not attempt.is_dir() or any(attempt.iterdir()):
+            raise ValueError("child attempt must be a fresh empty directory")
+    else:
+        attempt.mkdir(parents=True, exist_ok=False)
     settings = None
     try:
         settings = RunSettings.from_json(payload["settings"])

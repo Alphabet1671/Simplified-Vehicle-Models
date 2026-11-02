@@ -80,6 +80,14 @@ def prepare_case(study_dir: Path, definition: StudyDefinition, case: CaseSpec) -
     track_path = track.resolve()
     replay_plan = (Path(settings.plan).expanduser().resolve()
                    if settings.solver_kind == "yaw-aware" and settings.mode == "replay" else None)
+    forward_source_closure = None
+    if settings.solver_kind == "forward-driver":
+        compiled_for_identity = compile_formulation(str(files.formulation))
+        closure_paths = {Path(files.formulation).resolve(), Path(compiled_for_identity.manifest.assembly.path).resolve()}
+        closure_paths.update(Path(item.path).resolve() for item in compiled_for_identity.manifest.loaded_components)
+        closure_paths.add(track.resolve())
+        forward_source_closure = {str(path): "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+                                  for path in sorted(closure_paths)}
     payload = {
         "id": case.id, "label": case.label, "model": case.model, "track": str(track_path),
         "settings": settings.to_json(), "solver_kind": settings.solver_kind,
@@ -98,7 +106,8 @@ def prepare_case(study_dir: Path, definition: StudyDefinition, case: CaseSpec) -
                            "yaw_map": settings.yaw_map or None,
                            "yaw_map_sha256": hashlib.sha256(Path(settings.yaw_map).read_bytes()).hexdigest() if settings.solver_kind == "yaw-aware" else None,
                             "replay_plan": str(replay_plan) if replay_plan else None,
-                            "replay_plan_sha256": hashlib.sha256(replay_plan.read_bytes()).hexdigest() if replay_plan else None},
+                            "replay_plan_sha256": hashlib.sha256(replay_plan.read_bytes()).hexdigest() if replay_plan else None,
+                             "component_source_hashes": forward_source_closure},
     }
     _atomic_json(directory / "case.json", payload)
     timeout = (settings.point_mass_duration if settings.solver_kind == "point-mass"
@@ -133,6 +142,7 @@ def validate_case(prepared: PreparedCase) -> str | None:
 
 
 def new_attempt(prepared: PreparedCase) -> Path:
+    """Allocate the fresh attempt directory owned by the parent runner."""
     attempt = prepared.directory / f"attempt_{time.time_ns()}"
     attempt.mkdir(parents=True, exist_ok=False)
     return attempt
@@ -178,6 +188,7 @@ def finish_case(prepared: PreparedCase, attempt: Path, *, return_code: int | Non
             inputs_valid = inputs_valid and inputs.get("settings") == payload.get("settings")
             inputs_valid = inputs_valid and inputs.get("driver_config") == identity.get("driver_config") == payload.get("driver_config")
             inputs_valid = inputs_valid and inputs.get("settings_sha256") == identity.get("settings_sha256")
+            inputs_valid = inputs_valid and inputs.get("component_source_hashes") == identity.get("component_source_hashes")
         inputs_valid = inputs_valid and Path(identity.get("track", "")).is_file() and hashlib.sha256(Path(identity["track"]).read_bytes()).hexdigest() == identity.get("track_sha256")
         inputs_valid = inputs_valid and Path(identity.get("formulation", "")).is_file() and hashlib.sha256(Path(identity["formulation"]).read_bytes()).hexdigest() == identity.get("formulation_sha256")
         if prepared.solver_kind == "yaw-aware":
@@ -204,6 +215,7 @@ def finish_case(prepared: PreparedCase, attempt: Path, *, return_code: int | Non
             inputs_valid = inputs_valid and type(inputs.get("dense_samples_validated")) is int
             forward_summary = json.loads(summary_path.read_text())
             inputs_valid = inputs_valid and inputs.get("source_hashes") == forward_summary.get("source_hashes")
+            inputs_valid = inputs_valid and inputs.get("source_hashes") == identity.get("component_source_hashes")
             inputs_valid = inputs_valid and inputs.get("accepted_policy_sha256") == forward_summary.get("accepted_policy_sha256")
     except (OSError, ValueError, TypeError):
         inputs_valid = False
@@ -316,6 +328,7 @@ def finish_case(prepared: PreparedCase, attempt: Path, *, return_code: int | Non
           and inputs.get("accepted_policy_rows") == summary.get("accepted_steps") + 1
           and matches_digest("accepted_policy.jsonl", inputs.get("accepted_policy_sha256"))
           and inputs.get("source_hashes") == summary.get("source_hashes")
+          and inputs.get("source_hashes") == identity.get("component_source_hashes")
           and isinstance(summary.get("source_hashes"), dict)
           and len(summary["source_hashes"]) >= 3
           and matches_digest("accepted_policy.jsonl", summary.get("accepted_policy_sha256"))

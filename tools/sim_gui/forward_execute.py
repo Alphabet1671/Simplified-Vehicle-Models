@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from pathlib import Path
 import time
 
@@ -77,6 +78,13 @@ def _run_impl(case: dict, attempt: Path, settings: RunSettings, case_dir: Path) 
             separators=(",", ":"), allow_nan=False).encode()).hexdigest(),
         "driver_config": forward_driver_config(settings),
     }
+    frozen_sources = identity.get("component_source_hashes")
+    if not isinstance(frozen_sources, dict) or not frozen_sources:
+        raise ValueError("forward-driver immutable component source closure is missing")
+    for source, digest in frozen_sources.items():
+        path = Path(source)
+        if not path.is_file() or "sha256:" + _sha(path) != digest:
+            raise ValueError(f"forward-driver immutable component source mismatch: {source}")
     for key, value in expected.items():
         if identity.get(key) != value:
             raise ValueError(f"forward-driver immutable input identity mismatch: {key}")
@@ -87,6 +95,13 @@ def _run_impl(case: dict, attempt: Path, settings: RunSettings, case_dir: Path) 
     _write(progress, {"status": "running", "phase": "compile-and-envelope", "started_wall_seconds": time.perf_counter() - started})
     compiled_result = compile_formulation(str(formulation))
     compiled = compiled_result.model
+    compiled_sources = {str(Path(item.path).resolve()): "sha256:" + _sha(Path(item.path).resolve())
+                        for item in compiled_result.manifest.loaded_components}
+    compiled_sources[str(formulation)] = "sha256:" + _sha(formulation)
+    compiled_sources[str(Path(compiled_result.manifest.assembly.path).resolve())] = "sha256:" + _sha(Path(compiled_result.manifest.assembly.path).resolve())
+    compiled_sources[str(track_path)] = "sha256:" + _sha(track_path)
+    if compiled_sources != frozen_sources:
+        raise ValueError("compiled source closure differs from immutable prepared identity")
     if isinstance(compiled, VerticalVehicleParameters):
         control = compiled.planar
         reduction = "14dof.planar->planar-7dof"
@@ -101,6 +116,8 @@ def _run_impl(case: dict, attempt: Path, settings: RunSettings, case_dir: Path) 
     _, _, _, curvature = evaluate_path(track.path_coordinates, distance)
     plan = build_speed_plan(distance, curvature, settings.forward_maximum_speed,
         vehicle=control, live_limit=True, open_course=not track.is_closed, lateral_margin=.9)
+    if time.perf_counter() - started >= settings.forward_wall_seconds:
+        raise TimeoutError("forward-driver setup exhausted its wall budget")
     if not track.is_closed and plan.speed[0] != 0.:
         raise ValueError("forward open-course plan must begin at a standing start")
     if not track.is_closed and plan.is_closed:
@@ -124,7 +141,7 @@ def _run_impl(case: dict, attempt: Path, settings: RunSettings, case_dir: Path) 
     driver = PreviewDriver(plan, control.wheelbase, control.steering_maximum_angle,
         control.steering_maximum_rate, control.maximum_pedal_force, preview_seconds=config["preview_seconds"],
         speed_gain=config["speed_gain"], heading_gain=config["heading_gain"], lateral_gain=config["lateral_gain"], live_limit=True,
-        pedal_time_constant=config["pedal_time_constant"], throttle_apply_rate=config["throttle_apply_rate"],
+        pedal_time_constant=config["pedal_time_constant_s"], throttle_apply_rate=config["throttle_apply_rate"],
         throttle_release_rate=config["throttle_release_rate"], brake_apply_rate=config["brake_apply_rate"],
         brake_release_rate=config["brake_release_rate"], steering_time_constant=config["steering_time_constant_s"],
         envelope_policy=EnvelopePolicy(envelope, policy_settings))
@@ -133,9 +150,11 @@ def _run_impl(case: dict, attempt: Path, settings: RunSettings, case_dir: Path) 
     sink = RunRecordSink(plant, track.path_coordinates, run_record, precision="float32")
     policy_path = attempt / "accepted_policy.jsonl"
     policy_stream = policy_path.open("w", encoding="utf-8")
-    source_paths = {formulation, track_path}
+    source_paths = {formulation, track_path, Path(compiled_result.manifest.assembly.path).resolve()}
     source_paths.update(Path(item.path) for item in compiled_result.manifest.loaded_components)
     source_hash_map = source_hashes(source_paths)
+    if source_hash_map != frozen_sources:
+        raise ValueError("run source hashes differ from immutable prepared identity")
     manifest_provenance = {
         "formulation": {"model_id": compiled_result.manifest.formulation.model_id,
             "model_type": compiled_result.manifest.formulation.model_type,

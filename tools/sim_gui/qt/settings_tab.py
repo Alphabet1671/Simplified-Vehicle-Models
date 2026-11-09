@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from PyQt6.QtCore import pyqtSignal
-from PyQt6.QtWidgets import QComboBox, QDoubleSpinBox, QFormLayout, QLabel, QSpinBox, QWidget
+from PyQt6.QtWidgets import QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QLabel, QSpinBox, QWidget
 
 from tools.sim_gui.settings import RunSettings
 
@@ -17,6 +17,7 @@ class SettingsTab(QWidget):
         "forward_feedforward_distance",
     )
     INT_FIELDS = ("forward_speed_points",)
+    BOOL_FIELDS = ("forward_transient_corner_planning",)
     POINT_MASS_FIELDS = frozenset(FLOAT_FIELDS[:8])
     LABELS = {
         "point_mass_duration": "Duration (s)", "point_mass_spacing": "Spacing (m)",
@@ -28,6 +29,9 @@ class SettingsTab(QWidget):
         "forward_maximum_speed": "Forward speed cap (m/s)", "forward_spacing": "Envelope spacing (m)",
         "forward_deceleration_margin": "Deceleration margin", "forward_feedforward_distance": "Chord distance (m)",
         "forward_speed_points": "Envelope speed points",
+        "forward_physical_brake_planning": "Operational physical-brake forecast (diagnostic)",
+        "forward_transient_corner_planning": "Transient corner planning (yaw + steering-actuator inverse)",
+        "forward_longitudinal_mode": "Longitudinal policy mode",
     }
 
     def __init__(self, parent=None):
@@ -42,7 +46,7 @@ class SettingsTab(QWidget):
         self.solver_kind.setCurrentIndex(0)
         self.solver_kind.currentIndexChanged.connect(self._mode_changed)
         self._form.addRow("Solver workflow", self.solver_kind)
-        self.forward_note = QLabel("Current continuous braking-envelope policy with PreviewDriver steering and actuator dynamics; sampled envelope is not a safety certificate.")
+        self.forward_note = QLabel("Historical preview speed and steering controller with signed-pedal dynamics by default; newer envelope and hybrid policies are opt-in. Forward simulation is not a safety certificate.")
         self.forward_note.setWordWrap(True)
         self._form.addRow(self.forward_note)
         for name in self.FLOAT_FIELDS:
@@ -55,11 +59,29 @@ class SettingsTab(QWidget):
             self._widgets[name] = widget
             setattr(self, name, widget)
             self._form.addRow(self.LABELS[name], widget)
+        mode_widget = QComboBox()
+        mode_widget.addItem("Historical preview (default)", "historical-preview-v1")
+        mode_widget.addItem("Braking envelope (legacy)", "legacy")
+        mode_widget.addItem("Physical reachable forecast", "physical-reachable-v1")
+        mode_widget.addItem("Hybrid drive / brake rollout", "hybrid-drive-brake-v1")
+        mode_widget.currentIndexChanged.connect(self._changed)
+        mode_widget.setObjectName("forward_longitudinal_mode")
+        self._widgets["forward_longitudinal_mode"] = mode_widget
+        self.forward_longitudinal_mode = mode_widget
+        self._form.addRow(self.LABELS["forward_longitudinal_mode"], mode_widget)
         for name in self.INT_FIELDS:
             widget = QSpinBox()
             widget.setRange(2, 1_000_000)
             widget.setValue(getattr(self._settings, name))
             widget.valueChanged.connect(self._changed)
+            widget.setObjectName(name)
+            self._widgets[name] = widget
+            setattr(self, name, widget)
+            self._form.addRow(self.LABELS[name], widget)
+        for name in self.BOOL_FIELDS:
+            widget = QCheckBox()
+            widget.setChecked(getattr(self._settings, name))
+            widget.toggled.connect(self._changed)
             widget.setObjectName(name)
             self._widgets[name] = widget
             setattr(self, name, widget)
@@ -75,7 +97,7 @@ class SettingsTab(QWidget):
         forward = kind == "forward-driver"
         self.forward_note.setVisible(forward)
         for name, widget in self._widgets.items():
-            visible = name.startswith("forward_") if forward else name in self.POINT_MASS_FIELDS
+            visible = (name == "forward_longitudinal_mode" or name.startswith("forward_")) if forward else name in self.POINT_MASS_FIELDS
             widget.setVisible(visible)
             row = self._form.getWidgetPosition(widget)[0]
             label = self._form.itemAt(row, QFormLayout.ItemRole.LabelRole)
@@ -92,7 +114,12 @@ class SettingsTab(QWidget):
         try:
             self.solver_kind.setCurrentIndex(self.solver_kind.findData(settings.solver_kind))
             for name, widget in self._widgets.items():
-                widget.setValue(getattr(settings, name))
+                if name in self.BOOL_FIELDS:
+                    widget.setChecked(getattr(settings, name))
+                elif name == "forward_longitudinal_mode":
+                    widget.setCurrentIndex(widget.findData(getattr(settings, name)))
+                else:
+                    widget.setValue(getattr(settings, name))
             self._sync_visibility()
         finally:
             for widget, was_blocked in zip(widgets, previous):
@@ -103,7 +130,9 @@ class SettingsTab(QWidget):
         self._model = name
 
     def _changed(self, *_args):
-        values = {name: widget.value() for name, widget in self._widgets.items()}
+        values = {name: (widget.isChecked() if name in self.BOOL_FIELDS else
+                         widget.currentData() if name == "forward_longitudinal_mode" else widget.value())
+                  for name, widget in self._widgets.items()}
         values["solver_kind"] = self.solver_kind.currentData()
         self._settings = RunSettings(**values)
         self._sync_visibility()

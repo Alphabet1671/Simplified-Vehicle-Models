@@ -1,28 +1,59 @@
 #!/usr/bin/env bash
-# Run one forward-driver acceptance chain (cold -> warm/refined/finer/fourth) with fixed steering gains.
-# Usage: run_forward_acceptance_chain.sh MODEL(planar-7dof|14dof-simple) OUT PREVIEW HEADING LATERAL STAGE
-# STAGE: cold | warm | refined | finer | fourth. Warm-based stages read OUT/cold/attempt_*.
-# Settings mirror docs/validation/iem24-murphy/seven_dof_track_pair/new/final_acceptance_run6.
+# Run a cold seed and a warm flying lap with identical vehicle, track and controls.
+# Usage: ... MODEL OUT PREVIEW HEADING LATERAL [cold|warm|both] [extra runner args...]
+# PYTHON may select the interpreter; CHAIN_TIMEOUT selects the per-run wall budget.
 set -euo pipefail
-MODEL=$1; OUT=$2; PREVIEW=$3; HEADING=$4; LATERAL=$5; STAGE=$6
+if [ "$#" -lt 5 ]; then
+  echo "usage: $0 MODEL OUT PREVIEW HEADING LATERAL [cold|warm|both] [runner args...]" >&2
+  exit 2
+fi
+MODEL=$1; OUT=$2; PREVIEW=$3; HEADING=$4; LATERAL=$5
+shift 5
+STAGE=${1:-both}
+if [ "$#" -gt 0 ]; then shift; fi
+PYTHON=${PYTHON:-python3}
 case "$MODEL" in
-  planar-7dof) BASE_STEP=0.02; TIMEOUT=300.0;;
-  14dof-simple) BASE_STEP=0.005; TIMEOUT=${CHAIN_TIMEOUT:-1800.0};;
+  planar-7dof) STEP=0.02; TIMEOUT=${CHAIN_TIMEOUT:-600.0};;
+  14dof-simple) STEP=0.01; TIMEOUT=${CHAIN_TIMEOUT:-1800.0};;
   *) echo "unknown model $MODEL" >&2; exit 2;;
 esac
 case "$STAGE" in
-  cold|warm) STEP=$BASE_STEP; RTOL=1e-05;;
-  refined) STEP=$(python3 -c "print($BASE_STEP/2)"); RTOL=5e-06;;
-  finer) STEP=$(python3 -c "print($BASE_STEP/4)"); RTOL=2.5e-06;;
-  fourth) STEP=$(python3 -c "print($BASE_STEP/8)"); RTOL=1.25e-06;;
-  *) echo "unknown stage $STAGE" >&2; exit 2;;
+  cold|warm|both) ;;
+  *) echo "unknown stage $STAGE (expected cold, warm or both; refinement stages were removed)" >&2; exit 2;;
 esac
 ARGS=(--model "$MODEL" --maximum-speed 60.0 --pedal-travel-time 0.175
-      --maximum-step "$STEP" --rtol "$RTOL" --method BDF --spacing 0.5 --duration 300.0
+      --maximum-step "$STEP" --rtol 1e-5 --method BDF --spacing 0.5 --duration 300.0
       --timeout-seconds "$TIMEOUT" --preview-seconds "$PREVIEW" --heading-gain "$HEADING"
-      --lateral-gain "$LATERAL" --output-root "$OUT/$STAGE")
-if [ "$STAGE" != cold ]; then
-  COLD=$(ls -d "$OUT"/cold/attempt_* | tail -1)
-  ARGS+=(--warm-start "$COLD")
+      --lateral-gain "$LATERAL")
+# Stage-owned arguments must not be overridden by the optional shared settings.
+for ARG in "$@"; do
+  case "$ARG" in
+    --output-root|--output-root=*|--warm-start|--warm-start=*)
+      echo "output-root and warm-start are owned by the acceptance chain" >&2; exit 2;;
+  esac
+done
+if [ "$STAGE" = cold ] || [ "$STAGE" = both ]; then
+  PYTHONPATH=src:. "$PYTHON" tools/run/run_iem24_forward_driver.py \
+    "${ARGS[@]}" "$@" --output-root "$OUT/cold"
 fi
-PYTHONPATH=src:. exec python3 tools/run/run_iem24_forward_driver.py "${ARGS[@]}"
+if [ "$STAGE" = warm ] || [ "$STAGE" = both ]; then
+  # Select the newest completed seed from this chain, never an incomplete attempt.
+  COLD=$("$PYTHON" - "$OUT/cold" <<'PY'
+import json
+from pathlib import Path
+import sys
+for path in sorted(Path(sys.argv[1]).glob('attempt_*'), reverse=True):
+    try:
+        summary = json.loads((path / 'summary.json').read_text())
+    except (OSError, ValueError):
+        continue
+    if summary.get('status') == 'Completed' and summary.get('lap_completed') is True:
+        print(path)
+        break
+else:
+    raise SystemExit('no completed cold seed found')
+PY
+)
+  PYTHONPATH=src:. "$PYTHON" tools/run/run_iem24_forward_driver.py \
+    "${ARGS[@]}" "$@" --output-root "$OUT/warm" --warm-start "$COLD"
+fi

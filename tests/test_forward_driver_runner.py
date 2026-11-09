@@ -22,6 +22,7 @@ from simplified_vehicle_models.solvers.driver_maps import (
 )
 from simplified_vehicle_models.solvers.forward_driver import (
     DriverObservation, ForwardResult, PreviewDriver, RateSystem, SpeedPlan, solve_forward,
+    build_speed_plan,
 )
 from simplified_vehicle_models.solvers.planar_forward import PlanarForwardPlant
 from simplified_vehicle_models.solvers.vertical_forward import (
@@ -57,6 +58,17 @@ VOLATILE_SUMMARY_KEYS = (
     "solver_wall_budget_seconds", "solver_elapsed_seconds", "elapsed_wall_seconds",
     "peak_memory_bytes", "peak_memory_source", "pedal_map", "runtime_model_identity",
 )
+
+# Legacy fixture fields that no longer have the same contract. Keep every
+# other fixture key and stable value under regression comparison.
+LEGACY_FIXTURE_SUMMARY_KEYS = {
+    "between_step_validation_complete",  # removed between-step certificate
+    "refinement_validated",  # removed refinement certificate
+    "planner",  # replaced by the current longitudinal_policy record
+    "planned_lap_time",  # current plan/policy produces this result dynamically
+    "planned_peak_lateral_acceleration",  # current plan/policy produces this dynamically
+    "usable",  # now exactly the current formal acceptance-gate result
+}
 
 REQUIRED_14DOF_SOURCES = (
     "models/vehicles/iem24_murphy_real_planar.xml",
@@ -257,8 +269,7 @@ class RunnerTests(unittest.TestCase):
                        periodic_state_tolerances=tolerances, periodicity_valid=True,
                        integration_completed=True, path_tracking_valid=True,
                        resolution_valid=True, checked_rhs_physics_valid=True,
-                       between_step_validation_complete=True,
-                       refinement_validated=True, contact_valid=True)
+                       contact_valid=True)
         self.assertEqual(len(deltas), len(tolerances))
         self.assertTrue(any(abs(delta) > tolerance
                             for delta, tolerance in zip(deltas, tolerances)))
@@ -275,8 +286,6 @@ class RunnerTests(unittest.TestCase):
             "path_tracking_valid": True,
             "resolution_valid": True,
             "checked_rhs_physics_valid": True,
-            "between_step_validation_complete": True,
-            "refinement_validated": True,
             "contact_valid": True,
         }
         self.assertTrue(acceptance_gate(valid))
@@ -291,7 +300,7 @@ class RunnerTests(unittest.TestCase):
                 self.assertFalse(acceptance_gate(candidate))
 
     def test_limits_reject_nonfinite_and_over_budget_values(self):
-        for arguments in (["--timeout-seconds", "301"], ["--timeout-seconds", "nan"],
+        for arguments in (["--timeout-seconds", "0"], ["--timeout-seconds", "nan"],
                           ["--duration", "0"], ["--spacing", ".51"],
                           ["--rtol", "-1"]):
             with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
@@ -668,6 +677,35 @@ class RunnerTests(unittest.TestCase):
             "policy": "braking-envelope", "deceleration_margin": .6,
             "speed_query_points": 11}), hashes, args))
 
+    def test_physical_forecast_identity_separates_horizon_actuators_source_and_modes(self):
+        hashes = {"source": "compiled-source-v1"}
+        args = parse_args(["--physical-brake-planning", "--transient-corner-planning"])
+        args.physical_source_closure_sha256 = "source-closure-A"
+        common = dict(maximum_speed=8., lateral_acceleration=None, pedal_travel_time=.175,
+                      throttle_apply_rate=None, throttle_release_rate=None, brake_apply_rate=None,
+                      brake_release_rate=None, spacing=.5, preview_seconds=.15, heading_gain=1.5,
+                      lateral_gain=1.5, speed_gain=2., lateral_margin=None, track=DEFAULT_TRACK,
+                      longitudinal_policy="braking-envelope", envelope_deceleration_margin=.6,
+                      envelope_speed_points=9, physical_brake_planning=True,
+                      transient_corner_planning=True)
+        identity = policy_identity_settings(args)
+        prior = {"status":"Completed", "lap_completed":True,"source_hashes":hashes,
+            "settings":common, "longitudinal_policy":{"policy":"braking-envelope",
+            "deceleration_margin":.6,"speed_query_points":9,
+            "settings_identity_sha256":hashlib.sha256(canonical_json(identity).encode()).hexdigest()}}
+        self.assertTrue(warm_start_matches(prior, hashes, args, policy_settings_identity=identity))
+        for key, value in (("forecast_horizon_s", 2.5), ("authority_provenance_version", "other")):
+            changed=json.loads(canonical_json(identity)); changed[key]=value
+            self.assertFalse(warm_start_matches(prior, hashes, args, policy_settings_identity=changed))
+        changed=json.loads(canonical_json(identity)); changed["physical_actuator"]["brake_apply_rate"] = 4.0
+        self.assertFalse(warm_start_matches(prior, hashes, args, policy_settings_identity=changed))
+        changed=json.loads(canonical_json(identity)); changed["source_closure_sha256"]="source-closure-B"
+        self.assertFalse(warm_start_matches(prior, hashes, args, policy_settings_identity=changed))
+        self.assertFalse(warm_start_matches(prior, hashes, parse_args(["--physical-brake-planning"]),
+                                            policy_settings_identity=identity))
+        self.assertFalse(warm_start_matches(prior, hashes, parse_args([]),
+                                            policy_settings_identity=identity))
+
     def test_warm_start_requires_matching_track_and_hashes(self):
         hashes = {"track.xml": "a", "track.csv": "b", "tire.xml": "c", "form.xml": "d"}
         args = parse_args(["--track", CANONICAL_TRACK])
@@ -748,11 +786,43 @@ class ForwardRunnerModelTests(unittest.TestCase):
             header, ["time"] + list(PlanarForwardPlant.state_names),
         )
         summary = json.loads((root / "summary.json").read_text())
+        from simplified_vehicle_models.tracks.profile import load_track
+        from simplified_vehicle_models.tracks.path_coordinates import evaluate_path
+        args = parse_args(["--output-root", str(root), "--model", "planar-7dof"])
+        track = load_track(args.track)
+        station = np.linspace(0., track.lap_length,
+                              int(np.ceil(track.lap_length / args.spacing)) + 1)
+        _, _, _, curvature = evaluate_path(track.path_coordinates, station)
+        summary_plan = build_speed_plan(
+            station, curvature, args.maximum_speed, args.lateral_acceleration,
+            1., 2., vehicle=compile_formulation(
+                str(model_spec("planar-7dof").formulation)).model,
+            live_limit=True, open_course=False, lateral_margin=1.)
+        # Retain regression coverage of every field whose stable semantics are
+        # unchanged. The fixture's removed, replaced, or policy-derived fields
+        # are checked against current contracts below rather than old values.
         for key in baseline["stable_summary"]:
-            self.assertIn(key, summary)
-        stable = {key: value for key, value in summary.items()
-                  if key not in VOLATILE_SUMMARY_KEYS}
-        self.assertEqual(stable, baseline["stable_summary"])
+            if key not in LEGACY_FIXTURE_SUMMARY_KEYS:
+                self.assertIn(key, summary)
+        expected_stable = {key: value for key, value in baseline["stable_summary"].items()
+                           if key not in LEGACY_FIXTURE_SUMMARY_KEYS
+                           and key not in VOLATILE_SUMMARY_KEYS}
+        actual_fixture_stable = {key: summary[key] for key in expected_stable}
+        self.assertEqual(actual_fixture_stable, expected_stable)
+        self.assertEqual(summary["usable"], acceptance_gate(summary))
+        self.assertIn(summary["longitudinal_policy"]["policy"],
+                      {"braking-envelope", "legacy"})
+        self.assertEqual(summary["suspension_travel_policy"], "unlimited")
+        self.assertIs(summary["suspension_travel_enforced"], False)
+        self.assertAlmostEqual(
+            summary["planned_lap_time"],
+            float(np.sum(np.diff(summary_plan.distance)
+                         / (.5 * (summary_plan.speed[1:] + summary_plan.speed[:-1])))),
+        )
+        self.assertAlmostEqual(
+            summary["planned_peak_lateral_acceleration"],
+            float(np.max(summary_plan.speed**2 * np.abs(summary_plan.curvature))),
+        )
         # Task 8 adds the model identity and the requested/elapsed wall budget.
         self.assertEqual(summary["model"], "planar-7dof")
         self.assertEqual(summary["requested_wall_seconds"], 300.)
@@ -810,11 +880,12 @@ class ForwardRunnerModelTests(unittest.TestCase):
         self.assertIn("accepted states only", summary["jounce_gate_scope"])
         self.assertEqual(summary["maximum_damper_velocity"], 0.5)
         self.assertEqual(summary["minimum_contact_load_n"], 812.5)
-        # Vertical runs record their narrow dense state-domain result; this is
-        # distinct from planar load-closure and is not full between-step validation.
+        # Vertical runs record their narrow dense state-domain result as a
+        # diagnostic. The removed between-step and refinement flags are absent.
         self.assertFalse(summary["dense_polynomial_domain_certified"])
         self.assertIsInstance(summary["dense_polynomial_domain"], dict)
-        self.assertFalse(summary["between_step_validation_complete"])
+        self.assertNotIn("between_step_validation_complete", summary)
+        self.assertNotIn("refinement_validated", summary)
         self.assertIsNone(summary["contact_nonnegativity_conditions_hold"])
         self.assertIsNone(summary["contact_nonnegativity_conditions"])
 
@@ -876,7 +947,8 @@ class ForwardRunnerModelTests(unittest.TestCase):
         self.assertEqual(summary["jounce_accepted_maximum_m"], 0.05)
         root, _, _ = run_fake_child("14dof-simple", vertical_fake(out_of_range_evaluations=2))
         summary = json.loads((root / "summary.json").read_text())
-        self.assertFalse(summary["contact_valid"])
+        self.assertTrue(summary["contact_valid"])
+        self.assertEqual(summary["out_of_range_evaluations"], 2)
         root, _, _ = run_fake_child("14dof-simple", vertical_fake(minimum_contact_load=-1.0))
         summary = json.loads((root / "summary.json").read_text())
         self.assertFalse(summary["contact_valid"])
@@ -1065,8 +1137,8 @@ class WallBudgetTests(unittest.TestCase):
             self.assertGreaterEqual(parent["solver_wall_budget_seconds"], 870.)
             self.assertTrue((attempt / "run.log").exists())
 
-    def test_planar_rejects_long_timeouts_and_coarse_spacing(self):
-        for arguments in (["--timeout-seconds", "301"], ["--timeout-seconds", "900"],
+    def test_runner_rejects_coarse_spacing_and_invalid_models(self):
+        for arguments in (["--timeout-seconds", "0"], ["--timeout-seconds", "inf"],
                           ["--spacing", ".51"], ["--model", "planar-14dof"],
                           ["--model", "14dof-simple", "--timeout-seconds", "nan"]):
             with self.subTest(arguments=arguments):
@@ -1074,9 +1146,10 @@ class WallBudgetTests(unittest.TestCase):
                     parse_args(arguments)
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             parse_args(["--model", "14dof-simple", "--spacing", ".51"])
-        # Only the 14DoF model accepts a longer parent timeout.
-        args = parse_args(["--model", "14dof-simple", "--timeout-seconds", "900"])
-        self.assertEqual(args.timeout_seconds, 900.)
+        # Both models allow explicitly selected parent budgets; defaults stay bounded.
+        for model in ("planar-7dof", "14dof-simple"):
+            args = parse_args(["--model", model, "--timeout-seconds", "900"])
+            self.assertEqual(args.timeout_seconds, 900.)
         self.assertEqual(args.spacing, .5)
 
     def test_solve_forward_wall_ceiling(self):

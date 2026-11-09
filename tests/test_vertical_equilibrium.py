@@ -322,13 +322,17 @@ class VerticalEquilibriumOracleTests(unittest.TestCase):
             with self.subTest(field=name):
                 np.testing.assert_array_equal(getattr(zero_toe, name), getattr(evaluation, name))
         self.assertEqual(zero_toe.out_of_range_count, evaluation.out_of_range_count)
-        for name in ("spring", "arb", "damper", "total", "damper_velocity"):
+        # The element names depend on the layout. The legacy independent-corner
+        # layout has "spring", "arb" and "damper". The active parallel strut layout
+        # has "preload", "spring" and "damper" and no ARB.
+        mine_forces, base_forces = zero_toe.corner_forces, evaluation.corner_forces
+        self.assertEqual(set(mine_forces.elements), set(base_forces.elements))
+        for name in (*sorted(base_forces.elements), "total", "damper_velocity"):
             with self.subTest(corner_force=name):
-                mine, base = zero_toe.corner_forces, evaluation.corner_forces
-                if name in mine.elements:
-                    mine, base = mine.elements[name], base.elements[name]
+                if name in base_forces.elements:
+                    mine, base = mine_forces.elements[name], base_forces.elements[name]
                 else:
-                    mine, base = getattr(mine, name), getattr(base, name)
+                    mine, base = getattr(mine_forces, name), getattr(base_forces, name)
                 np.testing.assert_array_equal(mine, base)
 
         # The evaluator's commanded slip is the pure steering slip: rebuild the
@@ -459,7 +463,13 @@ class SteadyCornerTests(unittest.TestCase):
             for speed in cls.speeds
         }
         cls.straight = _solve_steady_corner_detail(cls.vehicle, 15.0, 0.0)
-        cls.reference = _reference_rigid_tire_vehicle(cls.vehicle)
+        # The D4-D7 source numbers (1057/1104 N*m/deg, 0.289 deg/g, LLTD 0.473)
+        # belong to the historical independent-corner spring and ARB setup. The
+        # active Murphy suspension uses the parallel physical struts and has no
+        # ARB, so the source-number oracles use the explicit legacy fixture.
+        from tests.legacy_suspension import legacy_vehicle
+        cls.legacy = without_bump_steer(legacy_vehicle())
+        cls.reference = _reference_rigid_tire_vehicle(cls.legacy)
         cls.reference_one_g = {
             speed: _solve_steady_corner_detail(cls.reference, speed, GRAVITY)
             for speed in cls.speeds
@@ -739,9 +749,10 @@ class SteadyCornerTests(unittest.TestCase):
         spreadsheet numbers. The rigid-tire roll gradient then follows in closed
         form from the sprung mass, the sprung CG height, the roll-stiffness
         weighted roll-centre height and the total wheel-rate roll stiffness.
+        The source numbers belong to the legacy independent-corner setup.
         """
 
-        vehicle = self.vehicle
+        vehicle = self.legacy
         front = _axle_roll_stiffness(vehicle, [0, 1])
         rear = _axle_roll_stiffness(vehicle, [2, 3])
         self.assertAlmostEqual(front / np.degrees(1.0), 1057.4, delta=1.0)
@@ -755,6 +766,32 @@ class SteadyCornerTests(unittest.TestCase):
             * GRAVITY
         )
         self.assertAlmostEqual(gradient, 0.289, delta=0.006)
+
+    def test_active_strut_roll_stiffness_matches_closed_form(self):
+        """Oracle: the active parallel strut roll stiffness from the strut XML.
+
+        A roll strut sees the shaft travel ``x = (z_right - z_left) / (2 * MR)``.
+        A pure wheel roll angle ``phi`` gives ``z = y * phi`` at each wheel, so
+        ``x = half_track * phi / MR`` and the axle roll stiffness is
+        ``k * half_track**2 / MR**2``. Only the roll strut adds roll stiffness:
+        the heave strut sees zero travel and the corner struts are zero.
+        """
+
+        import xml.etree.ElementTree as ElementTree
+
+        def strut(name):
+            path = ROOT / f"models/struts/iem24_{name}_strut.xml"
+            return {element.get("name"): float(element.get("value"))
+                    for element in ElementTree.parse(path).iter("parameter")}
+
+        positions = sprung_wheel_positions(self.vehicle)
+        for indices, name in (([0, 1], "roll_front"), ([2, 3], "roll_rear")):
+            with self.subTest(axle=name):
+                values = strut(name)
+                half_track = 0.5 * float(positions[indices[1], 1] - positions[indices[0], 1])
+                expected = values["spring_rate"] * half_track**2 / values["motion_ratio"]**2
+                measured = _axle_roll_stiffness(self.vehicle, indices)
+                self.assertAlmostEqual(measured, expected, delta=1e-6 * expected)
 
     def test_reference_rigid_tire_roll_gradient_and_lltd(self):
         """Oracle: the rigid-tire/static-RC reference case (0.289 deg/g, LLTD 0.473).

@@ -65,6 +65,78 @@ class EnvelopePolicyTests(unittest.TestCase):
         self.assertEqual(d.governed_brake_force,0.)
         self.assertEqual(d,pol.decide(obs(v=5),-.5))
         self.assertEqual(d.to_dict(),pol.decide(obs(v=5),-.5).to_dict())
+    def test_planning_transition_validation(self):
+        for value in (0.,-1.,float('nan'),float('inf')):
+            with self.subTest(value=value), self.assertRaises((TypeError,ValueError)):
+                EnvelopeDriverSettings(planning_transition_time_s=value)
+
+    def test_fixed_planning_transition_is_pedal_invariant_and_actual_readiness_remains_visible(self):
+        env=BrakingEnvelope(np.array([0.,10.,20.]),np.zeros(3),np.array([30.,20.,30.]),
+            np.array([30.,20.,30.]),np.array([5.,5.]),np.array([0,1,2]),True,60.,{})
+        settings=EnvelopeDriverSettings(planning_transition_time_s=.47)
+        policy=EnvelopePolicy(env,settings)
+        ctx=PedalPolicyContext(1/.175,1/.175,.02,1000.,.85)
+        # Exact frozen MIS observation coordinates, evaluated on a compact synthetic
+        # descending envelope (not by loading the ignored full-lap run fixture).
+        decisions=[policy.decide(obs(s=84.5738442666058,v=16.005802367141506),p,ctx) for p in (.744200105926319,0.,-1.)]
+        for field in ('reference_speed','squared_speed_slope','acceleration_request','reserve_distance_m'):
+            values=[getattr(d,field) for d in decisions]
+            self.assertTrue(all(value == values[0] for value in values), (field,values))
+        self.assertAlmostEqual(decisions[0].transition_time_s,.47)
+        self.assertNotEqual(decisions[0].actual_transition_time_s,decisions[-1].actual_transition_time_s)
+        self.assertAlmostEqual(decisions[0].planning_transition_time_s,.47)
+        self.assertEqual(decisions[0].to_dict()['planning_transition_time_s'],.47)
+
+    def test_fixed_planning_transition_disabled_actual_and_directional_rates(self):
+        env=envelope([30,30,10],[np.sqrt(300),np.sqrt(200),10])
+        policy=EnvelopePolicy(env,EnvelopeDriverSettings(planning_transition_time_s=.47,disabled_transition_time_s=.4))
+        disabled=policy.decide(obs(s=0.,v=10.),None,None)
+        self.assertEqual(disabled.transition_time_s,.47)
+        self.assertEqual(disabled.planning_transition_time_s,.47)
+        self.assertEqual(disabled.actual_transition_time_s,.4)
+        ctx=PedalPolicyContext(2.,5.,.03,1000.,.85)
+        directional=policy.decide(obs(s=0.,v=10.),.5,ctx)
+        expected=.5/2.+1./5.+.06+3.*.03
+        self.assertAlmostEqual(directional.actual_transition_time_s,expected)
+        self.assertEqual(directional.transition_time_s,.47)
+
+    def test_fixed_planning_transition_seam_endpoint_and_reordered_calls(self):
+        x=np.array([0.,10.,20.]); caps=np.array([30.,30.,30.])
+        closed=BrakingEnvelope(x,np.zeros(3),caps,np.array([30.,20.,30.]),np.array([5.,5.]),np.array([0,1,2]),True,60.,{})
+        opened=envelope([30.,30.,10.],[30.,20.,10.])
+        settings=EnvelopeDriverSettings(planning_transition_time_s=.47)
+        for env,stations in ((closed,(19.9,-.1)),(opened,(-1.e-5,20.))):
+            policy=EnvelopePolicy(env,settings)
+            first={s:policy.decide(obs(s=s,v=12.),p,PedalPolicyContext(4.,6.,.02,1000.,.85))
+                   for s,p in ((stations[0],.7),(stations[1],-1.))}
+            second={s:policy.decide(obs(s=s,v=12.),p,PedalPolicyContext(4.,6.,.02,1000.,.85))
+                    for s,p in reversed(((stations[0],.7),(stations[1],-1.)))}
+            self.assertEqual(first,second)
+            self.assertEqual(first[stations[0]].planning_transition_time_s,.47)
+
+    def test_fixed_planning_transition_short_synthetic_actuator_integration(self):
+        from simplified_vehicle_models.solvers.forward_driver import SpeedPlan
+        x=np.array([0.,10.,20.]); env=BrakingEnvelope(x,np.zeros(3),np.array([30.,30.,8.]),
+            np.array([30.,20.,8.]),np.array([5.,5.]),np.array([0,1,2]),False,60.,{})
+        policy=EnvelopePolicy(env,EnvelopeDriverSettings(planning_transition_time_s=.47))
+        plan=SpeedPlan(np.array([0.,20.]),np.array([20.,8.]),np.zeros(2),False)
+        driver=PreviewDriver(plan,1.5,.5,2.,1000.,envelope_policy=policy,
+            throttle_apply_rate=1/.175,throttle_release_rate=1/.175,
+            brake_apply_rate=1/.175,brake_release_rate=1/.175)
+        class Plant:
+            state_size=1
+            def observe(self,state): return DriverObservation(float(state[0]),0.,0.,16.,0.,0.)
+            def evaluate(self,time,state,command): return RateSystem(np.array([1.]))
+        samples=[]
+        solve_forward(Plant(),driver,np.array([0.]),duration=.02,maximum_step=.01,step_sink=samples.append)
+        self.assertTrue(samples)
+        for sample in samples:
+            decision=sample.policy_diagnostics
+            self.assertEqual(decision.planning_transition_time_s,.47)
+            self.assertAlmostEqual(decision.actual_transition_time_s,.12)
+            self.assertEqual(decision.ungoverned_brake_force,1000.)
+            self.assertEqual(sample.mapped_command.brake_force,1000.)
+
     def test_actual_pedal_reserve_governor_shortfall(self):
         env=envelope([30,30,10],[np.sqrt(300),np.sqrt(200),10])
         ctx=PedalPolicyContext(4.,6.,.02,1000.,.85)

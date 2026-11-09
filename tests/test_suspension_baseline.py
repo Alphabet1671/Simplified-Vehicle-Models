@@ -188,7 +188,11 @@ class SuspensionBaselineTests(unittest.TestCase):
     def test_evaluator_outputs_are_unchanged(self):
         v = vehicle()
         plant, _ = _plant(15.0)
-        tires = plant.tire_states(plant.initial_state(15.0))
+        # The pinned tire inputs were recorded from the straight static start.
+        # The plant now starts from the steady corner, which carries the steady
+        # drive torque and nonzero slip. Use the static start explicitly so this
+        # gate pins the evaluator, not the choice of initializer.
+        tires = plant.tire_states(plant._static_initial_state(15.0))
         for name, row in self.expected["evaluations"].items():
             with self.subTest(case=name):
                 evaluation = evaluate_vertical_dynamics(

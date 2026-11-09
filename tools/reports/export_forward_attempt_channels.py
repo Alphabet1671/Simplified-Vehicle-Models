@@ -233,8 +233,9 @@ def replay(attempt, *, root: Path = ROOT) -> tuple[dict[str, np.ndarray], dict]:
     klass = plant_class(model)
     plant = klass(vehicle, plan)
     names = tuple(plant.state_names)
-    if summary.get("longitudinal_policy", {}).get("policy") != "braking-envelope":
-        raise ExportBlocker("attempt has no persisted braking-envelope decisions; refusing legacy command reconstruction")
+    policy_kind = summary.get("longitudinal_policy", {}).get("policy")
+    if policy_kind not in {"braking-envelope", "hybrid-drive-brake-v1"}:
+        raise ExportBlocker("attempt has no persisted supported longitudinal-policy decisions; refusing legacy command reconstruction")
     policy_path = attempt / "accepted_policy.jsonl"
     sidecar = attempt / "accepted_policy.json"
     if not policy_path.is_file() or not sidecar.is_file():
@@ -255,6 +256,11 @@ def replay(attempt, *, root: Path = ROOT) -> tuple[dict[str, np.ndarray], dict]:
     for index, (decision, time_value) in enumerate(zip(decisions, trace[:, 0])):
         if decision.get("step_index") != index or decision.get("time") != float(time_value):
             raise ExportBlocker("accepted policy sample index/time does not match trace")
+        if summary.get("longitudinal_policy", {}).get("policy") == "hybrid-drive-brake-v1":
+            if decision.get("longitudinal_mode") != "hybrid-drive-brake-v1" or decision.get("decision_schema") != "hybrid-telemetry-v1":
+                raise ExportBlocker(f"hybrid accepted row {index} lacks its tagged raw decision")
+            if decision.get("decision", {}).get("schema") != "hybrid-telemetry-v1":
+                raise ExportBlocker(f"hybrid accepted row {index} raw decision schema mismatch")
     states = trace[:, 1:]
     columns = wheel_speed_columns(names)
     accelerations = accelerations_function(model)

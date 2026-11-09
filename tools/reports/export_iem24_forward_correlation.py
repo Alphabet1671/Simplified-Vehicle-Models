@@ -90,6 +90,9 @@ def export(attempt: Path) -> Path:
         raise ValueError("accepted policy decision count does not match sidecar")
     if len(decisions) != len(trace):
         raise ValueError("accepted policy samples do not match trace samples")
+    for index, (decision, time_value) in enumerate(zip(decisions, trace[:, 0])):
+        if decision.get("step_index") != index or decision.get("time") != float(time_value):
+            raise ValueError("accepted policy index/time does not match trace")
     states = trace[:, 1:]
     # Column indices come from the plant's published layout, not literals.
     names = tuple(plant.state_names)

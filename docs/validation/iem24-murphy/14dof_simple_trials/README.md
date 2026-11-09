@@ -7,7 +7,6 @@ Forward-driver attempts of the vertical 14-DoF model on the endurance lap.
 | Directory | Purpose |
 |---|---|
 | `periodicity/` | Attempts that check the periodicity of the 14-DoF lap. |
-| `refinement/` | Attempts that check the 14-DoF lap at a refined step. |
 
 ## Attempt directories
 

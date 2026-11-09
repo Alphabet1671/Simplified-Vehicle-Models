@@ -4,6 +4,7 @@ import shutil
 import subprocess
 import sys
 import time
+import tempfile
 import unittest
 from unittest import mock
 from pathlib import Path
@@ -26,9 +27,9 @@ else:
 
 class HeadlessRunnerUnitTests(unittest.TestCase):
     def setUp(self):
-        self.root = REPOSITORY_ROOT / "runs" / "_test"
-        self.assertTrue(str(self.root).endswith("runs/_test"))
-        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name) / "runs"
 
     def definition(self, name="unit"):
         return StudyDefinition(name, "", "", "point-mass", {}, RunSettings(), "one-at-a-time", ())
@@ -176,6 +177,55 @@ class HeadlessRunnerUnitTests(unittest.TestCase):
 @unittest.skipUnless(SCIPY_AVAILABLE, "scipy is required for the forward-driver integration test")
 class RunCaseIntegrationTests(unittest.TestCase):
     study_dir = REPOSITORY_ROOT / "runs" / "_test"
+
+    def test_orchestrated_forward_child_reaches_backend_with_parent_log(self):
+        source = REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_14dof_simple.xml"
+        baseline = VehicleConfiguration.open(source)
+        choices = {key: path.relative_to(REPOSITORY_ROOT).as_posix() for key, path in baseline.choices.items()}
+        definition = StudyDefinition("orchestrated-tiny", source.as_posix(),
+            "models/tracks/fsae_2026_acceleration.xml", "14dof-simple", choices,
+            RunSettings(forward_duration=.05, forward_wall_seconds=120., forward_spacing=.5), "one-at-a-time", ())
+        output = run_study(definition, output_root=self.study_dir, parallel=1)
+        case = json.loads((output / "study.json").read_text())["cases"][0]
+        attempt = output / case.get("attempt", "cases/case_000/attempt_unknown")
+        self.assertTrue((attempt / "run.log").is_file())
+        self.assertTrue((attempt / "progress.json").is_file(), (attempt / "run.log").read_text()[-2000:])
+        self.assertNotIn("fresh empty directory", (attempt / "run.log").read_text())
+        if case.get("status") == "completed":
+            self.assertEqual(case["summary"]["status"], "completed")
+        else:
+            self.assertIn(case.get("summary", {}).get("status"), {"incomplete", "failed"})
+
+    def test_child_attempt_rejects_unknown_entry_and_symlink(self):
+        from tools.sim_gui.run_case import _validate_child_attempt
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            case = root / "case"
+            attempt = case / "attempt"
+            case.mkdir()
+            attempt.mkdir()
+            (attempt / "unexpected").write_text("reject")
+            with self.assertRaisesRegex(ValueError, "fresh"):
+                _validate_child_attempt(case, attempt)
+            (attempt / "unexpected").unlink()
+            target = root / "target"
+            target.write_text("not a log")
+            (attempt / "run.log").symlink_to(target)
+            with self.assertRaisesRegex(ValueError, "regular"):
+                _validate_child_attempt(case, attempt)
+
+    def test_child_attempt_rejects_symlinked_ancestor_escape(self):
+        from tools.sim_gui.run_case import _validate_child_attempt
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            case = root / "case"
+            outside = root / "outside"
+            case.mkdir()
+            outside.mkdir()
+            (outside / "run.log").write_text("parent log")
+            (case / "redirect").symlink_to(outside, target_is_directory=True)
+            with self.assertRaisesRegex(ValueError, "symlink|resolve inside"):
+                _validate_child_attempt(case, case / "redirect")
 
     def setUp(self):
         path = self.study_dir

@@ -111,6 +111,45 @@ class PlanarForwardPlant:
         return PlanarState(float(state[3]), float(state[4]), float(state[5]),
                            np.asarray(state[6:10]), float(state[10]))
 
+    def hybrid_kinematic_context(self,state):
+        from simplified_vehicle_models.solvers.longitudinal_capability import PathKinematicContext
+        values=np.asarray(state,dtype=float); obs=self.observe(values); _,curv,_=self.plan.sample(obs.distance)
+        grad=float(np.interp(obs.distance,self.plan.distance,np.gradient(self.plan.curvature,self.plan.distance)))
+        valid=(abs(float(values[2]))<.05 and abs(float(values[1]))<.25 and abs(float(values[4]))<.5 and abs(float(curv))<.08 and abs(grad)<.02)
+        return PathKinematicContext(float(values[3]),float(values[4]),float(values[2]),float(values[1]),float(values[5]),float(curv),grad,0.,valid)
+
+    def brake_authority_context(self, state, *, predictor=None):
+        """Build immutable planar brake authority context from this state only."""
+        from simplified_vehicle_models.solvers.brake_authority import BrakeAuthorityContext
+        values = np.asarray(state, dtype=float)
+        observation = self.observe(values)
+        if predictor is None:
+            predictor = getattr(self, "brake_authority_predictor", None)
+        if predictor is None:
+            raise ValueError("a prebuilt BrakeAuthorityPredictor is required")
+        _, curvature, _ = self.plan.sample(observation.distance)
+        loads = np.maximum(evaluate_normal_loads(self.vehicle, float(np.hypot(values[3], values[4])),
+                                                0., 0.), 1.)
+        radii = loaded_radius(self.vehicle.tire, loads)
+        return BrakeAuthorityContext(float(observation.speed), float(curvature),
+            tuple(float(x) for x in radii), tuple(float(x) for x in loads),
+            soc=float(np.clip(values[10], 0., 1.)), regen_enabled=False,
+            v_y_mps=float(observation.lateral_speed), yaw_rate_rps=float(observation.yaw_rate),
+            steering_rad=float(observation.steering))
+
+    def brake_planning_context(self, state, pedal_context, *, predictor=None, knot_count=8):
+        """Build a fixed diagnostic forecast table from an explicit current state."""
+        from simplified_vehicle_models.solvers.envelope_driver import PhysicalBrakePlanningContext
+        if predictor is None:
+            predictor = getattr(self, "brake_authority_predictor", None)
+        if predictor is None:
+            raise ValueError("a prebuilt BrakeAuthorityPredictor is required")
+        authority = self.brake_authority_context(state, predictor=predictor)
+        context = PhysicalBrakePlanningContext.from_predictor(predictor, authority, pedal_context,
+                                                               knot_count=knot_count)
+        from dataclasses import replace
+        return replace(context, current_authority_context=authority, current_predictor=predictor)
+
     def initial_state(self, speed: float) -> np.ndarray:
         if self.plan.is_closed:
             if not np.isfinite(speed) or speed <= 1.:
@@ -201,11 +240,11 @@ class PlanarForwardPlant:
         _, curvature, _ = self.plan.sample(state[0])
         denominator = 1. - curvature * state[1]
         if denominator < 0.5:
-            raise RuntimeError("path coordinate denominator is invalid")
+            raise TrialStateError("path coordinate denominator is invalid")
         progress = (state[3] * np.cos(state[2]) - state[4] * np.sin(state[2])) / denominator
         if progress < self.minimum_progress or (
                 self.plan.is_closed and progress == self.minimum_progress):
-            raise RuntimeError("positive path progress constraint failed")
+            raise TrialStateError("positive path progress constraint failed")
         rate = np.zeros(self.state_size)
         rate[0] = progress
         rate[1] = state[3] * np.sin(state[2]) + state[4] * np.cos(state[2])

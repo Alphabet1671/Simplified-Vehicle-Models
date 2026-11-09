@@ -11,7 +11,7 @@ Qt layer of the simulation GUI, including forward-driver and point-mass workflow
 | `maneuver_tab.py` | Pure maneuver draft/preflight model (independent of Qt widgets). |
 | `model_panel.py` | Qt widget for selecting a vehicle model and its components. |
 | `queue.py` | Qt process queue for running prepared simulation cases. |
-| `settings_tab.py` | Qt widget for forward-run settings. |
+| `settings_tab.py` | Qt forward-run settings with historical-preview default and optional newer policy controls. |
 | `single_run_tab.py` | Qt tab for one standalone simulation run. |
 | `study_tab.py` | Qt study definition and case preview tab. |
 | `track_tab.py` | Qt tab for selecting a track model and previewing its centerline. |

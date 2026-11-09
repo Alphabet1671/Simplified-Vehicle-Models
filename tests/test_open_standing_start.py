@@ -260,8 +260,7 @@ class EventTimeAndGateTests(unittest.TestCase):
     def test_open_course_gate_needs_no_periodic_closure(self):
         summary = dict(lap_completed=True, track_is_closed=False, integration_completed=True,
                        path_tracking_valid=True, resolution_valid=True,
-                       checked_rhs_physics_valid=True, between_step_validation_complete=True,
-                       refinement_validated=True, contact_valid=True)
+                       checked_rhs_physics_valid=True, contact_valid=True)
         self.assertTrue(acceptance_gate(summary))
         self.assertFalse(acceptance_gate({**summary, "lap_completed": False}))
         self.assertFalse(acceptance_gate({**summary, "path_tracking_valid": False}))
@@ -270,8 +269,7 @@ class EventTimeAndGateTests(unittest.TestCase):
     def test_open_course_gate_still_needs_the_other_gates(self):
         summary = dict(lap_completed=True, track_is_closed=False, integration_completed=True,
                        path_tracking_valid=True, resolution_valid=True,
-                       checked_rhs_physics_valid=True, between_step_validation_complete=False,
-                       refinement_validated=True, contact_valid=True)
+                       checked_rhs_physics_valid=True, contact_valid=False)
         self.assertFalse(acceptance_gate(summary))
 
 

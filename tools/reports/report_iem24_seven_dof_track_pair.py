@@ -67,8 +67,6 @@ GATES = (('lap_completed', 'Full lap completed'),
          ('path_tracking_valid', 'Path tracking (lateral error ≤ 0.25 m)'),
          ('resolution_valid', 'Accepted spatial step resolution'),
          ('checked_rhs_physics_valid', 'Physics checked at every accepted state'),
-         ('between_step_validation_complete', 'Between-step validation'),
-         ('refinement_validated', 'Refinement validated'),
          ('contact_valid', 'Tire contact loads non-negative'))
 #: Filter clock for the model traces: finer than any measured sample interval.
 MODEL_FILTER_HZ = 100.

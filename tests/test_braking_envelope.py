@@ -5,8 +5,26 @@ import numpy as np
 
 from simplified_vehicle_models.parameters.vehicle import PointMassVehicleParameters
 from simplified_vehicle_models.solvers.braking_envelope import (
-    BrakingEnvelope, build_braking_envelope, propagate_braking_caps,
+    BrakingEnvelope, build_braking_envelope, propagate_braking_caps, restrict_braking_envelope,
 )
+
+
+class RestrictionTests(unittest.TestCase):
+    def test_restriction_repropagates_without_increasing_authority(self):
+        x = np.array([0., 10., 20.])
+        corner = np.array([30., 30., 10.])
+        decel = np.array([5., 5.])
+        entry, binding, _ = propagate_braking_caps(x, corner, decel, is_closed=False)
+        original = BrakingEnvelope(x, np.zeros(3), corner, entry, decel, binding,
+                                   False, 30., {"segment_speed_domain_max": (30., 10.)})
+        result = restrict_braking_envelope(original, [30., 8., 10.], provenance={"method": "tested"})
+        self.assertTrue(np.all(result.entry_speed <= original.entry_speed))
+        np.testing.assert_allclose(result.entry_speed**2, [164., 64., 100.])
+        np.testing.assert_array_equal(result.deceleration, original.deceleration)
+        np.testing.assert_array_equal(original.corner_speed, corner)
+        self.assertEqual(result.provenance["restriction_method"], "tested")
+        with self.assertRaises(ValueError):
+            restrict_braking_envelope(original, [30., 31., 10.])
 
 
 class PropagationTests(unittest.TestCase):

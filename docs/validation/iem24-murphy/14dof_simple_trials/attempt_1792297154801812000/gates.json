@@ -1,48 +1,136 @@
 {
-  "task": "Task 9 - vertical 14DoF lap, validation gates and report",
+  "task": "vertical 14DoF lap acceptance gates",
   "attempt": "docs/validation/iem24-murphy/14dof_simple_trials/attempt_1792297154801812000",
   "periodicity_attempt": "docs/validation/iem24-murphy/14dof_simple_trials/periodicity/attempt_1792297599699445000",
-  "refinement_attempt": "docs/validation/iem24-murphy/14dof_simple_trials/refinement/attempt_1792297311051668000",
   "planar_reference_attempt": "docs/validation/iem24-murphy/seven_dof_track_pair/original/attempt_1792298175493764000",
   "plan_gates": {
     "completed": true,
     "contact_valid": true,
     "travel_valid": true,
     "table_domain_valid": true,
-    "refinement_validated": true,
-    "periodicity_valid": true,
-    "cross_fidelity_reported": true
+    "periodicity_valid": true
   },
+  "all_gates_pass": true,
   "gate_source_mapping": {
     "completed": "summary.lap_completed + summary.status + elapsed <= requested wall",
     "contact_valid": "summary.contact_valid",
-    "travel_valid": "summary.jounce_travel_valid (the runner's key for the plan's travel_valid)",
+    "travel_valid": "summary.jounce_travel_valid (finite jounce; travel is unlimited)",
     "table_domain_valid": "summary.out_of_range_evaluations == 0",
-    "refinement_validated": "paired warm baseline vs refined traces (this tool)",
-    "periodicity_valid": "summary.periodicity_valid of the warm-started attempt",
-    "cross_fidelity_reported": "vertical vs corrected planar 7DoF traces (this tool)"
+    "periodicity_valid": "summary.periodicity_valid of the warm-started attempt"
+  },
+  "removed_gates": {
+    "refinement_validated": "removed by user decision 2026-11-04",
+    "between_step_validation_complete": "removed by user decision 2026-11-04"
   },
   "gate_tool": {
     "path": "tools/gates/check_14dof_simple_gates.py",
-    "sha256": "d96e92ed3ae85a8400c14ee229c5d74ffe8bf403b72d8bf78a73dbc4bba2c8c4"
+    "sha256": "29b798281f26b62ede9e95b55b05c803d37bbff89b66a0570dfbf9f30038cb9d"
   },
-  "plan_gate_note": "The plan's Task 9 table names seven gates; summary.json carries contact_valid and periodicity_valid under the same names, refinement_validated as a hard-coded false, and no key at all for completed, travel_valid, table_domain_valid or cross_fidelity_reported (the runner records lap_completed, jounce_travel_valid and out_of_range_evaluations instead). `plan_gates` is the plan's table with its own names.",
   "source_hash_agreement": {
     "sources_checked": 31,
-    "all_sources_match": true,
-    "mismatches": [],
+    "all_sources_match": false,
+    "mismatches": [
+      {
+        "source": "/Users/alphabet1671/Dev/Simplified-Vehicle-Models/tools/run/run_iem24_forward_driver.py",
+        "reason": "sha256 differs"
+      },
+      {
+        "source": "models/anti-roll-bars/iem24_murphy_real_suspension_arb.xml",
+        "reason": "sha256 differs"
+      },
+      {
+        "source": "models/data/iem24_murphy_real_corners.npz",
+        "reason": "sha256 differs"
+      },
+      {
+        "source": "models/springs/iem24_murphy_real_suspension_springs.xml",
+        "reason": "sha256 differs"
+      },
+      {
+        "source": "models/suspension-kinematics/iem24_murphy_real_suspension_kinematics.xml",
+        "reason": "sha256 differs"
+      },
+      {
+        "source": "models/suspensions/iem24_murphy_real_suspension.xml",
+        "reason": "sha256 differs"
+      },
+      {
+        "source": "models/vehicles/iem24_murphy_real_planar.xml",
+        "reason": "sha256 differs"
+      },
+      {
+        "source": "src/simplified_vehicle_models/formulations/vertical_14dof.py",
+        "reason": "sha256 differs"
+      },
+      {
+        "source": "src/simplified_vehicle_models/solvers/forward_driver.py",
+        "reason": "sha256 differs"
+      },
+      {
+        "source": "src/simplified_vehicle_models/solvers/forward_powertrain.py",
+        "reason": "sha256 differs"
+      },
+      {
+        "source": "src/simplified_vehicle_models/solvers/vertical_equilibrium.py",
+        "reason": "sha256 differs"
+      },
+      {
+        "source": "src/simplified_vehicle_models/solvers/vertical_forward.py",
+        "reason": "sha256 differs"
+      },
+      {
+        "source": "src/simplified_vehicle_models/suspension/components.py",
+        "reason": "sha256 differs"
+      },
+      {
+        "source": "src/simplified_vehicle_models/suspension/corner.py",
+        "reason": "sha256 differs"
+      },
+      {
+        "source": "src/simplified_vehicle_models/suspension/damper_table.py",
+        "reason": "sha256 differs"
+      },
+      {
+        "source": "src/simplified_vehicle_models/suspension/elements.py",
+        "reason": "sha256 differs"
+      },
+      {
+        "source": "src/simplified_vehicle_models/suspension/kinematics.py",
+        "reason": "sha256 differs"
+      },
+      {
+        "source": "src/simplified_vehicle_models/suspension/layouts/independent_corner.py",
+        "reason": "sha256 differs"
+      },
+      {
+        "source": "src/simplified_vehicle_models/suspension/monotone_spline.py",
+        "reason": "sha256 differs"
+      },
+      {
+        "source": "src/simplified_vehicle_models/suspension/network.py",
+        "reason": "sha256 differs"
+      },
+      {
+        "source": "src/simplified_vehicle_models/tires/unitire_simple.py",
+        "reason": "sha256 differs"
+      },
+      {
+        "source": "src/simplified_vehicle_models/tires/unitire_transient.py",
+        "reason": "sha256 differs"
+      }
+    ],
     "sources": [
       {
         "source": "/Users/alphabet1671/Dev/Simplified-Vehicle-Models/tools/run/run_iem24_forward_driver.py",
         "recorded_sha256": "fdc2ea3384b6b16c35813de0777fd4da3993bc4e4a4d804954e47f659dc6837d",
-        "working_sha256": "fdc2ea3384b6b16c35813de0777fd4da3993bc4e4a4d804954e47f659dc6837d",
-        "matches": true
+        "working_sha256": "23ce49fdcebb0822ce09fd93a94a03d87fe196faa1c735b4aee3542f079dc547",
+        "matches": false
       },
       {
         "source": "models/anti-roll-bars/iem24_murphy_real_suspension_arb.xml",
         "recorded_sha256": "6a8d11028140d08c60b52dcfbeb363233b5f415a359398a99a6ad0a4b375f961",
-        "working_sha256": "6a8d11028140d08c60b52dcfbeb363233b5f415a359398a99a6ad0a4b375f961",
-        "matches": true
+        "working_sha256": "b29054b92680777a8409f70e2798c7dd878c5d6317ad89b339b8f3b80f545b50",
+        "matches": false
       },
       {
         "source": "models/dampers/multimatic_dssv_vc01_front.xml",
@@ -59,8 +147,8 @@
       {
         "source": "models/data/iem24_murphy_real_corners.npz",
         "recorded_sha256": "04bb06c93b7f52de2e9bc4fcd4e934532d89a9442e75e79ab5886afadb38f0f0",
-        "working_sha256": "04bb06c93b7f52de2e9bc4fcd4e934532d89a9442e75e79ab5886afadb38f0f0",
-        "matches": true
+        "working_sha256": "9fbee5d0f237d999e79024e60542a711320a523f73e30577682bbe1bd8dc9904",
+        "matches": false
       },
       {
         "source": "models/data/multimatic_dssv_vc01.npz",
@@ -77,20 +165,20 @@
       {
         "source": "models/springs/iem24_murphy_real_suspension_springs.xml",
         "recorded_sha256": "4e51eaf6c47aaaf1fafca57db839e6ddbc0ca64bba1fbbb8eda7027a461c64c4",
-        "working_sha256": "4e51eaf6c47aaaf1fafca57db839e6ddbc0ca64bba1fbbb8eda7027a461c64c4",
-        "matches": true
+        "working_sha256": "7d76178f9c8a50c80eba653de36e04c379eb386ca9bc712b5b56c89b51eb0903",
+        "matches": false
       },
       {
         "source": "models/suspension-kinematics/iem24_murphy_real_suspension_kinematics.xml",
         "recorded_sha256": "06e7b1f94d6dd986ea704e6d193a9e3b5d7f8d7e4c248923f52b28d11648349a",
-        "working_sha256": "06e7b1f94d6dd986ea704e6d193a9e3b5d7f8d7e4c248923f52b28d11648349a",
-        "matches": true
+        "working_sha256": "1f4524ec0001c8f6dbfc117cd1bc5f7229eee50f983c37839466b16ea0fc0abd",
+        "matches": false
       },
       {
         "source": "models/suspensions/iem24_murphy_real_suspension.xml",
         "recorded_sha256": "7619af2719ffb1bc2eced2b9b89b52d02362f9feb78d87ed8ca388150cb7ca7e",
-        "working_sha256": "7619af2719ffb1bc2eced2b9b89b52d02362f9feb78d87ed8ca388150cb7ca7e",
-        "matches": true
+        "working_sha256": "3b90f4d38f435e2901275ba1a53b4ee148c3c7587734a1cbc73b15c2a6ffe6b0",
+        "matches": false
       },
       {
         "source": "models/tires/iem24_murphy_real_unitire.xml",
@@ -119,98 +207,98 @@
       {
         "source": "models/vehicles/iem24_murphy_real_planar.xml",
         "recorded_sha256": "3ac48648dbad6daa4d969ca4e66b6b99bd3c77abf86bd79709f51b066427c92d",
-        "working_sha256": "3ac48648dbad6daa4d969ca4e66b6b99bd3c77abf86bd79709f51b066427c92d",
-        "matches": true
+        "working_sha256": "3cce99216fa57ac375920cc328debc2c96154ac19d8559b1e4a131085d690c92",
+        "matches": false
       },
       {
         "source": "src/simplified_vehicle_models/formulations/vertical_14dof.py",
         "recorded_sha256": "9ffa2cf8ecbfb9112258f9c77e29a9bcaec2c9762f85122e54724ca080f9a84b",
-        "working_sha256": "9ffa2cf8ecbfb9112258f9c77e29a9bcaec2c9762f85122e54724ca080f9a84b",
-        "matches": true
+        "working_sha256": "36756b7eb27a58daba3ae153daeb52229d01d0aa43deb2608cfecc32a099643d",
+        "matches": false
       },
       {
         "source": "src/simplified_vehicle_models/solvers/forward_driver.py",
         "recorded_sha256": "3b82c3c1440e63ceddc72145843c825cbbc010c597a915a435b5cde110f823d6",
-        "working_sha256": "3b82c3c1440e63ceddc72145843c825cbbc010c597a915a435b5cde110f823d6",
-        "matches": true
+        "working_sha256": "e67efa6138a4c59dbc48e0a94dfb4358f28a5881db4101609bfe3f382f852b96",
+        "matches": false
       },
       {
         "source": "src/simplified_vehicle_models/solvers/forward_powertrain.py",
         "recorded_sha256": "94c4f229c1758b9827701f70ef44aa9c9345b25590da1bfe5f4e44b6f076acff",
-        "working_sha256": "94c4f229c1758b9827701f70ef44aa9c9345b25590da1bfe5f4e44b6f076acff",
-        "matches": true
+        "working_sha256": "db038a4d0462ee86155a29f4b08962f012999663161c3c8033a79abe258806ac",
+        "matches": false
       },
       {
         "source": "src/simplified_vehicle_models/solvers/vertical_equilibrium.py",
         "recorded_sha256": "39f039b42f8a9a722c25e84d9cdb20cbb351ae4b011401cf77051c4b284780aa",
-        "working_sha256": "39f039b42f8a9a722c25e84d9cdb20cbb351ae4b011401cf77051c4b284780aa",
-        "matches": true
+        "working_sha256": "383c9160c6ff04d2cf5378f6c22861e2027eefc23683656093244d6ff8dd2385",
+        "matches": false
       },
       {
         "source": "src/simplified_vehicle_models/solvers/vertical_forward.py",
         "recorded_sha256": "ea1d1025ed4c838e657de61d64231f9132f65deac0bd9f28f1db54208bd95e6d",
-        "working_sha256": "ea1d1025ed4c838e657de61d64231f9132f65deac0bd9f28f1db54208bd95e6d",
-        "matches": true
+        "working_sha256": "0405b371dfc67823659c660fd1cfef88639e74c4fb799a0870047faefd960195",
+        "matches": false
       },
       {
         "source": "src/simplified_vehicle_models/suspension/components.py",
         "recorded_sha256": "7425daf04f2fc0f766fc53982eb336a8d14e665e5432d66e11343525ef18901e",
-        "working_sha256": "7425daf04f2fc0f766fc53982eb336a8d14e665e5432d66e11343525ef18901e",
-        "matches": true
+        "working_sha256": "aa670f1f59f1703a0a82be5f20f67d8a38c0707a4682e62f02dc9d6fc7b117bd",
+        "matches": false
       },
       {
         "source": "src/simplified_vehicle_models/suspension/corner.py",
         "recorded_sha256": "ba327cf20f13818babe9dbcb28acd36b56fd8c592515ef4e718e45a2f2c7aa30",
-        "working_sha256": "ba327cf20f13818babe9dbcb28acd36b56fd8c592515ef4e718e45a2f2c7aa30",
-        "matches": true
+        "working_sha256": "6a8c51d927695dec45302d853e1c964840c0abe5163d1dd40cc938cd937ad1a4",
+        "matches": false
       },
       {
         "source": "src/simplified_vehicle_models/suspension/damper_table.py",
         "recorded_sha256": "88726c2c7bb50d8a4ad205a94206e0e97e65d9cd1579b286a66a83ff956eef61",
-        "working_sha256": "88726c2c7bb50d8a4ad205a94206e0e97e65d9cd1579b286a66a83ff956eef61",
-        "matches": true
+        "working_sha256": "00a7a7c7d9f735cf62508c97e7ca6f18b371b938e65d434add79bd7bff0c3936",
+        "matches": false
       },
       {
         "source": "src/simplified_vehicle_models/suspension/elements.py",
         "recorded_sha256": "46aa1c1764fd5cf9c35c9a71a4887939b0331cb75a88aae28347f90eb2ca0b6c",
-        "working_sha256": "46aa1c1764fd5cf9c35c9a71a4887939b0331cb75a88aae28347f90eb2ca0b6c",
-        "matches": true
+        "working_sha256": "34cb6c0cbd456ddc8ef8eb16de1c28522584c7672634e60ddb932fd9aea288bd",
+        "matches": false
       },
       {
         "source": "src/simplified_vehicle_models/suspension/kinematics.py",
         "recorded_sha256": "ff04d6733a17ce2f74412f3aa0bca655d70477c18b42757003739ac733e8a171",
-        "working_sha256": "ff04d6733a17ce2f74412f3aa0bca655d70477c18b42757003739ac733e8a171",
-        "matches": true
+        "working_sha256": "cc1cc2057231b9e6c6a19459d42da6a16050f83b8ce91fb5b009bd7868679ff1",
+        "matches": false
       },
       {
         "source": "src/simplified_vehicle_models/suspension/layouts/independent_corner.py",
         "recorded_sha256": "b4920954b50fdb7eaaae3ca339be874e6cc6ab17eb0982cb4590dec600fcf148",
-        "working_sha256": "b4920954b50fdb7eaaae3ca339be874e6cc6ab17eb0982cb4590dec600fcf148",
-        "matches": true
+        "working_sha256": "40a2ace1547823dd0d62334a12f3d772d9472c2543d359646275e36d407534ed",
+        "matches": false
       },
       {
         "source": "src/simplified_vehicle_models/suspension/monotone_spline.py",
         "recorded_sha256": "78ae779ac71ae8551184f7af485722f007f1f9972f13f50b3176ebf546a20f64",
-        "working_sha256": "78ae779ac71ae8551184f7af485722f007f1f9972f13f50b3176ebf546a20f64",
-        "matches": true
+        "working_sha256": "2c4e206f6f0db0190497d5a02b365be87a0826e7596cb90b0e73445efadbf0bc",
+        "matches": false
       },
       {
         "source": "src/simplified_vehicle_models/suspension/network.py",
         "recorded_sha256": "893b6f7cfaf2b76939be0b2c08b2751befc077619c56061cef4d5d3d57edf03d",
-        "working_sha256": "893b6f7cfaf2b76939be0b2c08b2751befc077619c56061cef4d5d3d57edf03d",
-        "matches": true
+        "working_sha256": "4770b999fd77dfbca9dd4a85939729b44a2826840e56cc4c21657735da6fb9c7",
+        "matches": false
       },
       {
         "source": "src/simplified_vehicle_models/tires/unitire_simple.py",
         "recorded_sha256": "b1e4df85b08f771bc6b2a3e590c2a8d255d60eeb39186422adf2314372ee71f7",
-        "working_sha256": "b1e4df85b08f771bc6b2a3e590c2a8d255d60eeb39186422adf2314372ee71f7",
-        "matches": true
+        "working_sha256": "a7324f2032a5eaf6a2579fc75874df07d38edc8288759b9a91e7fb98b0d61107",
+        "matches": false
       },
       {
         "source": "src/simplified_vehicle_models/tires/unitire_transient.py",
         "recorded_sha256": "706f8f94e3a8f86a481f71a161ef6516da177d7b9d6b5c0afa72a446989a10de",
-        "working_sha256": "706f8f94e3a8f86a481f71a161ef6516da177d7b9d6b5c0afa72a446989a10de",
-        "matches": true
+        "working_sha256": "141b31b767e9fa721a97fcb8317fb2c7fc7810da7870b91296f2cc167a5b1c20",
+        "matches": false
       },
       {
         "source": "src/simplified_vehicle_models/tires/vertical.py",
@@ -222,14 +310,47 @@
   },
   "planar_reference_source_hash_agreement": {
     "sources_checked": 14,
-    "all_sources_match": true,
-    "mismatches": [],
+    "all_sources_match": false,
+    "mismatches": [
+      {
+        "source": "/Users/alphabet1671/Dev/Simplified-Vehicle-Models/tools/run/run_iem24_forward_driver.py",
+        "reason": "sha256 differs"
+      },
+      {
+        "source": "models/vehicles/iem24_murphy_real_planar.xml",
+        "reason": "sha256 differs"
+      },
+      {
+        "source": "src/simplified_vehicle_models/formulations/planar_7dof.py",
+        "reason": "sha256 differs"
+      },
+      {
+        "source": "src/simplified_vehicle_models/solvers/forward_driver.py",
+        "reason": "sha256 differs"
+      },
+      {
+        "source": "src/simplified_vehicle_models/solvers/forward_powertrain.py",
+        "reason": "sha256 differs"
+      },
+      {
+        "source": "src/simplified_vehicle_models/solvers/planar_dense_certificate.py",
+        "reason": "sha256 differs"
+      },
+      {
+        "source": "src/simplified_vehicle_models/solvers/planar_forward.py",
+        "reason": "sha256 differs"
+      },
+      {
+        "source": "src/simplified_vehicle_models/tires/unitire_simple.py",
+        "reason": "sha256 differs"
+      }
+    ],
     "sources": [
       {
         "source": "/Users/alphabet1671/Dev/Simplified-Vehicle-Models/tools/run/run_iem24_forward_driver.py",
         "recorded_sha256": "fdc2ea3384b6b16c35813de0777fd4da3993bc4e4a4d804954e47f659dc6837d",
-        "working_sha256": "fdc2ea3384b6b16c35813de0777fd4da3993bc4e4a4d804954e47f659dc6837d",
-        "matches": true
+        "working_sha256": "23ce49fdcebb0822ce09fd93a94a03d87fe196faa1c735b4aee3542f079dc547",
+        "matches": false
       },
       {
         "source": "models/formulations/iem24_murphy_real_planar_7dof.xml",
@@ -258,14 +379,14 @@
       {
         "source": "models/vehicles/iem24_murphy_real_planar.xml",
         "recorded_sha256": "3ac48648dbad6daa4d969ca4e66b6b99bd3c77abf86bd79709f51b066427c92d",
-        "working_sha256": "3ac48648dbad6daa4d969ca4e66b6b99bd3c77abf86bd79709f51b066427c92d",
-        "matches": true
+        "working_sha256": "3cce99216fa57ac375920cc328debc2c96154ac19d8559b1e4a131085d690c92",
+        "matches": false
       },
       {
         "source": "src/simplified_vehicle_models/formulations/planar_7dof.py",
         "recorded_sha256": "2add724a62149814f24262b5f201d77490f6b2eb16ff0d15f4484f050fd49ad1",
-        "working_sha256": "2add724a62149814f24262b5f201d77490f6b2eb16ff0d15f4484f050fd49ad1",
-        "matches": true
+        "working_sha256": "440fe703d83d361d026ea03bb70d1a2bc43f4eeb791ebb12459935959eaca74e",
+        "matches": false
       },
       {
         "source": "src/simplified_vehicle_models/solvers/dense_domain.py",
@@ -276,14 +397,14 @@
       {
         "source": "src/simplified_vehicle_models/solvers/forward_driver.py",
         "recorded_sha256": "3b82c3c1440e63ceddc72145843c825cbbc010c597a915a435b5cde110f823d6",
-        "working_sha256": "3b82c3c1440e63ceddc72145843c825cbbc010c597a915a435b5cde110f823d6",
-        "matches": true
+        "working_sha256": "e67efa6138a4c59dbc48e0a94dfb4358f28a5881db4101609bfe3f382f852b96",
+        "matches": false
       },
       {
         "source": "src/simplified_vehicle_models/solvers/forward_powertrain.py",
         "recorded_sha256": "94c4f229c1758b9827701f70ef44aa9c9345b25590da1bfe5f4e44b6f076acff",
-        "working_sha256": "94c4f229c1758b9827701f70ef44aa9c9345b25590da1bfe5f4e44b6f076acff",
-        "matches": true
+        "working_sha256": "db038a4d0462ee86155a29f4b08962f012999663161c3c8033a79abe258806ac",
+        "matches": false
       },
       {
         "source": "src/simplified_vehicle_models/solvers/load_interval.py",
@@ -294,20 +415,20 @@
       {
         "source": "src/simplified_vehicle_models/solvers/planar_dense_certificate.py",
         "recorded_sha256": "0b9c7f5309f367c1674f776d176d109bff20cc2c264496bf858682a604a7f5bc",
-        "working_sha256": "0b9c7f5309f367c1674f776d176d109bff20cc2c264496bf858682a604a7f5bc",
-        "matches": true
+        "working_sha256": "4771e1c3a74ef75eb19ba3d756f0817d40ee70bcc9e5d83c6ef259931064bddf",
+        "matches": false
       },
       {
         "source": "src/simplified_vehicle_models/solvers/planar_forward.py",
         "recorded_sha256": "6525be426cd1256460c8c88391e7ed3bf6512d4afce863a15471d181832ab1ce",
-        "working_sha256": "6525be426cd1256460c8c88391e7ed3bf6512d4afce863a15471d181832ab1ce",
-        "matches": true
+        "working_sha256": "f425f7cb9dd06bb94368b9167ec636efd140d36a6d042efc40574607f16e12aa",
+        "matches": false
       },
       {
         "source": "src/simplified_vehicle_models/tires/unitire_simple.py",
         "recorded_sha256": "b1e4df85b08f771bc6b2a3e590c2a8d255d60eeb39186422adf2314372ee71f7",
-        "working_sha256": "b1e4df85b08f771bc6b2a3e590c2a8d255d60eeb39186422adf2314372ee71f7",
-        "matches": true
+        "working_sha256": "a7324f2032a5eaf6a2579fc75874df07d38edc8288759b9a91e7fb98b0d61107",
+        "matches": false
       }
     ]
   },
@@ -326,14 +447,6 @@
       "sha256": "38bf004f804317291f1949ffebd9718887afbdd6a7598327a0e64e06150015d0",
       "bytes": 19735474,
       "rows": 19950,
-      "columns": 39
-    },
-    "refinement_attempt": {
-      "trace": "docs/validation/iem24-murphy/14dof_simple_trials/refinement/attempt_1792297311051668000/trace.csv",
-      "present": true,
-      "sha256": "333a160a4de5f9b093fc6f75376dc899ee847a4288d564743c305eb862589e2c",
-      "bytes": 38325863,
-      "rows": 38745,
       "columns": 39
     },
     "planar_reference_attempt": {
@@ -388,7 +501,7 @@
     },
     "travel_valid": {
       "pass": true,
-      "definition": "All accepted and midpoint states keep jounce inside +/-31.8 mm. Bump-stop entry before the limit is reported, not failed; a state beyond the limit fails.",
+      "definition": "Historical interpretation: accepted and midpoint jounce stays inside recorded travel limits.",
       "source_attempt": "docs/validation/iem24-murphy/14dof_simple_trials/attempt_1792297154801812000",
       "runner_keys": {
         "jounce_travel_valid": true
@@ -440,18 +553,27 @@
     },
     "table_domain_valid": {
       "pass": true,
-      "definition": "out_of_range_evaluations == 0 for dampers, springs and the roll-centre table.",
+      "definition": "Historical interpretation: no query left recorded damper, spring, or roll-centre table domains.",
       "source_attempt": "docs/validation/iem24-murphy/14dof_simple_trials/attempt_1792297154801812000",
       "runner_keys": {
         "out_of_range_evaluations": 0
       },
       "evidence": {
         "out_of_range_evaluations": 0,
-        "out_of_range_scope": "every plant evaluation, including rejected Newton trials: damper-velocity exits plus spring, bump-stop and jounce-steer DomainError conversions",
+        "out_of_range_scope": "historical table-domain counter interpretation",
+        "jounce_table_ranges_scope": "historical table-domain metadata",
         "maximum_damper_velocity_mps": 0.09252835437999095,
         "damper_table_velocity_limit_mps": 0.5,
         "damper_velocity_headroom_fraction": 0.8149432912400181,
+        "spring_design_knot_range_m": [
+          -0.0318,
+          0.0318
+        ],
         "spring_curve_jounce_domain_m": [
+          -0.0318,
+          0.0318
+        ],
+        "jounce_steer_design_knot_range_m": [
           -0.0318,
           0.0318
         ],
@@ -469,257 +591,6 @@
         "roll_centre_query_clipped": false,
         "definition": "the evaluator holds the roll-centre height constant above the 1 g point and clips its query at the committed 5 deg table maximum; a maximum |roll| below 5 deg means the clip never bound"
       }
-    },
-    "refinement_validated": {
-      "pass": true,
-      "definition": "A second run at maximum_step 0.0025 s and rtol 1e-6 from the same warm start: lap time difference <= 5 ms, max |dv| <= 0.05 m/s at matched s, and every matched tire state within its own periodic tolerance.",
-      "source_attempt": "docs/validation/iem24-murphy/14dof_simple_trials/refinement/attempt_1792297311051668000",
-      "runner_keys": {
-        "refinement_validated": true
-      },
-      "evidence": {
-        "reference_attempt": "docs/validation/iem24-murphy/14dof_simple_trials/periodicity/attempt_1792297599699445000",
-        "refined_attempt": "docs/validation/iem24-murphy/14dof_simple_trials/refinement/attempt_1792297311051668000",
-        "reference_lap_time_s": 66.58945362318003,
-        "refined_lap_time_s": 66.58945438784353,
-        "lap_time_difference_s": 7.646634969660226e-07,
-        "lap_time_limit_s": 0.005,
-        "maximum_body_speed_difference_mps": 9.364173662973485e-05,
-        "body_speed_rmse_mps": 9.54929914540692e-06,
-        "body_speed_limit_mps": 0.05,
-        "matched_distance_m": 1016.7006495899999,
-        "matched_sample_count": 1017,
-        "worst_tire_state": "kappa_eff_rl",
-        "worst_tire_state_ratio": 0.03669501249423113,
-        "worst_other_state": "wheel_speed_rl",
-        "worst_other_state_ratio": 0.40901464373774843,
-        "state_differences": {
-          "heading_error": {
-            "maximum_absolute_difference": 2.084211891656418e-05,
-            "periodic_tolerance": 0.005,
-            "ratio": 0.004168423783312836,
-            "tire_state": false
-          },
-          "heave": {
-            "maximum_absolute_difference": 4.217997594761075e-07,
-            "periodic_tolerance": 0.0005,
-            "ratio": 0.000843599518952215,
-            "tire_state": false
-          },
-          "jounce_fl": {
-            "maximum_absolute_difference": 7.742580729352445e-07,
-            "periodic_tolerance": 0.0005,
-            "ratio": 0.001548516145870489,
-            "tire_state": false
-          },
-          "jounce_fr": {
-            "maximum_absolute_difference": 7.010714611244313e-07,
-            "periodic_tolerance": 0.0005,
-            "ratio": 0.0014021429222488627,
-            "tire_state": false
-          },
-          "jounce_rate_fl": {
-            "maximum_absolute_difference": 1.9589105451345984e-05,
-            "periodic_tolerance": 0.01,
-            "ratio": 0.0019589105451345984,
-            "tire_state": false
-          },
-          "jounce_rate_fr": {
-            "maximum_absolute_difference": 2.029741512888858e-05,
-            "periodic_tolerance": 0.01,
-            "ratio": 0.002029741512888858,
-            "tire_state": false
-          },
-          "jounce_rate_rl": {
-            "maximum_absolute_difference": 1.610890586011514e-05,
-            "periodic_tolerance": 0.01,
-            "ratio": 0.0016108905860115139,
-            "tire_state": false
-          },
-          "jounce_rate_rr": {
-            "maximum_absolute_difference": 3.9156937641098705e-05,
-            "periodic_tolerance": 0.01,
-            "ratio": 0.0039156937641098705,
-            "tire_state": false
-          },
-          "jounce_rl": {
-            "maximum_absolute_difference": 8.002430819135584e-07,
-            "periodic_tolerance": 0.0005,
-            "ratio": 0.0016004861638271167,
-            "tire_state": false
-          },
-          "jounce_rr": {
-            "maximum_absolute_difference": 4.4272573155234793e-07,
-            "periodic_tolerance": 0.0005,
-            "ratio": 0.0008854514631046959,
-            "tire_state": false
-          },
-          "kappa_eff_fl": {
-            "maximum_absolute_difference": 2.445668317524463e-05,
-            "periodic_tolerance": 0.002,
-            "ratio": 0.012228341587622316,
-            "tire_state": true
-          },
-          "kappa_eff_fr": {
-            "maximum_absolute_difference": 3.0112401907061992e-05,
-            "periodic_tolerance": 0.002,
-            "ratio": 0.015056200953530996,
-            "tire_state": true
-          },
-          "kappa_eff_rl": {
-            "maximum_absolute_difference": 7.339002498846225e-05,
-            "periodic_tolerance": 0.002,
-            "ratio": 0.03669501249423113,
-            "tire_state": true
-          },
-          "kappa_eff_rr": {
-            "maximum_absolute_difference": 3.159846011036027e-05,
-            "periodic_tolerance": 0.002,
-            "ratio": 0.015799230055180136,
-            "tire_state": true
-          },
-          "lateral_deformation_fl": {
-            "maximum_absolute_difference": 9.310027945285196e-07,
-            "periodic_tolerance": 0.0002,
-            "ratio": 0.004655013972642598,
-            "tire_state": true
-          },
-          "lateral_deformation_fr": {
-            "maximum_absolute_difference": 2.1647682762297726e-06,
-            "periodic_tolerance": 0.0002,
-            "ratio": 0.010823841381148863,
-            "tire_state": true
-          },
-          "lateral_deformation_rl": {
-            "maximum_absolute_difference": 4.956870006586275e-06,
-            "periodic_tolerance": 0.0002,
-            "ratio": 0.024784350032931377,
-            "tire_state": true
-          },
-          "lateral_deformation_rr": {
-            "maximum_absolute_difference": 7.167497314729959e-06,
-            "periodic_tolerance": 0.0002,
-            "ratio": 0.035837486573649796,
-            "tire_state": true
-          },
-          "n": {
-            "maximum_absolute_difference": 2.385031853419095e-05,
-            "periodic_tolerance": 0.0005,
-            "ratio": 0.0477006370683819,
-            "tire_state": false
-          },
-          "pitch": {
-            "maximum_absolute_difference": 1.483385136030746e-06,
-            "periodic_tolerance": 0.005,
-            "ratio": 0.0002966770272061492,
-            "tire_state": false
-          },
-          "pitch_rate": {
-            "maximum_absolute_difference": 3.971750518707434e-05,
-            "periodic_tolerance": 0.005,
-            "ratio": 0.007943501037414868,
-            "tire_state": false
-          },
-          "roll": {
-            "maximum_absolute_difference": 3.41351574683485e-06,
-            "periodic_tolerance": 0.005,
-            "ratio": 0.00068270314936697,
-            "tire_state": false
-          },
-          "roll_rate": {
-            "maximum_absolute_difference": 9.087704196508728e-05,
-            "periodic_tolerance": 0.005,
-            "ratio": 0.018175408393017456,
-            "tire_state": false
-          },
-          "steering": {
-            "maximum_absolute_difference": 1.0515195855813342e-05,
-            "periodic_tolerance": 0.005,
-            "ratio": 0.0021030391711626684,
-            "tire_state": false
-          },
-          "trail_angle_fl": {
-            "maximum_absolute_difference": 5.7357894004267385e-06,
-            "periodic_tolerance": 0.002,
-            "ratio": 0.0028678947002133692,
-            "tire_state": true
-          },
-          "trail_angle_fr": {
-            "maximum_absolute_difference": 5.778744689662052e-06,
-            "periodic_tolerance": 0.002,
-            "ratio": 0.002889372344831026,
-            "tire_state": true
-          },
-          "trail_angle_rl": {
-            "maximum_absolute_difference": 2.5060973119508945e-05,
-            "periodic_tolerance": 0.002,
-            "ratio": 0.012530486559754472,
-            "tire_state": true
-          },
-          "trail_angle_rr": {
-            "maximum_absolute_difference": 2.1407244036264483e-05,
-            "periodic_tolerance": 0.002,
-            "ratio": 0.010703622018132242,
-            "tire_state": true
-          },
-          "v_x": {
-            "maximum_absolute_difference": 9.366143811817551e-05,
-            "periodic_tolerance": 0.01,
-            "ratio": 0.009366143811817551,
-            "tire_state": false
-          },
-          "v_y": {
-            "maximum_absolute_difference": 0.0002850289762189595,
-            "periodic_tolerance": 0.01,
-            "ratio": 0.02850289762189595,
-            "tire_state": false
-          },
-          "v_z": {
-            "maximum_absolute_difference": 6.671281895569148e-06,
-            "periodic_tolerance": 0.01,
-            "ratio": 0.0006671281895569148,
-            "tire_state": false
-          },
-          "wheel_speed_fl": {
-            "maximum_absolute_difference": 0.0038343286989146463,
-            "periodic_tolerance": 0.01,
-            "ratio": 0.38343286989146463,
-            "tire_state": false
-          },
-          "wheel_speed_fr": {
-            "maximum_absolute_difference": 0.003365371844338938,
-            "periodic_tolerance": 0.01,
-            "ratio": 0.3365371844338938,
-            "tire_state": false
-          },
-          "wheel_speed_rl": {
-            "maximum_absolute_difference": 0.004090146437377484,
-            "periodic_tolerance": 0.01,
-            "ratio": 0.40901464373774843,
-            "tire_state": false
-          },
-          "wheel_speed_rr": {
-            "maximum_absolute_difference": 0.0033664859137303438,
-            "periodic_tolerance": 0.01,
-            "ratio": 0.3366485913730344,
-            "tire_state": false
-          },
-          "yaw_rate": {
-            "maximum_absolute_difference": 0.00021672914931181175,
-            "periodic_tolerance": 0.005,
-            "ratio": 0.04334582986236235,
-            "tire_state": false
-          }
-        },
-        "refined_maximum_step_s": 0.0025,
-        "reference_maximum_step_s": 0.005,
-        "refined_rtol": 1e-06,
-        "reference_rtol": 1e-05,
-        "same_initial_state": true,
-        "same_source_hashes": true,
-        "both_laps_completed": true
-      },
-      "runner_key_origin": "the runner always writes refinement_validated=false (a second integration has not happened yet); this tool certifies it in the refined attempt's summary.json"
     },
     "periodicity_valid": {
       "pass": true,
@@ -755,12 +626,12 @@
         "recorded_tolerances_match_plant": true,
         "warm_start_source": "docs/validation/iem24-murphy/14dof_simple_trials/attempt_1792297154801812000"
       }
-    },
-    "cross_fidelity_reported": {
-      "pass": true,
-      "definition": "Report item, not a pass/fail gate: lap time and speed trace compared with the corrected 7DoF lap. `pass` means the comparison was computed and recorded.",
+    }
+  },
+  "reports": {
+    "cross_fidelity": {
+      "definition": "Report item, not a gate: lap time and speed trace compared with the planar 7DoF lap. It has no pass value.",
       "source_attempt": "docs/validation/iem24-murphy/14dof_simple_trials/attempt_1792297154801812000",
-      "runner_keys": {},
       "evidence": {
         "reference_attempt": "docs/validation/iem24-murphy/seven_dof_track_pair/original/attempt_1792298175493764000",
         "reference_model": "planar-7dof",

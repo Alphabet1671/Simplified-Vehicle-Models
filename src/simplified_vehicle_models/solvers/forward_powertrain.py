@@ -23,6 +23,15 @@ from simplified_vehicle_models.powertrain.motor_envelope import speed_regulated_
 from simplified_vehicle_models.solvers.forward_driver import DriverCommand
 
 
+def shape_brake_command(vehicle, brake_force_n: float) -> tuple[float, float]:
+    """Return (shaped force, hydraulic force after controller deadband)."""
+    controller = vehicle.controller
+    calibration = getattr(controller, "actuator_calibration", None)
+    effective = (brake_force_n if calibration is None else
+                 calibration.shape_brake_force(brake_force_n, vehicle.maximum_pedal_force))
+    return effective, max(effective - controller.hydraulic_deadband_n, 0.)
+
+
 @dataclass(frozen=True)
 class ForwardPowertrain:
     wheel_torques: np.ndarray
@@ -55,12 +64,9 @@ def evaluate_forward_powertrain(vehicle, driven, gearing, gear_efficiency,
     calibration = getattr(controller, "actuator_calibration", None)
     if calibration is None:
         effective_throttle = command.throttle
-        effective_brake_force = command.brake_force
     else:
         effective_throttle = calibration.shape_throttle(command.throttle)
-        effective_brake_force = calibration.shape_brake_force(
-            command.brake_force, vehicle.maximum_pedal_force
-        )
+    effective_brake_force, hydraulic_force = shape_brake_command(vehicle, command.brake_force)
     charge_state = StorageState(float(soc))
     limits = evaluate_storage(storage, charge_state)
     resistance = storage.series_count / storage.parallel_count * float(np.interp(
@@ -143,7 +149,6 @@ def evaluate_forward_powertrain(vehicle, driven, gearing, gear_efficiency,
     voltage = next_voltage
     if voltage < minimum_voltage - 1.e-7 or voltage > maximum_voltage + 1.e-7:
         raise RuntimeError("battery voltage constraint violated")
-    hydraulic_force = max(effective_brake_force - controller.hydraulic_deadband_n, 0.)
     # The hydraulic chain takes the physical pedal force in newtons.
     brake = brake_torques(hydraulic_force,
         vehicle.maximum_pedal_force, vehicle.pedal_curve,

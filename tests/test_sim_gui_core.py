@@ -56,7 +56,7 @@ class SettingsTests(unittest.TestCase):
             with self.subTest(source=source):
                 self.assertEqual(solution_model_for(RunSettings(solver_kind="point-mass"), source), "point-mass")
         self.assertEqual(solution_model_for(RunSettings(), "planar-7dof"), "planar-7dof")
-        self.assertEqual(solution_model_for(RunSettings(), "14dof-simple"), "planar-7dof")
+        self.assertEqual(solution_model_for(RunSettings(), "14dof-simple"), "14dof-simple")
         with self.assertRaisesRegex(ValueError, "unsupported"):
             solution_model_for(RunSettings(), "point-mass")
         with self.assertRaisesRegex(ValueError, "unsupported"):

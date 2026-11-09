@@ -13,6 +13,7 @@ from simplified_vehicle_models.compiler.compile import compile_formulation
 
 from . import REPOSITORY_ROOT
 from .settings import solution_model_for, validate
+from .source_identity import execution_source_identity, identity_digest, combined_source_closure
 from .study import CaseSpec, StudyDefinition
 from .variant import write_variant
 from .vehicle import VehicleConfiguration
@@ -88,7 +89,7 @@ def prepare_case(study_dir: Path, definition: StudyDefinition, case: CaseSpec) -
         "settings": settings.to_json(), "solver_kind": settings.solver_kind,
         "solution_model": solution_model,
         "resolution_mapping": {"source_model": case.model, "solver_kind": settings.solver_kind,
-                               "solution_model": solution_model, "reduction": ("point_mass_view_of_planar" if settings.solver_kind == "point-mass" and case.model == "planar-7dof" else "14dof.planar->point_mass_view_of_planar" if settings.solver_kind == "point-mass" and case.model == "14dof-simple" else "14dof.planar->planar-7dof" if case.model == "14dof-simple" and settings.solver_kind == "forward-driver" else "identity")},
+                               "solution_model": solution_model, "reduction": ("point_mass_view_of_planar" if settings.solver_kind == "point-mass" and case.model == "planar-7dof" else "14dof.planar->point_mass_view_of_planar" if settings.solver_kind == "point-mass" and case.model == "14dof-simple" else "identity") if settings.solver_kind == "point-mass" else "identity"},
         "source_model": case.model,
         "formulation": files.formulation.relative_to(directory).as_posix(),
         "source_formulation": files.formulation.relative_to(directory).as_posix(),
@@ -109,6 +110,25 @@ def prepare_case(study_dir: Path, definition: StudyDefinition, case: CaseSpec) -
     if settings.solver_kind == "forward-driver":
         from .settings import forward_driver_config
         payload["driver_config"] = forward_driver_config(settings)
+        resolved_mode = payload["driver_config"]["longitudinal_mode"]
+        if resolved_mode in ("physical-reachable-v1", "hybrid-drive-brake-v1") or settings.forward_transient_corner_planning:
+            payload["input_identity"]["authority_source_closure_sha256"] = identity_digest(
+                payload["input_identity"]["component_source_hashes"])
+            payload["input_identity"]["execution_source_hashes"] = execution_source_identity()
+            payload["input_identity"]["execution_source_identity_sha256"] = identity_digest(
+                payload["input_identity"]["execution_source_hashes"])
+            payload["input_identity"]["complete_source_closure"] = combined_source_closure(
+                payload["input_identity"]["component_source_hashes"],
+                payload["input_identity"]["execution_source_hashes"])
+            payload["input_identity"]["complete_source_closure_sha256"] = identity_digest(
+                payload["input_identity"]["complete_source_closure"])
+            payload["input_identity"]["source_identity_manifest_sha256"] = identity_digest({
+                rel: "required" for rel in sorted(payload["input_identity"]["execution_source_hashes"])})
+
+        if resolved_mode == "hybrid-drive-brake-v1" and case.model != "14dof-simple":
+            raise ValueError("hybrid-drive-brake-v1 requires the full vertical 14DoF plant")
+        if resolved_mode == "physical-reachable-v1" and case.model != "14dof-simple":
+            raise ValueError("physical brake forecasting requires the full vertical 14DoF plant")
         payload["input_identity"].update(settings=settings.to_json(), driver_config=payload["driver_config"],
             settings_sha256=hashlib.sha256(json.dumps(settings.to_json(), sort_keys=True,
                 separators=(",", ":"), allow_nan=False).encode()).hexdigest())
@@ -121,8 +141,12 @@ def prepare_case(study_dir: Path, definition: StudyDefinition, case: CaseSpec) -
 def validate_case(prepared: PreparedCase) -> str | None:
     try:
         compiled = compile_formulation(str(prepared.formulation)).model
-        if prepared.solver_kind == "forward-driver" and prepared.model == "planar-7dof" and not hasattr(compiled, "yaw_inertia"):
-            raise ValueError("forward-driver selected variant did not compile to planar 7DoF")
+        if prepared.solver_kind == "forward-driver":
+            from simplified_vehicle_models.formulations.vertical_14dof import VerticalVehicleParameters
+            if prepared.model == "14dof-simple" and not isinstance(compiled, VerticalVehicleParameters):
+                raise ValueError("forward-driver selected variant did not compile to vertical 14DoF")
+            if prepared.model == "planar-7dof" and not hasattr(compiled, "yaw_inertia"):
+                raise ValueError("forward-driver selected variant did not compile to planar 7DoF")
         if prepared.model == "point-mass":
             from simplified_vehicle_models.parameters.vehicle import PointMassVehicleParameters
             from simplified_vehicle_models.formulations.vertical_14dof import VerticalVehicleParameters

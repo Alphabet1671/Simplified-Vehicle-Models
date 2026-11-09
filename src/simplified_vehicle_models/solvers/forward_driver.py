@@ -369,6 +369,23 @@ def build_speed_plan(distance, curvature, maximum_speed=8., lateral_acceleration
 
 
 @dataclass(frozen=True)
+class HistoricalPreviewDecision:
+    """Actual historical speed-law values; no envelope or forecast is implied."""
+    distance: float
+    target_speed: float
+    feedforward_acceleration: float
+    acceleration_request: float
+    requested_throttle: float
+    ungoverned_brake_force: float
+    governor_factor: float
+    governed_brake_force: float
+
+    def to_dict(self):
+        from dataclasses import asdict
+        return {"schema": "historical-preview-v1", **asdict(self)}
+
+
+@dataclass(frozen=True)
 class PreviewDriver:
     plan: SpeedPlan
     wheelbase: float
@@ -411,8 +428,48 @@ class PreviewDriver:
     brake_apply_rate: float | None = None
     brake_release_rate: float | None = None
     envelope_policy: object | None = None
+    brake_planning_context: object | None = None
+    brake_planning_context_cache: object | None = None
+    brake_planning_context_factory: object | None = None
+    brake_current_context_factory: object | None = None
+    brake_current_predictor: object | None = None
+    hybrid_policy: object | None = None
+    hybrid_kinematic_context_factory: object | None = None
+    #: Opt-in first-order actuator inverse; preview preserves existing behavior.
+    steering_feedforward: str = "preview"
 
     def __post_init__(self):
+        providers=sum(item is not None for item in (self.brake_planning_context,self.brake_planning_context_cache,self.brake_planning_context_factory))
+        if providers>1:
+            raise ValueError("configure only one brake planning context provider")
+        if self.brake_planning_context_cache is not None and not callable(self.brake_planning_context_cache):
+            raise TypeError("brake_planning_context_cache must be callable")
+        if self.brake_planning_context_factory is not None and not callable(self.brake_planning_context_factory):
+            raise TypeError("brake_planning_context_factory must be callable")
+        if self.brake_current_context_factory is not None and not callable(self.brake_current_context_factory):
+            raise TypeError("brake_current_context_factory must be callable")
+        if self.brake_current_predictor is not None and not callable(getattr(self.brake_current_predictor,"request_current",None)):
+            raise TypeError("brake_current_predictor must provide request_current")
+        if self.brake_current_predictor is not None and self.brake_current_context_factory is None and self.hybrid_policy is None:
+            raise ValueError("current inverse requires current-context factory")
+        if self.steering_feedforward not in ("preview", "actuator-inverse"):
+            raise ValueError("steering_feedforward must be preview or actuator-inverse")
+        if self.hybrid_policy is not None:
+            from simplified_vehicle_models.solvers.hybrid_driver import HybridLongitudinalPolicy
+            if not isinstance(self.hybrid_policy, HybridLongitudinalPolicy): raise TypeError("hybrid_policy must be HybridLongitudinalPolicy")
+            if self.envelope_policy is not None: raise ValueError("configure only one longitudinal policy")
+            pc=self.hybrid_policy.config.pedal_context
+            if not self.has_pedal_dynamics: raise ValueError("hybrid policy requires signed pedal dynamics")
+            if self.has_pedal_dynamics:
+                release=self.throttle_release_rate or 1./self.pedal_travel_time
+                apply=self.brake_apply_rate or 1./self.pedal_travel_time
+                throttle_apply=self.throttle_apply_rate or 1./self.pedal_travel_time
+                brake_release=self.brake_release_rate or 1./self.pedal_travel_time
+                actual=__import__('simplified_vehicle_models.solvers.envelope_driver',fromlist=['PedalPolicyContext']).PedalPolicyContext(release,apply,self.pedal_time_constant,self.maximum_brake_force,self.brake_governor_margin,throttle_apply,brake_release)
+                if pc is None or actual!=pc: raise ValueError("hybrid pedal context must exactly match PreviewDriver dynamics")
+            if not np.isclose(self.hybrid_policy.config.maximum_brake_force_n,self.maximum_brake_force): raise ValueError("hybrid maximum brake force must match PreviewDriver")
+            if self.brake_current_predictor is not None and self.brake_current_predictor is not self.hybrid_policy.predictor: raise ValueError("adapter and policy current predictors must match")
+        if self.hybrid_kinematic_context_factory is not None and not callable(self.hybrid_kinematic_context_factory): raise TypeError("hybrid_kinematic_context_factory must be callable")
         if self.envelope_policy is not None:
             from simplified_vehicle_models.solvers.envelope_driver import EnvelopePolicy
             if not isinstance(self.envelope_policy, EnvelopePolicy):
@@ -480,8 +537,29 @@ class PreviewDriver:
             observation.distance + max(observation.speed, 0.) * self.preview_seconds)
         course_error = observation.heading_error + np.arctan2(
             observation.lateral_speed, max(observation.speed, 0.25))
+        feedforward = np.arctan(self.wheelbase * preview_curvature)
+        if self.steering_feedforward == "actuator-inverse":
+            # Invert delta_dot=(target-delta)/tau for the nominal curvature
+            # steering: target=delta_ref+tau*v*d(delta_ref)/ds. A centered
+            # derivative over 0.2 m bounds sensitivity to piecewise-plan knots;
+            # this is a numerical stencil, not a track-specific gain. The
+            # physical angle and slew limits remain applied below.
+            half_span = 0.1
+            before = self.plan.sample(observation.distance - half_span)[1]
+            after = self.plan.sample(observation.distance + half_span)[1]
+            span = 2. * half_span
+            if not self.plan.is_closed:
+                low = max(float(self.plan.distance[0]), observation.distance - half_span)
+                high = min(float(self.plan.distance[-1]), observation.distance + half_span)
+                before = self.plan.sample(low)[1]
+                after = self.plan.sample(high)[1]
+                span = max(high - low, np.finfo(float).eps)
+            gradient = (np.arctan(self.wheelbase * after)
+                        - np.arctan(self.wheelbase * before)) / span
+            feedforward = (np.arctan(self.wheelbase * curvature)
+                           + self.steering_time_constant * max(observation.speed, 0.) * gradient)
         desired_steering = (
-            np.arctan(self.wheelbase * preview_curvature)
+            feedforward
             - self.heading_gain * course_error
             - np.arctan2(self.lateral_gain * observation.lateral_error,
                          max(observation.speed, 1.))
@@ -490,16 +568,97 @@ class PreviewDriver:
         return float(np.clip((desired_steering-observation.steering)/self.steering_time_constant,
                              -self.maximum_steering_rate,self.maximum_steering_rate))
 
-    def command_with_context(self, observation, pedal_position=None):
+    def build_brake_planning_context(self, plant, observation, pedal_context, plant_state):
+        if self.brake_planning_context_factory is None:
+            return self.brake_planning_context
+        return self.brake_planning_context_factory(plant,observation,pedal_context,plant_state)
+
+    def command_with_context(self, observation, pedal_position=None, plant_state=None, plant=None, planning_context_override=None, use_resolved_context=False):
+        if self.hybrid_policy is not None:
+            if plant_state is None or plant is None:
+                raise ValueError("hybrid policy requires plant and complete current state")
+            from simplified_vehicle_models.solvers.hybrid_driver import HybridLongitudinalPolicy
+            if self.hybrid_kinematic_context_factory is not None:
+                kin=self.hybrid_kinematic_context_factory(plant, observation, plant_state)
+            elif callable(getattr(plant,"hybrid_kinematic_context",None)):
+                kin=plant.hybrid_kinematic_context(plant_state)
+            else:
+                raise ValueError("plant has no pure hybrid kinematic context factory")
+            ctx=planning_context_override
+            force_context=None
+            predictor=self.brake_current_predictor or self.hybrid_policy.predictor
+            if self.brake_current_predictor is not None and predictor is not self.hybrid_policy.predictor: raise ValueError("adapter and policy predictors must match")
+            if self.brake_current_context_factory is not None:
+                force_context=self.brake_current_context_factory(plant,observation,None,plant_state)
+            elif plant is not None and callable(getattr(plant,"brake_authority_context",None)):
+                force_context=plant.brake_authority_context(plant_state,predictor=predictor)
+            elif ctx is not None:
+                force_context=getattr(ctx,"current_authority_context",ctx)
+            result=self.hybrid_policy.decide(observation=observation,pedal_position=0. if pedal_position is None else pedal_position,
+                kinematics=kin,soc=float(getattr(force_context,"soc",float('nan'))),brake_context=force_context)
+            return DriverCommand(result.throttle,result.brake_force_n,self._steering_command(observation)),result.decision
         if self.envelope_policy is None:
-            raise ValueError("autonomous PreviewDriver commands require EnvelopePolicy; retired schedule/demand-map control is unsupported")
-        from simplified_vehicle_models.solvers.envelope_driver import PedalPolicyContext
+            if any(not np.isfinite(value) for name, value in vars(observation).items()
+                   if name != "wheel_speed_margin") or np.isnan(observation.wheel_speed_margin):
+                raise ValueError("driver observations must be finite")
+            target, _, feedforward = self.plan.sample(observation.distance)
+            acceleration = feedforward + self.speed_gain * (target - observation.speed)
+            throttle = float(np.clip(acceleration / 6., 0., 1.))
+            ungoverned = float(np.clip(-acceleration / 6., 0., 1.)) * self.maximum_brake_force
+            governor = float(np.clip(observation.wheel_speed_margin / self.brake_governor_margin, 0., 1.))
+            brake = ungoverned * governor
+            decision = HistoricalPreviewDecision(float(observation.distance), target, feedforward,
+                float(acceleration), throttle, ungoverned, governor, brake)
+            return DriverCommand(throttle, brake, self._steering_command(observation)), decision
+        from simplified_vehicle_models.solvers.envelope_driver import PedalPolicyContext, PhysicalBrakePlanningContext
         context = None
+        configured_contexts=sum(x is not None for x in (self.brake_planning_context,self.brake_planning_context_cache,self.brake_planning_context_factory))
+        if self.brake_current_predictor is not None and self.brake_current_context_factory is None and self.hybrid_policy is None:
+            raise ValueError("current inverse requires current-context factory")
+        if planning_context_override is not None and self.brake_planning_context_factory is not None:
+            context = planning_context_override
+        if configured_contexts>1:
+            raise ValueError("configure one fixed context, cache provider, or setup factory")
+        if self.brake_planning_context_factory is not None and not callable(self.brake_planning_context_factory):
+            raise TypeError("brake_planning_context_factory must be callable")
         if self.has_pedal_dynamics:
             release = self.throttle_release_rate if self.throttle_release_rate is not None else 1./self.pedal_travel_time
             apply = self.brake_apply_rate if self.brake_apply_rate is not None else 1./self.pedal_travel_time
+            throttle_apply = self.throttle_apply_rate if self.throttle_apply_rate is not None else 1./self.pedal_travel_time
+            brake_release = self.brake_release_rate if self.brake_release_rate is not None else 1./self.pedal_travel_time
             context = PedalPolicyContext(release, apply, self.pedal_time_constant,
-                                         self.maximum_brake_force,self.brake_governor_margin)
+                                         self.maximum_brake_force,self.brake_governor_margin,
+                                         throttle_apply,brake_release)
+        authority=None
+        if self.envelope_policy.settings.mode == "physical-reachable-v1" and self.brake_current_context_factory is not None:
+            if plant is None or plant_state is None:
+                raise ValueError("current brake context requires plant and state")
+            authority=self.brake_current_context_factory(plant,observation,context,plant_state)
+            if planning_context_override is not None:
+                from dataclasses import replace as dc_replace
+                context=dc_replace(planning_context_override,current_authority_context=authority)
+            elif self.brake_planning_context is not None:
+                from dataclasses import replace as dc_replace
+                context=dc_replace(self.brake_planning_context,current_authority_context=authority)
+            else:
+                raise ValueError("current-state physical inverse requires a forecast context")
+        if (self.envelope_policy.settings.mode == "physical-reachable-v1"
+                and (context is not None or self.brake_current_context_factory is not None)
+                and (self.brake_planning_context is not None or planning_context_override is not None or use_resolved_context)):
+            if self.brake_planning_context_factory is not None:
+                context = planning_context_override
+            elif callable(self.brake_planning_context_cache):
+                context = planning_context_override if use_resolved_context else self.brake_planning_context_cache(observation, context, plant_state)
+            elif self.brake_current_context_factory is None:
+                context = self.brake_planning_context
+            if self.brake_current_context_factory is not None:
+                from dataclasses import replace as dc_replace
+                context=dc_replace(context,current_authority_context=authority)
+            elif context is None:
+                raise ValueError("current-state inverse requires forecast context wrapper")
+            if self.brake_current_predictor is not None:
+                from dataclasses import replace as dc_replace
+                context=dc_replace(context,current_predictor=self.brake_current_predictor)
         decision = self.envelope_policy.decide(observation,pedal_position,context)
         if context is None:
             from dataclasses import replace
@@ -513,8 +672,6 @@ class PreviewDriver:
                              self._steering_command(observation)), decision
 
     def command(self, observation: DriverObservation) -> DriverCommand:
-        if self.envelope_policy is None:
-            raise ValueError("autonomous PreviewDriver commands require EnvelopePolicy; retired schedule/demand-map control is unsupported")
         return self.command_with_context(observation, None)[0]
 
 
@@ -551,13 +708,24 @@ class ForwardResult:
 
 
 @dataclass(frozen=True)
+class AppliedPowertrainDiagnostics:
+    """Immutable snapshot of algebraic powertrain output for one evaluation."""
+
+    wheel_motor_torque_nm: tuple[float, ...]
+
+    def to_dict(self):
+        return {"wheel_motor_torque_nm": list(self.wheel_motor_torque_nm)}
+
+
+@dataclass(frozen=True)
 class StepSample:
     """One accepted integrator step, as handed to a ``step_sink``.
 
     ``state`` and ``rates`` hold the plant layout only (the pedal coordinate is
     reported separately). ``command`` is the *realized* command the plant was
-    evaluated with, i.e. after the pedal lag when the driver has one. The plant's
-    ``last_evaluation`` still describes this exact state when the sink runs.
+    evaluated with, i.e. after the pedal lag when the driver has one. Algebraic
+    powertrain diagnostics are copied into an immutable snapshot during that
+    evaluation, so later trial/Jacobian calls cannot change this row.
     """
 
     index: int
@@ -569,6 +737,7 @@ class StepSample:
     requested_command: DriverCommand | None = None
     mapped_command: DriverCommand | None = None
     policy_diagnostics: object | None = None
+    applied_powertrain_diagnostics: object | None = None
 
 
 def solve_forward(plant: ForwardPlant, driver: PreviewDriver, initial_state,
@@ -576,8 +745,13 @@ def solve_forward(plant: ForwardPlant, driver: PreviewDriver, initial_state,
                   rtol=1.e-6, atol=1.e-8, method="Radau",
                    initial_pedal: float | None = None,
                    maximum_wall_seconds: float = 300.,
-                   step_sink=None, *, diagnostics_sink=None) -> ForwardResult:
+                   step_sink=None, *, diagnostics_sink=None, policy_sink=None,
+                   stop_speed_mps: float | None = None) -> ForwardResult:
     """Integrate all states with a stiff method and stop at the path end.
+
+    When ``stop_speed_mps`` is set, also terminate at the downward crossing
+    of that positive body-speed threshold; this is an operational event, not
+    a claim that the vehicle is at rest or that its wheels are stopped.
 
     ``wall_seconds`` is this call's wall budget and ``maximum_wall_seconds`` is
     the ceiling that budget may not exceed. The ceiling defaults to 300 s so the
@@ -589,15 +763,27 @@ def solve_forward(plant: ForwardPlant, driver: PreviewDriver, initial_state,
 
     ``step_sink`` is an optional callable that receives one :class:`StepSample`
     per accepted step, in order, from the accepted-state validation loop below.
-    That loop already evaluates the plant at each accepted state, so the sink adds
-    no plant evaluation and never sees a rejected trial. ``None`` (the default)
-    leaves every result bit-for-bit unchanged.
+    ``policy_sink`` is an alternative observer used when ``step_sink`` is absent;
+    they are mutually exclusive and passing both raises ``ValueError`` before
+    plant work. The validation loop already evaluates the plant at each accepted
+    state, so an observer adds no plant evaluation and never sees a rejected trial.
+    No observer (the default) leaves every result bit-for-bit unchanged.
     """
     from scipy.integrate import solve_ivp
 
+    if stop_speed_mps is not None:
+        if (isinstance(stop_speed_mps, (bool, np.bool_))
+                or not isinstance(stop_speed_mps, (int, float, np.integer, np.floating))
+                or not np.isfinite(stop_speed_mps) or stop_speed_mps <= 0.):
+            raise ValueError("stop_speed_mps must be finite and strictly positive")
+        stop_speed_mps = float(stop_speed_mps)
+    if step_sink is not None and policy_sink is not None:
+        raise ValueError("step_sink and policy_sink are alternative observers; pass only one")
     policy_enabled = getattr(driver, "envelope_policy", None) is not None
-    if not policy_enabled:
-        raise ValueError("solve_forward requires PreviewDriver configured with EnvelopePolicy")
+    hybrid_enabled = getattr(driver, "hybrid_policy", None) is not None
+    historical_enabled = isinstance(driver, PreviewDriver) and not (policy_enabled or hybrid_enabled)
+    if not (policy_enabled or hybrid_enabled or historical_enabled):
+        raise ValueError("solve_forward requires a configured PreviewDriver")
     limits = np.asarray([duration, wall_seconds, maximum_step, rtol, atol,
                          maximum_wall_seconds], dtype=float)
     if not np.all(np.isfinite(limits)) or np.any(limits <= 0):
@@ -610,6 +796,14 @@ def solve_forward(plant: ForwardPlant, driver: PreviewDriver, initial_state,
     plant_size = plant.state_size
     if plant_initial.shape != (plant_size,) or not np.all(np.isfinite(plant_initial)):
         raise ValueError("initial state must match the complete plant layout")
+    if stop_speed_mps is not None:
+        initial_speed = plant.observe(plant_initial).speed
+        if initial_speed <= stop_speed_mps:
+            raise ValueError("initial body speed must be above stop_speed_mps")
+    if (getattr(driver,"brake_planning_context_factory",None) is not None
+            and getattr(driver,"envelope_policy",None) is not None
+            and driver.envelope_policy.settings.mode!="physical-reachable-v1"):
+        raise ValueError("physical context factory requires physical-reachable-v1 mode")
     pedal_dynamics = bool(getattr(driver, "has_pedal_dynamics", False))
     if initial_pedal is not None and (not pedal_dynamics or not np.isfinite(initial_pedal)
                                       or not -1. <= initial_pedal <= 1.):
@@ -618,8 +812,24 @@ def solve_forward(plant: ForwardPlant, driver: PreviewDriver, initial_state,
         # The foot starts where the driver wants it, so the run does not open
         # with a pedal transient.
         observation = plant.observe(plant_initial)
-        if policy_enabled:
-            requested, _ = driver.command_with_context(observation, initial_pedal)
+        if policy_enabled or hybrid_enabled:
+            if driver.brake_planning_context_factory is not None or driver.brake_current_context_factory is not None:
+                pedal_context = None
+                if driver.has_pedal_dynamics:
+                    release=driver.throttle_release_rate if driver.throttle_release_rate is not None else 1./driver.pedal_travel_time
+                    apply=driver.brake_apply_rate if driver.brake_apply_rate is not None else 1./driver.pedal_travel_time
+                    pedal_context=__import__('simplified_vehicle_models.solvers.envelope_driver',fromlist=['PedalPolicyContext']).PedalPolicyContext(
+                        release,apply,driver.pedal_time_constant,driver.maximum_brake_force,driver.brake_governor_margin,
+                        driver.throttle_apply_rate or release,driver.brake_release_rate or apply)
+                if driver.brake_planning_context_factory is not None:
+                    fixed_context=driver.brake_planning_context_factory(plant,observation,pedal_context,plant_initial)
+                else:
+                    fixed_context=driver.brake_planning_context
+                resolved_planning_context=[fixed_context]
+            else:
+                fixed_context=None
+            requested, _ = driver.command_with_context(observation, initial_pedal, plant_state=plant_initial,
+                                                        plant=plant,planning_context_override=fixed_context)
         else:
             requested = driver.command(observation)
         initial = np.r_[plant_initial, driver.pedal_target(requested)
@@ -635,13 +845,38 @@ def solve_forward(plant: ForwardPlant, driver: PreviewDriver, initial_state,
     applied = [None]
     command_stages = [None]
     policy_stage = [None]
+    # Immutable diagnostics captured inside the exact evaluate() call used by
+    # the latest RHS. Accepted-state validation consumes this immediately;
+    # later Jacobian/trial calls cannot change its provenance.
+    evaluated_powertrain = [None]
 
+    def capture_powertrain_snapshot():
+        powertrain = getattr(plant, "last_powertrain", None)
+        if powertrain is None:
+            evaluated_powertrain[0] = None
+            return
+        torques = tuple(float(value) for value in
+                        np.asarray(powertrain.motor_wheel_torques, dtype=float).copy())
+        evaluated_powertrain[0] = AppliedPowertrainDiagnostics(torques)
+
+    resolved_planning_context=[fixed_context if pedal_dynamics and (policy_enabled or hybrid_enabled) else getattr(driver,"brake_planning_context",None)]
+    if pedal_dynamics and policy_enabled and fixed_context is None and driver.brake_planning_context_cache is not None:
+        pedal_context_for_cache=__import__('simplified_vehicle_models.solvers.envelope_driver',fromlist=['PedalPolicyContext']).PedalPolicyContext(
+            driver.throttle_release_rate or 1./driver.pedal_travel_time,
+            driver.brake_apply_rate or 1./driver.pedal_travel_time,
+            driver.pedal_time_constant,driver.maximum_brake_force,driver.brake_governor_margin,
+            driver.throttle_apply_rate or 1./driver.pedal_travel_time,
+            driver.brake_release_rate or 1./driver.pedal_travel_time)
+        resolved_planning_context[0]=driver.brake_planning_context_cache(plant,observation,pedal_context_for_cache,plant_initial)
     def raw_state_rates(time, state):
         plant_state = state[:plant_size]
         observation = plant.observe(plant_state)
-        if policy_enabled:
+        if policy_enabled or hybrid_enabled or historical_enabled:
             requested, decision = driver.command_with_context(
-                observation, float(np.clip(state[plant_size], -1., 1.)) if pedal_dynamics else None)
+                observation, float(np.clip(state[plant_size], -1., 1.)) if pedal_dynamics else None,
+                plant_state=plant_state, plant=plant,
+                planning_context_override=resolved_planning_context[0],
+                use_resolved_context=resolved_planning_context[0] is not None)
             policy_stage[0] = decision
         else:
             requested = driver.command(observation)
@@ -650,11 +885,15 @@ def solve_forward(plant: ForwardPlant, driver: PreviewDriver, initial_state,
         command_stages[0] = (requested, mapped)
         if not pedal_dynamics:
             applied[0] = mapped
-            return plant.evaluate(time, plant_state, mapped).solve()
+            system = plant.evaluate(time, plant_state, mapped)
+            capture_powertrain_snapshot()
+            return system.solve()
         position = float(state[plant_size])
         realized = driver.realized_command(position, mapped)
         applied[0] = realized
-        rates = plant.evaluate(time, plant_state, realized).solve()
+        system = plant.evaluate(time, plant_state, realized)
+        capture_powertrain_snapshot()
+        rates = system.solve()
         return np.r_[rates, driver.pedal_rate(position, driver.pedal_target(mapped))]
 
     def state_rates(time, state):
@@ -684,6 +923,17 @@ def solve_forward(plant: ForwardPlant, driver: PreviewDriver, initial_state,
 
     finish.terminal = True
     finish.direction = 1
+
+    if stop_speed_mps is not None:
+        def speed_stop(time, state):
+            return plant.observe(state[:plant_size]).speed - stop_speed_mps
+
+        speed_stop.terminal = True
+        speed_stop.direction = -1
+        integration_events = (finish, speed_stop)
+    else:
+        integration_events = finish
+
     def jacobian(time, state):
         # Local closure tolerance can obscure machine-scale perturbations.
         baseline = rhs(time, state)
@@ -715,7 +965,8 @@ def solve_forward(plant: ForwardPlant, driver: PreviewDriver, initial_state,
         return matrix
 
     result = solve_ivp(rhs, (0., duration), initial, method=method, jac=jacobian,
-                       rtol=rtol, atol=atol, max_step=maximum_step, events=finish, dense_output=True)
+                       rtol=rtol, atol=atol, max_step=maximum_step,
+                       events=integration_events, dense_output=True)
     if not result.success:
         accepted_time=float(result.t[-1]) if len(result.t) else 0.
         accepted_state=np.asarray(result.y[:,-1],dtype=float) if result.y.ndim == 2 and result.y.shape[1] else initial
@@ -762,15 +1013,19 @@ def solve_forward(plant: ForwardPlant, driver: PreviewDriver, initial_state,
         accepted_rates = state_rates(time_value, state)
         timings["accepted_state_validation_seconds"] += perf_counter() - validation_started
         counts["accepted_states_validated"] += 1
-        if step_sink is not None:
-            record_started = perf_counter()
-            step_sink(StepSample(
-                step_number, float(time_value), np.array(state[:plant_size], dtype=float),
-                np.array(accepted_rates[:plant_size], dtype=float), applied[0],
-                float(np.clip(state[plant_size], -1., 1.)) if pedal_dynamics else None,
-                command_stages[0][0], command_stages[0][1], policy_stage[0]))
-            timings["record_writing_seconds"] += perf_counter() - record_started
-            counts["records_written"] += 1
+        sample = StepSample(
+            step_number, float(time_value), np.array(state[:plant_size], dtype=float),
+            np.array(accepted_rates[:plant_size], dtype=float), applied[0],
+            float(np.clip(state[plant_size], -1., 1.)) if pedal_dynamics else None,
+            command_stages[0][0], command_stages[0][1], policy_stage[0],
+            evaluated_powertrain[0])
+        sinks = (step_sink,) if step_sink is not None else (policy_sink,)
+        for sink in sinks:
+            if sink is not None:
+                record_started = perf_counter()
+                sink(sample)
+                timings["record_writing_seconds"] += perf_counter() - record_started
+                counts["records_written"] += 1
     # Endpoints are not enough: reconstruct each interval's interior state
     # from the integrator's dense solution, including its pedal coordinate.
     defect_max = 0.
@@ -818,7 +1073,8 @@ def solve_forward(plant: ForwardPlant, driver: PreviewDriver, initial_state,
                                       result.y[:, -1], result.t[-1])
     pedal = np.clip(result.y[plant_size], -1., 1.) if pedal_dynamics else None
     summary_started = perf_counter()
-    forward_result = ForwardResult(result.t, result.y[:plant_size], bool(result.t_events[0].size),
+    lap_completed = bool(result.t_events[0].size)
+    forward_result = ForwardResult(result.t, result.y[:plant_size], lap_completed,
                          elapsed, evaluations, result.message, rejected_domain_trials, pedal, True,
                          dense_bounds, dense_polynomials, samples, defect_max,
                           np.asarray(dense_sample_times), np.asarray(dense_sample_states))

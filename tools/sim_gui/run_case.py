@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import stat
 import hashlib
 from pathlib import Path
 
@@ -111,8 +113,36 @@ def _point_mass(case: dict, attempt: Path, settings: RunSettings, case_dir: Path
     return 0
 
 
+def _validate_child_attempt(case_dir: Path, attempt: Path) -> None:
+    """Admit only a fresh attempt under its case, optionally with parent run.log."""
+    case_dir = Path(case_dir).resolve()
+    attempt = Path(attempt)
+    if attempt.is_symlink():
+        raise ValueError("child attempt must not be a symlink")
+    resolved_attempt = attempt.resolve()
+    try:
+        resolved_attempt.relative_to(case_dir)
+    except ValueError as error:
+        raise ValueError("child attempt must resolve inside its case directory") from error
+    attempt = resolved_attempt
+    if not attempt.exists():
+        attempt.mkdir(parents=True, exist_ok=False)
+        return
+    if not attempt.is_dir():
+        raise ValueError("child attempt must be a real directory")
+    entries = list(attempt.iterdir())
+    if not entries:
+        return
+    if len(entries) != 1 or entries[0].name != "run.log":
+        raise ValueError("child attempt must be fresh except for parent run.log")
+    log = entries[0]
+    if log.is_symlink() or not log.is_file() or not stat.S_ISREG(log.lstat().st_mode):
+        raise ValueError("parent run.log must be a regular file")
+
+
 def run_case(case_dir: Path, attempt: Path) -> int:
-    case_dir, attempt = Path(case_dir).resolve(), Path(attempt).resolve()
+    case_dir = Path(case_dir).resolve()
+    attempt = Path(os.path.abspath(Path(attempt)))
     payload = json.loads((case_dir / "case.json").read_text())
     if not isinstance(payload, dict):
         raise ValueError("invalid case.json solver contract")
@@ -120,11 +150,7 @@ def run_case(case_dir: Path, attempt: Path) -> int:
         raise ValueError("retired yaw workflow in case.json; select forward-driver or point-mass")
     if payload.get("solver_kind") not in {"point-mass", "forward-driver"}:
         raise ValueError("invalid case.json solver contract")
-    if attempt.exists():
-        if not attempt.is_dir() or any(attempt.iterdir()):
-            raise ValueError("child attempt must be a fresh empty directory")
-    else:
-        attempt.mkdir(parents=True, exist_ok=False)
+    _validate_child_attempt(case_dir, attempt)
     settings = None
     try:
         settings = RunSettings.from_json(payload["settings"])

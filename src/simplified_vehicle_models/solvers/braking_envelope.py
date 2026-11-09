@@ -184,6 +184,29 @@ class BrakingEnvelope:
         return EnvelopeSample(s,i,localcap,math.sqrt(q),q,float(slope),float(self.deceleration[i]),bi,float(x[bi]),float(bd),float(domain))
 
 
+def restrict_braking_envelope(envelope, corner_caps, *, provenance=None):
+    """Lower an existing envelope's caps and repropagate braking constraints.
+
+    The original sampled deceleration and its larger speed-query domain are
+    retained: this operation only lowers speeds, never claims new braking
+    authority. ``provenance`` describes the source of operational restrictions.
+    """
+    caps = _array(corner_caps, "corner_caps", minimum=2)
+    if len(caps) != len(envelope.distance) or np.any(caps < 0):
+        raise ValueError("corner_caps must match the envelope and be nonnegative")
+    if np.any(caps > envelope.corner_speed):
+        raise ValueError("restrictions cannot raise existing corner caps")
+    entry, binding, iterations = propagate_braking_caps(
+        envelope.distance, caps, envelope.deceleration, is_closed=envelope.is_closed)
+    evidence = dict(envelope.provenance)
+    for key, value in dict(provenance or {}).items():
+        evidence[f"restriction_{key}"] = value
+    evidence["restriction_iterations"] = iterations
+    return BrakingEnvelope(envelope.distance, envelope.curvature, caps, entry,
+                           envelope.deceleration, binding, envelope.is_closed,
+                           envelope.maximum_speed, evidence)
+
+
 def build_braking_envelope(distance, curvature, vehicle, *, maximum_speed=60.0,
                            lateral_margin=.9, deceleration_margin=.6,
                            speed_query_points=9, storage_state=None, tolerance=1e-8,

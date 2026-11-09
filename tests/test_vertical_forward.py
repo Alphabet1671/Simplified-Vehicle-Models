@@ -47,6 +47,7 @@ from simplified_vehicle_models.solvers.vertical_forward import (
     MECHANICAL_INDEX, SOC_INDEX, STEERING_INDEX, TIRE_INDEX, TIRE_OFFSET, WHEELS,
     VerticalForwardPlant, body_accelerations,
 )
+from simplified_vehicle_models.solvers.vertical_equilibrium import _solve_steady_corner_detail
 from simplified_vehicle_models.tires.unitire_transient import (
     relaxation_lengths, steady_rolling_state,
 )
@@ -462,24 +463,72 @@ class VerticalForwardInitialStateTests(unittest.TestCase):
         self._assert_steady(30.0)
         self._assert_steady(15.0, curvature=0.02)
 
-    def test_tire_states_start_at_their_steady_rolling_values(self):
-        plant, state = self._assert_steady(15.0)
-        loads = evaluate_vertical_dynamics(
-            self.vehicle, plant.mechanical_state(state), np.zeros(4),
-            float(state[STEERING_INDEX]), plant.tire_states(state),
-        ).normal_loads
-        for wheel, tire in enumerate(plant.tire_states(state)):
-            expected = steady_rolling_state(
-                self.vehicle.planar.tire, self.vehicle.transient_tire,
-                0.0, 0.0, float(loads[wheel]),
-            )
-            np.testing.assert_allclose(
-                [tire.longitudinal_slip, tire.lateral_deformation, tire.trail_angle],
-                [expected.longitudinal_slip, expected.lateral_deformation,
-                 expected.trail_angle],
-                rtol=0.0, atol=1e-12,
-            )
-        self.assertAlmostEqual(float(state[2]), 0.0, places=12)
+    def _steady_corner_start(self, speed: float, curvature: float):
+        """Return the plant, its start state and the matching steady-corner solve."""
+        plan = SpeedPlan(np.array([0.0, 200.0]), np.full(2, speed), np.full(2, curvature))
+        plant = VerticalForwardPlant(self.vehicle, plan)
+        state = plant.initial_state(speed)
+        solution = _solve_steady_corner_detail(self.vehicle, speed, speed * speed * curvature)
+        return plant, state, solution
+
+    def test_start_at_or_above_corner_speed_is_the_steady_corner(self):
+        """Oracle: the start equals the independent steady-corner solve.
+
+        The start must hold the steady-corner mechanical state, steering and tire
+        states at the first-node lateral acceleration. With the steady driven
+        torque applied, the lateral, yaw, vertical and tire rates vanish, so the
+        plant opens with no start transient on a curve.
+        """
+        for speed, curvature in ((15.0, 0.0), (11.0, -0.12), (19.4, -0.0089)):
+            with self.subTest(speed=speed, curvature=curvature):
+                plant, state, solution = self._steady_corner_start(speed, curvature)
+                self.assertEqual(plant.initial_condition["method"], "steady-corner")
+                np.testing.assert_allclose(plant.mechanical_state(state).as_vector(),
+                                           solution.state.as_vector(), rtol=0.0, atol=1e-12)
+                self.assertAlmostEqual(float(state[STEERING_INDEX]), solution.steering, places=12)
+                for tire, expected in zip(plant.tire_states(state), solution.tire_states):
+                    np.testing.assert_allclose(
+                        [tire.longitudinal_slip, tire.lateral_deformation, tire.trail_angle],
+                        [expected.longitudinal_slip, expected.lateral_deformation,
+                         expected.trail_angle], rtol=0.0, atol=1e-12)
+                evaluation = evaluate_vertical_dynamics(
+                    self.vehicle, plant.mechanical_state(state), solution.wheel_torques,
+                    float(state[STEERING_INDEX]), plant.tire_states(state))
+                rates = np.asarray(evaluation.rates)
+                # Rows 1, 5 and 6-20: lateral, yaw, vertical and wheel rates.
+                self.assertLess(float(np.max(np.abs(rates[[1, 5, *range(6, 21)]]))), 1e-6)
+                self.assertLess(float(np.max(np.abs(evaluation.tire_state_rates))), 1e-6)
+                self.assertAlmostEqual(float(state[2]),
+                                       -math.atan2(solution.state.v_y, solution.state.v_x),
+                                       places=12)
+
+    def test_tight_first_corner_start_has_small_lateral_rate(self):
+        """Regression: the MIS first node (about 11 m/s, R = 8.2 m) starts balanced.
+
+        The former static start put about 14.8 m/s^2 of lateral acceleration
+        error on the body at t = 0. This test fails if the start goes back to
+        imposing curve kinematics on the straight static state.
+        """
+        plant, state, solution = self._steady_corner_start(10.93, -0.1226)
+        evaluation = evaluate_vertical_dynamics(
+            self.vehicle, plant.mechanical_state(state), solution.wheel_torques,
+            float(state[STEERING_INDEX]), plant.tire_states(state))
+        self.assertLess(abs(float(np.asarray(evaluation.rates)[1])), 1e-6)
+
+    def test_start_without_a_steady_corner_raises(self):
+        """A first node with no steady corner raises. There is no unbalanced fallback."""
+        plan = SpeedPlan(np.array([0.0, 200.0]), np.full(2, 25.0), np.full(2, 3.0 * 9.80665 / 625.0))
+        plant = VerticalForwardPlant(self.vehicle, plan)
+        with self.assertRaisesRegex(ValueError, "no steady corner at the first node"):
+            plant.initial_state(25.0)
+
+    def test_standing_start_keeps_the_static_start(self):
+        """Below the steady-corner speed an open plan uses the refined static start."""
+        plan = SpeedPlan(np.array([0.0, 200.0]), np.array([0.0, 10.0]), np.zeros(2), is_closed=False)
+        plant = VerticalForwardPlant(self.vehicle, plan)
+        state = plant.initial_state(0.0)
+        self.assertEqual(plant.initial_condition["method"], "static-refined")
+        self.assertTrue(np.all(np.isfinite(state)))
 
     def test_initial_speed_must_exceed_one_m_s(self):
         plant = VerticalForwardPlant(self.vehicle, straight_plan())

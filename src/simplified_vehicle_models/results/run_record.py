@@ -96,7 +96,7 @@ CHANNEL_CATALOGUE: dict[str, ChannelSpec] = _catalogue(
 )
 
 _MANIFEST_DICT_FIELDS = ("producer", "model", "sources", "integrator", "segment", "track",
-                         "vehicle_geometry")
+                         "vehicle_geometry", "task5_telemetry")
 
 
 @dataclass(frozen=True)
@@ -123,6 +123,7 @@ class RunRecordManifest:
     segment: dict = field(default_factory=dict)
     track: dict = field(default_factory=dict)
     vehicle_geometry: dict = field(default_factory=dict)
+    task5_telemetry: dict = field(default_factory=dict)
     notes: tuple[str, ...] = ()
 
     def to_json(self) -> str:
@@ -131,6 +132,7 @@ class RunRecordManifest:
             "producer": self.producer, "model": self.model, "sources": self.sources,
             "integrator": self.integrator, "segment": self.segment, "track": self.track,
             "vehicle_geometry": self.vehicle_geometry,
+            "task5_telemetry": self.task5_telemetry,
             "state_names": list(self.state_names), "state_units": list(self.state_units),
             "control_names": list(self.control_names),
             "control_units": list(self.control_units),
@@ -367,6 +369,7 @@ class RunRecorder:
             sources=dict(metadata.get("sources", {})), integrator=integrator,
             segment=dict(metadata.get("segment", {})), track=dict(metadata.get("track", {})),
             vehicle_geometry=dict(metadata.get("vehicle_geometry", {})),
+            task5_telemetry=dict(metadata.get("task5_telemetry", {})),
             notes=tuple(metadata.get("notes", ())))
         arrays = {"time": time, "step_index": step, "state": state, "control": control}
         if rate is not None:

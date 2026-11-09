@@ -1,4 +1,23 @@
-"""Additive physical corner and axle-mode suspension force network."""
+"""Additive physical corner and axle-mode suspension force network.
+
+Motion ratio definition. For every strut, ``motion_ratio`` is the travel of one
+wheel divided by the end-to-end travel of the real spring/damper unit, in the
+mode that the strut resists:
+
+* corner strut: wheel travel ``z_i`` / shaft travel;
+* heave strut: the travel of one wheel in pure heave (``z_L = z_R = z``) /
+  shaft travel, so shaft travel is ``z / MR``;
+* roll strut: the travel of one wheel in pure roll (``z_R = -z_L = z``) /
+  shaft travel, so shaft travel is ``z / MR``.
+
+``ROWS`` is therefore the mean ``(z_L + z_R) / 2`` for heave and the half
+difference ``(z_R - z_L) / 2`` for roll. Shaft velocity uses the same Jacobian.
+By virtual work, the wheel force is ``A.T @ shaft_force``. Shaft spring rates,
+preloads, damper tables and inertances are physical shaft values, not wheel
+rates. In pure heave or pure roll, one strut gives each wheel a rate of
+``k / (2 * MR**2)``: both wheels share the one unit. A roll strut gives the axle a
+roll stiffness of ``k * half_track**2 / MR**2``.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass, replace

@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- Rear roll mode damper table from real car data; baseline setting: click 8. -->
+<!-- Rear roll mode damper table from real car data; competition setting C7R7 (the earlier modal example used click 8). -->
 <model schema-version="1.0" id="iem24-mode-roll-rear-damper" type="damper-model" subtype="table-mode">
   <parameters>
     <parameter name="click_compression" value="7" unit="1"/>

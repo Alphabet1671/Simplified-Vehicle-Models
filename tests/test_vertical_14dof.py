@@ -1324,7 +1324,13 @@ class LateralLoadTransferTests(unittest.TestCase):
         corner = out.corner_forces.total
         y_wheel = sprung_wheel_positions(vehicle)[:, 1]
         track = 2.0 * p.half_track
-        roll_query = float(np.clip(abs(relaxed.roll), 0.0, 5.0 * np.pi / 180.0))
+        # The evaluator queries the roll centre at a smoothed |roll| (no kink at
+        # zero); the oracle uses the same documented query.
+        from simplified_vehicle_models.formulations.vertical_14dof import (
+            ROLL_CENTRE_SMOOTHING_ROLL)
+        smooth_roll = float(np.hypot(relaxed.roll, ROLL_CENTRE_SMOOTHING_ROLL)
+                            - ROLL_CENTRE_SMOOTHING_ROLL)
+        roll_query = float(np.clip(smooth_roll, 0.0, 5.0 * np.pi / 180.0))
         kin = vehicle.suspension.kinematics
         rc = np.array([kin.roll_centre_height(0, roll_query)] * 2
                       + [kin.roll_centre_height(1, roll_query)] * 2)
@@ -1631,10 +1637,12 @@ class LongitudinalLoadTransferTests(unittest.TestCase):
                                                            anti=True)
         self.assertTrue(np.all(drive.tire_forces[:, 0] > 0.0), drive.tire_forces[:, 0])
         driven = self._anti_pair(v, drive_state, drive_tires, drive)[3:]
-        # Zero driven-axle share: the evaluator applies no anti force at the
-        # front instead of an unbounded one.
-        self.assertEqual(float(driven[0]), 0.0)
-        self.assertEqual(float(driven[1]), 0.0)
+        # Zero driven-axle share: the evaluator applies no anti-squat force at
+        # the front instead of an unbounded one. The drive/brake blend leaves only
+        # the brake gain's share of a positive F_x, which vanishes with the
+        # tanh weight: far below a newton here.
+        self.assertLess(abs(float(driven[0])), 1e-3)
+        self.assertLess(abs(float(driven[1])), 1e-3)
         # Anti-squat pushes the rear body up under traction (+).
         self.assertTrue(np.all(driven[2:] > 0.0), driven)
         for i in (2, 3):

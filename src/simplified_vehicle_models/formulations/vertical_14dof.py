@@ -95,6 +95,16 @@ VERTICAL_14DOF_VEHICLE_PARAMETER_UNITS: dict[str, str] = {
 #: Largest tire load [N] over which the transient relaxation lengths must stay positive.
 TIRE_OPERATING_MAXIMUM_LOAD = 3000.0
 
+#: Contact-force width [N] of the smooth drive/brake blend of the anti geometry.
+#: The anti force is at most |gain*h/L*F_x| ~ 0.3*F_x, so inside +-50 N the blended
+#: force differs from the hard switch by less than about 3 N per wheel.
+ANTI_BLEND_FORCE = 50.0
+
+#: Roll width [rad] over which the roll-centre query |roll| is smoothed at zero.
+#: 0.05 deg is far below the 0.29 deg roll-centre table knot, so the height
+#: differs from the unsmoothed value by less than 0.1 mm.
+ROLL_CENTRE_SMOOTHING_ROLL = np.radians(0.05)
+
 
 @dataclass(frozen=True, slots=True)
 class VerticalVehicleParameters:
@@ -426,7 +436,12 @@ def evaluate_vertical_dynamics(vehicle, state: VerticalState, wheel_torques, ste
     total_force = np.array([suspension.total[i] for i in range(4)])
     # Body Newton-Euler; include gravity, aero, RC jacking and anti-dive/squat.
     # Roll-centre curves are queried at absolute roll capped to measured range.
-    roll_query = float(np.clip(abs(state.roll), 0.0, 5.0*np.pi/180.0))
+    # |roll| has a slope step at zero and the table has a nonzero slope there
+    # (0.89 m/rad front), so the height had a kink at every roll reversal. A
+    # smooth |roll| removes it; the upper clip at the 5 deg table end stays.
+    smooth_roll = float(np.hypot(state.roll, ROLL_CENTRE_SMOOTHING_ROLL)
+                        - ROLL_CENTRE_SMOOTHING_ROLL)
+    roll_query = float(np.clip(smooth_roll, 0.0, 5.0*np.pi/180.0))
     # RC height is even under roll reversal (y -> -y): a mirrored vehicle has the
     # same RC height, so it is not sign-flipped with roll. The lateral jacking
     # below signs itself through bfy and sign(y_i).
@@ -465,24 +480,22 @@ def evaluate_vertical_dynamics(vehicle, state: VerticalState, wheel_torques, ste
         (0, (0, 1), -1.0, front_brake_share, front_drive_share),
         (1, (2, 3), 1.0, 1.0 - front_brake_share, rear_drive_share),
     ):
+        # Gain per newton of contact force on each side of zero. An axle that
+        # carries none of the reference force has no geometry force to
+        # generate; dividing by its zero share would otherwise be unbounded.
+        # anti*(h_cg/L)*F_x,axle/share equals the DSS reference anti*m*a*h_cg/L
+        # only while the realized axle split equals the design share.
+        drive_gain = (kinematics.anti_drive(axle) / drive_share if drive_share > 0.0 else 0.0)
+        brake_gain = (kinematics.anti_brake(axle) / brake_share if brake_share > 0.0 else 0.0)
         for i in ix:
-            driving = bfx[i] >= 0.0
-            share = drive_share if driving else brake_share
-            percentage = (kinematics.anti_drive(axle) if driving
-                          else kinematics.anti_brake(axle))
-            if share <= 0.0:
-                # An axle that carries none of the reference force has no
-                # geometry force to generate; dividing by its zero share would
-                # otherwise be unbounded.
-                anti[i] = 0.0
-            else:
-                # anti*(h_cg/L)*F_x,axle/share. This equals the DSS reference
-                # anti*m*a*h_cg/L only while the realized axle split equals the
-                # design share (brake bias under braking, driven share under
-                # drive). At speed drag contributes to m*a without an axle force
-                # and the load-dependent tire split differs from the bias, so the
-                # link force is not exactly anti*m*a*h_cg/L.
-                anti[i] = sign * percentage * (float(p.cg_height) / wheelbase) * bfx[i] / share
+            # The anti geometry differs between drive and brake, so the gain
+            # changes as F_x crosses zero. A hard switch there puts a slope
+            # step in the vector field at every throttle/brake crossover. Blend
+            # the two gains over ANTI_BLEND_FORCE instead; inside that band the
+            # anti force is below a few newtons, so the physics is unchanged.
+            weight = 0.5 * (1.0 + np.tanh(bfx[i] / ANTI_BLEND_FORCE))
+            gain = weight * drive_gain + (1.0 - weight) * brake_gain
+            anti[i] = sign * gain * (float(p.cg_height) / wheelbase) * bfx[i]
     # Hub lateral balance: the suspension link carries Y_i = bfy_i - mu_i*ay, so
     # the body-side link forces sum to m_s*ay. There is no separate Sigma Fy*h_rc
     # roll moment: the lateral force acting at ground level is accounted for in
@@ -561,7 +574,9 @@ def evaluate_vertical_dynamics(vehicle, state: VerticalState, wheel_torques, ste
     rr[5] = yaw_moment_of(pos, bfx, bfy, mz) / p.yaw_inertia
     rr[list(VERTICAL_ACCELERATION_INDEX)] = accel
     rr[6:9] = (state.v_z, state.roll_rate, state.pitch_rate)
-    rr[9:13] = (torques - fx*radii - np.array([f.rolling_resistance_moment for f in forces])) / p.wheel_inertia
+    # The tire returns a rolling resistance moment that is already negative for a
+    # forward roll, so it is added: it retards the wheel, as in the planar model.
+    rr[9:13] = (torques - fx*radii + np.array([f.rolling_resistance_moment for f in forces])) / p.wheel_inertia
     rr[13:17] = jounce_rate
     forcing = rr.copy()
     mass_matrix = None

@@ -175,6 +175,48 @@ class PhysicalCompilerTests(unittest.TestCase):
         self.assertGreater(network.forces([0,0,0,0],[-.01,.01,0,0]).element_velocity['roll-front'],0.)
         self.assertGreater(network.forces([0,0,0,0],[0,0,-.01,.01]).element_velocity['roll-rear'],0.)
 
+    def test_motion_ratio_is_single_wheel_travel_over_unit_end_to_end_travel(self):
+        """Pin the motion ratio definition of the active Murphy struts.
+
+        MR = (travel of one wheel in the strut's mode) / (end-to-end travel of the
+        real spring/damper unit). Pure heave moves both wheels of an axle by z;
+        pure roll moves one wheel by +z and the other by -z. In both cases the
+        unit length changes by z / MR, and its velocity by zdot / MR. A single
+        wheel bump of z is half heave plus half roll, so each axle unit then sees
+        z / (2 * MR).
+        """
+        network = compile_formulation('models/formulations/iem24_murphy_real_14dof_simple.xml').model.suspension.network
+        z, zdot = 0.010, 0.20
+        modes = {  # strut index: (unit-mode wheel travel pattern, MR from XML)
+            4: (np.array([z, z, 0., 0.]), 1.05),    # heave-front
+            5: (np.array([-z, z, 0., 0.]), 1.20),   # roll-front: left rebound, right bump
+            6: (np.array([0., 0., z, z]), 1.10),    # heave-rear
+            7: (np.array([0., 0., -z, z]), 1.30),   # roll-rear
+        }
+        for index, (wheels, ratio) in modes.items():
+            with self.subTest(strut=STRUT_NAMES[index]):
+                self.assertEqual(network.struts[index].motion_ratio, ratio)
+                result = network.forces(wheels, wheels / z * zdot)
+                travel = (network.jacobian @ wheels)[index]
+                velocity = result.element_velocity[STRUT_NAMES[index]]
+                # One wheel's travel over the unit travel is the declared MR.
+                self.assertAlmostEqual(z / travel, ratio, places=12)
+                self.assertAlmostEqual(zdot / velocity, ratio, places=12)
+                # The other axle-mode units do not move.
+                others = [i for i in range(4, 8) if i != index]
+                np.testing.assert_allclose((network.jacobian @ wheels)[others], 0., atol=1e-15)
+        # A single-wheel bump is half heave plus half roll.
+        single = network.jacobian @ np.array([z, 0., 0., 0.])
+        self.assertAlmostEqual(single[4], z / (2. * 1.05), places=15)
+        self.assertAlmostEqual(single[5], -z / (2. * 1.20), places=15)
+        # Each wheel sees k / (2 MR^2) in its own mode, because two wheels share one unit.
+        epsilon = 1e-6
+        zero = network.static_forces(np.zeros(4))
+        heave_rate = (network.static_forces(np.array([epsilon, epsilon, 0., 0.])) - zero)[0] / epsilon
+        roll_rate = (network.static_forces(np.array([-epsilon, epsilon, 0., 0.])) - zero)[1] / epsilon
+        self.assertAlmostEqual(heave_rate, network.struts[4].spring_rate / (2. * 1.05**2), delta=1e-6 * heave_rate)
+        self.assertAlmostEqual(roll_rate, network.struts[5].spring_rate / (2. * 1.20**2), delta=1e-6 * roll_rate)
+
     def test_actual_murphy_network_allows_far_finite_jounce(self):
         network = compile_formulation('models/formulations/iem24_murphy_real_14dof_simple.xml').model.suspension.network
         z = np.array([-.1, .1, .1, -.1])

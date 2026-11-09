@@ -13,9 +13,17 @@ import re
 import subprocess
 import sys
 import time
+from types import SimpleNamespace
 import xml.etree.ElementTree as ElementTree
 
 import numpy as np
+
+from simplified_vehicle_models.solvers.hybrid_setup import (
+    HYBRID_EXECUTION_ALLOCATOR_ID, HYBRID_HORIZON_S, HYBRID_MODE, HYBRID_SETUP_VERSION, HYBRID_SLABS,
+    HYBRID_POLICY_MAX_EXTRA_FORECASTS, HYBRID_POLICY_BRACKET_RESOLUTION, HYBRID_POLICY_MAX_TOTAL_FORECASTS,
+)
+from simplified_vehicle_models.solvers.hybrid_driver import HYBRID_POLICY_VERSION
+from simplified_vehicle_models.solvers.hybrid_speed_plan import HYBRID_PLAN_VERSION
 
 #: Canonical ten-lap MIS endurance track: the active default for new runs.
 DEFAULT_TRACK = Path("models/tracks/2024_michigan_endurance_multilap_closed.xml")
@@ -28,6 +36,15 @@ DEFAULT_TRACK = Path("models/tracks/2024_michigan_endurance_multilap_closed.xml"
 #: empirical, not derived.
 OPEN_COURSE_LATERAL_MARGIN = 0.90
 
+#: Closed-lap lateral margin of the 14DoF model when --lateral-margin is not
+#: given. The planner's point-mass corner speed over-predicts the 14DoF plant's
+#: steady lateral limit by up to about 8 % in tight corners (steady-corner solve
+#: at the planned speed: 15.3 against 16.6 m/s^2 at kappa 0.12, 16.2 against
+#: 16.9 at 0.08). At margin 1 the 14DoF car therefore runs wide at corner exit
+#: (0.44 m MIS, 0.49 m FSC). Measured 2026-11-04: 0.92 tracks MIS in 0.202 m and
+#: FSC in 0.251 m; 0.90 tracks FSC in 0.228 m. The value is empirical, not derived.
+VERTICAL_CLOSED_LATERAL_MARGIN = 0.90
+
 #: Track of every attempt that predates --track (no settings["track"] recorded).
 #: Historical warm-start matching must keep resolving to this, not DEFAULT_TRACK.
 LEGACY_TRACK = Path("models/tracks/2024_michigan_endurance_closed.xml")
@@ -39,8 +56,8 @@ FORMULATION = PLANAR_FORMULATION
 VERTICAL_FORMULATION = Path("models/formulations/iem24_murphy_real_14dof_simple.xml")
 #: Shared IEM24 assembly both formulations compile.
 VEHICLE = Path("models/vehicles/iem24_murphy_real_planar.xml")
-#: The established 7DoF acceptance limit; also the default wall ceiling of
-#: ``solve_forward``. A longer wall budget needs ``--model 14dof-simple``.
+#: Established default wall budget for new planar-7DoF attempts. Explicit
+#: user-selected timeout budgets are accepted for either model.
 PLANAR_MAXIMUM_WALL_SECONDS = 300.
 #: Maximum path spacing: a coarser plan is not a resolution the driver may run.
 MAXIMUM_PATH_SPACING_METRES = .5
@@ -72,7 +89,6 @@ _PLANAR_SOURCES = _SOLVER_SOURCES + (
 _VERTICAL_SOURCES = _SOLVER_SOURCES + (
     Path("src/simplified_vehicle_models/solvers/vertical_forward.py"),
     Path("src/simplified_vehicle_models/solvers/vertical_dense_certificate.py"),
-    Path("src/simplified_vehicle_models/solvers/vertical_between_step.py"),
     Path("src/simplified_vehicle_models/solvers/dense_domain.py"),
     Path("src/simplified_vehicle_models/solvers/vertical_equilibrium.py"),
     Path("src/simplified_vehicle_models/formulations/vertical_14dof.py"),
@@ -111,6 +127,8 @@ class ModelSpec:
     #: Fraction of the parent timeout held back from the solver, and its floor.
     wall_margin_fraction: float
     wall_margin_floor_seconds: float = 5.
+    #: Default lateral margin on a closed lap when --lateral-margin is not given.
+    closed_lateral_margin: float = 1.
 
     @property
     def plant(self):
@@ -140,6 +158,7 @@ MODELS: dict[str, ModelSpec] = {
         component_roles=("tire", "tire-transient", "suspension"),
         planar_dense_certificate=False,
         wall_margin_fraction=.02,
+        closed_lateral_margin=VERTICAL_CLOSED_LATERAL_MARGIN,
     ),
 }
 #: Model names in CLI order.
@@ -256,6 +275,8 @@ def model_inputs(model: str, track_xml):
     inputs = {"track_xml": track_xml, "track_csv": track_csv,
               "tire_xml": component_xml(spec.vehicle, "tire"),
               "formulation_xml": spec.formulation, "vehicle_xml": spec.vehicle}
+    for index, data_path in enumerate(component_data_paths(spec.vehicle)):
+        inputs["vehicle_data" if index == 0 else f"vehicle_data_{index}"] = data_path
     for role in spec.component_roles:
         if role == "tire":
             continue  # already recorded as ``tire_xml``
@@ -274,7 +295,7 @@ def _record_component(inputs, key, xml):
                           canonical_path(Path(xml).parent / child.get("ref")))
 
 
-def source_files(model: str, track_xml, longitudinal_policy="braking-envelope"):
+def source_files(model: str, track_xml, longitudinal_policy="braking-envelope", vertical_corner_samples=0, transient_corner_planning=False, physical_brake_planning=False, longitudinal_mode="legacy"):
     """Return every file hashed and snapshotted for one run, in order.
 
     The file names must stay unique because the attempt's ``source_snapshot``
@@ -282,8 +303,20 @@ def source_files(model: str, track_xml, longitudinal_policy="braking-envelope"):
     """
     spec = model_spec(model)
     sources = [Path(__file__), *spec.solver_sources,
+               *((Path("src/simplified_vehicle_models/solvers/envelope_driver.py"),
+                  Path("src/simplified_vehicle_models/solvers/brake_authority.py"),
+                  Path("src/simplified_vehicle_models/controls/brake_inverse.py"),
+                  Path("src/simplified_vehicle_models/solvers/forward_powertrain.py"))
+                 if physical_brake_planning else ()),
                *(_ENVELOPE_SOURCES if longitudinal_policy == "braking-envelope" else ()),
+               *((Path("src/simplified_vehicle_models/solvers/vertical_capability.py"),)
+                 if vertical_corner_samples and model == "14dof-simple" else ()),
+               *((Path("src/simplified_vehicle_models/solvers/yaw_transition.py"),)
+                 if transient_corner_planning else ()),
                *model_inputs(model, track_xml).values()]
+    if longitudinal_mode == "hybrid-drive-brake-v1":
+        sources.extend(Path("src/simplified_vehicle_models/solvers") / name for name in
+            ("hybrid_setup.py", "hybrid_driver.py", "hybrid_speed_plan.py", "longitudinal_capability.py"))
     unique = []
     for path in sources:
         if path not in unique:
@@ -292,6 +325,61 @@ def source_files(model: str, track_xml, longitudinal_policy="braking-envelope"):
     if len(set(names)) != len(names):
         raise ValueError("source snapshot file names must be unique")
     return tuple(unique)
+
+
+def apply_vertical_corner_restriction(vehicle, plan, envelope, *, max_queries, is_closed, artifact_path):
+    """Apply opt-in tested-speed evidence to the envelope and preview plan."""
+    from simplified_vehicle_models.solvers.vertical_capability import constrain_corner_speeds
+    from simplified_vehicle_models.solvers.braking_envelope import restrict_braking_envelope
+    evidence = constrain_corner_speeds(vehicle, plan.distance, plan.curvature, envelope.corner_speed,
+                                       max_queries=max_queries, is_closed=is_closed)
+    payload = asdict(evidence)
+    payload["caps"] = evidence.caps.tolist()
+    payload["samples"] = [asdict(sample) for sample in evidence.samples]
+    payload["caveat"] = ("Sparse tested-speed restrictions are operational evidence, not a physical maximum "
+                         "or feasibility guarantee; unsampled speeds and stations are not certified.")
+    artifact_path = Path(artifact_path)
+    artifact_path.write_text(json.dumps(payload, sort_keys=True, indent=2, allow_nan=False) + "\n")
+    semantic_hash = hashlib.sha256(canonical_json(payload).encode()).hexdigest()
+    artifact_hash = hashlib.sha256(artifact_path.read_bytes()).hexdigest()
+    restricted = restrict_braking_envelope(envelope, evidence.caps,
+        provenance={"query_budget": max_queries, "semantic_sha256": semantic_hash})
+    speed = np.minimum(plan.speed, restricted.entry_speed)
+    if not is_closed:
+        speed[0] = 0.
+    from simplified_vehicle_models.solvers.forward_driver import SpeedPlan
+    restricted_plan = SpeedPlan(plan.distance, speed, plan.curvature, is_closed=plan.is_closed)
+    detail = {"file": artifact_path.name, "query_budget": max_queries,
+              "query_count": evidence.query_count, "semantic_sha256": semantic_hash,
+              "artifact_sha256": artifact_hash, "reasons": list(evidence.reasons),
+              "caveat": payload["caveat"]}
+    return restricted_plan, restricted, detail
+
+
+def apply_transient_corner_restriction(control, plan, envelope, artifact_path):
+    """Lower caps for sampled yaw-transition demand and bind their evidence."""
+    from simplified_vehicle_models.solvers.yaw_transition import yaw_transition_speed_caps
+    from simplified_vehicle_models.solvers.braking_envelope import restrict_braking_envelope
+    from simplified_vehicle_models.solvers.forward_driver import SpeedPlan
+    evidence = yaw_transition_speed_caps(plan.distance, plan.curvature, control,
+                                         envelope.corner_speed, is_closed=plan.is_closed)
+    payload = {"caps": evidence.caps.tolist(),
+               "curvature_gradient": evidence.curvature_gradient.tolist(),
+               "provenance": dict(evidence.provenance),
+               "steering_feedforward": "actuator-inverse"}
+    semantic = hashlib.sha256(canonical_json(payload).encode()).hexdigest()
+    path = Path(artifact_path)
+    path.write_text(json.dumps(payload, sort_keys=True, indent=2, allow_nan=False) + "\n")
+    restricted = restrict_braking_envelope(envelope, evidence.caps,
+        provenance={"yaw_transition_semantic_sha256": semantic})
+    speeds = np.minimum(plan.speed, restricted.entry_speed)
+    if not plan.is_closed:
+        speeds[0] = 0.
+    updated = SpeedPlan(plan.distance, speeds, plan.curvature, is_closed=plan.is_closed)
+    return updated, restricted, {"file": path.name, "semantic_sha256": semantic,
+        "artifact_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        "restricted_nodes": int(np.count_nonzero(evidence.caps < envelope.corner_speed)),
+        "provenance": dict(evidence.provenance)}
 
 
 def trace_header(plant):
@@ -478,19 +566,60 @@ def canonical_json(value):
     return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 
+def _hybrid_steering_plan(hybrid_plan):
+    """Adapt the tuple-only steering preview to the canonical hybrid plan."""
+    def sample(station):
+        item=hybrid_plan.sample(station)
+        return item.speed_mps,item.curvature_inv_m,item.acceleration_mps2
+    return SimpleNamespace(distance=hybrid_plan.distance_m,speed=hybrid_plan.speed_mps,
+        curvature=hybrid_plan.curvature_inv_m,is_closed=hybrid_plan.is_closed,sample=sample)
+
+
 def policy_identity_settings(args):
     """Settings and deterministic envelope-builder inputs that define policy identity."""
     from dataclasses import asdict
     from simplified_vehicle_models.solvers.envelope_driver import EnvelopeDriverSettings
-    return {"policy": args.longitudinal_policy,
-            "settings": asdict(EnvelopeDriverSettings(speed_gain=args.speed_gain)),
+    mode=getattr(args,"longitudinal_mode", "physical-reachable-v1" if getattr(args,"physical_brake_planning",False) else "legacy")
+    identity={"policy": args.longitudinal_policy,
+            "longitudinal_mode": mode,
+            "forecast_version": "operational-diagnostic-v1" if getattr(args,"physical_brake_planning",False) else None,
+            "forecast_horizon_s": 3.0 if getattr(args,"physical_brake_planning",False) else None,
+            "authority_provenance_version": "compiled-source-calibration-v1" if getattr(args,"physical_brake_planning",False) else None,
+            "settings": asdict(EnvelopeDriverSettings(speed_gain=args.speed_gain,
+                mode="physical-reachable-v1" if getattr(args,"physical_brake_planning",False) else "legacy",
+                planning_transition_time_s=None, forecast_horizon_s=3.0)),
+            "physical_actuator": {key: getattr(args, key) for key in ("pedal_travel_time", "brake_apply_rate", "brake_release_rate")} if getattr(args,"physical_brake_planning",False) else None,
+            "source_closure_sha256": getattr(args, "physical_source_closure_sha256", None) if getattr(args,"physical_brake_planning",False) else None,
             "builder": {"deceleration_margin": args.envelope_deceleration_margin,
                         "speed_query_points": args.envelope_speed_points,
                         "maximum_speed": args.maximum_speed,
                         "lateral_margin": args.lateral_margin,
                         "storage_state_of_charge": getattr(args, "initial_storage_soc", None),
                         "is_closed": getattr(args, "track_is_closed", None),
-                        "builder_parameters": getattr(args, "builder_parameters", None)}}
+                        "builder_parameters": getattr(args, "builder_parameters", None),
+                        **({"vertical_corner_samples": args.vertical_corner_samples,
+                            "vertical_capability_semantic_sha256": getattr(args, "vertical_capability_semantic_sha256", None)}
+                           if getattr(args, "vertical_corner_samples", 0) else {}),
+                        **({"transient_corner_planning": True,
+                            "yaw_transition_semantic_sha256": getattr(args, "yaw_transition_semantic_sha256", None)}
+                           if getattr(args, "transient_corner_planning", False) else {})}}
+
+    if mode == "hybrid-drive-brake-v1":
+        identity.update({"longitudinal_mode": mode,
+            "policy": HYBRID_POLICY_VERSION,
+            "hybrid_setup_version": HYBRID_SETUP_VERSION,
+            "hybrid_plan_version": HYBRID_PLAN_VERSION,
+            "hybrid_policy_version": HYBRID_POLICY_VERSION,
+            "hybrid_horizon_s": HYBRID_HORIZON_S, "hybrid_slabs": HYBRID_SLABS,
+            "hybrid_max_extra_forecasts": HYBRID_POLICY_MAX_EXTRA_FORECASTS,
+            "hybrid_bracket_resolution": HYBRID_POLICY_BRACKET_RESOLUTION,
+            "hybrid_max_total_forecasts": HYBRID_POLICY_MAX_TOTAL_FORECASTS,
+            "hybrid_max_total_transitions": HYBRID_POLICY_MAX_TOTAL_FORECASTS*HYBRID_SLABS,
+            "provider_identity": getattr(args, "hybrid_provider_identity", None),
+            "allocator_identity": getattr(args, "hybrid_allocator_identity", None),
+            "physical_actuator": {key: getattr(args, key) for key in ("pedal_travel_time", "throttle_apply_rate", "throttle_release_rate", "brake_apply_rate", "brake_release_rate")},
+            "source_closure_sha256": getattr(args, "physical_source_closure_sha256", None)})
+    return identity
 
 
 def warm_start_matches(previous, source_hashes, args, pedal_map_sha256=None, policy_settings_identity=None):
@@ -501,17 +630,23 @@ def warm_start_matches(previous, source_hashes, args, pedal_map_sha256=None, pol
     """
     settings = previous.get("settings", {})
     defaults = {"preview_seconds": .15, "heading_gain": 1.5, "lateral_gain": 1.5, "speed_gain": 2.,
-                "lateral_margin": None}
+                "lateral_margin": None, "initial_speed": 0.}
     previous_policy = previous.get("longitudinal_policy", {})
     if not isinstance(previous_policy, dict):
         previous_policy = {}
     current_policy_settings = policy_settings_identity or policy_identity_settings(args)
-    policy_matches = (previous_policy.get("policy") == "braking-envelope"
-                      and settings.get("longitudinal_policy") == "braking-envelope"
+    hybrid_mode = getattr(args, "longitudinal_mode", "legacy") == "hybrid-drive-brake-v1"
+    expected_policy = "hybrid-drive-brake-v1" if hybrid_mode else "historical-preview-v1" if getattr(args, "longitudinal_mode", "legacy") == "historical-preview-v1" else "braking-envelope"
+    policy_matches = (previous_policy.get("policy") == expected_policy
+                      and settings.get("longitudinal_policy") == expected_policy
+                      and (not hybrid_mode or previous_policy.get("settings_identity", {}).get("setup_identity") == current_policy_settings.get("setup_identity"))
+                       and (getattr(args,"longitudinal_mode", "legacy") != "hybrid-drive-brake-v1" or settings.get("longitudinal_mode") == "hybrid-drive-brake-v1")
+                       and settings.get("physical_brake_planning", False) == bool(getattr(args, "physical_brake_planning", False))
+                       and settings.get("transient_corner_planning", False) == bool(getattr(args, "transient_corner_planning", False))
                       and settings.get("envelope_deceleration_margin", .6) == args.envelope_deceleration_margin
                       and settings.get("envelope_speed_points", 9) == args.envelope_speed_points
-                      and previous_policy.get("deceleration_margin", .6) == args.envelope_deceleration_margin
-                      and previous_policy.get("speed_query_points", 9) == args.envelope_speed_points
+                      and (expected_policy == "historical-preview-v1" or previous_policy.get("deceleration_margin", .6) == args.envelope_deceleration_margin)
+                      and (expected_policy == "historical-preview-v1" or previous_policy.get("speed_query_points", 9) == args.envelope_speed_points)
                       and previous_policy.get("settings_identity_sha256") ==
                            hashlib.sha256(canonical_json(current_policy_settings).encode()).hexdigest())
     return bool(policy_matches
@@ -524,9 +659,32 @@ def warm_start_matches(previous, source_hashes, args, pedal_map_sha256=None, pol
                                     "pedal_travel_time", "throttle_apply_rate",
                                     "throttle_release_rate", "brake_apply_rate",
                                     "brake_release_rate", "spacing", "preview_seconds",
-                                    "heading_gain", "lateral_gain", "speed_gain", "lateral_margin"))
+                                    "heading_gain", "lateral_gain", "speed_gain", "lateral_margin", "initial_speed"))
                 and canonical_path(settings.get("track") or LEGACY_TRACK)
                 == canonical_path(args.track))
+
+
+def _load_warm_start_arrays(warm_start, previous, source_hashes, args, pedal_map_sha256, policy_settings_identity, plant):
+    """Validate a completed seed against the actual setup identity before loading arrays."""
+    if not warm_start_matches(previous, source_hashes, args, pedal_map_sha256, policy_settings_identity):
+        raise ValueError("warm start requires a completed lap with matching speed cap, track, source hashes and pedal-map identity")
+    trace = np.loadtxt(Path(warm_start) / "trace.csv", delimiter=",", skiprows=1)
+    pedals = np.loadtxt(Path(warm_start) / "pedal.csv", delimiter=",", skiprows=1)
+    if (trace.ndim != 2 or trace.shape[1] != 1 + plant.state_size
+            or pedals.shape != (len(trace), 2)
+            or not np.array_equal(trace[:, 0], pedals[:, 0])):
+        raise ValueError("warm-start trace and pedal samples must match")
+    return trace, pedals
+
+
+def _nonnegative_integer(value):
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        raise argparse.ArgumentTypeError("must be an integer >= 0") from None
+    if str(parsed) != str(value).strip() or parsed < 0:
+        raise argparse.ArgumentTypeError("must be an integer >= 0")
+    return parsed
 
 
 def _positive_integer(value):
@@ -542,13 +700,14 @@ def _positive_integer(value):
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", choices=MODEL_NAMES, default="planar-7dof",
-                        help="Forward model: the planar 7DoF rung (300 s wall limit) or the "
-                             "vertical 14DoF rung (a longer, user-selected wall limit)")
+                        help="Forward model: planar 7DoF or vertical 14DoF; --timeout-seconds "
+                             "sets the user-selected wall budget for either model")
     parser.add_argument("--output-root", type=Path,
         default=Path("docs/validation/iem24-murphy/forward_driver_trials"))
     parser.add_argument("--timeout-seconds", type=float, default=300.)
     parser.add_argument("--duration", type=float, default=300.)
     parser.add_argument("--maximum-speed", type=float, default=8.)
+    parser.add_argument("--initial-speed", type=float, default=0., help="actual initial speed for supported rolling starts; open-course legacy default remains standing start")
     parser.add_argument("--lateral-acceleration", type=float, default=None,
                         help="Optional cornering cap (m/s^2) on the point-mass preview plan")
     parser.add_argument("--pedal-travel-time", type=float, default=.175,
@@ -562,7 +721,8 @@ def parse_args(argv=None):
     parser.add_argument("--lateral-margin", type=float, default=None,
                         help="Fraction (above 0, at most 1) of the point-mass cornering grip the live "
                              "preview plan uses. 1 plans at the grip limit; a lower value leaves grip for "
-                             "steering changes. Default: 1 on a closed lap, "
+                             "steering changes. Default on a closed lap: 1 for planar-7dof, "
+                             f"{VERTICAL_CLOSED_LATERAL_MARGIN} for 14dof-simple; "
                              f"{OPEN_COURSE_LATERAL_MARGIN} on an open course. Ignored by the "
                              "braking-envelope policy")
     parser.add_argument("--speed-gain", type=float, default=2.,
@@ -577,10 +737,18 @@ def parse_args(argv=None):
     parser.add_argument("--spacing", type=float, default=.5)
     parser.add_argument("--envelope-deceleration-margin", type=float, default=.6)
     parser.add_argument("--envelope-speed-points", type=_positive_integer, default=9)
+    parser.add_argument("--longitudinal-mode", choices=("historical-preview-v1", "legacy", "physical-reachable-v1", "hybrid-drive-brake-v1"), default=None)
+    parser.add_argument("--physical-brake-planning", action="store_true",
+                        help="Opt-in physical-reachable-v1 sampled operational brake forecast; not a feasibility certificate")
+    parser.add_argument("--transient-corner-planning", action="store_true",
+                        help="Opt-in sampled yaw-transition force screen and steering-actuator inverse; not a physical feasibility guarantee")
+    parser.add_argument("--vertical-corner-samples", type=_nonnegative_integer, default=0,
+                         help="Optional bounded vertical-model steady-corner query budget (14DoF only); "
+                              "tested-speed restriction, not a physical maximum")
     parser.add_argument("--track", type=Path, default=DEFAULT_TRACK,
                         help="Signed closed-xy-profile or open-xy-profile track XML (default: the "
                              f"canonical ten-lap MIS track {DEFAULT_TRACK}). An open track is run "
-                             "as a standing start from rest")
+                             "as a standing start from rest in legacy mode; hybrid mode requires --initial-speed > 0")
     parser.add_argument("--warm-start", type=Path,
                         help="Completed previous attempt whose final physical/pedal state starts this lap")
     parser.add_argument("--record", action="store_true",
@@ -594,10 +762,28 @@ def parse_args(argv=None):
                              "APPROXIMATE roll/pitch estimates (never simulated states)")
     parser.add_argument("--pedal-map-config", dest="pedal_map_config_path", type=Path, help="strict schema-versioned physical pedal calibration JSON")
     parser.add_argument("--expected-pedal-map-sha256", help=argparse.SUPPRESS)
+    parser.add_argument("--expected-source-closure-sha256", help=argparse.SUPPRESS)
     parser.add_argument("--child-attempt", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
-    args.longitudinal_policy = "braking-envelope"
+    explicit_mode = args.longitudinal_mode
+    if args.physical_brake_planning and explicit_mode not in (None, "physical-reachable-v1"):
+        parser.error("--physical-brake-planning alias contradicts --longitudinal-mode")
+    args.longitudinal_mode = ("physical-reachable-v1" if args.physical_brake_planning else "legacy" if args.transient_corner_planning or args.vertical_corner_samples else "historical-preview-v1") if explicit_mode is None else explicit_mode
+    if args.longitudinal_mode == "historical-preview-v1" and (args.transient_corner_planning or args.vertical_corner_samples):
+        parser.error("historical-preview-v1 cannot use envelope corner restrictions")
+    args.longitudinal_policy = "historical-preview-v1" if args.longitudinal_mode == "historical-preview-v1" else "braking-envelope"
+    args.physical_brake_planning = args.longitudinal_mode == "physical-reachable-v1"
+    if args.longitudinal_mode == "hybrid-drive-brake-v1" and args.physical_brake_planning:
+        parser.error("hybrid-drive-brake-v1 cannot be combined with --physical-brake-planning")
+    if args.longitudinal_mode == "hybrid-drive-brake-v1" and (args.model != "14dof-simple" or args.transient_corner_planning or args.vertical_corner_samples):
+        parser.error("hybrid-drive-brake-v1 requires --model 14dof-simple and forbids transient/yaw and separate vertical-corner planning")
+    if args.vertical_corner_samples and args.model != "14dof-simple":
+        parser.error("--vertical-corner-samples requires --model 14dof-simple")
     import math
+    if not math.isfinite(args.initial_speed) or args.initial_speed < 0.:
+        parser.error("initial-speed must be finite and nonnegative")
+    if args.longitudinal_mode == "hybrid-drive-brake-v1" and args.initial_speed <= 0.:
+        parser.error("hybrid-drive-brake-v1 supports rolling starts only; specify a positive --initial-speed (standing rest is not qualified)")
     for name in ("timeout_seconds", "duration", "maximum_speed", "lateral_acceleration",
                  "maximum_step", "rtol", "spacing", "pedal_travel_time",
                  "throttle_apply_rate", "throttle_release_rate", "brake_apply_rate",
@@ -637,9 +823,6 @@ def parse_args(argv=None):
         parser.error("--quasi-static-attitude needs --record")
     if args.spacing > MAXIMUM_PATH_SPACING_METRES:
         parser.error(f"path spacing must be <= {MAXIMUM_PATH_SPACING_METRES} m")
-    if args.timeout_seconds > PLANAR_MAXIMUM_WALL_SECONDS and args.model == "planar-7dof":
-        parser.error(f"the planar-7dof wall limit must be <= {PLANAR_MAXIMUM_WALL_SECONDS:g} s; "
-                     "use --model 14dof-simple for a longer, user-selected wall limit")
     try:
         (args.pedal_map_config_payload, args.pedal_map_config,
          args.pedal_map_file_sha256) = load_runner_pedal_map(args.pedal_map_config_path)
@@ -649,6 +832,8 @@ def parse_args(argv=None):
         parser.error("--expected-pedal-map-sha256 is reserved for runner children")
     if args.expected_pedal_map_sha256 is not None and args.expected_pedal_map_sha256 != (args.pedal_map_file_sha256 or ""):
         parser.error("--pedal-map-config changed after parent validation")
+    if args.expected_source_closure_sha256 is not None and args.child_attempt is None:
+        parser.error("--expected-source-closure-sha256 is reserved for runner children")
     return args
 
 
@@ -776,6 +961,12 @@ def event_times(track_xml, time, distance):
     return result
 
 
+def vertical_contact_valid(lap_completed, minimum_contact_load, *, network_state_valid=True):
+    """Vertical contact gate independent of descriptive suspension-table extension counts."""
+    return bool(lap_completed and math.isfinite(minimum_contact_load)
+                and minimum_contact_load >= 0. and network_state_valid)
+
+
 def acceptance_gate(summary):
     """Return true only when every required lap-validity gate is established.
 
@@ -806,8 +997,6 @@ def acceptance_gate(summary):
                 and summary.get("path_tracking_valid") is True
                 and summary.get("resolution_valid") is True
                 and summary.get("checked_rhs_physics_valid") is True
-                and summary.get("between_step_validation_complete") is True
-                and summary.get("refinement_validated") is True
                 and summary.get("contact_valid") is True)
 
 
@@ -825,6 +1014,10 @@ def child(args):
                     "speed_query_points": args.envelope_speed_points,
                     "settings_identity_sha256": None}}
                    )}
+    summary["settings"]["longitudinal_policy"] = ("hybrid-drive-brake-v1"
+        if args.longitudinal_mode == "hybrid-drive-brake-v1" else args.longitudinal_policy)
+    summary["settings"]["longitudinal_mode"] = args.longitudinal_mode
+    summary["settings"]["initial_speed_mps"] = float(args.initial_speed)
     plant = None
     policy_decisions = []
     policy_solve_completed = False
@@ -843,10 +1036,23 @@ def child(args):
         # Track, referenced CSV, tire XMLs, component tables and formulation
         # define the run's physical inputs; they are hashed and snapshotted with
         # the code that this model depends on.
-        sources = source_files(args.model, args.track, args.longitudinal_policy)
+        sources = source_files(args.model, args.track, args.longitudinal_policy,
+                               args.vertical_corner_samples, args.transient_corner_planning,
+                               args.physical_brake_planning, args.longitudinal_mode)
         physical_inputs = model_inputs(args.model, args.track)
         summary["source_hashes"] = {str(path): hashlib.sha256(path.read_bytes()).hexdigest()
                                     for path in sources}
+        warm_start_previous = None
+        if args.warm_start is not None and args.longitudinal_mode == "hybrid-drive-brake-v1":
+            warm_start_previous = json.loads((args.warm_start / "summary.json").read_text())
+            if warm_start_previous.get("source_hashes") != summary["source_hashes"]:
+                raise ValueError("warm-start source/calibration identity changed before compile or prior arrays")
+        if args.physical_brake_planning or args.longitudinal_mode == "hybrid-drive-brake-v1":
+            args.physical_source_closure_sha256 = hashlib.sha256(
+                canonical_json(summary["source_hashes"]).encode()).hexdigest()
+            expected_closure = args.expected_source_closure_sha256
+            if expected_closure is not None and expected_closure != args.physical_source_closure_sha256:
+                raise ValueError("source/calibration closure changed between parent validation and child compile")
         summary["model_inputs"] = {key: str(path) for key, path in physical_inputs.items()}
         snapshot = root / "source_snapshot"
         snapshot.mkdir()
@@ -884,47 +1090,172 @@ def child(args):
         open_course = not track.is_closed
         lateral_margin = args.lateral_margin
         if lateral_margin is None:
-            lateral_margin = OPEN_COURSE_LATERAL_MARGIN if open_course else 1.
+            lateral_margin = (OPEN_COURSE_LATERAL_MARGIN if open_course
+                              else spec.closed_lateral_margin)
         summary["lateral_margin"] = float(lateral_margin)
         summary["track_is_closed"] = bool(track.is_closed)
-        plan = build_speed_plan(distance, curvature, args.maximum_speed,
-                                lateral_cap, 1., 2.,
-                                vehicle=control if live_limit else None,
-                                live_limit=live_limit, open_course=open_course,
-                                lateral_margin=lateral_margin)
-        from simplified_vehicle_models.solvers.braking_envelope import build_braking_envelope
-        from simplified_vehicle_models.solvers.envelope_driver import EnvelopePolicy, EnvelopeDriverSettings
         from simplified_vehicle_models.powertrain.energy_storage import StorageState
         storage = StorageState(control.drivetrain.powertrain.energy_storage.initial_state_of_charge)
-        envelope = build_braking_envelope(distance, curvature, control,
-            maximum_speed=args.maximum_speed, lateral_margin=lateral_margin,
-            deceleration_margin=args.envelope_deceleration_margin,
-            speed_query_points=args.envelope_speed_points, storage_state=storage,
-            is_closed=bool(track.is_closed))
-        array_names = ("distance", "curvature", "corner_speed", "entry_speed", "deceleration", "binding_index")
-        arrays = {name: getattr(envelope, name) for name in array_names}
-        arrays["segment_speed_domain_max"] = np.asarray(envelope.provenance["segment_speed_domain_max"], dtype=float)
-        array_hashes = {name: hashlib.sha256(np.ascontiguousarray(value).tobytes()).hexdigest()
-                        for name, value in arrays.items()}
-        np.savez_compressed(root / "envelope_arrays.npz", **arrays)
-        envelope_settings = EnvelopeDriverSettings(speed_gain=args.speed_gain)
-        settings = asdict(envelope_settings)
+        hybrid_mode = args.longitudinal_mode == "hybrid-drive-brake-v1"
+        historical_mode = args.longitudinal_mode == "historical-preview-v1"
+        envelope = None
+        if hybrid_mode:
+            # Shared hybrid setup owns the only longitudinal reachability plan.
+            # This pointwise geometry plan supplies initial speed only; it is
+            # not an envelope and is never passed into the hybrid builder.
+            plan = build_speed_plan(distance, curvature, args.maximum_speed,
+                                    lateral_cap, 1., 2., vehicle=control,
+                                    live_limit=live_limit, open_course=open_course,
+                                    lateral_margin=lateral_margin)
+        else:
+            plan = build_speed_plan(distance, curvature, args.maximum_speed,
+                                    lateral_cap, 1., 2., vehicle=control if live_limit else None,
+                                    live_limit=live_limit, open_course=open_course,
+                                    lateral_margin=lateral_margin)
+            if not historical_mode:
+                from simplified_vehicle_models.solvers.braking_envelope import build_braking_envelope
+                envelope = build_braking_envelope(distance, curvature, control,
+                    maximum_speed=args.maximum_speed, lateral_margin=lateral_margin,
+                    deceleration_margin=args.envelope_deceleration_margin,
+                    speed_query_points=args.envelope_speed_points, storage_state=storage,
+                    is_closed=bool(track.is_closed))
+        from simplified_vehicle_models.solvers.envelope_driver import EnvelopePolicy, EnvelopeDriverSettings
+        hybrid_setup = None
+        if args.longitudinal_mode == "hybrid-drive-brake-v1":
+            if args.model != "14dof-simple" or args.transient_corner_planning:
+                raise ValueError("hybrid mode requires full 14DoF and forbids transient yaw/TV planning")
+            from simplified_vehicle_models.solvers.envelope_driver import PedalPolicyContext
+            from simplified_vehicle_models.solvers.hybrid_setup import build_hybrid_setup
+            from simplified_vehicle_models.tires.unitire_simple import loaded_radius
+            from simplified_vehicle_models.formulations.point_mass import point_mass_view_of_planar, normal_loads
+            rated_loads=normal_loads(point_mass_view_of_planar(control),max(args.maximum_speed,1.),0.,0.)
+            radii=loaded_radius(control.tire,rated_loads)
+            pc=PedalPolicyContext(args.throttle_release_rate or 1./args.pedal_travel_time,
+                args.brake_apply_rate or 1./args.pedal_travel_time,.02,control.maximum_pedal_force,.85,
+                args.throttle_apply_rate or 1./args.pedal_travel_time,args.brake_release_rate or 1./args.pedal_travel_time)
+            root_path=Path(__file__).resolve().parents[2]
+            model_hashes={}
+            for source in sources:
+                path=Path(source).resolve()
+                try: rel=path.relative_to(root_path).as_posix()
+                except ValueError: continue
+                model_hashes[rel]=hashlib.sha256(path.read_bytes()).hexdigest()
+            args.hybrid_allocator_identity=HYBRID_EXECUTION_ALLOCATOR_ID
+            hybrid_setup=build_hybrid_setup(control,distance_m=distance,curvature_inv_m=curvature,
+                maximum_speed_mps=args.maximum_speed,initial_speed_mps=float(args.initial_speed),
+                storage_soc=float(storage.state_of_charge),wheel_radii_m=tuple(float(v) for v in radii),
+                model_source_hashes=model_hashes,maximum_pedal_force_n=control.maximum_pedal_force,
+                pedal_context=pc,lateral_margin=lateral_margin,is_closed=bool(track.is_closed),
+                execution_allocator_identity=HYBRID_EXECUTION_ALLOCATOR_ID)
+            args.hybrid_provider_identity=hybrid_setup.provider.identity
+            hybrid_plan=hybrid_setup.plan
+            plan = _hybrid_steering_plan(hybrid_plan)
+            plant=plant_class_for(spec,vehicle)(vehicle,hybrid_plan)
+        vertical_evidence_hash = None
+        if args.vertical_corner_samples:
+            plan, envelope, detail = apply_vertical_corner_restriction(
+                vehicle, plan, envelope, max_queries=args.vertical_corner_samples,
+                is_closed=bool(track.is_closed), artifact_path=root / "vertical_corner_samples.json")
+            vertical_evidence_hash = detail["semantic_sha256"]
+            args.vertical_capability_semantic_sha256 = vertical_evidence_hash
+            summary["vertical_corner_samples"] = detail
+        if args.transient_corner_planning:
+            plan, envelope, detail = apply_transient_corner_restriction(
+                control, plan, envelope, root / "yaw_transition.json")
+            args.yaw_transition_semantic_sha256 = detail["semantic_sha256"]
+            summary["yaw_transition"] = detail
+        if hybrid_setup is not None:
+            hybrid_plan = hybrid_setup.plan
+            def sample_for_driver(station):
+                item = hybrid_plan.sample(station)
+                return item.speed_mps, item.curvature_inv_m, item.acceleration_mps2
+            plan = _hybrid_steering_plan(hybrid_plan)
+            hybrid_steering_plan = plan
+            summary["hybrid_setup"]={"identity":hybrid_setup.setup_identity,"plan_version":hybrid_setup.plan.algorithm_version,
+                "policy_version":HYBRID_POLICY_VERSION,"setup_version":HYBRID_SETUP_VERSION,
+                "horizon_s":hybrid_setup.policy.config.horizon_s,"slabs":hybrid_setup.policy.config.slabs,
+                "provider_identity":hybrid_setup.provider.identity,"allocator_identity":HYBRID_EXECUTION_ALLOCATOR_ID,
+                "plan_speed_mps":hybrid_setup.plan.speed_mps.tolist(),
+                "corner_speed_cap_mps":hybrid_setup.plan.corner_speed_cap_mps.tolist(),
+                "braking_speed_bound_mps":hybrid_setup.plan.braking_speed_bound_mps.tolist()}
+        array_hashes = None
+        if envelope is not None:
+            array_names = ("distance", "curvature", "corner_speed", "entry_speed", "deceleration", "binding_index")
+            arrays = {name: getattr(envelope, name) for name in array_names}
+            arrays["segment_speed_domain_max"] = np.asarray(envelope.provenance["segment_speed_domain_max"], dtype=float)
+            array_hashes = {name: hashlib.sha256(np.ascontiguousarray(value).tobytes()).hexdigest()
+                            for name, value in arrays.items()}
+            np.savez_compressed(root / "envelope_arrays.npz", **arrays)
+        envelope_settings = None if hybrid_setup is not None or historical_mode else EnvelopeDriverSettings(speed_gain=args.speed_gain,
+            mode=("physical-reachable-v1" if args.physical_brake_planning else "legacy"),
+            planning_transition_time_s=None, forecast_horizon_s=3.0)
+        if args.physical_brake_planning:
+            args.longitudinal_forecast_horizon_s = 3.0
+        settings = asdict(envelope_settings) if envelope_settings is not None else {}
+        if hybrid_setup is not None:
+            settings = {"policy": HYBRID_POLICY_VERSION,
+                "setup_version": HYBRID_SETUP_VERSION, "longitudinal_mode": HYBRID_MODE,
+                "horizon_s": HYBRID_HORIZON_S, "slabs": HYBRID_SLABS,
+                "max_extra_forecasts": hybrid_setup.policy.config.max_extra_forecasts,
+                "bracket_resolution": hybrid_setup.policy.config.bracket_resolution,
+                "max_total_forecasts": 3 + hybrid_setup.policy.config.max_extra_forecasts,
+                "max_total_transitions": (3 + hybrid_setup.policy.config.max_extra_forecasts) * hybrid_setup.policy.config.slabs,
+                "policy_version": HYBRID_POLICY_VERSION}
         summary["longitudinal_policy"] = {
-            "policy": "braking-envelope", "settings": settings,
+            "policy": "hybrid-drive-brake-v1" if hybrid_setup is not None else args.longitudinal_policy, "settings": settings,
+            "longitudinal_mode": args.longitudinal_mode,
+            "forecast_version": "operational-diagnostic-v1" if args.physical_brake_planning else None,
+            "forecast_horizon_s": 3.0 if args.physical_brake_planning else None,
+            "transient_corner_planning": bool(args.transient_corner_planning),
             "maximum_speed": float(args.maximum_speed), "lateral_margin": float(lateral_margin),
-            "deceleration_margin": float(args.envelope_deceleration_margin),
-            "speed_query_points": int(args.envelope_speed_points),
+            "deceleration_margin": float(args.envelope_deceleration_margin) if envelope is not None else None,
+            "speed_query_points": int(args.envelope_speed_points) if envelope is not None else None,
             "storage_state": {"state_of_charge": float(storage.state_of_charge)},
-            "is_closed": bool(track.is_closed), "builder": dict(envelope.provenance),
-            "array_sha256": array_hashes, "arrays_file": "envelope_arrays.npz",
-            "builder_source_sha256": {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in _ENVELOPE_SOURCES},
-            "caveat": "Sampled quasi-static authority may be optimistic; not a physical feasibility guarantee."}
-        identity_settings = {"policy": "braking-envelope", "settings": settings,
+            "is_closed": bool(track.is_closed),
+            **({"builder": dict(envelope.provenance), "array_sha256": array_hashes,
+                "arrays_file": "envelope_arrays.npz",
+                "builder_source_sha256": {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in _ENVELOPE_SOURCES}}
+                if envelope is not None else {"builder": "build_speed_plan", "live_limit": True}
+                if historical_mode else {"builder": "build_hybrid_setup",
+                    "setup_identity": hybrid_setup.setup_identity, "arrays_file": "hybrid_plan_arrays.npz"}),
+            "caveat": "Sampled operational model-conditioned plan; not a feasibility certificate or tire-authority guarantee."}
+        identity_settings = {"policy": "hybrid-drive-brake-v1" if hybrid_setup is not None else args.longitudinal_policy, "longitudinal_mode": args.longitudinal_mode,
+            "forecast_version": "operational-diagnostic-v1" if args.physical_brake_planning else None,
+            "forecast_horizon_s": 3.0 if args.physical_brake_planning else None,
+            "authority_provenance_version": "compiled-source-calibration-v1" if args.physical_brake_planning else None,
+            "physical_actuator": {key: getattr(args, key) for key in ("pedal_travel_time", "brake_apply_rate", "brake_release_rate")} if args.physical_brake_planning else None,
+            "source_closure_sha256": getattr(args, "physical_source_closure_sha256", None) if args.physical_brake_planning else None,
+            "transient_corner_planning": bool(args.transient_corner_planning), "settings": settings,
             "builder": {"deceleration_margin": float(args.envelope_deceleration_margin),
                 "speed_query_points": int(args.envelope_speed_points),
                 "maximum_speed": float(args.maximum_speed), "lateral_margin": float(lateral_margin),
                 "storage_state_of_charge": float(storage.state_of_charge),
-                "is_closed": bool(track.is_closed)}}
+                "is_closed": bool(track.is_closed),
+                **({"vertical_corner_samples": int(args.vertical_corner_samples),
+                    "vertical_capability_semantic_sha256": vertical_evidence_hash}
+                   if args.vertical_corner_samples else {}),
+                **({"transient_corner_planning": True,
+                    "yaw_transition_semantic_sha256": args.yaw_transition_semantic_sha256}
+                   if args.transient_corner_planning else {})}}
+        if hybrid_setup is not None:
+            identity_settings = {"policy": "hybrid-drive-brake-v1", "longitudinal_mode": args.longitudinal_mode,
+                "setup_identity": hybrid_setup.setup_identity,
+                "setup_identity_payload": json.loads(hybrid_setup.setup_identity_payload_json),
+                "setup_version": HYBRID_SETUP_VERSION,
+                "policy_version": HYBRID_POLICY_VERSION,
+                "horizon_s": hybrid_setup.policy.config.horizon_s,
+                "slabs": hybrid_setup.policy.config.slabs,
+                "max_extra_forecasts": hybrid_setup.policy.config.max_extra_forecasts,
+                "bracket_resolution": hybrid_setup.policy.config.bracket_resolution,
+                "max_total_forecasts": 3 + hybrid_setup.policy.config.max_extra_forecasts,
+                "max_total_transitions": (3 + hybrid_setup.policy.config.max_extra_forecasts) * hybrid_setup.policy.config.slabs,
+                "plan_version": hybrid_setup.plan.algorithm_version,
+                "provider_identity": hybrid_setup.provider.identity,
+                "allocator_identity": HYBRID_EXECUTION_ALLOCATOR_ID,
+                "physical_actuator_rates": {key: getattr(args, key) for key in
+                    ("throttle_apply_rate", "throttle_release_rate", "brake_apply_rate", "brake_release_rate")},
+                "lateral_margin": float(lateral_margin), "brake_margin": float(args.envelope_deceleration_margin),
+                "source_closure_sha256": getattr(args, "physical_source_closure_sha256", None)}
         args.builder_parameters = {"method": "sampled-quasi-static-v1",
             "deceleration_margin": float(args.envelope_deceleration_margin),
             "speed_query_points": int(args.envelope_speed_points),
@@ -932,15 +1263,23 @@ def child(args):
             "lateral_margin": float(lateral_margin),
             "storage_state_of_charge": float(storage.state_of_charge),
             "is_closed": bool(track.is_closed)}
-        identity_settings["builder"]["builder_parameters"] = args.builder_parameters
+        if hybrid_setup is None:
+            identity_settings["builder"]["builder_parameters"] = args.builder_parameters
         summary["longitudinal_policy"]["settings_identity"] = identity_settings
         summary["longitudinal_policy"]["settings_identity_sha256"] = hashlib.sha256(
             canonical_json(identity_settings).encode()).hexdigest()
         summary["settings"].update(longitudinal_policy_settings_identity_sha256=
             summary["longitudinal_policy"]["settings_identity_sha256"],
             longitudinal_policy_settings_identity=identity_settings)
+        artifact_payload = ({"builder": dict(envelope.provenance), "array_sha256": array_hashes}
+                            if envelope is not None else {"builder": "build_speed_plan", "distance": plan.distance.tolist(), "speed": plan.speed.tolist(), "curvature": plan.curvature.tolist()}
+                            if historical_mode else {"setup_identity": hybrid_setup.setup_identity,
+                                "setup_identity_payload": json.loads(hybrid_setup.setup_identity_payload_json),
+                                "plan_speed_mps": hybrid_setup.plan.speed_mps.tolist(),
+                                "corner_speed_cap_mps": hybrid_setup.plan.corner_speed_cap_mps.tolist(),
+                                "braking_speed_bound_mps": hybrid_setup.plan.braking_speed_bound_mps.tolist()})
         summary["longitudinal_policy"]["artifact_sha256"] = hashlib.sha256(
-            canonical_json({"builder": dict(envelope.provenance), "array_sha256": array_hashes}).encode()).hexdigest()
+            canonical_json(artifact_payload).encode()).hexdigest()
         plant_class = plant_class_for(spec, vehicle)
         # The plant publishes its layout; every column index below is derived
         # from it instead of being repeated as a literal.
@@ -962,7 +1301,23 @@ def child(args):
                 return value
 
         plant = LoggedPlant(vehicle, plan)
-        driver = PreviewDriver(plan, control.wheelbase, control.steering_maximum_angle,
+        # The steering preview consumes the tuple sample contract, but hybrid
+        # mode must sample the already-built canonical plan, not build a second.
+        driver_plan = hybrid_steering_plan if hybrid_setup is not None else plan
+        physical_predictor = None
+        planning_factory = None
+        current_factory = None
+        if args.physical_brake_planning:
+            from simplified_vehicle_models.solvers.brake_authority import BrakeAuthorityPredictor
+            physical_predictor = BrakeAuthorityPredictor(control,
+                maximum_abs_curvature_inv_m=float(np.max(np.abs(curvature))),
+                minimum_speed_mps=min(2.0, max(0.1, float(np.min(hybrid_setup.plan.speed_mps if hybrid_setup is not None else plan.speed)))),
+                maximum_speed_mps=max(40.0, args.maximum_speed))
+            planning_factory = lambda p, observation, pedal, state: p.brake_planning_context(
+                state, pedal, predictor=physical_predictor)
+            current_factory = lambda p, observation, pedal, state: p.brake_authority_context(
+                state, predictor=physical_predictor)
+        driver = PreviewDriver(driver_plan, control.wheelbase, control.steering_maximum_angle,
                                control.steering_maximum_rate, control.maximum_pedal_force,
                                 preview_seconds=args.preview_seconds,
                                 speed_gain=args.speed_gain,
@@ -973,8 +1328,14 @@ def child(args):
                                 throttle_release_rate=args.throttle_release_rate,
                                 brake_apply_rate=args.brake_apply_rate,
                                 brake_release_rate=args.brake_release_rate,
-                                envelope_policy=EnvelopePolicy(envelope, envelope_settings))
-        initial = plant.initial_state(float(plan.speed[0]))
+                                envelope_policy=None if hybrid_setup is not None or historical_mode else EnvelopePolicy(envelope, envelope_settings),
+                                 hybrid_policy=hybrid_setup.policy if hybrid_setup is not None else None,
+                                brake_planning_context_factory=planning_factory,
+                                brake_current_context_factory=(lambda p, observation, pedal, state: p.brake_authority_context(state, predictor=hybrid_setup.brake_predictor)) if hybrid_setup is not None else current_factory,
+                                brake_current_predictor=hybrid_setup.brake_predictor if hybrid_setup is not None else physical_predictor,
+                                steering_feedforward=("actuator-inverse" if args.transient_corner_planning else "preview"))
+        initial = plant.initial_state(float(hybrid_setup.plan.speed_mps[0] if hybrid_setup is not None else plan.speed[0]))
+        summary["initial_condition"] = getattr(plant, "initial_condition", None)
         # A flying lap starts with the foot where the driver wants it. A standing
         # start begins with the foot off the pedal: the driver then presses the
         # throttle through the pedal lag instead of dropping full torque on a
@@ -984,23 +1345,18 @@ def child(args):
             previous = json.loads((args.warm_start / "summary.json").read_text())
             previous_settings = previous.get("settings", {})
             current_policy_identity = summary.get("longitudinal_policy", {}).get("settings_identity")
-            if current_policy_identity is not None:
+            if current_policy_identity is not None and "builder" in current_policy_identity:
                 current_policy_identity["builder"]["builder_parameters"] = args.builder_parameters
-            if not warm_start_matches(previous, summary["source_hashes"], args,
-                                      summary["pedal_map"]["semantic_sha256"], current_policy_identity):
-                raise ValueError("warm start requires a completed lap with matching speed cap, track, source hashes and pedal-map identity")
-            trace = np.loadtxt(args.warm_start / "trace.csv", delimiter=",", skiprows=1)
-            pedals = np.loadtxt(args.warm_start / "pedal.csv", delimiter=",", skiprows=1)
-            if (trace.ndim != 2 or trace.shape[1] != 1 + plant.state_size
-                    or pedals.shape != (len(trace), 2)
-                    or not np.array_equal(trace[:, 0], pedals[:, 0])):
-                raise ValueError("warm-start trace and pedal samples must match")
+            trace, pedals = _load_warm_start_arrays(args.warm_start, previous, summary["source_hashes"], args,
+                summary["pedal_map"]["semantic_sha256"], current_policy_identity, plant)
             initial = np.array(trace[-1, 1:], copy=True)
             initial[state_index(plant, "s")] = 0.
             initial_pedal = float(pedals[-1, 1])
             if not np.all(np.isfinite(initial)):
                 raise ValueError("warm-start final state must be finite")
             summary["warm_start_source"] = str(args.warm_start)
+            summary["initial_condition"] = {"method": "warm-start",
+                                            "source": str(args.warm_start)}
         summary.update(wheel_inertia=control.wheel_inertia, state_size=plant.state_size,
                        track_length=track.lap_length, setup_seconds=time.perf_counter() - started)
         print(json.dumps(summary), flush=True)
@@ -1025,7 +1381,7 @@ def child(args):
         policy_sidecar = root / "accepted_policy.json"
         decision_handle = None
         def persist_policy_prefix(status):
-            payload = {"schema_version": 1, "policy": "braking-envelope", "status": status,
+            payload = {"schema_version": 1, "policy": "hybrid-drive-brake-v1" if hybrid_setup is not None else args.longitudinal_policy, "status": status,
                        "accepted_decision_count": len(policy_decisions),
                        "decisions_file": "accepted_policy.jsonl"}
             temporary_path = policy_sidecar.with_suffix(".json.tmp")
@@ -1038,14 +1394,17 @@ def child(args):
         decision_path = root / "accepted_policy.jsonl"
         decision_handle = decision_path.open("w")
         persist_policy_prefix("in_progress")
-        ordinary_sink = recording.get("step_sink")
         def accepted_policy_sink(sample):
-            if ordinary_sink is not None:
-                ordinary_sink(sample)
+            if sink is not None:
+                sink(sample)
             if sample.policy_diagnostics is None:
-                raise RuntimeError("accepted envelope-policy sample lacks cached decision")
+                raise RuntimeError("accepted longitudinal-policy sample lacks cached decision")
+            raw_decision = sample.policy_diagnostics.to_dict()
             decision = {"time": float(sample.time), "step_index": int(sample.index),
-                "decision": sample.policy_diagnostics.to_dict(),
+                "longitudinal_mode": args.longitudinal_mode,
+                "decision_schema": "hybrid-telemetry-v1" if hybrid_setup is not None else "historical-preview-v1" if historical_mode else "task5-telemetry-v1",
+                "decision": ({"schema": "hybrid-telemetry-v1", **raw_decision} if hybrid_setup is not None else raw_decision),
+                "policy_kind": "hybrid" if hybrid_setup is not None else "historical-preview" if historical_mode else "envelope",
                 "requested_command": command_dict(sample.requested_command),
                 "mapped_command": command_dict(sample.mapped_command),
                 "applied_command": command_dict(sample.command),
@@ -1053,14 +1412,22 @@ def child(args):
             decision_handle.write(json.dumps(decision, separators=(",", ":"), allow_nan=False) + "\n")
             decision_handle.flush()
             policy_decisions.append(decision)
-        recording["step_sink"] = accepted_policy_sink
+        # Policy acceptance evidence is required for forward-policy validation;
+        # the optional run-record step_sink remains opt-in and separate.
+        if sink is not None:
+            # One accepted-step observer owns both recording and policy evidence,
+            # avoiding duplicate RunRecord writes when recording is enabled.
+            recording["step_sink"] = accepted_policy_sink
+            policy_recording = {}
+        else:
+            policy_recording = {"policy_sink": accepted_policy_sink}
         try:
             result = solve_forward(plant, driver, initial, duration=args.duration,
                                    wall_seconds=remaining,
                                    maximum_wall_seconds=args.timeout_seconds,
                                    maximum_step=args.maximum_step,
                                    rtol=args.rtol, atol=args.rtol * .01, method=args.method,
-                                   initial_pedal=initial_pedal, **recording)
+                                   initial_pedal=initial_pedal, **recording, **policy_recording)
             policy_solve_completed = True
         finally:
             if decision_handle is not None:
@@ -1104,7 +1471,6 @@ def child(args):
                        periodic_state_tolerances=tolerances.tolist(),
                        integration_completed=True, checked_rhs_physics_valid=True,
                        midpoint_sample_validation_complete=result.midpoint_sample_validation_complete,
-                        between_step_validation_complete=False, refinement_validated=False,
                        steering_peak=float(np.max(np.abs(
                            result.state[state_index(plant, "steering")]))),
                        minimum_wheel_speed=float(np.min(
@@ -1116,8 +1482,10 @@ def child(args):
                            plan.speed**2 * np.abs(plan.curvature))))
         summary["suspension_travel_policy"] = "unlimited"
         summary["suspension_travel_enforced"] = False
-        # A completed transient is not usable unless every independent acceptance
-        # gate (including periodicity and between-step/refinement checks) passes.
+        # A completed transient is not usable unless every acceptance gate in
+        # ``acceptance_gate`` passes (completion, periodicity, tracking, spacing,
+        # checked physics and contact). Between-step and refinement checks were
+        # removed by user decision on 2026-11-04.
         # Every accepted state has been checked by solve_forward. Zero contact
         # load is permitted (wheel lift); negative loads are rejected by plant.
         summary["minimum_contact_load_n"] = plant.minimum_contact_load
@@ -1144,18 +1512,13 @@ def child(args):
             summary["jounce_travel_valid"] = travel_valid
             if getattr(plant, "network_states", 0):
                 summary.update(network_state_ranges(vehicle, plant, result.state))
-            summary["contact_valid"] = bool(result.lap_completed
-                and math.isfinite(plant.minimum_contact_load)
-                and plant.minimum_contact_load >= 0.
-                and plant.out_of_range_evaluations == 0
-                and summary.get("network_state_valid", True))
-        # Interval-wide evidence that is narrower than between-step validation:
-        # it bounds the BDF dense interpolant (not the true trajectory) for the
-        # explicit state domain, and checks parameter-dependent contact
-        # conditions. Load-closure and powertrain closure between nodes stay
-        # uncertified, so these flags never set between_step_validation_complete.
-        # The planar and vertical paths certify different, deliberately narrow
-        # interpolant domains. Neither is a full between-step certificate.
+            summary["contact_valid"] = vertical_contact_valid(
+                result.lap_completed, plant.minimum_contact_load,
+                network_state_valid=summary.get("network_state_valid", True))
+        # Diagnostic interval-wide evidence: it bounds the BDF dense interpolant
+        # (not the true trajectory) for the explicit state domain, and checks
+        # parameter-dependent contact conditions. It is recorded only; it is not
+        # an acceptance gate.
         if spec.planar_dense_certificate:
             from simplified_vehicle_models.solvers.planar_dense_certificate import (
                 certify_planar_dense_domain, contact_nonnegativity_conditions)
@@ -1172,10 +1535,9 @@ def child(args):
                                                      pedal_dynamics=True)
             else:
                 dense = {"certified": False, "reason": "no verifiable dense interpolant",
-                         "scope": "vertical dense state-domain only; not full between-step validation"}
+                         "scope": "vertical dense state-domain only (diagnostic)"}
             contact = None
-        # Save the exact interpolant so independent refinements can be compared
-        # continuously (see tools/gates/check_iem24_forward_tube.py).
+        # Save the exact interpolant for post-run inspection.
         if result.dense_polynomials is not None:
             poly = result.dense_polynomials
             np.savez_compressed(root / "dense_polynomials.npz", times=poly.times, t_end=poly.t_end,
@@ -1261,13 +1623,21 @@ def main(argv=None):
     attempt = args.output_root / f"attempt_{time.time_ns()}"
     attempt.mkdir(parents=True, exist_ok=False)
     (attempt / "accepted_policy.json").write_text(json.dumps({"schema_version": 1,
-        "policy": "braking-envelope", "status": "child_not_started",
+        "policy": "hybrid-drive-brake-v1" if args.longitudinal_mode == "hybrid-drive-brake-v1" else args.longitudinal_policy, "status": "child_not_started",
         "accepted_decision_count": 0, "decisions_file": "accepted_policy.jsonl"}, indent=2) + "\n")
     (attempt / "accepted_policy.jsonl").write_text("")
     command = [sys.executable, "-u", str(Path(__file__).resolve()),
                *(sys.argv[1:] if argv is None else argv), "--child-attempt", str(attempt)]
     command.extend(("--expected-pedal-map-sha256", args.pedal_map_file_sha256 or ""))
     started = time.perf_counter()
+    if args.physical_brake_planning or args.longitudinal_mode == "hybrid-drive-brake-v1":
+        identity_sources = source_files(args.model, args.track, args.longitudinal_policy,
+            args.vertical_corner_samples, args.transient_corner_planning, args.physical_brake_planning, args.longitudinal_mode)
+        identity_hashes = {str(path): hashlib.sha256(path.read_bytes()).hexdigest()
+                           for path in identity_sources}
+        args.physical_source_closure_sha256 = hashlib.sha256(
+            canonical_json(identity_hashes).encode()).hexdigest()
+        command.extend(("--expected-source-closure-sha256", args.physical_source_closure_sha256))
     child_settings_identity = policy_identity_settings(args)
     child_settings_identity_hash = (None if child_settings_identity is None else
         hashlib.sha256(canonical_json(child_settings_identity).encode()).hexdigest())
@@ -1297,7 +1667,9 @@ def main(argv=None):
               **({"longitudinal_policy": {"policy": args.longitudinal_policy,
                   "deceleration_margin": args.envelope_deceleration_margin,
                   "speed_query_points": args.envelope_speed_points,
-                  "settings_identity_sha256": child_settings_identity_hash}}
+                  "settings_identity_sha256": child_settings_identity_hash,
+                   "preparation_settings_identity_sha256": child_settings_identity_hash,
+                   "settings_identity_scope": "pre_child_preparation_config_not_actual_setup_identity"}}
                  ),
               "attempt": str(attempt)}
     (attempt / "parent.json").write_text(json.dumps(parent, indent=2) + "\n")

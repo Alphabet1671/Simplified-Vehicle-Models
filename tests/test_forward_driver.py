@@ -177,6 +177,56 @@ class DriverTests(unittest.TestCase):
                                initial_pedal=-.25)
         self.assertAlmostEqual(result.pedal[0], -.25)
 
+    def test_step_and_policy_sinks_are_mutually_exclusive_before_plant_work(self):
+        class Plant:
+            state_size = 1
+            evaluations = 0
+            def observe(self, state):
+                raise AssertionError("observer contract must fail before observation")
+            def evaluate(self, time, state, command):
+                self.evaluations += 1
+                raise AssertionError("observer contract must fail before evaluation")
+
+        plant = Plant()
+        with self.assertRaisesRegex(ValueError, "alternative observers"):
+            solve_forward(plant, self.driver, np.array([0.]), duration=.01,
+                          step_sink=lambda sample: None, policy_sink=lambda sample: None)
+        self.assertEqual(plant.evaluations, 0)
+
+    def test_step_sample_powertrain_is_snapshotted_from_exact_evaluation(self):
+        class Plant:
+            state_size = 1
+            def __init__(self):
+                self.last_powertrain = None
+            def observe(self, state):
+                return DriverObservation(state[0], 0., 0., 1., 0., 0.)
+            def evaluate(self, time, state, command):
+                accepted_torque = float(100. * state[0] + 7. * command.throttle
+                                        - command.brake_force)
+                self.last_powertrain = type("PT", (), {
+                    "motor_wheel_torques": np.array([accepted_torque])})()
+                def disturb_after_capture():
+                    self.last_powertrain = type("PT", (), {
+                        "motor_wheel_torques": np.array([9999.])})()
+                    return np.array([1.])
+                return type("System", (), {"solve": staticmethod(disturb_after_capture)})()
+
+        driver = PreviewDriver(self.plan, 1.5, .5, 2., 1000.,
+            pedal_travel_time=.175, envelope_policy=test_policy(self.plan))
+        rows = []
+        plant = Plant()
+        solve_forward(plant, driver, np.array([0.]), duration=.02, maximum_step=.005,
+                      initial_pedal=0., step_sink=rows.append)
+        self.assertTrue(rows)
+        for sample in rows:
+            self.assertEqual(sample.applied_powertrain_diagnostics.wheel_motor_torque_nm,
+                (100. * sample.state[0] + 7. * sample.command.throttle
+                 - sample.command.brake_force,))
+            self.assertNotEqual(sample.applied_powertrain_diagnostics.wheel_motor_torque_nm,
+                                (9999.,))
+            self.assertIsInstance(sample.command.throttle, float)
+        self.assertTrue(any(sample.requested_command != sample.command for sample in rows))
+
     def test_dense_midpoints_are_checked(self):
         class Plant:
             state_size = 1

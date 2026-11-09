@@ -5,6 +5,8 @@ from dataclasses import asdict, dataclass
 import math
 from typing import Any, Literal
 
+from simplified_vehicle_models.solvers.hybrid_setup import HYBRID_SETUP_VERSION
+
 MODEL_NAMES = frozenset({"point-mass", "planar-7dof", "14dof-simple"})
 SolverKind = Literal["point-mass", "forward-driver"]
 
@@ -31,6 +33,9 @@ class RunSettings:
     forward_deceleration_margin: float = 0.6
     forward_feedforward_distance: float = 2.0
     forward_speed_points: int = 9
+    forward_physical_brake_planning: bool = False
+    forward_transient_corner_planning: bool = False
+    forward_longitudinal_mode: str = "historical-preview-v1"
 
     @classmethod
     def for_model(cls, model: str) -> "RunSettings":
@@ -58,10 +63,20 @@ class RunSettings:
         if retired:
             fields = ", ".join(sorted(retired))
             raise ValueError(f"retired yaw workflow setting(s): {fields}; choose forward-driver or point-mass")
+        if (data.get("forward_physical_brake_planning") is True
+                and data.get("forward_longitudinal_mode") == "hybrid-drive-brake-v1"):
+            raise ValueError("physical forecast checkbox contradicts hybrid longitudinal mode")
+        legacy_mode = None
+        if "forward_longitudinal_mode" not in data and "forward_physical_brake_planning" in data:
+            legacy_mode = "physical-reachable-v1" if data["forward_physical_brake_planning"] else "legacy"
+        data = dict(data)
+        if legacy_mode is not None:
+            data["forward_longitudinal_mode"] = legacy_mode
         unknown = set(data) - set(cls.__dataclass_fields__)
         if unknown:
             raise ValueError(f"unknown run setting(s): {', '.join(sorted(unknown))}")
         integer_fields = {"forward_speed_points"}
+        boolean_fields = {"forward_physical_brake_planning", "forward_transient_corner_planning"}
         float_fields = {
             "point_mass_duration", "point_mass_spacing", "point_mass_maximum_speed",
             "point_mass_pedal_travel_time", "point_mass_preview_seconds", "point_mass_heading_gain",
@@ -69,8 +84,10 @@ class RunSettings:
             "forward_duration", "forward_wall_seconds", "forward_maximum_speed", "forward_spacing",
             "forward_deceleration_margin", "forward_feedforward_distance",
         }
-        string_fields = {"solver_kind", "point_mass_method", "point_mass_record_precision"}
+        string_fields = {"solver_kind", "point_mass_method", "point_mass_record_precision", "forward_longitudinal_mode"}
         for name, value in data.items():
+            if name in boolean_fields and not isinstance(value, bool):
+                raise ValueError(f"{name} must be a boolean")
             if name in integer_fields and (isinstance(value, bool) or not isinstance(value, int)):
                 raise ValueError(f"{name} must be an integer")
             if name in float_fields and value is not None and (isinstance(value, bool) or not isinstance(value, (int, float))):
@@ -81,6 +98,7 @@ class RunSettings:
             "solver_kind": {"point-mass", "forward-driver"},
             "point_mass_method": {"BDF", "LSODA", "RK45", "DOP853", "Radau"},
             "point_mass_record_precision": {"float32", "float64"},
+            "forward_longitudinal_mode": {"historical-preview-v1", "legacy", "physical-reachable-v1", "hybrid-drive-brake-v1"},
         }
         for name, choices in enums.items():
             if name in data and data[name] not in choices:
@@ -98,8 +116,21 @@ class RunSettings:
 
 def forward_driver_config(settings: RunSettings) -> dict[str, Any]:
     """Return the fully resolved forward-policy calibration and solver settings."""
+    mode = settings.forward_longitudinal_mode
+    if settings.forward_physical_brake_planning:
+        if mode == "hybrid-drive-brake-v1":
+            raise ValueError("physical forecast checkbox contradicts hybrid longitudinal mode")
+        mode = "physical-reachable-v1"
     return {
-        "policy": "continuous-braking-envelope-v1", "speed_gain": 2.0,
+        "policy": "hybrid-longitudinal-policy-v5-coast-neutral-event-rollout" if mode == "hybrid-drive-brake-v1" else "historical-preview-v1" if mode == "historical-preview-v1" else "continuous-braking-envelope-v1", "speed_gain": 2.0,
+        "longitudinal_mode": mode,
+        "physical_brake_forecast_version": "operational-diagnostic-v1" if mode == "physical-reachable-v1" else None,
+        "physical_brake_forecast_horizon_s": 3.0 if mode == "physical-reachable-v1" else None,
+        "physical_brake_authority_source": "current-state-model-context" if mode == "physical-reachable-v1" else None,
+        "hybrid_setup_version": HYBRID_SETUP_VERSION if mode == "hybrid-drive-brake-v1" else None,
+        "hybrid_horizon_s": 3.0 if mode == "hybrid-drive-brake-v1" else None,
+        "hybrid_slabs": 30 if mode == "hybrid-drive-brake-v1" else None,
+        "transient_corner_planning": settings.forward_transient_corner_planning,
         "throttle_acceleration_scale": 2.5, "brake_acceleration_scale": 6.0,
         "response_allowance_s": 0.06, "positive_acceleration_reserve_mps2": 4.0,
         "feedforward_distance_m": settings.forward_feedforward_distance,
@@ -122,7 +153,7 @@ def solution_model_for(settings: RunSettings, selected_model: str) -> str:
     if settings.solver_kind == "forward-driver":
         if selected_model == "point-mass":
             raise ValueError("forward-driver mode requires a 7DoF/14DoF source; point-mass is unsupported")
-        return "planar-7dof"
+        return selected_model
     raise ValueError(f"unsupported solver kind: {settings.solver_kind}")
 
 
@@ -147,6 +178,28 @@ def validate(settings: RunSettings, model: str, track) -> None:
         if settings.point_mass_record_precision not in {"float32", "float64"}:
             raise ValueError("point_mass_record_precision must be float32 or float64")
         return
+    if not isinstance(settings.forward_physical_brake_planning, bool):
+        raise ValueError("forward_physical_brake_planning must be a boolean")
+    if not isinstance(settings.forward_transient_corner_planning, bool):
+        raise ValueError("forward_transient_corner_planning must be a boolean")
+    if settings.forward_physical_brake_planning and settings.forward_longitudinal_mode == "hybrid-drive-brake-v1":
+        raise ValueError("physical forecast checkbox contradicts hybrid longitudinal mode")
+    if settings.forward_longitudinal_mode not in {"historical-preview-v1", "legacy", "physical-reachable-v1", "hybrid-drive-brake-v1"}:
+        raise ValueError("unsupported forward_longitudinal_mode")
+    mode = forward_driver_config(settings)["longitudinal_mode"]
+    if mode == "physical-reachable-v1" and model != "14dof-simple":
+        raise ValueError("physical brake forecasting requires the full vertical 14DoF plant")
+    if mode == "historical-preview-v1" and settings.forward_transient_corner_planning:
+        raise ValueError("historical preview cannot use envelope corner restrictions; select legacy or physical mode")
+    if settings.forward_longitudinal_mode == "hybrid-drive-brake-v1":
+        if settings.forward_physical_brake_planning:
+            raise ValueError("hybrid mode cannot be combined with physical forecast checkbox")
+        if model != "14dof-simple":
+            raise ValueError("hybrid-drive-brake-v1 requires the full vertical 14DoF plant")
+        if settings.forward_transient_corner_planning:
+            raise ValueError("hybrid mode does not support transient yaw/TV planning")
+    elif settings.forward_transient_corner_planning and settings.forward_longitudinal_mode == "hybrid-drive-brake-v1":
+        raise ValueError("hybrid mode does not support transient yaw/TV planning")
     for name in ("forward_duration", "forward_wall_seconds", "forward_maximum_speed", "forward_spacing",
                  "forward_deceleration_margin", "forward_feedforward_distance"):
         value = getattr(settings, name)

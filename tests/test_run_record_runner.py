@@ -44,6 +44,7 @@ class RecordOptionTest(unittest.TestCase):
         root, calls, code = run_fake_child("planar-7dof", FakePlanarPlant)
         self.assertEqual(code, 0)
         self.assertNotIn("step_sink", calls[0])
+        self.assertIn("policy_sink", calls[0])
         self.assertFalse((root / RUN_RECORD_FILE).exists())
         self.assertNotIn("run_record_file", json.loads((root / "summary.json").read_text()))
 
@@ -88,12 +89,27 @@ class RealRecordRunTest(unittest.TestCase):
         for name in ("roll", "pitch", "heave"):
             self.assertTrue(record.has_channel(name), name)
 
-    def test_recording_does_not_change_the_trace(self):
-        plain_root, _, _ = real_child("planar-7dof")
-        record_root, _, _ = real_child("planar-7dof", "--record")
+    def test_recording_does_not_change_trace_and_policy_sink_emits_once(self):
+        plain_root, _, plain_summary = real_child("planar-7dof")
+        record_root, _, record_summary = real_child("planar-7dof", "--record")
+        for root, summary, has_record in ((plain_root, plain_summary, False),
+                                          (record_root, record_summary, True)):
+            trace = np.loadtxt(root / "trace.csv", delimiter=",", skiprows=1)
+            policy = [json.loads(line) for line in (root / "accepted_policy.jsonl").read_text().splitlines()]
+            self.assertEqual(len(policy), trace.shape[0])
+            self.assertEqual(len(policy), summary["accepted_steps"] + 1)
+            self.assertEqual([row["step_index"] for row in policy], list(range(trace.shape[0])))
+            np.testing.assert_array_equal([row["time"] for row in policy], trace[:, 0])
+            self.assertEqual(len(set(row["time"] for row in policy)), len(policy))
+            if has_record:
+                record = load_run_record(root / RUN_RECORD_FILE)
+                self.assertEqual(record.rows, len(policy))
+                np.testing.assert_array_equal(record.time, trace[:, 0])
+            else:
+                self.assertFalse((root / RUN_RECORD_FILE).exists())
+                self.assertNotIn("run_record_file", summary)
         for name in ("trace.csv", "pedal.csv"):
             self.assertEqual((plain_root / name).read_bytes(), (record_root / name).read_bytes(), name)
-        self.assertFalse((plain_root / RUN_RECORD_FILE).exists())
 
 
 if __name__ == "__main__":

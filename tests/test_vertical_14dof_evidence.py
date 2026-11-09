@@ -7,7 +7,7 @@ The plan's Task 9 acceptance gate is the plan's **gate table**, not the runner's
   ``summary.json`` (the runner's in-run gates and diagnostics), and
 * its ``gates.json``, written by ``tools/gates/check_14dof_simple_gates.py``,
   which carries the plan's seven gates with their measured evidence and names
-  the periodicity, refinement and planar-reference attempts.
+  the periodicity and planar-reference attempts.
 
 Gate-name mapping (the plan's table -> the runner's summary keys). ``gates.json``
 records this mapping itself in ``gate_source_mapping``; it is restated here so a
@@ -20,9 +20,7 @@ completed        ``lap_completed`` + ``status`` + elapsed <= requested wall
 contact_valid    ``contact_valid``
 travel_valid     ``jounce_travel_valid`` (the runner's name for it)
 table_domain_valid ``out_of_range_evaluations == 0``
-refinement_validated  paired warm-baseline/refined traces (gate tool)
 periodicity_valid  ``periodicity_valid`` of the warm-started attempt
-cross_fidelity_reported  vertical vs corrected planar 7DoF traces (gate tool)
 ===============  ==========================================================
 """
 import hashlib
@@ -35,7 +33,7 @@ import numpy as np
 from simplified_vehicle_models.solvers.planar_forward import PlanarForwardPlant
 from simplified_vehicle_models.solvers.vertical_forward import VerticalForwardPlant
 from tools.gates.check_14dof_simple_gates import (
-    column, matched_metrics, read_trace, tolerance_by_name,
+    column, read_trace, tolerance_by_name,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -48,11 +46,11 @@ PLANAR_REFERENCE = ("docs/validation/iem24-murphy/seven_dof_track_pair/original/
 GATE_TOOL_COMMAND = (
     "PYTHONPATH=src:. python3 tools/gates/check_14dof_simple_gates.py "
     "--attempt <cold 14dof-simple attempt> --periodicity <warm baseline attempt> "
-    "--refinement <tighter-step attempt> --planar-reference " + PLANAR_REFERENCE)
+    "--planar-reference " + PLANAR_REFERENCE)
 
 #: The plan's Task 9 acceptance gates, in plan order.
 PLAN_GATES = ("completed", "contact_valid", "travel_valid", "table_domain_valid",
-              "refinement_validated", "periodicity_valid", "cross_fidelity_reported")
+              "periodicity_valid")
 
 #: plan gate -> the runner summary key whose value the gate must agree with.
 RUNNER_GATE_KEYS = {
@@ -61,8 +59,6 @@ RUNNER_GATE_KEYS = {
     "travel_valid": "jounce_travel_valid",
     "table_domain_valid": "out_of_range_evaluations",
     "periodicity_valid": "periodicity_valid",
-    "refinement_validated": "refinement_validated",
-    "cross_fidelity_reported": None,
 }
 
 #: Evidence keys every gate record must carry.
@@ -89,31 +85,11 @@ REQUIRED_EVIDENCE = {
         "jounce_accepted_extremes_m", "jounce_steer_baseline_toe_rad",
         "roll_centre_table_limit_deg", "maximum_absolute_roll_deg",
         "roll_centre_query_clipped"),
-    "refinement_validated": (
-        "reference_attempt", "refined_attempt", "reference_lap_time_s", "refined_lap_time_s",
-        "lap_time_difference_s", "lap_time_limit_s", "maximum_body_speed_difference_mps",
-        "body_speed_rmse_mps", "body_speed_limit_mps", "matched_distance_m",
-        "matched_sample_count", "worst_tire_state", "worst_tire_state_ratio",
-        "worst_other_state", "worst_other_state_ratio", "state_differences",
-        "refined_maximum_step_s", "reference_maximum_step_s", "refined_rtol",
-        "reference_rtol", "same_initial_state", "same_source_hashes", "both_laps_completed"),
     "periodicity_valid": (
         "lap_completed", "lap_time_s", "maximum_tolerance_ratio", "worst_state",
         "worst_state_absolute_delta", "worst_state_tolerance", "periodic_state_count",
         "verified_state_count", "vertical_tolerances", "tire_state_tolerances",
         "recorded_tolerances_match_plant", "warm_start_source"),
-    "cross_fidelity_reported": (
-        "reference_attempt", "reference_model", "reference_lap_time_s", "reference_usable",
-        "reference_path_tracking_valid", "reference_maximum_lateral_error_m",
-        "vertical_lap_time_s", "lap_time_delta_s", "matched_distance_m",
-        "matched_sample_count", "speed_difference_rmse_mps",
-        "speed_difference_maximum_mps", "speed_difference_maximum_distance_m",
-        "fine_grid_sample_count", "fine_grid_speed_difference_rmse_mps",
-        "fine_grid_speed_difference_maximum_mps",
-        "fine_grid_speed_difference_maximum_distance_m", "tail_distance_threshold_m",
-        "tail_maximum_speed_difference_mps",
-        "fine_grid_tail_maximum_speed_difference_mps",
-        "speed_trace_file", "expected_effects", "both_laps_completed"),
 }
 
 #: Evidence keys that must hold a value, not just exist, when a gate passes.
@@ -184,8 +160,8 @@ class Vertical14DofEvidenceTests(unittest.TestCase):
         self.assertEqual(self.table["attempt"],
                          self.attempt.relative_to(ROOT).as_posix())
 
-    def test_the_three_paired_attempts_are_recorded_and_exist(self):
-        for key in ("periodicity_attempt", "refinement_attempt", "planar_reference_attempt"):
+    def test_the_paired_attempts_are_recorded_and_exist(self):
+        for key in ("periodicity_attempt", "planar_reference_attempt"):
             directory = ROOT / self.table[key]
             with self.subTest(key=key):
                 self.assertTrue((directory / "summary.json").is_file(), key)
@@ -319,16 +295,6 @@ class Vertical14DofEvidenceTests(unittest.TestCase):
 
     # -- the paired runs --------------------------------------------------
 
-    def test_refinement_attempt_uses_the_task_9_criteria(self):
-        evidence = self.gates["refinement_validated"]["evidence"]
-        self.assertEqual(evidence["refined_maximum_step_s"], 0.0025)
-        self.assertEqual(evidence["refined_rtol"], 1.0e-6)
-        self.assertEqual(evidence["lap_time_limit_s"], 0.005)
-        self.assertEqual(evidence["body_speed_limit_mps"], 0.05)
-        self.assertTrue(evidence["same_initial_state"])
-        self.assertTrue(evidence["same_source_hashes"])
-        self.assertTrue(evidence["both_laps_completed"])
-
     def test_periodicity_attempt_is_a_warm_start_of_the_acceptance_lap(self):
         evidence = self.gates["periodicity_valid"]["evidence"]
         self.assertEqual(evidence["warm_start_source"],
@@ -342,7 +308,7 @@ class Vertical14DofEvidenceTests(unittest.TestCase):
         self.assertEqual(evidence["tire_state_tolerances"]["trail_angle"], 2.0e-3)
 
     def test_cross_fidelity_reference_is_the_bounded_corrected_planar_lap(self):
-        evidence = self.gates["cross_fidelity_reported"]["evidence"]
+        evidence = self.table["reports"]["cross_fidelity"]["evidence"]
         self.assertEqual(evidence["reference_model"], "planar-7dof")
         self.assertEqual(evidence["reference_attempt"], PLANAR_REFERENCE)
         self.assertTrue(evidence["both_laps_completed"])
@@ -362,32 +328,29 @@ class Vertical14DofEvidenceTests(unittest.TestCase):
         self.assertIs(self.summary["path_tracking_valid"], False)
 
     def test_plan_gates_block_is_the_plan_table_with_its_own_names(self):
-        # The plan asks for every gate as a boolean; four of its seven names are
-        # not runner summary keys, so gates.json carries the plan's table itself.
         self.assertEqual(tuple(self.table["plan_gates"]), PLAN_GATES)
         for name in PLAN_GATES:
             with self.subTest(gate=name):
                 self.assertIsInstance(self.table["plan_gates"][name], bool)
                 self.assertEqual(self.table["plan_gates"][name], self.gates[name]["pass"])
-        self.assertTrue(self.table["plan_gate_note"].strip())
-        # Four of the plan's seven gate names are not keys in summary.json at all:
-        # the runner records lap_completed, jounce_travel_valid and
-        # out_of_range_evaluations instead, and never reports the comparison.
-        for name in ("completed", "travel_valid", "table_domain_valid",
-                     "cross_fidelity_reported"):
+        self.assertEqual(self.table["all_gates_pass"],
+                         all(self.table["plan_gates"][name] for name in PLAN_GATES))
+        # The removed checks are named, not silently dropped, and the
+        # cross-fidelity comparison is a report, never a gate.
+        self.assertEqual(set(self.table["removed_gates"]),
+                         {"refinement_validated", "between_step_validation_complete"})
+        self.assertNotIn("cross_fidelity_reported", self.table["plan_gates"])
+        self.assertNotIn("pass", self.table["reports"]["cross_fidelity"])
+        for name in ("completed", "travel_valid", "table_domain_valid"):
             with self.subTest(plan_gate=name):
                 self.assertNotIn(name, self.summary)
-                self.assertIn(name, self.table["plan_gates"])
-        for name in ("contact_valid", "periodicity_valid", "refinement_validated"):
-            with self.subTest(plan_gate=name):
-                self.assertIn(name, self.summary)
         self.assertIn("jounce_travel_valid", self.summary)
         self.assertIn("out_of_range_evaluations", self.summary)
 
-    def test_trace_provenance_is_recorded_for_the_four_attempts(self):
+    def test_trace_provenance_is_recorded_for_the_three_attempts(self):
         traces = self.table["traces"]
         self.assertEqual(set(traces), {"attempt", "periodicity_attempt",
-                                       "refinement_attempt", "planar_reference_attempt"})
+                                       "planar_reference_attempt"})
         for role, record in traces.items():
             with self.subTest(role=role):
                 self.assertTrue(record["trace"].endswith("trace.csv"))
@@ -398,7 +361,7 @@ class Vertical14DofEvidenceTests(unittest.TestCase):
                     self.assertEqual(record["columns"], 39 if "planar" not in role else 13)
         if traces["attempt"]["present"]:
             self.assertEqual(traces["attempt"]["rows"], self.summary["accepted_steps"] + 1)
-        for role in ("periodicity_attempt", "refinement_attempt"):
+        for role in ("periodicity_attempt",):
             directory = ROOT / self.table[role]
             summary = read_json(directory / "summary.json")
             if traces[role]["present"]:
@@ -433,7 +396,7 @@ class Vertical14DofEvidenceTests(unittest.TestCase):
         self.assertTrue(all(self.table["plan_gates"][name] for name in PLAN_GATES))
 
     def test_cross_fidelity_evidence_quotes_both_sampling_grids(self):
-        evidence = self.gates["cross_fidelity_reported"]["evidence"]
+        evidence = self.table["reports"]["cross_fidelity"]["evidence"]
         self.assertEqual(evidence["matched_sample_count"], 200)
         self.assertEqual(evidence["fine_grid_sample_count"], 2001)
         # Both densities are recorded, and the finer grid can only find a larger
@@ -456,7 +419,7 @@ class PinnedTraceEvidenceTests(unittest.TestCase):
     """Re-derive the trace-based gate evidence from the pinned traces.
 
     ``gates.json`` is written by the gate tool, so on its own it is a claim about
-    itself. These tests re-derive the two paired-run gates and the cross-fidelity
+    itself. These tests re-derive the periodicity gate and the cross-fidelity
     comparison from the raw traces with the gate tool's own functions and compare
     them with the recorded table, so a perturbed trace, a zeroed summary delta or
     an edited record fails instead of passing.
@@ -475,7 +438,6 @@ class PinnedTraceEvidenceTests(unittest.TestCase):
         cls.table = read_json(cls.attempt / "gates.json")
         cls.summary = read_json(cls.attempt / "summary.json")
         cls.periodicity = ROOT / cls.table["periodicity_attempt"]
-        cls.refinement = ROOT / cls.table["refinement_attempt"]
         cls.reference = ROOT / cls.table["planar_reference_attempt"]
 
     def record(self, role: str) -> dict:
@@ -499,8 +461,7 @@ class PinnedTraceEvidenceTests(unittest.TestCase):
         return read_trace(path)
 
     def test_present_traces_match_their_pinned_sha256(self):
-        for role in ("attempt", "periodicity_attempt", "refinement_attempt",
-                     "planar_reference_attempt"):
+        for role in ("attempt", "periodicity_attempt", "planar_reference_attempt"):
             record = self.record(role)
             if not record["present"]:
                 continue  # gitignored and absent: nothing to check here
@@ -509,32 +470,6 @@ class PinnedTraceEvidenceTests(unittest.TestCase):
                 self.assertEqual(sha256_file(ROOT / record["trace"]), record["sha256"],
                                  f"{record['trace']} does not match the gate table's pinned "
                                  f"sha256; re-run the gate tool after regenerating the attempt")
-
-    def test_refinement_metrics_are_reproduced_from_the_pinned_traces(self):
-        periodicity = self.pinned_trace("periodicity_attempt")
-        refinement = self.pinned_trace("refinement_attempt")
-        evidence = self.table["gates"]["refinement_validated"]["evidence"]
-        self.assertTrue(np.array_equal(periodicity[0, 1:], refinement[0, 1:]))
-        lap_difference = abs(float(periodicity[-1, 0]) - float(refinement[-1, 0]))
-        self.assertEqual(lap_difference, evidence["lap_time_difference_s"])
-        self.assertEqual(lap_difference, abs(float(evidence["reference_lap_time_s"])
-                                            - float(evidence["refined_lap_time_s"])))
-        metrics = matched_metrics(periodicity, refinement, VerticalForwardPlant,
-                                  evidence["matched_sample_count"],
-                                  tolerance_by_name(VerticalForwardPlant))
-        self.assertEqual(metrics["maximum_body_speed_difference_mps"],
-                         evidence["maximum_body_speed_difference_mps"])
-        self.assertEqual(metrics["worst_tire_state"], evidence["worst_tire_state"])
-        self.assertEqual(metrics["worst_tire_state_ratio"], evidence["worst_tire_state_ratio"])
-        for name, values in evidence["state_differences"].items():
-            with self.subTest(state=name):
-                self.assertEqual(metrics["state_differences"][name]["maximum_absolute_difference"],
-                                 values["maximum_absolute_difference"])
-        # And the criteria themselves, re-derived from the traces.
-        self.assertLessEqual(lap_difference, evidence["lap_time_limit_s"])
-        self.assertLessEqual(metrics["maximum_body_speed_difference_mps"],
-                             evidence["body_speed_limit_mps"])
-        self.assertLessEqual(metrics["worst_tire_state_ratio"], 1.)
 
     def test_periodicity_closure_is_reproduced_from_the_pinned_trace(self):
         trace = self.pinned_trace("periodicity_attempt")
@@ -563,7 +498,7 @@ class PinnedTraceEvidenceTests(unittest.TestCase):
     def test_cross_fidelity_speed_trace_is_reproduced_from_the_pinned_traces(self):
         vertical = self.pinned_trace("attempt")
         planar = self.pinned_trace("planar_reference_attempt")
-        evidence = self.table["gates"]["cross_fidelity_reported"]["evidence"]
+        evidence = self.table["reports"]["cross_fidelity"]["evidence"]
         last = min(float(vertical[-1, column(VerticalForwardPlant, "s")]),
                    float(planar[-1, column(PlanarForwardPlant, "s")]))
         self.assertEqual(last, evidence["matched_distance_m"])
@@ -592,57 +527,6 @@ class PinnedTraceEvidenceTests(unittest.TestCase):
         self.assertEqual(tracked.shape[0], evidence["matched_sample_count"])
         np.testing.assert_allclose(tracked[:, 0], distance, rtol=0., atol=5.e-7)
         np.testing.assert_allclose(tracked[:, 3], difference, rtol=0., atol=1.e-9)
-
-
-class MatchedMetricTests(unittest.TestCase):
-    """The gate tool's matched-distance comparison, on synthetic traces."""
-
-    def setUp(self):
-        self.plant = VerticalForwardPlant
-        self.matched_metrics = matched_metrics
-        self.tolerances = tolerance_by_name(VerticalForwardPlant)
-
-    def synthetic(self, speed_offset, s_end=10.0):
-        names = self.plant.state_names
-        trace = np.zeros((3, 1 + self.plant.state_size))
-        trace[:, 0] = [0., 1., 2.]
-        trace[:, 1 + names.index("s")] = [0., s_end / 2, s_end]
-        trace[:, 1 + names.index("v_x")] = 10. + speed_offset
-        return trace
-
-    def test_speed_difference_is_measured_at_matched_distance(self):
-        metrics = self.matched_metrics(self.synthetic(0.0), self.synthetic(0.04),
-                                      self.plant, 11, self.tolerances)
-        self.assertAlmostEqual(metrics["maximum_body_speed_difference_mps"], 0.04, places=12)
-        self.assertEqual(metrics["matched_sample_count"], 11)
-        self.assertAlmostEqual(metrics["matched_distance_m"], 10.0, places=12)
-
-    def test_matched_grid_is_limited_by_the_shorter_lap(self):
-        metrics = self.matched_metrics(self.synthetic(0.0), self.synthetic(0.0, 6.0),
-                                      self.plant, 11, self.tolerances)
-        self.assertAlmostEqual(metrics["matched_distance_m"], 6.0, places=12)
-
-    def test_tire_state_differences_are_split_from_the_other_states(self):
-        names = self.plant.state_names
-        refined = self.synthetic(0.0)
-        refined[:, 1 + names.index("kappa_eff_fl")] = 0.001
-        metrics = self.matched_metrics(self.synthetic(0.0), refined, self.plant, 5,
-                                      self.tolerances)
-        self.assertEqual(metrics["worst_tire_state"], "kappa_eff_fl")
-        self.assertAlmostEqual(metrics["worst_tire_state_ratio"], 0.001 / 2.0e-3, places=12)
-        # The unchanged states are also compared, but only as diagnostics: they
-        # never enter the refinement verdict.
-        self.assertNotIn(metrics["worst_other_state"], ("kappa_eff_fl",))
-        self.assertEqual(metrics["worst_other_state_ratio"], 0.0)
-        self.assertTrue(metrics["state_differences"]["kappa_eff_fl"]["tire_state"])
-        self.assertFalse(metrics["state_differences"]["heading_error"]["tire_state"])
-
-    def test_every_tire_state_carries_a_plan_tolerance(self):
-        for prefix in ("kappa_eff", "lateral_deformation", "trail_angle"):
-            for wheel in ("fl", "fr", "rl", "rr"):
-                name = f"{prefix}_{wheel}"
-                with self.subTest(state=name):
-                    self.assertIn(name, self.tolerances)
 
 
 if __name__ == "__main__":

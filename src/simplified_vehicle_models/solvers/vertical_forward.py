@@ -27,10 +27,14 @@ The mechanical rows come from ``evaluate_vertical_dynamics`` through
 plant embeds it directly; when the inertance is positive the 21x21 physical
 block is embedded in a 38x38 identity by the state-name index map.
 
-``initial_state`` starts from ``solve_static_equilibrium`` and refines the seven
-vertical coordinates on the evaluator's generalized forces, so the plant opens
-with no artificial vertical or tire transient (the ledger ruling: the static
-solver carries no longitudinal tire force and is not stationary at speed).
+``initial_state`` starts from the steady corner at the planned speed and the
+first-node curvature (``solve_steady_corner``). The body sideslip, yaw rate,
+steering, roll, heave, pitch, jounces, wheel speeds and tire states are then in
+lateral, yaw and vertical balance at ``t = 0``. The driver still owns the wheel
+torque, so the longitudinal balance follows the first command. Below the steady-corner
+minimum speed (a standing start) the start uses ``solve_static_equilibrium`` and
+refines the seven vertical coordinates on the evaluator's generalized forces.
+``initial_condition`` records which start was used.
 """
 from __future__ import annotations
 
@@ -43,7 +47,7 @@ from simplified_vehicle_models.formulations.planar_7dof import (
     wheel_steering_angles,
 )
 from simplified_vehicle_models.formulations.vertical_14dof import (
-    VerticalState, evaluate_vertical_dynamics,
+    VerticalState, evaluate_vertical_dynamics, sprung_wheel_positions,
 )
 from simplified_vehicle_models.powertrain.motor_envelope import (
     INVERTER_SPEED_REGULATION_BAND, motor_speed_limit,
@@ -54,9 +58,12 @@ from simplified_vehicle_models.solvers.forward_driver import (
 from simplified_vehicle_models.solvers.forward_powertrain import (
     ForwardPowertrain, evaluate_forward_powertrain,
 )
-from simplified_vehicle_models.solvers.vertical_equilibrium import solve_static_equilibrium
+from simplified_vehicle_models.solvers.vertical_equilibrium import (
+    MINIMUM_STEADY_CORNER_SPEED, _solve_steady_corner_detail, solve_static_equilibrium,
+)
 from simplified_vehicle_models.suspension.errors import DomainError
 from simplified_vehicle_models.tires.unitire_simple import loaded_radius
+from simplified_vehicle_models.tires.vertical import tire_deflection_load
 from simplified_vehicle_models.tires.unitire_transient import (
     TransientTireState, steady_rolling_state,
 )
@@ -173,6 +180,8 @@ class VerticalForwardPlant:
     def __init__(self, vehicle, plan: SpeedPlan):
         self.vehicle = vehicle
         self.plan = plan
+        #: The method and values of the last ``initial_state`` call, or ``None``.
+        self.initial_condition = None
         #: See ``PlanarForwardPlant``: an open plan may start from rest.
         self.minimum_speed = 0.25 if plan.is_closed else 0.0
         self.minimum_progress = 0.25 if plan.is_closed else 0.0
@@ -246,12 +255,69 @@ class VerticalForwardPlant:
     def initial_state(self, speed: float) -> np.ndarray:
         """Return the steady (planned-curvature) initial state.
 
-        The seven vertical coordinates are refined on the evaluator's
-        generalized forces at zero wheel torque, and the 12 tire states are set
-        to their steady rolling values at the converged loads, so the plant
-        opens with no artificial start transient. The remaining path and
-        steering values follow the plan at ``s = 0``.
+        At or above ``MINIMUM_STEADY_CORNER_SPEED`` the start is the steady
+        corner at ``speed`` and ``ay = speed**2 * curvature(0)``. Sideslip, yaw
+        rate, steering, body attitude, jounces, wheel speeds and the 12 tire
+        states come from that solve, so the lateral, yaw and vertical rates are
+        zero at ``t = 0``. If no steady corner exists at the first node, this
+        raises ``ValueError``. It does not fall back to an unbalanced start.
+
+        Below that speed (a standing start) the seven vertical coordinates are
+        refined on the evaluator's generalized forces at zero wheel torque, and
+        the tire states are set to their steady rolling values.
         """
+        if (np.isfinite(speed) and speed >= MINIMUM_STEADY_CORNER_SPEED):
+            return self._steady_corner_initial_state(float(speed))
+        return self._static_initial_state(speed)
+
+    def _steady_corner_initial_state(self, speed: float) -> np.ndarray:
+        """Return the initial state from the steady corner at the first node."""
+        vehicle = self.vehicle
+        planar = vehicle.planar
+        _, curvature, _ = self.plan.sample(0.0)
+        lateral_acceleration = speed * speed * float(curvature)
+        try:
+            solution = _solve_steady_corner_detail(vehicle, speed, lateral_acceleration)
+        except RuntimeError as error:
+            raise ValueError(
+                f"no steady corner at the first node (speed {speed:.6g} m/s, "
+                f"curvature {float(curvature):.6g} 1/m, ay {lateral_acceleration:.6g} m/s^2): "
+                f"{error}"
+            ) from error
+        steering = float(solution.steering)
+        if abs(steering) > planar.steering_maximum_angle:
+            raise ValueError("initial curvature exceeds steering authority")
+        q = solution.state.as_vector()
+        self.initial_condition = {
+            "method": "steady-corner",
+            "speed_mps": speed,
+            "curvature_1pm": float(curvature),
+            "lateral_acceleration_mps2": lateral_acceleration,
+            "steering_rad": steering,
+            "steady_driven_wheel_torque_nm": float(solution.driven_torque),
+            "residual_inf": float(solution.residual_inf),
+            "continuation_steps": int(solution.continuation_steps),
+        }
+        return self._assemble_state(q, steering, solution.tire_states)
+
+    def _assemble_state(self, q: np.ndarray, steering: float, tires) -> np.ndarray:
+        """Place the mechanical, tire, network, SOC and path values in the plant layout."""
+        vehicle = self.vehicle
+        state = np.zeros(self.state_size)
+        if self.network_states:
+            state[NETWORK_OFFSET:] = vehicle.suspension.network.initial_state(q[13:17])
+        state[2] = -np.arctan2(q[1], q[0])
+        state[list(MECHANICAL_INDEX)] = q
+        state[SOC_INDEX] = vehicle.planar.storage.initial_state_of_charge
+        state[STEERING_INDEX] = steering
+        for wheel, tire in enumerate(tires):
+            state[TIRE_OFFSET + 3 * wheel:TIRE_OFFSET + 3 * wheel + 3] = (
+                tire.longitudinal_slip, tire.lateral_deformation, tire.trail_angle
+            )
+        return state
+
+    def _static_initial_state(self, speed: float) -> np.ndarray:
+        """Return the straight static-equilibrium start used below the corner-solve speed."""
         if self.plan.is_closed:
             if not np.isfinite(speed) or speed <= 1.0:
                 raise ValueError("initial forward speed must exceed 1 m/s")
@@ -303,18 +369,13 @@ class VerticalForwardPlant:
             if float(np.max(np.abs(q - previous))) < 1e-12:
                 break
 
-        state = np.zeros(self.state_size)
-        if self.network_states:
-            state[NETWORK_OFFSET:] = vehicle.suspension.network.initial_state(q[13:17])
-        state[2] = -np.arctan2(q[1], q[0])
-        state[list(MECHANICAL_INDEX)] = q
-        state[SOC_INDEX] = planar.storage.initial_state_of_charge
-        state[STEERING_INDEX] = steering
-        for wheel, tire in enumerate(tires):
-            state[TIRE_OFFSET + 3 * wheel:TIRE_OFFSET + 3 * wheel + 3] = (
-                tire.longitudinal_slip, tire.lateral_deformation, tire.trail_angle
-            )
-        return state
+        self.initial_condition = {
+            "method": "static-refined",
+            "speed_mps": float(speed),
+            "curvature_1pm": float(curvature),
+            "steering_rad": steering,
+        }
+        return self._assemble_state(q, steering, tires)
 
     def _refine_vertical(self, state: VerticalState, tires, wheel_torques, steering: float,
                          iterations: int = 40) -> VerticalState:
@@ -377,18 +438,113 @@ class VerticalForwardPlant:
 
     # -- driver interface -------------------------------------------------
 
+    def hybrid_kinematic_context(self, state):
+        """Pure path-aligned quasi-steady context; vy_dot=0 is explicit assumption."""
+        from simplified_vehicle_models.solvers.longitudinal_capability import PathKinematicContext
+        values=np.asarray(state,dtype=float); obs=self.observe(values)
+        _,curv,_=self.plan.sample(obs.distance)
+        gradient=float(np.interp(obs.distance,self.plan.distance,np.gradient(self.plan.curvature,self.plan.distance)))
+        valid=(abs(float(values[2]))<.05 and abs(float(values[1]))<.25 and abs(float(values[4]))<.5
+               and abs(float(curv))<.08 and abs(gradient)<.02)
+        return PathKinematicContext(float(values[3]),float(values[4]),float(values[2]),float(values[1]),
+            float(values[8]),float(curv),gradient,0.,valid)
+
+    def brake_authority_context(self, state, *, predictor=None):
+        """Build an immutable authority context from this exact plant state."""
+        from simplified_vehicle_models.solvers.brake_authority import BrakeAuthorityContext
+        values=np.asarray(state,dtype=float)
+        observation=self.observe(values)
+        if predictor is None:
+            predictor=getattr(self,"brake_authority_predictor",None)
+        if predictor is None:
+            raise ValueError("a prebuilt BrakeAuthorityPredictor is required")
+        mechanical=self.mechanical_state(values)
+        jounce=values[list(JOUNCE_INDEX)]
+        positions=sprung_wheel_positions(self.vehicle)
+        z_body=mechanical.heave+mechanical.roll*positions[:,1]-mechanical.pitch*positions[:,0]
+        lift,_,_=self.vehicle.suspension.kinematics.steering_lift(
+            wheel_steering_angles(float(values[STEERING_INDEX]),_CORNER_COUNT))
+        loads=np.maximum(np.asarray(tire_deflection_load(
+            self.vehicle.planar.tire,z_body-jounce-lift,np.zeros(_CORNER_COUNT),0.).load),1.)
+        radii=loaded_radius(self.vehicle.planar.tire,loads)
+        _,curvature,_=self.plan.sample(observation.distance)
+        return BrakeAuthorityContext(float(observation.speed),float(curvature),
+            tuple(float(x) for x in radii),tuple(float(x) for x in loads),
+            soc=float(np.clip(values[SOC_INDEX],0.,1.)),regen_enabled=False,
+            v_y_mps=float(observation.lateral_speed),yaw_rate_rps=float(observation.yaw_rate),
+            steering_rad=float(observation.steering))
+
+    def brake_planning_context(self, state, pedal_context, *, predictor=None, knot_count=8):
+        """Construct explicit state-valid authority context, never using last RHS data.
+
+        Vertical load estimates use the current mechanical jounce/attitude state;
+        per-wheel capacities are conservatively omitted, so callers must treat
+        the resulting fixed-bias forecast as a quasi-steady lower-confidence
+        estimate, not combined-slip certification.
+        """
+        from simplified_vehicle_models.solvers.brake_authority import BrakeAuthorityContext
+        from simplified_vehicle_models.solvers.envelope_driver import PhysicalBrakePlanningContext
+        values=np.asarray(state,dtype=float)
+        observation=self.observe(values)
+        if predictor is None:
+            predictor=getattr(self,"brake_authority_predictor",None)
+        if predictor is None:
+            raise ValueError("a prebuilt BrakeAuthorityPredictor is required")
+        mechanical=self.mechanical_state(values)
+        jounce=values[list(JOUNCE_INDEX)]
+        positions=sprung_wheel_positions(self.vehicle)
+        z_body=mechanical.heave+mechanical.roll*positions[:,1]-mechanical.pitch*positions[:,0]
+        lift,_,_=self.vehicle.suspension.kinematics.steering_lift(
+            wheel_steering_angles(float(values[STEERING_INDEX]),_CORNER_COUNT))
+        loads=np.maximum(np.asarray(tire_deflection_load(
+            self.vehicle.planar.tire,z_body-jounce-lift,np.zeros(_CORNER_COUNT),0.).load),1.)
+        radii=loaded_radius(self.vehicle.planar.tire,loads)
+        _,curvature,_=self.plan.sample(observation.distance)
+        authority=BrakeAuthorityContext(float(observation.speed),
+            float(curvature),tuple(float(x) for x in radii),tuple(float(x) for x in loads),
+            soc=float(np.clip(values[SOC_INDEX],0.,1.)),regen_enabled=False,
+            v_y_mps=float(observation.lateral_speed),yaw_rate_rps=float(observation.yaw_rate),
+            steering_rad=float(observation.steering))
+        context=PhysicalBrakePlanningContext.from_predictor(predictor,authority,pedal_context,knot_count=knot_count)
+        from dataclasses import replace
+        return replace(context,current_authority_context=authority,current_predictor=predictor)
+
     def observe(self, state) -> DriverObservation:
         """Return the driver observation from this state.
 
         The road-plane body accelerations of the last evaluation stay on
         ``self.body_accelerations``; ``DriverObservation`` itself carries no
-        acceleration fields. The wheel-speed margin uses the most-locked wheel's
-        effective longitudinal slip state (the transient tire's slip ratio) with
-        the same ``+1`` full-lock offset as the planar plant.
+        acceleration fields. The wheel-speed margin is the most-locked wheel's
+        kinematic slip ratio plus one, exactly as the planar plant computes it.
+        It uses wheel speed against contact velocity at the static loaded
+        radius, so the brake governor sees wheel lock when it happens. The
+        transient tire's slip state lags the wheel by the relaxation length,
+        so using it made the governor release late.
         """
         values = np.asarray(state, dtype=float)
-        wheel_speed_margin = float(np.min(values[
-            TIRE_OFFSET:TIRE_OFFSET + 3 * _CORNER_COUNT:3])) + 1.0
+        mechanical = self.mechanical_state(values)
+        planar = self.vehicle.planar
+        jounce = values[list(JOUNCE_INDEX)]
+        angles = (wheel_steering_angles(float(values[STEERING_INDEX]), _CORNER_COUNT)
+                  + self.vehicle.suspension.kinematics.toe(jounce))
+        longitudinal, lateral = contact_velocities(
+            PlanarState(mechanical.v_x, mechanical.v_y, mechanical.yaw_rate,
+                        values[list(WHEEL_SPEED_INDEX)]),
+            wheel_positions(planar), angles)
+        # The loaded radius follows each tire's current load (from its own
+        # deflection), as in the planar plant; a single nominal radius was off by
+        # several percent of slip under load transfer.
+        positions = sprung_wheel_positions(self.vehicle)
+        z_body = (mechanical.heave + mechanical.roll * positions[:, 1]
+                  - mechanical.pitch * positions[:, 0])
+        lift, _, _ = self.vehicle.suspension.kinematics.steering_lift(
+            wheel_steering_angles(float(values[STEERING_INDEX]), _CORNER_COUNT))
+        loads = np.maximum(np.asarray(tire_deflection_load(
+            planar.tire, z_body - jounce - lift, np.zeros(_CORNER_COUNT), 0.0).load), 0.0)
+        slip_ratio, _ = slip_quantities(values[list(WHEEL_SPEED_INDEX)],
+                                        loaded_radius(planar.tire, loads),
+                                        longitudinal, lateral, 1.0)
+        wheel_speed_margin = float(np.min(slip_ratio)) + 1.0
         return DriverObservation(float(values[0]), float(values[1]), float(values[2]),
                                  float(values[3]), float(values[8]),
                                  float(values[STEERING_INDEX]), float(values[4]),
@@ -419,7 +575,7 @@ class VerticalForwardPlant:
                 values[list(WHEEL_SPEED_INDEX)] < 0.0):
             raise TrialStateError("prototype requires forward body and wheel motion")
         if abs(values[STEERING_INDEX]) > self.vehicle.planar.steering_maximum_angle + 1.0e-7:
-            raise ValueError("steering angle exceeds the physical bound")
+            raise TrialStateError("steering angle exceeds the physical bound")
         # State finiteness is checked above; finite suspension displacement is unlimited.
         point = self.powertrain(values, command)
         mechanical = self.mechanical_state(values)
@@ -442,14 +598,24 @@ class VerticalForwardPlant:
             # damper-velocity exits.
             self.out_of_range_evaluations += 1
             raise TrialStateError(f"trial left a suspension table domain: {error}") from error
+        except np.linalg.LinAlgError as error:
+            # A singular vertical mass block at a trial state is a rejected step.
+            raise TrialStateError(f"trial vertical mass block is singular: {error}") from error
+        if not (np.all(np.isfinite(evaluation.forcing))
+                and np.all(np.isfinite(evaluation.tire_state_rates))):
+            # A finite trial state can still overflow the tire or contact law.
+            # The integrator must retry with a smaller step, not stop.
+            raise TrialStateError("trial produced nonfinite plant rates")
         _, curvature, _ = self.plan.sample(values[0])
         denominator = 1.0 - curvature * values[1]
         if denominator < 0.5:
-            raise RuntimeError("path coordinate denominator is invalid")
+            # A trial state off the path-coordinate domain is a step the
+            # integrator must retry smaller, not a failure of the run.
+            raise TrialStateError("path coordinate denominator is invalid")
         progress = (values[3] * np.cos(values[2]) - values[4] * np.sin(values[2])) / denominator
         if progress < self.minimum_progress or (
                 self.plan.is_closed and progress == self.minimum_progress):
-            raise RuntimeError("positive path progress constraint failed")
+            raise TrialStateError("positive path progress constraint failed")
 
         forcing = np.zeros(self.state_size)
         forcing[0] = progress

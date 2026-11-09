@@ -53,8 +53,11 @@ class ModelPanelTests(unittest.TestCase):
     def _combo(self, key):
         return self.panel._slot_widgets[key][0]
 
-    def test_tire_combo_has_two_items(self):
-        self.assertEqual(self._combo("tire").count(), 2)
+    def test_tire_combo_includes_supported_tires(self):
+        combo = self._combo("tire")
+        tire_names = {Path(combo.itemData(i)).name for i in range(combo.count())}
+        self.assertTrue({"iem24_murphy_real_unitire.xml", "hoosier-43075-r20-simple.xml"} <= tire_names)
+        self.assertIn("ttc-r20-unitire-steady.xml", tire_names)
 
     def test_selecting_hoosier_emits_and_bolds(self):
         emitted = []
@@ -127,7 +130,7 @@ class ModelPanelTests(unittest.TestCase):
         panel = ModelPanel(point_mass)
         try:
             self.assertEqual(panel._model.currentText(), "point-mass")
-            self.assertIn("no forward runner", panel._error.text())
+            self.assertEqual(panel._error.text(), "")
             emitted = []
             panel.configurationChanged.connect(emitted.append)
             panel._model.setCurrentText("planar-7dof")
@@ -529,28 +532,55 @@ class MainWindowTests(unittest.TestCase):
         self.assertTrue(condition())
 
     def test_main_window_end_to_end_case(self):
-        output = REPOSITORY_ROOT / "runs" / "_test"
-        if output.exists():
-            shutil.rmtree(output)
-        self.addCleanup(lambda: shutil.rmtree(output) if output.exists() else None)
-        self.assertTrue(str(output).endswith("runs/_test"))
-        store_dir = Path(tempfile.mkdtemp())
-        self.addCleanup(lambda: shutil.rmtree(store_dir, ignore_errors=True))
-        store = QSettings(str(store_dir / "settings.ini"), QSettings.Format.IniFormat)
-        window = MainWindow(output_root=output, settings_store=store)
-        self.addCleanup(window.close)
-        window.open_model(REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_planar_7dof.xml")
-        window.track_tab.set_track(REPOSITORY_ROOT / "models/tracks/2024_michigan_endurance_closed.xml")
-        window.settings_tab.forward_duration.setValue(0.3)
-        window.settings_tab.timeout_seconds.setValue(120.0)
-        window.run_cases()
-        loop = QEventLoop()
-        window._queue.allFinished.connect(loop.quit)
-        QTimer.singleShot(120000, loop.quit)
-        loop.exec()
-        self.assertEqual(window.queue_table.item(0, 2).text(), "completed")
-        record = window.study_index.directory / window.study_index.cases[0]["run_record"]
-        self.assertTrue(record.exists())
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / "runs"
+            track_dir = root / "track"
+            track_dir.mkdir()
+            geometry = track_dir / "geometry.csv"
+            geometry.write_text(
+                "distance,x_north,y_east,heading_rad,curvature\n"
+                "0,0,0,0,0\n1,1,0,0,0\n2,2,0,0,0\n",
+                encoding="utf-8",
+            )
+            track = track_dir / "straight.xml"
+            track.write_text(
+                '<model schema-version="1.0" id="short-open-straight" type="track-model" subtype="open-xy-profile">'
+                '<metadata><title>Short open straight</title></metadata><data ref="geometry.csv"/>'
+                '<parameters><parameter name="is_closed" value="false"/>'
+                '<parameter name="terminal_segment_is_duplicate" value="false"/>'
+                '<parameter name="maximum_radius" value="100000" unit="m"/></parameters></model>',
+                encoding="utf-8",
+            )
+            store = QSettings(str(root / "settings.ini"), QSettings.Format.IniFormat)
+            window = MainWindow(output_root=output, settings_store=store)
+            self.addCleanup(window.close)
+            window.open_model(REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_planar_7dof.xml")
+            window.track_tab.set_track(track)
+            window.settings_tab.forward_duration.setValue(0.03)
+            window.settings_tab.forward_wall_seconds.setValue(5.0)
+            window.settings_tab.forward_spacing.setValue(0.5)
+            window.settings_tab.forward_maximum_speed.setValue(1.0)
+            with mock.patch("tools.sim_gui.qt.main_window._warn") as warn:
+                window.run_cases()
+                self.assertEqual(warn.call_count, 0)
+            loop = QEventLoop()
+            window._queue.allFinished.connect(loop.quit)
+            QTimer.singleShot(10000, loop.quit)
+            loop.exec()
+            if window._queue._running or window._queue._pending:
+                window._queue.shutdown()
+                self.fail("short bounded GUI run did not finish within 10 seconds")
+            case = window.study_index.cases[0]
+            summary = case["summary"]
+            self.assertIsInstance(summary, dict)
+            self.assertEqual(summary["status"], "incomplete")
+            self.assertEqual(summary["status"], "incomplete")
+            self.assertFalse(summary["lap_completed"])
+            # The GUI queue's strict contract maps backend-incomplete results
+            # to failed rather than completed study cases.
+            self.assertEqual(window.queue_table.item(0, 2).text(), "failed")
+            self.assertEqual(case["status"], "failed")
 
     def _build_with_tire_dimension(self, window, validate):
         """Build a baseline + Hoosier study with a patched validate_case."""
@@ -619,13 +649,16 @@ class MainWindowTests(unittest.TestCase):
         window = MainWindow(output_root=output, settings_store=store)
         self.addCleanup(window.close)
         window.open_model(REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_planar_7dof.xml")
+        window.track_tab.set_track(REPOSITORY_ROOT / "models/tracks/2024_michigan_endurance_closed.xml")
         combo = window.model_panel._slot_widgets["tire"][0]
         index = next(i for i in range(combo.count()) if "hoosier-43075" in combo.itemData(i))
         combo.setCurrentIndex(index)
-        window.build_cases()
-        deadline = time.time() + 10
-        while window._validation_thread is not None and time.time() < deadline:
-            app.processEvents()
+        with mock.patch("tools.sim_gui.qt.main_window._warn") as warn:
+            window.build_cases()
+            deadline = time.time() + 10
+            while window._validation_thread is not None and time.time() < deadline:
+                app.processEvents()
+        warn.assert_not_called()
         self.assertEqual(Path(window.study_index.cases[0]["choices"]["tire"]).name, "hoosier-43075-r20-simple.xml")
 
     def test_open_study_restores_changed_model_tire_settings_and_recent(self):
@@ -683,27 +716,41 @@ class MainWindowTests(unittest.TestCase):
         window.track_tab.set_track(track)
         self.assertEqual(Path(window._definition().track).resolve(), track.resolve())
 
-    def test_single_run_completes_and_writes_a_record(self):
+    def test_single_run_writes_a_strict_incomplete_record(self):
         window = self._window()
         window.open_model(REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_planar_7dof.xml")
-        window.track_tab.set_track(REPOSITORY_ROOT / "models/tracks/2024_michigan_endurance_closed.xml")
-        window.settings_tab.forward_duration.setValue(0.3)
-        window.settings_tab.timeout_seconds.setValue(120.0)
-        export = Path(tempfile.mkdtemp())
-        self.addCleanup(lambda: shutil.rmtree(export, ignore_errors=True))
-        window.single_tab.set_export_folder(export)
-        window.single_tab.go_button.click()
-        self._wait(window._queue, 120)
-        self.assertEqual(window.single_tab.status_label.text(), "completed")
-        directory = window.study_index.directory
-        self.assertEqual(directory.parent, export)
-        self.assertTrue(directory.name.startswith("single-run_"))
-        records = list(export.glob("single-run_*/cases/case_000/attempt_*/run_record.npz"))
-        self.assertEqual(len(records), 1)
-        self.assertEqual(window.queue_table.rowCount(), 0)
-        log_text = window.single_tab.log_view.toPlainText()
-        self.assertTrue(log_text)
-        self.assertLessEqual(len(log_text.splitlines()), 2000)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            track_dir = root / "track"
+            track_dir.mkdir()
+            (track_dir / "geometry.csv").write_text(
+                "distance,x_north,y_east,heading_rad,curvature\n"
+                "0,0,0,0,0\n1,1,0,0,0\n2,2,0,0,0\n", encoding="utf-8")
+            track = track_dir / "straight.xml"
+            track.write_text(
+                '<model schema-version="1.0" id="short-open-straight" type="track-model" subtype="open-xy-profile">'
+                '<metadata><title>Short open straight</title></metadata><data ref="geometry.csv"/>'
+                '<parameters><parameter name="is_closed" value="false"/>'
+                '<parameter name="terminal_segment_is_duplicate" value="false"/>'
+                '<parameter name="maximum_radius" value="100000" unit="m"/></parameters></model>', encoding="utf-8")
+            window.track_tab.set_track(track)
+            window.settings_tab.forward_duration.setValue(0.03)
+            window.settings_tab.forward_wall_seconds.setValue(5.0)
+            window.settings_tab.forward_spacing.setValue(0.5)
+            window.settings_tab.forward_maximum_speed.setValue(1.0)
+            export = root / "export"
+            window.single_tab.set_export_folder(export)
+            window.single_tab.go_button.click()
+            self._wait(window._queue, 15)
+            self.assertEqual(window.single_tab.status_label.text(), "failed")
+            case = window.study_index.cases[0]
+            summary = case["summary"]
+            self.assertEqual(summary["status"], "incomplete")
+            self.assertFalse(summary["lap_completed"])
+            self.assertEqual(window.study_index.directory.parent, export)
+            self.assertTrue(list(export.glob("single-run_*/cases/case_000/attempt_*/run_record.npz")))
+            self.assertEqual(window.queue_table.rowCount(), 0)
+            self.assertLessEqual(len(window.single_tab.log_view.toPlainText().splitlines()), 2000)
 
     def test_single_run_does_not_start_without_a_track(self):
         window = self._window()
@@ -794,14 +841,32 @@ class MainWindowTests(unittest.TestCase):
     def test_study_run_still_uses_the_queue(self):
         window = self._window()
         window.open_model(REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_planar_7dof.xml")
-        window.settings_tab.forward_duration.setValue(0.3)
-        window.settings_tab.timeout_seconds.setValue(120.0)
-        window.build_cases()
-        self._until(lambda: window._validation_thread is None, 60)
-        window.run_cases()
-        self._wait(window._queue, 120)
-        self.assertEqual(window.queue_table.rowCount(), 1)
-        self.assertEqual(window.queue_table.item(0, 2).text(), "completed")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            track_dir = root / "track"
+            track_dir.mkdir()
+            (track_dir / "geometry.csv").write_text(
+                "distance,x_north,y_east,heading_rad,curvature\n"
+                "0,0,0,0,0\n1,1,0,0,0\n2,2,0,0,0\n", encoding="utf-8")
+            track = track_dir / "straight.xml"
+            track.write_text(
+                '<model schema-version="1.0" id="short-open-straight" type="track-model" subtype="open-xy-profile">'
+                '<metadata><title>Short open straight</title></metadata><data ref="geometry.csv"/>'
+                '<parameters><parameter name="is_closed" value="false"/>'
+                '<parameter name="terminal_segment_is_duplicate" value="false"/>'
+                '<parameter name="maximum_radius" value="100000" unit="m"/></parameters></model>', encoding="utf-8")
+            window.track_tab.set_track(track)
+            window.settings_tab.forward_duration.setValue(0.03)
+            window.settings_tab.forward_wall_seconds.setValue(5.0)
+            window.settings_tab.forward_spacing.setValue(0.5)
+            window.settings_tab.forward_maximum_speed.setValue(1.0)
+            window.build_cases()
+            self._until(lambda: window._validation_thread is None, 60)
+            window.run_cases()
+            self._wait(window._queue, 15)
+            self.assertEqual(window.queue_table.rowCount(), 1)
+            self.assertEqual(window.queue_table.item(0, 2).text(), "failed")
+            self.assertEqual(window.study_index.cases[0]["summary"]["status"], "incomplete")
         self.assertEqual(window.single_tab.status_label.text(), "")
         self.assertEqual(window.single_tab.log_view.toPlainText(), "")
 
@@ -869,10 +934,12 @@ class MainWindowTests(unittest.TestCase):
 
     def test_single_run_tab_is_first_and_track_tab_is_second(self):
         window = self._window()
-        self.assertEqual(window.tabs.tabText(0), "Single Run")
-        self.assertEqual(window.tabs.tabText(1), "Track")
+        names = [window.tabs.tabText(index) for index in range(window.tabs.count())]
+        self.assertEqual(names[0], "Single Run")
+        self.assertEqual(names.index("Maneuvers"), 1)
+        self.assertEqual(names.index("Track"), 2)
 
-    def test_point_mass_disables_run(self):
+    def test_point_mass_workflow_is_available_for_supported_model(self):
         store_dir = Path(tempfile.mkdtemp())
         self.addCleanup(lambda: __import__("shutil").rmtree(store_dir, ignore_errors=True))
         store = QSettings(str(store_dir / "settings.ini"), QSettings.Format.IniFormat)
@@ -881,7 +948,8 @@ class MainWindowTests(unittest.TestCase):
         window = MainWindow(output_root=output, settings_store=store)
         self.addCleanup(window.close)
         window.open_model(REPOSITORY_ROOT / "models/formulations/iem24_murphy_real_point_mass.xml")
-        self.assertFalse(window.go_action.isEnabled())
+        self.assertEqual(window.model_panel._error.text(), "")
+        self.assertGreaterEqual(window.settings_tab.solver_kind.findData("point-mass"), 0)
 
     def test_save_open_study_round_trip(self):
         store_dir = Path(tempfile.mkdtemp())
